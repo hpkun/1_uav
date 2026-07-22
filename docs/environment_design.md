@@ -1,7 +1,17 @@
 # Environment Design
 
-`core` contains unit-aware state, control, constants, and geometry primitives. `actions` maps the fixed discrete action IDs to controls. `dynamics` consumes only a six-dimensional kinematic vector and a control command, keeping rewards, combat, and agent policy out of the physics kernel.
+环境采用单向依赖：`core` 定义状态、控制、枚举和几何；`actions` 把 15 个动作映射到控制；`dynamics` 只负责受约束的物理推进；`entities` 组合状态与同构平台参数。低层数值模块不依赖奖励、策略或 Gymnasium 环境。
 
-`entities` holds state/profile associations. Future `combat`, `observations`, `rewards`, and `opponents` modules depend on core/entities but do not change the dynamics contract. `envs` will later compose those modules behind Gymnasium-style `reset()` and `step()` methods. `utils` provides configuration and validation helpers.
+`combat` 在决策边界计算攻击/优势几何、概率伤害和结构化事件。`observations` 根据同步更新后的状态构造 11 维 Actor 观测与 10 维 Critic 状态。`rewards` 提供可单测的角度、距离、高度、速度、优势、事件和终局组件。
 
-The current dependency direction is intentionally one-way: low-level numerical modules do not import environment classes or learning frameworks.
+`opponents` 只选择离散动作，不修改环境状态。`Combat1v1Env` 负责以下固定顺序：
+
+1. 红蓝选择动作；
+2. 每个物理子步先分别计算候选状态，再同时写回；
+3. 检查边界和可选碰撞；
+4. 从同一决策边界状态计算双向几何；
+5. 分别采样双方伤害，再同时写回生命值；
+6. 生成事件、奖励、观测、Critic 状态和结果；
+7. 将决策记录及物理子步加入轨迹。
+
+配置由 `base.yaml`、一个平台参数文件和一个场景文件做递归合并。工厂 `make_1v1_env` 只完成配置读取和对象构造，没有引入注册器或插件系统。

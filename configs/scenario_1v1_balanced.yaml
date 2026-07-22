@@ -1,0 +1,8 @@
+scenario_name: balanced_random
+red_count: 1
+blue_count: 1
+initial_xy_extent: 2500.0
+initial_altitude_min: 800.0
+initial_altitude_max: 3000.0
+initial_speed_min: 80.0
+initial_speed_max: 140.0

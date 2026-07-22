@@ -1,12 +1,10 @@
 # Implementation Plan
 
-1. Dynamics and action validation
-2. 1v1 unarmed pursuit
-3. 1v1 attack and probabilistic damage
-4. Rule-based opponents
-5. 2v2 homogeneous environment
-6. 2v2 heterogeneous environment
-7. 3v2 heterogeneous environment
-8. MAPPO baseline integration
-
-Only the first stage is represented by executable code in the current repository.
+1. **动力学和动作验证：已完成。** 包括约束裁剪、动作保持和镜像转弯测试。
+2. **1v1 无武器追踪：已完成。** 包括三个初始化场景和三种规则策略。
+3. **1v1 攻击与概率毁伤：已完成。** 包括同步结算、事件和完整回合。
+4. **规则对手：部分完成。** 直飞、随机和项目几何追踪已完成；论文预测威胁规则因子函数缺失而保留 TODO。
+5. **2v2 同构环境：下一阶段。** 复用状态推进、几何、伤害、事件、观测归一化和奖励组件。
+6. **2v2 异构环境：未开始。**
+7. **3v2 异构环境：未开始。**
+8. **MAPPO 基线：未开始。** 当前 Gymnasium 接口、Actor 观测和 Critic 状态已可供后续算法调用。

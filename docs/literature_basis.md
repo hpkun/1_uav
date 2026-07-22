@@ -1,13 +1,7 @@
 # Literature Basis
 
-The planned environment is based on the following concepts:
+本项目采用两篇实验设定中明确给出的三自由度过载质点模型、15 种离散动作、Runge–Kutta 积分、攻击区与优势区、分段概率生命值毁伤、2023 年稠密/终局奖励形式，以及从 1v1 扩展到多机环境的思路。
 
-- Three-degree-of-freedom overload point-mass dynamics
-- A 15-action discrete manoeuvre set
-- Runge-Kutta numerical integration
-- Attack and advantage zones
-- Probabilistic health-value damage
-- Predictive rule-based opponents
-- An extension path from 1v1 to multi-aircraft environments
+文档和配置只把附件中明确列出的数值视为论文参数。同步更新、同步伤害、最大高度、碰撞关闭、初始化范围、距离奖励缺失细节的连续实现，以及几何追踪代价均属于项目实现约定。
 
-This document records design concepts only. It does not invent paper-specific parameters or claim that unimplemented modules are complete.
+两篇论文只公开预测式规则对手的总威胁加权形式，没有给出四个子威胁函数的完整定义。因此 `PredictiveRuleOpponent` 仍明确抛出 `NotImplementedError`，项目提供的 `PursuitOpponent` 不声称是该方法的严格复现。

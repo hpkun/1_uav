@@ -1,0 +1,10 @@
+profile_name: homogeneous_2024
+min_speed: 30.0
+max_speed: 180.0
+min_flight_path_angle: -0.7853981633974483
+max_flight_path_angle: 0.7853981633974483
+min_tangential_overload: -1.0
+max_tangential_overload: 2.5
+min_normal_overload: -4.0
+max_normal_overload: 4.0
+initial_health: 300.0

@@ -1,14 +1,22 @@
 """Straight-flight opponent structure."""
 
+import numpy as np
+
 from uav_env.actions.discrete_15 import DiscreteAction15
 from uav_env.core.state import UAVState
 from uav_env.opponents.base import RuleOpponent
 
 
 class StraightOpponent(RuleOpponent):
-    """Future opponent that maintains straight, level flight."""
+    """Transparent baseline that always maintains straight, level flight."""
 
-    def select_action(self, ownship: UAVState, opponent: UAVState) -> DiscreteAction15:
-        """Return a straight-flight command once policy details are approved."""
+    def select_action(
+        self,
+        ownship: UAVState,
+        opponent: UAVState,
+        rng: np.random.Generator | None = None,
+    ) -> DiscreteAction15:
+        """Return the level-hold action."""
 
-        raise NotImplementedError("Straight opponent policy is not implemented")
+        del ownship, opponent, rng
+        return DiscreteAction15.LEVEL_HOLD

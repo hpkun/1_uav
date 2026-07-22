@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from math import isfinite
+from math import cos, isfinite, sin
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,8 +26,18 @@ class UAVState:
     alive: bool
     team_id: int
     type_id: str
+    damaged: bool = False
+    crashed: bool = False
+    last_action: int | None = None
 
     def __post_init__(self) -> None:
+        self.validate_finite()
+        if not self.type_id:
+            raise ValueError("type_id must not be empty")
+
+    def validate_finite(self) -> None:
+        """Raise when any continuous state value is not finite."""
+
         numeric = (
             self.x,
             self.y,
@@ -39,8 +49,24 @@ class UAVState:
         )
         if not all(isfinite(value) for value in numeric):
             raise ValueError("UAVState numeric values must be finite")
-        if not self.type_id:
-            raise ValueError("type_id must not be empty")
+
+    def position_vector(self) -> NDArray[np.float64]:
+        """Return Cartesian position ``[x, y, z]`` in metres."""
+
+        return np.asarray([self.x, self.y, self.z], dtype=np.float64)
+
+    def velocity_vector(self) -> NDArray[np.float64]:
+        """Derive Cartesian velocity from speed and flight angles."""
+
+        horizontal = self.speed * cos(self.flight_path_angle)
+        return np.asarray(
+            [
+                horizontal * cos(self.heading_angle),
+                horizontal * sin(self.heading_angle),
+                self.speed * sin(self.flight_path_angle),
+            ],
+            dtype=np.float64,
+        )
 
     def to_kinematic_vector(self) -> NDArray[np.float64]:
         """Return ``[x, y, z, speed, flight_path_angle, heading_angle]``."""

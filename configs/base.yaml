@@ -1,13 +1,42 @@
 physics_dt: 0.1
 decision_dt: 0.5
+physics_steps_per_action: 5
 max_episode_seconds: 200.0
+max_decision_steps: 400
 gravity: 9.81
-min_speed: 30.0
-max_speed: 150.0
-min_flight_path_angle: -0.78539816339
-max_flight_path_angle: 0.78539816339
-min_tangential_overload: -1.0
-max_tangential_overload: 2.5
-min_normal_overload: -4.0
-max_normal_overload: 4.0
-initial_health: 300.0
+min_altitude: 0.0
+max_altitude: 5000.0
+simultaneous_attack_resolution: true
+
+attack_distance_min: 40.0
+attack_distance_max: 900.0
+attack_angle_max: 0.5235987755982988
+escape_angle_max: 1.0471975511965976
+attack_area_angle_max: 0.7853981633974483
+advantage_distance_min: 40.0
+advantage_distance_max: 1300.0
+advantage_escape_angle_max: 1.0471975511965976
+desired_distance_max: 5000.0
+
+damage_probability_thresholds: [0.1, 0.4, 0.8]
+damage_values: [51.0, 21.0, 11.0, 0.0]
+
+normalization_a: 2.0
+normalization_b: 1.0
+clip_observation: true
+event_reward_mode: per_step
+draw_as_loss: true
+
+height_reward:
+  H_max: 500.0
+  H_adv: 300.0
+  H_att: 100.0
+  H_min: -300.0
+
+project_assumptions:
+  max_altitude: 5000.0
+  collision_distance: 0.0
+  minimum_initial_separation: 1200.0
+  pursuit_angle_weight: 1.0
+  pursuit_distance_weight: 0.6
+  pursuit_altitude_weight: 0.2

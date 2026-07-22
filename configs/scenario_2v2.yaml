@@ -1,4 +1,5 @@
 scenario: 2v2
+implemented: false
 blue_uavs: 2
 red_uavs: 2
 physics_dt: 0.1
