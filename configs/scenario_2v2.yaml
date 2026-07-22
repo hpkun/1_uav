@@ -1,0 +1,16 @@
+scenario: 2v2
+blue_uavs: 2
+red_uavs: 2
+physics_dt: 0.1
+decision_dt: 0.5
+max_episode_seconds: 200.0
+gravity: 9.81
+min_speed: 30.0
+max_speed: 150.0
+min_flight_path_angle: -0.78539816339
+max_flight_path_angle: 0.78539816339
+min_tangential_overload: -1.0
+max_tangential_overload: 2.5
+min_normal_overload: -4.0
+max_normal_overload: 4.0
+initial_health: 300.0
