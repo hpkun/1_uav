@@ -76,6 +76,7 @@ class Combat1v1Env(BaseUAVEnv):
         self._statistics: dict[str, float | int] = {}
         self._previous_red_geometry: CombatGeometry | None = None
         self._previous_blue_geometry: CombatGeometry | None = None
+        self.reverse_damage_sample_order = False
 
     def _build_opponent(self, opponent: str | RuleOpponent) -> RuleOpponent:
         if isinstance(opponent, RuleOpponent):
@@ -346,8 +347,12 @@ class Combat1v1Env(BaseUAVEnv):
     ) -> tuple[DamageResult, DamageResult]:
         red_attempt = self.red.state.alive and self.blue.state.alive and red_geometry.can_attack
         blue_attempt = self.blue.state.alive and self.red.state.alive and blue_geometry.can_attack
-        blue_updated, damage_to_blue = sample_damage(self.blue.state, self.damage_config, self.rng, red_attempt)
-        red_updated, damage_to_red = sample_damage(self.red.state, self.damage_config, self.rng, blue_attempt)
+        if self.reverse_damage_sample_order:
+            red_updated, damage_to_red = sample_damage(self.red.state, self.damage_config, self.rng, blue_attempt)
+            blue_updated, damage_to_blue = sample_damage(self.blue.state, self.damage_config, self.rng, red_attempt)
+        else:
+            blue_updated, damage_to_blue = sample_damage(self.blue.state, self.damage_config, self.rng, red_attempt)
+            red_updated, damage_to_red = sample_damage(self.red.state, self.damage_config, self.rng, blue_attempt)
         self.red.state, self.blue.state = red_updated, blue_updated
         for source, target, result in (
             ("red", "blue", damage_to_blue),

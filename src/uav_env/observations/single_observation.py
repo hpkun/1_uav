@@ -50,7 +50,7 @@ def actor_feature_specs(config: NormalizationConfig) -> list[FeatureSpec]:
 def critic_feature_specs(config: NormalizationConfig) -> list[FeatureSpec]:
     """Return the explicit Critic feature type table."""
 
-    refs = [config.horizontal_reference, pi, pi, config.altitude_reference, pi, pi, pi, config.speed_difference_reference, config.health_reference, config.health_reference]
+    refs = [config.horizontal_reference, pi, pi, config.altitude_reference, config.heading_reference, pi, pi, config.speed_difference_reference, config.health_reference, config.health_reference]
     kinds = ["nonnegative", "nonnegative", "nonnegative", "signed", "yaw", "signed", "signed", "signed", "nonnegative", "signed"]
     return [FeatureSpec(name, ref, kind) for name, ref, kind in zip(CRITIC_STATE_FEATURE_NAMES, refs, kinds)]  # type: ignore[arg-type]
 

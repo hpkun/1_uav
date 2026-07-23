@@ -137,7 +137,17 @@ class PursuitOpponent(RuleOpponent):
         scored: list[tuple[float, DiscreteAction15, UAVState, bool]] = []
         for action, (candidate, unsafe, penalty) in zip(DiscreteAction15, self._predict_all(ownship)):
             scored.append((self._score(candidate, target) + penalty, action, candidate, unsafe))
+        relative = target.position_vector()[:2] - ownship.position_vector()[:2]
+        velocity = ownship.velocity_vector()[:2]
+        scale = max(float(np.linalg.norm(relative) * np.linalg.norm(velocity)), 1.0)
+        collinear = abs(float(velocity[0] * relative[1] - velocity[1] * relative[0])) / scale <= 1.0e-12
         safe = [entry for entry in scored if not entry[3]]
+        if collinear:
+            # At exact left/right degeneracy there is no reflection-equivariant
+            # choice between a chiral pair. Prefer a non-turning maneuver.
+            nonturning = [entry for entry in safe if int(entry[1]) <= int(DiscreteAction15.DIVE_DECELERATE)]
+            if nonturning:
+                safe = nonturning
         if safe:
             return min(safe, key=lambda entry: (entry[0], int(entry[1])))[1]
         if min(entry[2].z for entry in scored) < self.minimum_safe_altitude:

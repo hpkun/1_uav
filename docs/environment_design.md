@@ -1,5 +1,7 @@
 # Environment Design
 
+MAPPO 位于 `uav_env.algorithms.mappo`，只通过 `MAPPOEnvAdapter` 消费既有 Gymnasium 环境，不反向修改动力学、战斗或奖励内核。依赖方向为：runner → adapter/algorithm → env API → observations/rewards/combat → dynamics/core；环境模块不依赖算法模块。
+
 依赖方向保持为：`core/actions → dynamics/entities → combat/observations/rewards/opponents → envs → scripts`。1v1 与 2v2 共用状态、平台、RK4、攻击几何、伤害区间和事件定义，不复制动力学。
 
 每个物理子步都从同一子步起始快照计算全部存活飞机的候选状态，计算结束后统一写回。1v1 保留原同步接口；2v2 中单机越界不会停止其余飞机，只有一方全部失效才可提前结束剩余子步。

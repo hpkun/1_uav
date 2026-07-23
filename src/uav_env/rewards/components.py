@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from math import pi
+import warnings
 
 import numpy as np
 
@@ -166,18 +167,21 @@ def advantage_reward(distance: float, enemy_escape_angle: float, minimum: float,
 
 
 def piecewise_distance_reward(distance: float, attack_distance_min: float, attack_distance_max: float, advantage_distance_max: float, desired_distance_max: float) -> float:
-    """Backward-compatible alias for the debug linear piecewise component."""
+    """Deprecated compatibility alias for the paper piecewise term."""
 
-    return debug_linear_distance_reward(distance, distance, attack_distance_min, attack_distance_max, advantage_distance_max, desired_distance_max)[2]
+    warnings.warn("Use paper_piecewise_distance_reward explicitly", DeprecationWarning, stacklevel=2)
+    return paper_piecewise_distance_reward(distance, attack_distance_min, attack_distance_max, advantage_distance_max, desired_distance_max)
 
 
 def height_reward(
     delta_h: float,
+    d_att_max: float = 900.0,
     h_max: float = 500.0,
     h_adv: float = 300.0,
     h_att: float = 100.0,
     h_min: float = -300.0,
 ) -> float:
-    """Backward-compatible wrapper for the debug linear height term."""
+    """Deprecated compatibility alias for the paper height term."""
 
-    return debug_linear_height_reward(delta_h, h_max, h_adv, h_att, h_min)
+    warnings.warn("Use paper_height_reward explicitly", DeprecationWarning, stacklevel=2)
+    return paper_height_reward(delta_h, d_att_max, h_max, h_adv, h_att, h_min)

@@ -27,6 +27,10 @@ class GlobalStateResult:
     raw: NDArray[np.float64]
     normalized: NDArray[np.float64]
     feature_names: list[str]
+    saturation_count: int
+    saturation_ratio: float
+    saturated_feature_mask: NDArray[np.bool_]
+    saturated_feature_names: list[str]
 
 
 def _pair_block(red: UAV, blue: UAV) -> NDArray[np.float64]:
@@ -57,5 +61,7 @@ def build_global_state_2v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[
         *[FeatureSpec(name, np.pi, "nonnegative") for name in ("velocity_vector_angle", "attack_angle", "escape_angle")],
     ]
     specs = [FeatureSpec("red_failure", 1.0, "failure") for _ in range(2)] + pair_specs * 4 + [FeatureSpec("last_action", 14.0, "action") for _ in range(2)]
-    normalized = normalize_by_specs(raw, specs, config).values
-    return GlobalStateResult(raw, normalized, list(GLOBAL_STATE_FEATURE_NAMES))
+    result = normalize_by_specs(raw, specs, config)
+    names = list(GLOBAL_STATE_FEATURE_NAMES)
+    return GlobalStateResult(raw, result.values, names, result.saturation_count, result.saturation_ratio,
+                             result.saturated_mask, [name for name, flag in zip(names, result.saturated_mask) if flag])

@@ -82,12 +82,18 @@ def resolve_multi_attacks(
     attack_config: AttackZoneConfig,
     damage_config: DamageConfig,
     rng: np.random.Generator,
+    sample_team_order: tuple[int, ...] | None = None,
 ) -> MultiCombatStepResult:
     """Select nearest attackable targets, sample first, then update every target simultaneously."""
 
     ordered = sorted((u for u in aircraft if u.is_alive), key=lambda u: u.uav_id)
+    if sample_team_order is not None:
+        rank = {team: index for index, team in enumerate(sample_team_order)}
+        sampling_order = sorted(ordered, key=lambda u: (rank.get(u.team, len(rank)), u.uav_id))
+    else:
+        sampling_order = ordered
     attempts: list[AttackAttempt] = []
-    for attacker in ordered:
+    for attacker in sampling_order:
         candidates: list[tuple[float, str, UAV]] = []
         for target in ordered:
             if target.team == attacker.team:

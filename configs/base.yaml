@@ -26,6 +26,8 @@ normalization_a: 2.0
 normalization_b: 1.0
 clip_observation: true
 reward_profile: zheng_series_1v1
+# Safety default until equations (22)-(25) can be checked against a readable PDF.
+multi_terminal_reward_profile: project_balanced
 event_reward_mode: per_step
 draw_as_loss: true
 r_den0: 0.01

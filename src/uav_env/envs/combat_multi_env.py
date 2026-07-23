@@ -33,7 +33,7 @@ from uav_env.opponents.pursuit import PursuitOpponent
 from uav_env.opponents.random import RandomOpponent
 from uav_env.opponents.straight import StraightOpponent
 from uav_env.rewards.components import advantage_reward
-from uav_env.rewards.multi_reward import MultiAgentRewardBreakdown, assign_dense_rewards, individual_situation_reward, multi_terminal_rewards
+from uav_env.rewards.multi_reward import MultiAgentRewardBreakdown, assign_dense_rewards, individual_situation_reward, multi_terminal_reward_allocations
 from uav_env.utils.config import validate_experiment_config
 
 
@@ -59,6 +59,7 @@ class CombatMultiEnv(BaseUAVEnv):
         self._has_reset = False
         self._current_seed: int | None = None
         self.rng = np.random.default_rng(seed)
+        self.blue_rule_rng = np.random.default_rng(None if seed is None else seed + 2_000_003)
         self.opponent_name = opponent
         self.opponent_policy = self._build_policy(opponent)
         self.red_aircraft: list[UAV] = []
@@ -68,6 +69,7 @@ class CombatMultiEnv(BaseUAVEnv):
         self._trajectory: list[dict[str, Any]] = []
         self._statistics: dict[str, Any] = {}
         self._previous_states: dict[str, UAVState] = {}
+        self.damage_sample_team_order: tuple[int, ...] | None = None
 
     @property
     def all_aircraft(self) -> list[UAV]:
@@ -149,6 +151,7 @@ class CombatMultiEnv(BaseUAVEnv):
         if effective is not None:
             self.action_space.seed(effective)
             self._current_seed = effective
+            self.blue_rule_rng = np.random.default_rng(effective + 2_000_003)
         self._has_reset = True
         options = options or {}
         scenario = str(options.get("scenario", self.scenario_name))
@@ -178,10 +181,16 @@ class CombatMultiEnv(BaseUAVEnv):
             "red_states": [u.state.copy() for u in self.red_aircraft], "blue_states": [u.state.copy() for u in self.blue_aircraft],
             "local_observations_raw": local.raw, "local_observations": local.normalized,
             "local_observation_feature_names": local.feature_names, "ally_alive_masks": local.ally_alive_masks,
+            "local_observation_saturation_count": local.saturation_count,
+            "local_observation_saturation_ratio": local.saturation_ratio,
+            "local_observation_saturated_feature_names": local.saturated_feature_names,
             "enemy_alive_masks": local.enemy_alive_masks, "red_agent_alive_mask": local.own_alive_mask,
             "blue_alive_mask": np.asarray([int(u.is_alive) for u in self.blue_aircraft], dtype=np.int8),
             "available_action_mask": self._available_action_mask(), "global_state_raw": global_state.raw,
             "global_state": global_state.normalized, "global_state_feature_names": global_state.feature_names,
+            "global_state_saturation_count": global_state.saturation_count,
+            "global_state_saturation_ratio": global_state.saturation_ratio,
+            "global_state_saturated_feature_names": global_state.saturated_feature_names,
             "statistics": self.get_statistics(), "outcome": self._outcome(False), "simulation_time": self.simulation_time,
             "decision_step": self.decision_step, "scenario_name": self.scenario_name, "seed": self._current_seed,
         }
@@ -197,7 +206,7 @@ class CombatMultiEnv(BaseUAVEnv):
             if not blue.is_alive or blue.uav_id not in assignment_map:
                 actions.append(DiscreteAction15.LEVEL_HOLD)
             else:
-                actions.append(self.opponent_policy.select_action(blue.state.copy(), red_map[assignment_map[blue.uav_id]].state.copy(), self.rng))
+                actions.append(self.opponent_policy.select_action(blue.state.copy(), red_map[assignment_map[blue.uav_id]].state.copy(), self.blue_rule_rng))
         return actions
 
     def _propagate_all(self, action_map: dict[str, DiscreteAction15]) -> tuple[list[dict[str, UAVState]], dict[str, str], int]:
@@ -307,7 +316,10 @@ class CombatMultiEnv(BaseUAVEnv):
         previous_states = {u.uav_id: u.state.copy() for u in self.all_aircraft}
         substeps, boundary, executed = self._propagate_all(action_map)
         collision_pairs, collision_ids = self._resolve_collisions()
-        combat_result = resolve_multi_attacks(self.all_aircraft, self.attack_config, self.damage_config, self.rng)
+        combat_result = resolve_multi_attacks(
+            self.all_aircraft, self.attack_config, self.damage_config, self.rng,
+            self.damage_sample_team_order,
+        )
         for aircraft in self.all_aircraft:
             aircraft.state = combat_result.updated_states[aircraft.uav_id]
         self.decision_step += 1
@@ -338,12 +350,12 @@ class CombatMultiEnv(BaseUAVEnv):
             raw_dense[red.uav_id] = situation + event
             self._statistics["aircraft"][red.uav_id]["contribution_score"] += contribution
         assigned = assign_dense_rewards(raw_dense, {u.uav_id: u.is_alive for u in self.red_aircraft}, float(self.config["r_den0"]))
-        terminal = multi_terminal_rewards(outcome, self.red_aircraft, {u.uav_id: self._statistics["aircraft"][u.uav_id]["contribution_score"] for u in self.red_aircraft}, self.config)
+        terminal = multi_terminal_reward_allocations(outcome, self.red_aircraft, {u.uav_id: self._statistics["aircraft"][u.uav_id]["contribution_score"] for u in self.red_aircraft}, self.config)
         breakdowns: dict[str, MultiAgentRewardBreakdown] = {}
         for red in self.red_aircraft:
             situation = raw_dense[red.uav_id] - event_values[red.uav_id]
-            total = assigned[red.uav_id] + terminal[red.uav_id]
-            breakdowns[red.uav_id] = MultiAgentRewardBreakdown(situation, event_values[red.uav_id], raw_dense[red.uav_id], assigned[red.uav_id], terminal[red.uav_id], total, step_contributions[red.uav_id])
+            allocation=terminal[red.uav_id]; total = assigned[red.uav_id] + allocation.reward
+            breakdowns[red.uav_id] = MultiAgentRewardBreakdown(situation, event_values[red.uav_id], raw_dense[red.uav_id], assigned[red.uav_id], allocation.reward, total, step_contributions[red.uav_id], allocation.profile, allocation.team_base, allocation.allocation_factor, allocation.health_component, allocation.contribution_component, allocation.survival_component)
             self._statistics["aircraft"][red.uav_id]["cumulative_reward"] += total
         agent_rewards = {key: value.total for key, value in breakdowns.items()}
         team_reward = float(np.mean(list(agent_rewards.values())))

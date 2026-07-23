@@ -11,6 +11,9 @@ from uav_env.actions.discrete_15 import DiscreteAction15
 from uav_env.envs import make_2v2_env
 from uav_env.envs.combat_multi_env import CombatMultiEnv
 from uav_env.opponents.pursuit import PursuitOpponent
+from uav_env.opponents.random import RandomOpponent
+from uav_env.opponents.straight import StraightOpponent
+from uav_env.opponents.team_controller import TeamRuleController
 
 
 @dataclass(frozen=True)
@@ -36,30 +39,19 @@ def run_2v2_episode(scenario: str, opponent: str, seed: int, red_policy: str, ma
 
     env = make_2v2_env(scenario, opponent, seed=seed)
     env.reset(seed=seed)
-    policy_rng = np.random.default_rng(seed + 2_000_003)
     pursuit_cfg = {key: float(value) for key, value in env.config["pursuit"].items()}
     pursuit = PursuitOpponent(env.profile, env.attack_config, float(env.config["physics_dt"]), int(env.config["physics_steps_per_action"]), float(env.config["gravity"]), float(env.config["max_altitude"]), **pursuit_cfg)
+    rule = {"straight": StraightOpponent(), "random": RandomOpponent(), "pursuit": pursuit}.get(red_policy)
+    if rule is None:
+        raise ValueError(f"Unknown red policy: {red_policy!r}")
+    controller = TeamRuleController(red_policy, rule, seed + 1_000_003)
     team_total = 0.0
     terminated = truncated = False
     info: dict[str, object] = {}
     limit = max_steps or int(env.config["max_decision_steps"])
     while not (terminated or truncated) and env.decision_step < limit:
-        actions: list[int] = []
-        living_blue = [u for u in env.blue_aircraft if u.is_alive]
-        for red in env.red_aircraft:
-            if not red.is_alive or red_policy == "straight":
-                action = DiscreteAction15.LEVEL_HOLD
-            elif red_policy == "random":
-                action = DiscreteAction15(int(policy_rng.integers(0, 15)))
-            elif red_policy == "pursuit":
-                if living_blue:
-                    target = min(living_blue, key=lambda u: (float(np.linalg.norm(u.state.position_vector() - red.state.position_vector())), u.uav_id))
-                    action = pursuit.select_action(red.state, target.state)
-                else:
-                    action = DiscreteAction15.LEVEL_HOLD
-            else:
-                raise ValueError(f"Unknown red policy: {red_policy!r}")
-            actions.append(int(action))
+        selected, _ = controller.select_actions(env.red_aircraft, env.blue_aircraft)
+        actions = [int(action) for action in selected]
         _, reward, terminated, truncated, info = env.step(np.asarray(actions, dtype=np.int64))
         team_total += reward
     outcome = info.get("outcome", env._outcome(False))

@@ -29,6 +29,7 @@ class NormalizationResult:
     values: NDArray[np.float64]
     saturation_count: int
     saturation_ratio: float
+    saturated_mask: NDArray[np.bool_]
 
 
 @dataclass(frozen=True)
@@ -106,9 +107,10 @@ def normalize_by_specs(
                 unbounded[index] = transformed
             else:
                 unbounded[index] = 2.0 * transformed / spec.reference - 1.0
-    saturation_count = int(np.count_nonzero(np.abs(unbounded) > 1.0))
+    saturated_mask = np.abs(unbounded) > 1.0
+    saturation_count = int(np.count_nonzero(saturated_mask))
     output = np.clip(unbounded, -1.0, 1.0) if bool(config.clip_observation) else unbounded
-    return NormalizationResult(output.astype(np.float64), saturation_count, saturation_count / len(specs) if specs else 0.0)
+    return NormalizationResult(output.astype(np.float64), saturation_count, saturation_count / len(specs) if specs else 0.0, saturated_mask)
 
 
 def normalize_features(

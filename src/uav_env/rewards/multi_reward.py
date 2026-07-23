@@ -23,6 +23,23 @@ class MultiAgentRewardBreakdown:
     terminal: float
     total: float
     contribution_score: float
+    terminal_profile: str = "none"
+    terminal_team_base: float = 0.0
+    terminal_allocation_factor: float = 0.0
+    terminal_health_component: float = 0.0
+    terminal_contribution_component: float = 0.0
+    terminal_survival_component: float = 0.0
+
+
+@dataclass(frozen=True)
+class TerminalRewardAllocation:
+    reward: float
+    profile: str
+    team_base: float
+    allocation_factor: float
+    health_component: float
+    contribution_component: float
+    survival_component: float
 
 
 def pair_situation_reward(previous_red: UAVState, previous_blue: UAVState, red: UAVState, blue: UAVState, config: dict[str, Any]) -> float:
@@ -81,19 +98,58 @@ def multi_terminal_rewards(
     contribution_scores: Mapping[str, float],
     config: dict[str, Any],
 ) -> dict[str, float]:
-    """Apply zero-safe project weights to the published multi-terminal structure."""
+    """Return terminal rewards using the explicitly selected profile."""
 
+    return {key: value.reward for key, value in multi_terminal_reward_allocations(outcome, red_aircraft, contribution_scores, config).items()}
+
+
+def multi_terminal_reward_allocations(
+    outcome: EpisodeOutcome, red_aircraft: Sequence[UAV], contribution_scores: Mapping[str, float], config: dict[str, Any],
+) -> dict[str, TerminalRewardAllocation]:
+    """Return terminal rewards and inspectable formula components."""
+
+    profile = str(config.get("multi_terminal_reward_profile", "paper_2024_exact"))
     if outcome.termination_reason == "ongoing":
-        return {u.uav_id: 0.0 for u in red_aircraft}
+        return {u.uav_id: TerminalRewardAllocation(0.0, profile, 0.0, 0.0, 0.0, 0.0, 0.0) for u in red_aircraft}
     assumptions = config["project_assumptions"]["multi_terminal_reward"]
     if outcome.winner == "draw":
-        return {u.uav_id: float(assumptions["draw_reward"]) for u in red_aircraft}
+        value=float(assumptions["draw_reward"])
+        return {u.uav_id: TerminalRewardAllocation(value, profile, value, 1.0, 0.0, 0.0, 0.0) for u in red_aircraft}
     weights = assumptions["win_weights"] if outcome.winner == "red" else assumptions["lose_weights"]
+    if len(weights)!=3 or any(float(w)<0 for w in weights) or abs(sum(float(w) for w in weights)-1.0)>1e-8:
+        raise ValueError("Terminal weights must be three nonnegative values summing to one")
+    if profile == "project_balanced":
+        legacy=dict(config); legacy["multi_terminal_reward_profile"]="_legacy"
+        return _project_balanced_allocations(outcome,red_aircraft,contribution_scores,legacy)
+    if profile != "paper_2024_exact": raise ValueError(f"Unknown terminal reward profile: {profile}")
+    n=len(red_aircraft); max_steps=int(config["max_decision_steps"]); remaining=(max_steps-outcome.decision_steps)/max_steps
+    won=outcome.winner=="red"; base=float(config["r_win0"] if won else config["r_lose0"])*n*((1.0+remaining) if won else (0.8+0.2*remaining))
+    health=[max(0.0,u.state.health) for u in red_aircraft]; b0=float(config["initial_health"]); alive_count=sum(u.is_alive for u in red_aircraft)
+    beta=[max(0.0,float(contribution_scores.get(u.uav_id,0.0))) for u in red_aircraft]
+    if won:
+        beta_sum=sum(beta); beta_share=[v/beta_sum if beta_sum>0 else 1/n for v in beta]
+        total_health=sum(health); health_share=[(v/total_health if total_health>0 else 1/n)*(total_health/(n*b0) if total_health>0 else 0.0) for v in health]
+        survival=[float(u.is_alive)/max(alive_count,1) for u in red_aircraft]
+    else:
+        beta_prime=[max(beta)-v+1.0 for v in beta]; beta_sum=sum(beta_prime); beta_share=[v/beta_sum for v in beta_prime]
+        reverse_health=[b0-v+10.0 for v in health]; total_reverse=sum(reverse_health); health_share=[v/total_reverse for v in reverse_health]
+        failed=max(n-alive_count,1); survival=[float(not u.is_alive)/failed for u in red_aircraft]
+    result={}
+    for index,u in enumerate(red_aircraft):
+        survival_component=float(weights[0])*survival[index]; contribution_component=float(weights[1])*beta_share[index]; health_component=float(weights[2])*health_share[index]
+        factor=survival_component+contribution_component+health_component
+        result[u.uav_id]=TerminalRewardAllocation(base*factor,profile,base,factor,health_component,contribution_component,survival_component)
+    return result
+
+
+def _project_balanced_allocations(outcome: EpisodeOutcome, red_aircraft: Sequence[UAV], contribution_scores: Mapping[str,float], config: dict[str,Any]) -> dict[str,TerminalRewardAllocation]:
+    assumptions=config["project_assumptions"]["multi_terminal_reward"]
+    weights=assumptions["win_weights"] if outcome.winner=="red" else assumptions["lose_weights"]
     base = float(config["r_win0"] if outcome.winner == "red" else config["r_lose0"])
     total_health = sum(max(0.0, u.state.health) for u in red_aircraft)
     total_beta = sum(max(0.0, contribution_scores.get(u.uav_id, 0.0)) for u in red_aircraft)
     team_health_ratio = total_health / (len(red_aircraft) * float(config["initial_health"]))
-    rewards: dict[str, float] = {}
+    rewards: dict[str, TerminalRewardAllocation] = {}
     for aircraft in red_aircraft:
         own_health_ratio = max(0.0, aircraft.state.health) / float(config["initial_health"])
         beta_share = max(0.0, contribution_scores.get(aircraft.uav_id, 0.0)) / total_beta if total_beta > 0.0 else 1.0 / len(red_aircraft)
@@ -101,7 +157,7 @@ def multi_terminal_rewards(
             factor = float(weights[0]) * team_health_ratio + float(weights[1]) * own_health_ratio + float(weights[2]) * beta_share
         else:
             factor = float(weights[0]) * (1.0 - team_health_ratio) + float(weights[1]) * (1.0 - own_health_ratio) + float(weights[2]) * (1.0 - beta_share)
-        rewards[aircraft.uav_id] = base * factor
+        rewards[aircraft.uav_id] = TerminalRewardAllocation(base*factor,"project_balanced",base,factor,float(weights[1])*own_health_ratio,float(weights[2])*beta_share,float(weights[0])*team_health_ratio)
     return rewards
 
 

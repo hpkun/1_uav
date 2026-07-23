@@ -1,0 +1,6 @@
+inherits: mappo_base.yaml
+environment:
+  kind: 1v1
+  scenario: tail_chase
+  opponent: straight
+

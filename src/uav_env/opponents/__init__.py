@@ -7,3 +7,6 @@ from uav_env.opponents.random import RandomOpponent
 from uav_env.opponents.straight import StraightOpponent
 
 __all__ = ["PredictiveRuleOpponent", "PursuitOpponent", "RandomOpponent", "RuleOpponent", "StraightOpponent"]
+from uav_env.opponents.team_controller import TeamRuleController
+
+__all__ = ["TeamRuleController"]

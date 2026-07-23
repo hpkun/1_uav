@@ -3,3 +3,5 @@ gymnasium
 pyyaml
 matplotlib
 pytest
+torch
+tensorboard

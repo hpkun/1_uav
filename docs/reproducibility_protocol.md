@@ -1,5 +1,9 @@
 # Reproducibility Protocol
 
+MAPPO 同时固定 Python、NumPy、Torch 和每个环境 RNG。训练环境使用 `base_seed + env_index`；评估默认使用从 100000 开始的独立序列。checkpoint 保存网络、optimizer、ValueNormalizer、全局 RNG 和并行环境的回合中状态。公平对比必须共享评估种子，并报告均值、样本标准差和 95% 置信区间。
+
+镜像评估将“同阵营纯 x-z 镜像”和“镜像后交换阵营”分开：前者比较回报、伤害和长度，后者比较胜负交换与阵营率差。阵营交换配对显式反转伤害采样的团队顺序，使同一 common-random-number 序列跟随原物理飞机，而不是跟随红/蓝调用先后。
+
 - 所有环境随机性来自 `env.np_random`，由 `reset(seed=...)` 管理；规则随机策略不得调用全局随机状态。
 - 训练种子和评估种子范围必须分离，并在结果中记录起止值。
 - 每个策略组合应运行多个独立种子，报告均值、标准差和样本数。

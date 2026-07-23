@@ -1,0 +1,6 @@
+inherits: mappo_base.yaml
+environment:
+  kind: 2v2
+  scenario: offset_formation
+  opponent: pursuit
+

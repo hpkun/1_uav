@@ -1,0 +1,13 @@
+inherits: mappo_base.yaml
+num_envs: 2
+rollout_length: 32
+total_env_steps: 2048
+evaluation_interval: 1024
+evaluation_episodes: 4
+ppo_epochs: 2
+num_mini_batches: 2
+environment:
+  kind: 2v2
+  scenario: offset_formation
+  opponent: straight
+
