@@ -1,31 +1,27 @@
-# Reward Definition
+# Reward definition
 
 ## 1v1
 
-`zheng_series_1v1` 使用明确命名的论文分段距离、高度、角度、速度、稀密和事件分量。`debug_linear_distance_reward` 与 `debug_linear_height_reward` 只供诊断。旧别名 `piecewise_distance_reward`、`height_reward` 暂为兼容保留，调用时发出 `DeprecationWarning`，且不再静默指向 debug 函数。
+The `zheng_series_1v1` profile keeps the named angle, distance, height, speed, dense, event, damage, boundary, and terminal components inspectable. Debug-linear alternatives are diagnostic only.
 
-## 2v2 dense reward
+## 2024 multi-UAV terminal reward
 
-每架红机对所有存活蓝机计算态势分量并取最佳配对。原始 dense reward 经公开的有效/正贡献/近零分支分配；终局奖励另行加入。`MultiAgentRewardBreakdown` 分开记录 dense、event、terminal、profile、team base、allocation factor、health、contribution 与 survival component。
-
-## 多机终局奖励的核验状态
-
-项目提供 `project_balanced`，完整保留原项目比例公式，并在原文核验完成前作为安全默认。配置中的 `win_weights`、`lose_weights` 与 `draw_reward` 是项目设定，不是论文公开参数；代码要求三个权重非负且和在容差内等于 1。
-
-当前源码还包含名为 `paper_2024_exact` 的候选转写，但截至本次审计，Zheng、Wei、Duan（2024）出版商全文受订阅限制，SciEngine PDF 又被 WAF 拦截，无法从原文逐项核对式（22）—（25）的括号、分母和符号。因此该候选实现**尚未获得原文验证，不得在论文或正式实验中声称为精确复现**。需要用户提供可读取的论文 PDF 后完成最终核对；这是有意保留的科学审计阻塞项，而不是用记忆补公式。
-
-已从任务给定信息确认的团队总量只有：
+These equations are transcribed from equations (21)--(25) on PDF pages 10--11 of the 2024 paper in the repository root. Let `n_r` be the number of red UAVs, `N_step` the decision limit, `n_step` the terminal decision step, `alive_count=|Omega'_r|`, `beta_i` cumulative contribution, `beta=sum_i beta_i`, `B_i` terminal health, `B_sum=sum_i B_i` over surviving red UAVs, and `B0` initial health.
 
 ```text
-r_win_all  = r_win0  * N * (1 + (max_steps - current_step) / max_steps)
-r_lose_all = r_lose0 * N * (0.8 + 0.2 * (max_steps - current_step) / max_steps)
+r_win_all = r_win0*n_r*(0.75 + 0.25*(N_step-n_step)/N_step)                (21)
+r_end_i = r_win_all*(w_win1/n_r + 0.03*alive_count
+                     + w_win2*beta_i/beta
+                     + w_win3*(B_i/B_sum)*(B_i/B0))                       (22)
+r_lose_all = r_lose0*n_r*(0.80 + 0.20*(N_step-n_step)/N_step)             (23)
+beta'_i = max_k(beta_k)-beta_i+1; B'_i = B0-B_i+10                        (24)
+r_end_i = r_lose_all*(w_lose1/n_r - 0.02*alive_count
+                      + w_lose2*beta'_i/max_k(beta'_k)
+                      + w_lose3*B'_i/B0)                                  (25)
 ```
 
-其中 `N` 为红机数；`current_step` 为终局决策步；`r_win0/r_lose0` 为项目配置。失败分配的反向量定义已确认：
+The paper does not publish numerical values for win/lose weights or draw reward; they remain project configuration. The code follows equation (25)'s `w_lose3` despite a nearby prose typo. `paper_2024_exact` checks only three finite, nonnegative weights and does not renormalize them. `project_balanced` is a project-defined proportional ablation and requires weights to sum to one.
 
-```text
-beta_prime_i = max(beta) - beta_i + 1
-B_prime_i    = B0 - B_i + 10
-```
+Project numerical conventions, not paper equations: on a win with `beta=0`, every contribution share is `1/n_r`; with `B_sum=0`, every health component is zero. A draw gives every red UAV the configured `draw_reward`. `base.yaml` safely defaults to `project_balanced`; all formal 2v2 configs explicitly select a profile.
 
-候选代码处理 `beta_sum=0`、生命值和为 0、单机/全机存活、第 1/最后一步、权重非法与平局，但这些数值保护不能替代原公式核验。正式核验完成后，应在本文件逐符号列出式（22）—（25）并用独立手算测试锁定。
+`TerminalRewardAllocation` and environment info expose team base, allocation factor, base share, shared survival term, contribution, health, alive count, and both denominators. The allocation factor is their direct sum and reward equals `team_base*allocation_factor`.

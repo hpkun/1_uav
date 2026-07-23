@@ -56,7 +56,7 @@ def build_global_state_2v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[
     raw = np.asarray([*failures, *pairs, *actions], dtype=np.float64)
     pair_specs = [
         FeatureSpec("distance", config.horizontal_reference, "nonnegative"), FeatureSpec("relative_pitch", np.pi, "signed"),
-        FeatureSpec("relative_yaw", config.heading_reference, "yaw"),
+        FeatureSpec("relative_yaw", config.heading_reference, "yaw", np.pi),
         *[FeatureSpec(name, config.speed_difference_reference, "signed") for name in ("dvx", "dvy", "dvz")],
         *[FeatureSpec(name, np.pi, "nonnegative") for name in ("velocity_vector_angle", "attack_angle", "escape_angle")],
     ]

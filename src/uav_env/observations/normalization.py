@@ -20,6 +20,7 @@ class FeatureSpec:
     name: str
     reference: float
     kind: FeatureKind
+    symmetric_reference: float | None = None
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,8 @@ def normalize_by_specs(
         raise ValueError("Values must be a finite vector matching feature specs")
     unbounded = np.empty_like(raw)
     for index, (value, spec) in enumerate(zip(raw, specs)):
-        if spec.reference <= 0.0 or not isfinite(spec.reference):
+        reference = spec.reference if config.mode == "paper_linear" else (spec.symmetric_reference or spec.reference)
+        if reference <= 0.0 or not isfinite(reference):
             raise ValueError(f"Invalid reference for {spec.name}")
         transformed = float(value)
         if config.mode == "paper_linear":
@@ -97,16 +99,16 @@ def normalize_by_specs(
             if spec.kind in {"action", "failure"}:
                 unbounded[index] = transformed
             else:
-                unbounded[index] = config.a * transformed / spec.reference - config.b
+                unbounded[index] = config.a * transformed / reference - config.b
         else:
             if spec.kind in {"signed", "yaw"}:
-                unbounded[index] = transformed / spec.reference
+                unbounded[index] = transformed / reference
             elif spec.kind == "action":
-                unbounded[index] = 2.0 * transformed / spec.reference - 1.0
+                unbounded[index] = 2.0 * transformed / reference - 1.0
             elif spec.kind == "failure":
                 unbounded[index] = transformed
             else:
-                unbounded[index] = 2.0 * transformed / spec.reference - 1.0
+                unbounded[index] = 2.0 * transformed / reference - 1.0
     saturated_mask = np.abs(unbounded) > 1.0
     saturation_count = int(np.count_nonzero(saturated_mask))
     output = np.clip(unbounded, -1.0, 1.0) if bool(config.clip_observation) else unbounded

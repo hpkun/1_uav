@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
 from uav_env.combat.attack_geometry import AttackZoneConfig, compute_combat_geometry
 from uav_env.combat.events import EpisodeOutcome
 from uav_env.core.state import UAVState
@@ -26,9 +28,13 @@ class MultiAgentRewardBreakdown:
     terminal_profile: str = "none"
     terminal_team_base: float = 0.0
     terminal_allocation_factor: float = 0.0
-    terminal_health_component: float = 0.0
-    terminal_contribution_component: float = 0.0
+    terminal_base_share_component: float = 0.0
     terminal_survival_component: float = 0.0
+    terminal_contribution_component: float = 0.0
+    terminal_health_component: float = 0.0
+    terminal_alive_count: int = 0
+    terminal_contribution_denominator: float = 0.0
+    terminal_health_denominator: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -37,9 +43,13 @@ class TerminalRewardAllocation:
     profile: str
     team_base: float
     allocation_factor: float
-    health_component: float
-    contribution_component: float
-    survival_component: float
+    base_share_component: float = 0.0
+    survival_component: float = 0.0
+    contribution_component: float = 0.0
+    health_component: float = 0.0
+    alive_count: int = 0
+    contribution_denominator: float = 0.0
+    health_denominator: float = 0.0
 
 
 def pair_situation_reward(previous_red: UAVState, previous_blue: UAVState, red: UAVState, blue: UAVState, config: dict[str, Any]) -> float:
@@ -108,37 +118,62 @@ def multi_terminal_reward_allocations(
 ) -> dict[str, TerminalRewardAllocation]:
     """Return terminal rewards and inspectable formula components."""
 
-    profile = str(config.get("multi_terminal_reward_profile", "paper_2024_exact"))
+    profile = str(config.get("multi_terminal_reward_profile", "project_balanced"))
     if outcome.termination_reason == "ongoing":
-        return {u.uav_id: TerminalRewardAllocation(0.0, profile, 0.0, 0.0, 0.0, 0.0, 0.0) for u in red_aircraft}
+        return {u.uav_id: TerminalRewardAllocation(0.0, profile, 0.0, 0.0) for u in red_aircraft}
     assumptions = config["project_assumptions"]["multi_terminal_reward"]
     if outcome.winner == "draw":
         value=float(assumptions["draw_reward"])
-        return {u.uav_id: TerminalRewardAllocation(value, profile, value, 1.0, 0.0, 0.0, 0.0) for u in red_aircraft}
+        return {u.uav_id: TerminalRewardAllocation(value, profile, value, 1.0, 1.0) for u in red_aircraft}
     weights = assumptions["win_weights"] if outcome.winner == "red" else assumptions["lose_weights"]
-    if len(weights)!=3 or any(float(w)<0 for w in weights) or abs(sum(float(w) for w in weights)-1.0)>1e-8:
-        raise ValueError("Terminal weights must be three nonnegative values summing to one")
+    if len(weights) != 3 or any(not np.isfinite(float(w)) or float(w) < 0.0 for w in weights):
+        raise ValueError("Terminal weights must be three finite nonnegative values")
     if profile == "project_balanced":
-        legacy=dict(config); legacy["multi_terminal_reward_profile"]="_legacy"
-        return _project_balanced_allocations(outcome,red_aircraft,contribution_scores,legacy)
+        if abs(sum(float(w) for w in weights) - 1.0) > 1.0e-8:
+            raise ValueError("project_balanced terminal weights must sum to one")
+        return _project_balanced_allocations(outcome, red_aircraft, contribution_scores, config)
     if profile != "paper_2024_exact": raise ValueError(f"Unknown terminal reward profile: {profile}")
     n=len(red_aircraft); max_steps=int(config["max_decision_steps"]); remaining=(max_steps-outcome.decision_steps)/max_steps
-    won=outcome.winner=="red"; base=float(config["r_win0"] if won else config["r_lose0"])*n*((1.0+remaining) if won else (0.8+0.2*remaining))
+    won=outcome.winner=="red"
+    # Zheng, Wei and Duan (2024), equations (21) and (23).
+    time_factor=(0.75+0.25*remaining) if won else (0.80+0.20*remaining)
+    base=float(config["r_win0"] if won else config["r_lose0"])*n*time_factor
     health=[max(0.0,u.state.health) for u in red_aircraft]; b0=float(config["initial_health"]); alive_count=sum(u.is_alive for u in red_aircraft)
     beta=[max(0.0,float(contribution_scores.get(u.uav_id,0.0))) for u in red_aircraft]
     if won:
-        beta_sum=sum(beta); beta_share=[v/beta_sum if beta_sum>0 else 1/n for v in beta]
-        total_health=sum(health); health_share=[(v/total_health if total_health>0 else 1/n)*(total_health/(n*b0) if total_health>0 else 0.0) for v in health]
-        survival=[float(u.is_alive)/max(alive_count,1) for u in red_aircraft]
+        # Equation (22): beta is set to one when the sum is zero.  B_r,sum
+        # sums surviving red UAV health; a zero guard only handles impossible
+        # or synthetic edge cases without changing the published expression.
+        beta_sum=sum(beta)
+        total_health=sum(value for value,u in zip(health,red_aircraft) if u.is_alive)
+        contribution=[float(weights[1])*(value/beta_sum if beta_sum > 0.0 else 1.0/n) for value in beta]
+        health_component=[float(weights[2])*(value/total_health)*(value/b0) if total_health>0.0 else 0.0 for value in health]
+        base_share=[float(weights[0])/n for _ in red_aircraft]
+        survival_component=[0.03*alive_count for _ in red_aircraft]
+        contribution_denominator=beta_sum
+        health_denominator=total_health
     else:
-        beta_prime=[max(beta)-v+1.0 for v in beta]; beta_sum=sum(beta_prime); beta_share=[v/beta_sum for v in beta_prime]
-        reverse_health=[b0-v+10.0 for v in health]; total_reverse=sum(reverse_health); health_share=[v/total_reverse for v in reverse_health]
-        failed=max(n-alive_count,1); survival=[float(not u.is_alive)/failed for u in red_aircraft]
+        # Equations (24)-(25): the contribution denominator is max(beta'),
+        # not sum(beta'), and reverse health is divided directly by B0.
+        beta_prime=[max(beta)-value+1.0 for value in beta]
+        beta_prime_max=max(beta_prime)
+        reverse_health=[b0-value+10.0 for value in health]
+        contribution=[float(weights[1])*value/beta_prime_max for value in beta_prime]
+        health_component=[float(weights[2])*value/b0 for value in reverse_health]
+        base_share=[float(weights[0])/n for _ in red_aircraft]
+        survival_component=[-0.02*alive_count for _ in red_aircraft]
+        contribution_denominator=beta_prime_max
+        health_denominator=b0
     result={}
     for index,u in enumerate(red_aircraft):
-        survival_component=float(weights[0])*survival[index]; contribution_component=float(weights[1])*beta_share[index]; health_component=float(weights[2])*health_share[index]
-        factor=survival_component+contribution_component+health_component
-        result[u.uav_id]=TerminalRewardAllocation(base*factor,profile,base,factor,health_component,contribution_component,survival_component)
+        factor=base_share[index]+survival_component[index]+contribution[index]+health_component[index]
+        result[u.uav_id]=TerminalRewardAllocation(
+            reward=base*factor, profile=profile, team_base=base, allocation_factor=factor,
+            base_share_component=base_share[index], survival_component=survival_component[index],
+            contribution_component=contribution[index], health_component=health_component[index],
+            alive_count=alive_count, contribution_denominator=contribution_denominator,
+            health_denominator=health_denominator,
+        )
     return result
 
 
@@ -154,10 +189,23 @@ def _project_balanced_allocations(outcome: EpisodeOutcome, red_aircraft: Sequenc
         own_health_ratio = max(0.0, aircraft.state.health) / float(config["initial_health"])
         beta_share = max(0.0, contribution_scores.get(aircraft.uav_id, 0.0)) / total_beta if total_beta > 0.0 else 1.0 / len(red_aircraft)
         if outcome.winner == "red":
-            factor = float(weights[0]) * team_health_ratio + float(weights[1]) * own_health_ratio + float(weights[2]) * beta_share
+            base_component = float(weights[0]) * team_health_ratio
+            health_value = float(weights[1]) * own_health_ratio
+            contribution_value = float(weights[2]) * beta_share
         else:
-            factor = float(weights[0]) * (1.0 - team_health_ratio) + float(weights[1]) * (1.0 - own_health_ratio) + float(weights[2]) * (1.0 - beta_share)
-        rewards[aircraft.uav_id] = TerminalRewardAllocation(base*factor,"project_balanced",base,factor,float(weights[1])*own_health_ratio,float(weights[2])*beta_share,float(weights[0])*team_health_ratio)
+            base_component = float(weights[0]) * (1.0 - team_health_ratio)
+            health_value = float(weights[1]) * (1.0 - own_health_ratio)
+            contribution_value = float(weights[2]) * (1.0 - beta_share)
+        factor = base_component + health_value + contribution_value
+        rewards[aircraft.uav_id] = TerminalRewardAllocation(
+            reward=base*factor, profile="project_balanced", team_base=base, allocation_factor=factor,
+            base_share_component=base_component,
+            contribution_component=contribution_value,
+            health_component=health_value,
+            alive_count=sum(u.is_alive for u in red_aircraft),
+            contribution_denominator=total_beta,
+            health_denominator=len(red_aircraft)*float(config["initial_health"]),
+        )
     return rewards
 
 

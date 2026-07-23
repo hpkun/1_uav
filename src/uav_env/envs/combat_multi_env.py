@@ -355,7 +355,19 @@ class CombatMultiEnv(BaseUAVEnv):
         for red in self.red_aircraft:
             situation = raw_dense[red.uav_id] - event_values[red.uav_id]
             allocation=terminal[red.uav_id]; total = assigned[red.uav_id] + allocation.reward
-            breakdowns[red.uav_id] = MultiAgentRewardBreakdown(situation, event_values[red.uav_id], raw_dense[red.uav_id], assigned[red.uav_id], allocation.reward, total, step_contributions[red.uav_id], allocation.profile, allocation.team_base, allocation.allocation_factor, allocation.health_component, allocation.contribution_component, allocation.survival_component)
+            breakdowns[red.uav_id] = MultiAgentRewardBreakdown(
+                situation=situation, event=event_values[red.uav_id], raw_dense=raw_dense[red.uav_id],
+                assigned_dense=assigned[red.uav_id], terminal=allocation.reward, total=total,
+                contribution_score=step_contributions[red.uav_id], terminal_profile=allocation.profile,
+                terminal_team_base=allocation.team_base, terminal_allocation_factor=allocation.allocation_factor,
+                terminal_base_share_component=allocation.base_share_component,
+                terminal_survival_component=allocation.survival_component,
+                terminal_contribution_component=allocation.contribution_component,
+                terminal_health_component=allocation.health_component,
+                terminal_alive_count=allocation.alive_count,
+                terminal_contribution_denominator=allocation.contribution_denominator,
+                terminal_health_denominator=allocation.health_denominator,
+            )
             self._statistics["aircraft"][red.uav_id]["cumulative_reward"] += total
         agent_rewards = {key: value.total for key, value in breakdowns.items()}
         team_reward = float(np.mean(list(agent_rewards.values())))

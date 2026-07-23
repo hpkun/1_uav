@@ -24,10 +24,13 @@ def make_2v2_env(
     opponent: str = "straight",
     config_name: str = "paper_2024_homogeneous",
     seed: int | None = None,
+    multi_terminal_reward_profile: str | None = None,
 ) -> CombatMultiEnv:
     """Construct the fixed homogeneous 2v2 experiment environment."""
 
     config = load_multi_experiment_config(config_name, scenario)
+    if multi_terminal_reward_profile is not None:
+        config["multi_terminal_reward_profile"] = multi_terminal_reward_profile
     return CombatMultiEnv(config, scenario, opponent, seed)
 
 

@@ -1,12 +1,7 @@
-# Reproducibility Protocol
+# Reproducibility protocol
 
-MAPPO 同时固定 Python、NumPy、Torch 和每个环境 RNG。训练环境使用 `base_seed + env_index`；评估默认使用从 100000 开始的独立序列。checkpoint 保存网络、optimizer、ValueNormalizer、全局 RNG 和并行环境的回合中状态。公平对比必须共享评估种子，并报告均值、样本标准差和 95% 置信区间。
+Each run fixes Python, NumPy, Torch, CUDA, and environment RNGs. Vector environment seeds are `training_seed+env_index`. The Trainer owns an independent NumPy minibatch generator so separate Runners cannot perturb one another through global NumPy shuffling; its bit-generator state is checkpointed.
 
-镜像评估将“同阵营纯 x-z 镜像”和“镜像后交换阵营”分开：前者比较回报、伤害和长度，后者比较胜负交换与阵营率差。阵营交换配对显式反转伤害采样的团队顺序，使同一 common-random-number 序列跟随原物理飞机，而不是跟随红/蓝调用先后。
+Evaluation uses a documented independent contiguous seed range shared by every policy/checkpoint. Multi-seed claims report every seed plus overall mean, sample standard deviation, and 95% confidence interval. Binary baseline rates use Wilson intervals; continuous baseline metrics use normal-approximation intervals. No single episode or best seed establishes learnability or convergence.
 
-- 所有环境随机性来自 `env.np_random`，由 `reset(seed=...)` 管理；规则随机策略不得调用全局随机状态。
-- 训练种子和评估种子范围必须分离，并在结果中记录起止值。
-- 每个策略组合应运行多个独立种子，报告均值、标准差和样本数。
-- 评估脚本保存 CSV 和配置/种子快照；复现实验时同时保存代码版本。
-- 不使用单个成功轨迹证明环境可学习性，也不从一次规则策略胜负推断强化学习性能。
-- 对比算法必须共享场景、种子范围、配置和终止定义。
+Comparisons must match scenario, opponent, seed, maximum steps, normalization, terminal reward profile, and return semantics. Initial weights are evaluated alongside last and best. Resume must reproduce the uninterrupted rollout/update branch, including ValueNormalizer and minibatch ordering.

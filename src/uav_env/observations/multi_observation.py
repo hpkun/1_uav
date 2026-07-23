@@ -40,13 +40,13 @@ def multi_observation_specs(config: NormalizationConfig) -> list[FeatureSpec]:
     h, a, v = config.horizontal_reference, config.angle_reference, config.speed_difference_reference
     ally = [
         FeatureSpec("distance", h, "nonnegative"), FeatureSpec("relative_pitch", a, "signed"),
-        FeatureSpec("relative_yaw", config.heading_reference, "yaw"),
+        FeatureSpec("relative_yaw", config.heading_reference, "yaw", np.pi),
         *[FeatureSpec(name, v, "signed") for name in ("dvx", "dvy", "dvz")],
     ]
     enemy = [
         FeatureSpec("dx", h, "signed"), FeatureSpec("dy", h, "signed"),
         FeatureSpec("altitude_self", config.altitude_reference, "nonnegative"), FeatureSpec("distance", h, "nonnegative"),
-        FeatureSpec("relative_pitch", a, "signed"), FeatureSpec("relative_yaw", config.heading_reference, "yaw"),
+        FeatureSpec("relative_pitch", a, "signed"), FeatureSpec("relative_yaw", config.heading_reference, "yaw", np.pi),
         *[FeatureSpec(name, v, "signed") for name in ("dvx", "dvy", "dvz")],
         FeatureSpec("attack_angle", a, "nonnegative"), FeatureSpec("escape_angle", a, "nonnegative"),
     ]

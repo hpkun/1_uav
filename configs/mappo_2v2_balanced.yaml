@@ -3,4 +3,4 @@ environment:
   kind: 2v2
   scenario: balanced_random
   opponent: pursuit
-
+  multi_terminal_reward_profile: paper_2024_exact

@@ -37,4 +37,4 @@ python scripts/evaluate_mappo.py --checkpoint <best.pt> --episodes 100 --seed-st
 
 默认训练归一化为 `symmetric_training`；`paper_linear` 仅用于复核论文线性变量形式。1v1/2v2 是项目的同构实验环境，不应被描述为论文正式 3v2 复现。
 
-注意：多机终局 `paper_2024_exact` 候选实现尚未完成原文式（22）—（25）核验，因此安全默认暂为 `project_balanced`。在提供可读取 PDF 并通过逐式手算测试前，不应将候选 profile 用于“论文精确复现”结论。
+多机终局奖励已根据根目录 2024 原论文 PDF 的式（21）—（25）逐项核验，正式默认是 `paper_2024_exact`；旧项目比例公式保留为 `project_balanced` 供消融比较。权重数值仍是项目配置，不声称为论文公开参数。

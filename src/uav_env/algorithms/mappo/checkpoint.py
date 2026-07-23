@@ -11,7 +11,9 @@ CHECKPOINT_VERSION=2
 
 def save_checkpoint(path: Path, actor, critic, actor_optimizer, critic_optimizer, normalizer, config: dict[str,Any], environment_steps: int, update_index: int, best_evaluation: dict[str,Any] | None, runner_state: dict[str, Any] | None = None) -> None:
     path.parent.mkdir(parents=True,exist_ok=True)
-    torch.save({"version":CHECKPOINT_VERSION,"actor":actor.state_dict(),"critic":critic.state_dict(),"actor_optimizer":actor_optimizer.state_dict(),"critic_optimizer":critic_optimizer.state_dict(),"value_normalizer":normalizer.state_dict(),"config":config,"environment_steps":environment_steps,"update_index":update_index,"best_evaluation":best_evaluation,"runner_state":runner_state,"python_rng":random.getstate(),"numpy_rng":np.random.get_state(),"torch_rng":torch.get_rng_state(),"torch_cuda_rng":torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []},path)
+    temporary=path.with_suffix(path.suffix+".tmp")
+    torch.save({"version":CHECKPOINT_VERSION,"actor":actor.state_dict(),"critic":critic.state_dict(),"actor_optimizer":actor_optimizer.state_dict(),"critic_optimizer":critic_optimizer.state_dict(),"value_normalizer":normalizer.state_dict(),"config":config,"environment_steps":environment_steps,"update_index":update_index,"best_evaluation":best_evaluation,"runner_state":runner_state,"python_rng":random.getstate(),"numpy_rng":np.random.get_state(),"torch_rng":torch.get_rng_state(),"torch_cuda_rng":torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []},temporary)
+    temporary.replace(path)
 
 def load_checkpoint(path: str|Path, actor, critic=None, actor_optimizer=None, critic_optimizer=None, normalizer=None, actor_only: bool=False, map_location="cpu") -> dict[str,Any]:
     data=torch.load(path,map_location=map_location,weights_only=False)

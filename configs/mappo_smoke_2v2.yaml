@@ -10,4 +10,4 @@ environment:
   kind: 2v2
   scenario: offset_formation
   opponent: straight
-
+  multi_terminal_reward_profile: paper_2024_exact

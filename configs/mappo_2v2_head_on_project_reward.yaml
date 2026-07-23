@@ -3,4 +3,4 @@ environment:
   kind: 2v2
   scenario: head_on_formation
   opponent: straight
-  multi_terminal_reward_profile: paper_2024_exact
+  multi_terminal_reward_profile: project_balanced

@@ -44,7 +44,7 @@ def actor_feature_specs(config: NormalizationConfig) -> list[FeatureSpec]:
     h, z, a, v = config.horizontal_reference, config.altitude_reference, config.angle_reference, config.speed_difference_reference
     kinds = ["signed", "signed", "nonnegative", "nonnegative", "signed", "yaw", "signed", "signed", "signed", "nonnegative", "nonnegative"]
     refs = [h, h, z, h, a, config.heading_reference, v, v, v, a, a]
-    return [FeatureSpec(name, ref, kind) for name, ref, kind in zip(ACTOR_OBSERVATION_FEATURE_NAMES, refs, kinds)]  # type: ignore[arg-type]
+    return [FeatureSpec(name, ref, kind, pi if kind == "yaw" else None) for name, ref, kind in zip(ACTOR_OBSERVATION_FEATURE_NAMES, refs, kinds)]  # type: ignore[arg-type]
 
 
 def critic_feature_specs(config: NormalizationConfig) -> list[FeatureSpec]:
@@ -52,7 +52,7 @@ def critic_feature_specs(config: NormalizationConfig) -> list[FeatureSpec]:
 
     refs = [config.horizontal_reference, pi, pi, config.altitude_reference, config.heading_reference, pi, pi, config.speed_difference_reference, config.health_reference, config.health_reference]
     kinds = ["nonnegative", "nonnegative", "nonnegative", "signed", "yaw", "signed", "signed", "signed", "nonnegative", "signed"]
-    return [FeatureSpec(name, ref, kind) for name, ref, kind in zip(CRITIC_STATE_FEATURE_NAMES, refs, kinds)]  # type: ignore[arg-type]
+    return [FeatureSpec(name, ref, kind, pi if kind == "yaw" else None) for name, ref, kind in zip(CRITIC_STATE_FEATURE_NAMES, refs, kinds)]  # type: ignore[arg-type]
 
 
 def actor_observation_raw_1v1(own: UAVState, enemy: UAVState) -> NDArray[np.float64]:

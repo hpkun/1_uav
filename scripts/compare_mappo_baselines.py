@@ -27,24 +27,38 @@ def _summary(values: list[float]) -> tuple[float, float, float, float]:
     return mean, std, mean - half, mean + half
 
 
+def _wilson(values: list[float]) -> tuple[float, float]:
+    n=len(values); p=float(np.mean(values)); z=1.96; denominator=1+z*z/n
+    center=(p+z*z/(2*n))/denominator
+    half=z*np.sqrt(p*(1-p)/n+z*z/(4*n*n))/denominator
+    return center-half,center+half
+
+
 def _rule_episode(config: dict, policy: str, seed: int) -> dict[str, float]:
     environment = config["environment"]
     if environment["kind"] == "1v1":
         _, result = run_episode(environment["scenario"], environment["opponent"], seed, policy)
         return {
-            "episode_return": result.cumulative_reward,
+            "team_episode_return": result.cumulative_reward, "agent_sum_episode_return": result.cumulative_reward,
             "red_win": float(result.outcome == "red"),
+            "blue_win": float(result.outcome == "blue"), "draw": float(result.outcome == "draw"),
+            "timeout": float(result.termination_reason == "timeout"),
             "effective_damage": result.red_damage,
+            "hit_count": float(result.red_hits),
             "episode_steps": float(result.decision_steps),
-            "crash": float(result.red_ground_crash or result.blue_ground_crash),
+            "red_crash": float(result.red_ground_crash), "blue_crash": float(result.blue_ground_crash),
         }
-    _, result = run_2v2_episode(environment["scenario"], environment["opponent"], seed, policy)
+    _, result = run_2v2_episode(environment["scenario"], environment["opponent"], seed, policy, terminal_reward_profile=environment.get("multi_terminal_reward_profile"))
     return {
-        "episode_return": result.team_cumulative_reward,
+        "team_episode_return": result.team_cumulative_reward,
+        "agent_sum_episode_return": result.agent_sum_cumulative_reward,
         "red_win": float(result.winner == "red"),
+        "blue_win": float(result.winner == "blue"), "draw": float(result.winner == "draw"),
+        "timeout": float(result.timeout),
         "effective_damage": float(sum(result.red_effective_damage.values())),
+        "hit_count": float(sum(result.red_hits.values())),
         "episode_steps": float(result.decision_steps),
-        "crash": float(result.red_ground_crashes + result.blue_ground_crashes > 0),
+        "red_crash": float(result.red_ground_crashes > 0), "blue_crash": float(result.blue_ground_crashes > 0),
     }
 
 
@@ -55,11 +69,14 @@ def _checkpoint_evaluator(checkpoint: Path, config: dict) -> Callable[[int], dic
     def evaluate(seed: int) -> dict[str, float]:
         result = runner.evaluate(1, seed_start=seed, deterministic=True)
         return {
-            "episode_return": result["mean_episode_return"],
+            "team_episode_return": result["mean_team_episode_return"],
+            "agent_sum_episode_return": result["mean_agent_sum_episode_return"],
             "red_win": result["red_win_rate"],
+            "blue_win": result["blue_win_rate"], "draw": result["draw_rate"], "timeout": result["timeout_rate"],
             "effective_damage": result["mean_effective_damage"],
+            "hit_count": result["mean_hits"],
             "episode_steps": result["mean_episode_steps"],
-            "crash": float(max(result["red_crash_rate"], result["blue_crash_rate"])),
+            "red_crash": result["red_crash_rate"], "blue_crash": result["blue_crash_rate"],
         }
 
     return evaluate
@@ -97,14 +114,15 @@ def main() -> None:
     rows: list[dict[str, float | int | str]] = []
     for policy, source, evaluate in evaluators:
         samples = [evaluate(args.seed_start + offset) for offset in range(args.episodes)]
-        for metric in ("episode_return", "red_win", "effective_damage", "episode_steps", "crash"):
+        for metric in ("team_episode_return", "agent_sum_episode_return", "red_win", "blue_win", "draw", "timeout", "red_crash", "blue_crash", "effective_damage", "hit_count", "episode_steps"):
             mean, std, low, high = _summary([sample[metric] for sample in samples])
-            if metric in {"red_win", "crash"}:
-                low, high = max(0.0, low), min(1.0, high)
+            interval="normal"
+            if metric in {"red_win", "blue_win", "draw", "timeout", "red_crash", "blue_crash"}:
+                low, high = _wilson([sample[metric] for sample in samples]); interval="wilson"
             rows.append({
                 "policy": policy, "metric": metric, "episodes": args.episodes,
                 "seed_start": args.seed_start, "mean": mean, "std": std,
-                "ci95_low": low, "ci95_high": high, "source": source,
+                "ci95_low": low, "ci95_high": high, "ci_method": interval, "source": source,
             })
 
     output = Path(args.output)

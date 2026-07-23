@@ -29,15 +29,16 @@ class MultiEpisodeSummary:
     red_contribution: dict[str, float]
     red_cumulative_rewards: dict[str, float]
     team_cumulative_reward: float
+    agent_sum_cumulative_reward: float
     red_ground_crashes: int
     blue_ground_crashes: int
     timeout: bool
 
 
-def run_2v2_episode(scenario: str, opponent: str, seed: int, red_policy: str, max_steps: int | None = None) -> tuple[CombatMultiEnv, MultiEpisodeSummary]:
+def run_2v2_episode(scenario: str, opponent: str, seed: int, red_policy: str, max_steps: int | None = None, terminal_reward_profile: str | None = None) -> tuple[CombatMultiEnv, MultiEpisodeSummary]:
     """Run one deterministic-seed 2v2 rule-policy episode."""
 
-    env = make_2v2_env(scenario, opponent, seed=seed)
+    env = make_2v2_env(scenario, opponent, seed=seed, multi_terminal_reward_profile=terminal_reward_profile)
     env.reset(seed=seed)
     pursuit_cfg = {key: float(value) for key, value in env.config["pursuit"].items()}
     pursuit = PursuitOpponent(env.profile, env.attack_config, float(env.config["physics_dt"]), int(env.config["physics_steps_per_action"]), float(env.config["gravity"]), float(env.config["max_altitude"]), **pursuit_cfg)
@@ -64,7 +65,7 @@ def run_2v2_episode(scenario: str, opponent: str, seed: int, red_policy: str, ma
         {u.uav_id: int(stats[u.uav_id]["hits"]) for u in env.red_aircraft},
         {u.uav_id: float(stats[u.uav_id]["contribution_score"]) for u in env.red_aircraft},
         {u.uav_id: float(stats[u.uav_id]["cumulative_reward"]) for u in env.red_aircraft},
-        team_total,
+        team_total, sum(float(stats[u.uav_id]["cumulative_reward"]) for u in env.red_aircraft),
         sum(int(stats[u.uav_id]["ground_crashes"]) for u in env.red_aircraft),
         sum(int(stats[u.uav_id]["ground_crashes"]) for u in env.blue_aircraft),
         str(outcome.termination_reason) == "timeout",
@@ -91,6 +92,7 @@ def main() -> None:
     print(f"Red contribution: {summary.red_contribution}")
     print(f"Red cumulative rewards: {summary.red_cumulative_rewards}")
     print(f"Team cumulative reward: {summary.team_cumulative_reward:.6f}")
+    print(f"Agent-sum cumulative reward: {summary.agent_sum_cumulative_reward:.6f}")
     print(f"Ground crashes: red={summary.red_ground_crashes}, blue={summary.blue_ground_crashes}")
     print(f"Timeout: {summary.timeout}")
 

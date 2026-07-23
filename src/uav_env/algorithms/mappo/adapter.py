@@ -18,6 +18,8 @@ class AdapterStep:
     local_obs: NDArray[np.float32]
     global_state: NDArray[np.float32]
     agent_rewards: NDArray[np.float32]
+    team_reward: float
+    agent_reward_sum: float
     agent_alive_mask: NDArray[np.float32]
     available_action_mask: NDArray[np.bool_]
     terminated: bool
@@ -34,7 +36,7 @@ class MAPPOEnvAdapter:
         self.obs_dim = 11 if self.num_agents == 1 else 28
         self.state_dim = 10 if self.num_agents == 1 else 40
 
-    def _pack(self, observation: NDArray[np.float64], info: dict[str, Any], rewards: Sequence[float], terminated: bool, truncated: bool) -> AdapterStep:
+    def _pack(self, observation: NDArray[np.float64], info: dict[str, Any], rewards: Sequence[float], terminated: bool, truncated: bool, team_reward: float | None = None) -> AdapterStep:
         local = np.asarray(observation, dtype=np.float32).reshape(self.num_agents, self.obs_dim)
         if self.num_agents == 1:
             state = np.asarray(info["critic_state"], dtype=np.float32)
@@ -49,11 +51,15 @@ class MAPPOEnvAdapter:
             available = np.asarray(info["available_action_mask"], dtype=bool)
         if state.shape != (self.state_dim,) or available.shape != (self.num_agents, 15):
             raise ValueError(f"Adapter shape mismatch: state={state.shape}, available={available.shape}")
-        return AdapterStep(local, state, np.asarray(rewards, dtype=np.float32), alive, available, terminated, truncated, info)
+        agent_rewards = np.asarray(rewards, dtype=np.float32)
+        scalar_team_reward = float(np.mean(agent_rewards)) if team_reward is None else float(team_reward)
+        if not np.isclose(scalar_team_reward, float(np.mean(agent_rewards)), rtol=1.0e-6, atol=1.0e-6):
+            raise ValueError("Environment team reward must equal mean agent rewards")
+        return AdapterStep(local, state, agent_rewards, scalar_team_reward, float(np.sum(agent_rewards)), alive, available, terminated, truncated, info)
 
     def reset(self, seed: int | None = None) -> AdapterStep:
         observation, info = self.env.reset(seed=seed)
-        return self._pack(observation, info, np.zeros(self.num_agents), False, False)
+        return self._pack(observation, info, np.zeros(self.num_agents), False, False, 0.0)
 
     def step(self, actions: NDArray[np.int64]) -> AdapterStep:
         parsed = np.asarray(actions, dtype=np.int64).reshape(self.num_agents)
@@ -63,7 +69,7 @@ class MAPPOEnvAdapter:
             rewards = [float(team_reward)]
         else:
             rewards = [float(info["agent_rewards"][f"red_{index}"]) for index in range(self.num_agents)]
-        return self._pack(observation, info, rewards, terminated, truncated)
+        return self._pack(observation, info, rewards, terminated, truncated, float(team_reward))
 
 
 class SyncCombatVectorEnv:
@@ -85,6 +91,8 @@ class SyncCombatVectorEnv:
         return {
             "local_obs": np.stack([s.local_obs for s in steps]), "global_state": np.stack([s.global_state for s in steps]),
             "rewards": np.stack([s.agent_rewards for s in steps]), "alive_masks": np.stack([s.agent_alive_mask for s in steps]),
+            "team_rewards": np.asarray([s.team_reward for s in steps], dtype=np.float32),
+            "agent_reward_sums": np.asarray([s.agent_reward_sum for s in steps], dtype=np.float32),
             "available_actions": np.stack([s.available_action_mask for s in steps]),
             "terminated": np.asarray([s.terminated for s in steps], dtype=bool), "truncated": np.asarray([s.truncated for s in steps], dtype=bool),
             "infos": [s.info for s in steps],
