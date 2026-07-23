@@ -27,6 +27,7 @@ class UAVState:
     team_id: int
     type_id: str
     damaged: bool = False
+    ever_hit: bool = False
     crashed: bool = False
     last_action: int | None = None
 
@@ -34,6 +35,11 @@ class UAVState:
         self.validate_finite()
         if not self.type_id:
             raise ValueError("type_id must not be empty")
+        if self.health <= 0.0 or self.crashed or not self.alive:
+            self.health = max(0.0, self.health)
+            self.alive = False
+            self.damaged = True
+        self.validate_consistency()
 
     def validate_finite(self) -> None:
         """Raise when any continuous state value is not finite."""
@@ -49,6 +55,16 @@ class UAVState:
         )
         if not all(isfinite(value) for value in numeric):
             raise ValueError("UAVState numeric values must be finite")
+
+    def validate_consistency(self) -> None:
+        """Validate the invariant that ``damaged`` means combat failure."""
+
+        if self.damaged == self.alive:
+            raise ValueError("damaged must be exactly the inverse of alive")
+        if self.crashed and not self.damaged:
+            raise ValueError("A crashed UAV must be damaged")
+        if self.health <= 0.0 and self.alive:
+            raise ValueError("A zero-health UAV cannot be alive")
 
     def position_vector(self) -> NDArray[np.float64]:
         """Return Cartesian position ``[x, y, z]`` in metres."""

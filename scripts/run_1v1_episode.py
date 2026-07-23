@@ -27,6 +27,12 @@ class EpisodeSummary:
     red_damage: float
     blue_damage: float
     cumulative_reward: float
+    red_attack_area_steps: int
+    blue_attack_area_steps: int
+    red_ground_crash: bool
+    blue_ground_crash: bool
+    collision: bool
+    timeout: bool
 
 
 def run_episode(
@@ -48,6 +54,7 @@ def run_episode(
         int(env.config["physics_steps_per_action"]),
         float(env.config["gravity"]),
         float(env.config["max_altitude"]),
+        **{key: float(value) for key, value in env.config["pursuit"].items()},
     )
     cumulative_reward = 0.0
     terminated = truncated = False
@@ -76,9 +83,15 @@ def run_episode(
         blue_health=env.blue.state.health,
         red_hits=int(statistics["red_hits"]),  # type: ignore[index]
         blue_hits=int(statistics["blue_hits"]),  # type: ignore[index]
-        red_damage=float(statistics["red_damage"]),  # type: ignore[index]
-        blue_damage=float(statistics["blue_damage"]),  # type: ignore[index]
+        red_damage=float(statistics["red_effective_damage"]),  # type: ignore[index]
+        blue_damage=float(statistics["blue_effective_damage"]),  # type: ignore[index]
         cumulative_reward=cumulative_reward,
+        red_attack_area_steps=int(statistics["red_attack_area_steps"]),  # type: ignore[index]
+        blue_attack_area_steps=int(statistics["blue_attack_area_steps"]),  # type: ignore[index]
+        red_ground_crash="red_ground_crash" in str(reason),
+        blue_ground_crash="blue_ground_crash" in str(reason),
+        collision=str(reason) == "collision",
+        timeout=str(reason) == "timeout",
     )
     return env, summary
 

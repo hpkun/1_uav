@@ -25,9 +25,11 @@ from uav_env.entities.uav import UAV
 from uav_env.envs.base_env import BaseUAVEnv
 from uav_env.observations.normalization import NormalizationConfig
 from uav_env.observations.single_observation import (
+    ACTOR_OBSERVATION_FEATURE_NAMES,
     actor_observation_raw_1v1,
     build_actor_observation_1v1,
     build_critic_state_1v1,
+    normalize_actor_observation_1v1,
 )
 from uav_env.opponents.base import RuleOpponent
 from uav_env.opponents.pursuit import PursuitOpponent
@@ -83,6 +85,7 @@ class Combat1v1Env(BaseUAVEnv):
         if opponent == "random":
             return RandomOpponent()
         if opponent == "pursuit":
+            pursuit = self.config["pursuit"]
             return PursuitOpponent(
                 self.profile,
                 self.attack_config,
@@ -90,6 +93,13 @@ class Combat1v1Env(BaseUAVEnv):
                 int(self.config["physics_steps_per_action"]),
                 float(self.config["gravity"]),
                 float(self.config["max_altitude"]),
+                angle_weight=float(pursuit["angle_weight"]),
+                distance_weight=float(pursuit["distance_weight"]),
+                altitude_weight=float(pursuit["altitude_weight"]),
+                boundary_penalty=float(pursuit["boundary_penalty"]),
+                minimum_safe_altitude=float(pursuit["minimum_safe_altitude"]),
+                ceiling_margin=float(pursuit["ceiling_margin"]),
+                unsafe_flight_path_penalty=float(pursuit["unsafe_flight_path_penalty"]),
             )
         raise ValueError(f"Unknown opponent policy: {opponent!r}")
 
@@ -149,13 +159,10 @@ class Combat1v1Env(BaseUAVEnv):
             raise RuntimeError("Could not sample a balanced scenario with sufficient separation")
         raise ValueError(f"Unknown scenario: {scenario!r}")
 
-    def _observation(self) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    def _observation(self) -> tuple[NDArray[np.float64], NDArray[np.float64], int, float]:
         raw = actor_observation_raw_1v1(self.red.state, self.blue.state)
-        observation = build_actor_observation_1v1(self.red.state, self.blue.state, self.normalization_config)
-        unclipped_config = replace(self.normalization_config, clip_observation=False)
-        unbounded = build_actor_observation_1v1(self.red.state, self.blue.state, unclipped_config)
-        preclip_max_abs = float(np.max(np.abs(unbounded)))
-        return observation, raw, preclip_max_abs
+        result = normalize_actor_observation_1v1(self.red.state, self.blue.state, self.normalization_config)
+        return result.values, raw, result.saturation_count, result.saturation_ratio
 
     def _outcome(self, timed_out: bool = False, reason_override: str | None = None) -> EpisodeOutcome:
         red_alive = self.red.state.alive
@@ -226,6 +233,12 @@ class Combat1v1Env(BaseUAVEnv):
             "blue_hits": 0,
             "red_damage": 0.0,
             "blue_damage": 0.0,
+            "red_nominal_damage": 0.0,
+            "blue_nominal_damage": 0.0,
+            "red_effective_damage": 0.0,
+            "blue_effective_damage": 0.0,
+            "red_overkill_damage": 0.0,
+            "blue_overkill_damage": 0.0,
             "red_attack_area_steps": 0,
             "blue_attack_area_steps": 0,
             "red_attack_area_entries": 0,
@@ -251,12 +264,16 @@ class Combat1v1Env(BaseUAVEnv):
                 "events": [],
             }
         ]
-        observation, raw, preclip = self._observation()
+        observation, raw, saturation_count, saturation_ratio = self._observation()
         info = {
             "red_state": self.red.state.copy(),
             "blue_state": self.blue.state.copy(),
+            "observation_feature_names": list(ACTOR_OBSERVATION_FEATURE_NAMES),
+            "raw_observation": raw,
+            "normalized_observation": observation,
+            "observation_saturation_count": saturation_count,
+            "observation_saturation_ratio": saturation_ratio,
             "actor_observation_raw": raw,
-            "actor_observation_preclip_max_abs": preclip,
             "critic_state": build_critic_state_1v1(self.red.state, self.blue.state, self.normalization_config),
             "scenario_name": self.scenario_name,
             "seed": self._current_seed,
@@ -286,9 +303,9 @@ class Combat1v1Env(BaseUAVEnv):
             flags["blue_ground"] = blue_candidate.z <= float(self.config["min_altitude"])
             flags["blue_ceiling"] = blue_candidate.z > float(self.config["max_altitude"])
             if flags["red_ground"] or flags["red_ceiling"]:
-                red_candidate = replace(red_candidate, health=0.0, alive=False, damaged=True, crashed=True)
+                red_candidate = replace(red_candidate, health=0.0, alive=False, damaged=True, crashed=flags["red_ground"])
             if flags["blue_ground"] or flags["blue_ceiling"]:
-                blue_candidate = replace(blue_candidate, health=0.0, alive=False, damaged=True, crashed=True)
+                blue_candidate = replace(blue_candidate, health=0.0, alive=False, damaged=True, crashed=flags["blue_ground"])
             self.red.state, self.blue.state = red_candidate, blue_candidate
             executed += 1
             substeps.append({"red_state": red_candidate.copy(), "blue_state": blue_candidate.copy()})
@@ -338,15 +355,18 @@ class Combat1v1Env(BaseUAVEnv):
         ):
             if result.attempted:
                 events.append(self._event(CombatEventType.ATTACK_TRIGGERED, source, target, result.random_value))
-                events.append(self._event(CombatEventType.HIT if result.damage > 0.0 else CombatEventType.MISS, source, target, result.damage))
+                events.append(self._event(CombatEventType.HIT if result.hit else CombatEventType.MISS, source, target, result.effective_damage))
                 if result.destroyed:
                     events.append(self._event(CombatEventType.DESTROYED, source, target, result.damage))
-        if damage_to_blue.damage > 0.0:
+        if damage_to_blue.hit:
             self._statistics["red_hits"] = int(self._statistics["red_hits"]) + 1
-        if damage_to_red.damage > 0.0:
+        if damage_to_red.hit:
             self._statistics["blue_hits"] = int(self._statistics["blue_hits"]) + 1
-        self._statistics["red_damage"] = float(self._statistics["red_damage"]) + damage_to_blue.damage
-        self._statistics["blue_damage"] = float(self._statistics["blue_damage"]) + damage_to_red.damage
+        for prefix, result in (("red", damage_to_blue), ("blue", damage_to_red)):
+            self._statistics[f"{prefix}_nominal_damage"] = float(self._statistics[f"{prefix}_nominal_damage"]) + result.nominal_damage
+            self._statistics[f"{prefix}_effective_damage"] = float(self._statistics[f"{prefix}_effective_damage"]) + result.effective_damage
+            self._statistics[f"{prefix}_overkill_damage"] = float(self._statistics[f"{prefix}_overkill_damage"]) + result.overkill_damage
+            self._statistics[f"{prefix}_damage"] = self._statistics[f"{prefix}_effective_damage"]
         return damage_to_red, damage_to_blue
 
     def step(
@@ -379,8 +399,8 @@ class Combat1v1Env(BaseUAVEnv):
         collision_distance = float(self.config["project_assumptions"].get("collision_distance", 0.0))
         collided = self.red.state.alive and self.blue.state.alive and has_collision(self.red.state, self.blue.state, collision_distance)
         if collided:
-            self.red.state = replace(self.red.state, health=0.0, alive=False, damaged=True, crashed=True)
-            self.blue.state = replace(self.blue.state, health=0.0, alive=False, damaged=True, crashed=True)
+            self.red.state = replace(self.red.state, health=0.0, alive=False, damaged=True)
+            self.blue.state = replace(self.blue.state, health=0.0, alive=False, damaged=True)
             events.append(self._event(CombatEventType.COLLISION, "red", "blue"))
         red_geometry = compute_combat_geometry(self.red.state, self.blue.state, self.attack_config)
         blue_geometry = compute_combat_geometry(self.blue.state, self.red.state, self.attack_config)
@@ -427,7 +447,7 @@ class Combat1v1Env(BaseUAVEnv):
         )
         self._previous_red_geometry = red_geometry
         self._previous_blue_geometry = blue_geometry
-        observation, raw, preclip = self._observation()
+        observation, raw, saturation_count, saturation_ratio = self._observation()
         critic_state = build_critic_state_1v1(self.red.state, self.blue.state, self.normalization_config)
         self._trajectory.append(
             {
@@ -461,7 +481,11 @@ class Combat1v1Env(BaseUAVEnv):
             "events": events,
             "reward_breakdown": reward_breakdown,
             "actor_observation_raw": raw,
-            "actor_observation_preclip_max_abs": preclip,
+            "observation_feature_names": list(ACTOR_OBSERVATION_FEATURE_NAMES),
+            "raw_observation": raw,
+            "normalized_observation": observation,
+            "observation_saturation_count": saturation_count,
+            "observation_saturation_ratio": saturation_ratio,
             "critic_state": critic_state,
             "simulation_time": self.simulation_time,
             "decision_step": self.decision_step,

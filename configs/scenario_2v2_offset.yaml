@@ -1,0 +1,9 @@
+scenario_name: offset_formation
+red_count: 2
+blue_count: 2
+initial_altitude: 1800.0
+initial_speed: 110.0
+initial_team_distance: 1800.0
+formation_lateral_spacing: 500.0
+blue_lateral_offset: 300.0
+blue_altitude_offset: 250.0

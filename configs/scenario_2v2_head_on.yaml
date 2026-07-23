@@ -1,0 +1,7 @@
+scenario_name: head_on_formation
+red_count: 2
+blue_count: 2
+initial_altitude: 1800.0
+initial_speed: 110.0
+initial_team_distance: 1800.0
+formation_lateral_spacing: 500.0

@@ -31,3 +31,5 @@ class EpisodeOutcome:
     termination_reason: str
     decision_steps: int
     simulation_time: float
+    red_survivors: int | None = None
+    blue_survivors: int | None = None

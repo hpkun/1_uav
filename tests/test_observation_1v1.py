@@ -24,7 +24,7 @@ def test_actor_observation_order_and_values(profile: UAVTypeProfile) -> None:
     assert raw[4] == pytest.approx(0.0)
     assert raw[5] == pytest.approx(np.arctan2(400.0, 300.0))
     assert raw[6:9] == pytest.approx([20.0, 0.0, 0.0])
-    normalization = NormalizationConfig(speed_difference_reference=150.0, clip_observation=False)
+    normalization = NormalizationConfig(mode="paper_linear", speed_difference_reference=150.0, clip_observation=False)
     normalized = build_actor_observation_1v1(own, enemy, normalization)
     assert normalized[0] == pytest.approx(2.0 * -300.0 / 5000.0 - 1.0)
     assert normalized[2] == pytest.approx(2.0 * 1000.0 / 5000.0 - 1.0)
@@ -47,7 +47,7 @@ def test_critic_state_order_and_angle_differences(profile: UAVTypeProfile) -> No
     assert raw[3] == 200.0
     assert -np.pi <= raw[5] < np.pi
     assert raw[7:] == pytest.approx([20.0, 300.0, 0.0])
-    normalization = NormalizationConfig(speed_difference_reference=150.0, clip_observation=False)
+    normalization = NormalizationConfig(mode="paper_linear", speed_difference_reference=150.0, clip_observation=False)
     normalized = build_critic_state_1v1(own, enemy, normalization)
     assert normalized[0] == pytest.approx(2.0 * raw[0] / 5000.0 - 1.0)
     assert normalized[8] == pytest.approx(1.0)

@@ -12,9 +12,11 @@ from uav_env.core.state import UAVState
 from uav_env.rewards.components import (
     advantage_reward,
     angle_reward,
+    debug_linear_distance_reward,
+    debug_linear_height_reward,
     dense_reward,
-    distance_reward,
-    height_reward,
+    paper_distance_reward,
+    paper_height_reward,
     speed_reward,
 )
 
@@ -23,7 +25,10 @@ from uav_env.rewards.components import (
 class RewardBreakdown:
     """Primitive diagnostics and additive reward contributions."""
 
+    reward_profile: str = "zheng_series_1v1"
     angle: float = 0.0
+    distance_approach: float = 0.0
+    distance_piecewise: float = 0.0
     distance: float = 0.0
     height: float = 0.0
     speed: float = 0.0
@@ -90,22 +95,25 @@ def compute_reward_breakdown(
     """Compute the scalar reward and preserve every interpretable component."""
 
     angle = angle_reward(red_to_blue.attacker_attack_angle, red_to_blue.target_escape_angle)
-    distance = distance_reward(
-        previous_red_to_blue.distance,
-        red_to_blue.distance,
-        float(config["attack_distance_min"]),
-        float(config["attack_distance_max"]),
-        float(config["advantage_distance_max"]),
-        float(config["desired_distance_max"]),
+    profile = str(config.get("reward_profile", "zheng_series_1v1"))
+    distance_function = paper_distance_reward if profile == "zheng_series_1v1" else debug_linear_distance_reward
+    if profile not in {"zheng_series_1v1", "debug_linear"}:
+        raise ValueError(f"Unknown reward_profile: {profile!r}")
+    distance, distance_approach, distance_piecewise = distance_function(
+        previous_red_to_blue.distance, red_to_blue.distance, float(config["attack_distance_min"]),
+        float(config["attack_distance_max"]), float(config["advantage_distance_max"]), float(config["desired_distance_max"])
     )
     h_config = config["height_reward"]
-    height = height_reward(
-        red_state.z - blue_state.z,
-        float(h_config["H_max"]),
-        float(h_config["H_adv"]),
-        float(h_config["H_att"]),
-        float(h_config["H_min"]),
-    )
+    if profile == "zheng_series_1v1":
+        height = paper_height_reward(
+            red_state.z - blue_state.z, float(config["attack_distance_max"]), float(h_config["H_max"]),
+            float(h_config["H_adv"]), float(h_config["H_att"]), float(h_config["H_min"])
+        )
+    else:
+        height = debug_linear_height_reward(
+            red_state.z - blue_state.z, float(h_config["H_max"]), float(h_config["H_adv"]),
+            float(h_config["H_att"]), float(h_config["H_min"])
+        )
     speed = speed_reward(red_state.speed, blue_state.speed)
     dense = dense_reward(angle, distance, height, speed)
     advantage = 0.0
@@ -124,9 +132,9 @@ def compute_reward_breakdown(
     own_attack = red_to_blue.in_attack_area and (mode == "per_step" or not previous_red_to_blue.in_attack_area)
     enemy_attack = blue_to_red.in_attack_area and (mode == "per_step" or not previous_blue_to_red.in_attack_area)
     attack_area = (0.3 if own_attack else 0.0) - (0.3 if enemy_attack else 0.0)
-    hit = 0.8 if damage_to_blue.damage > 0.0 else 0.0
+    hit = 0.8 if damage_to_blue.effective_damage > 0.0 else 0.0
     destroy = 1.5 if damage_to_blue.destroyed else 0.0
-    being_hit = -0.9 if damage_to_red.damage > 0.0 else 0.0
+    being_hit = -0.9 if damage_to_red.effective_damage > 0.0 else 0.0
     being_destroyed = -1.6 if damage_to_red.destroyed else 0.0
     boundary = -0.5 if boundary_violation else 0.0
     terminal = terminal_reward(
@@ -138,7 +146,10 @@ def compute_reward_breakdown(
         bool(config.get("draw_as_loss", True)),
     )
     result = RewardBreakdown(
+        reward_profile=profile,
         angle=angle,
+        distance_approach=distance_approach,
+        distance_piecewise=distance_piecewise,
         distance=distance,
         height=height,
         speed=speed,

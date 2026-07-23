@@ -21,11 +21,25 @@ desired_distance_max: 5000.0
 damage_probability_thresholds: [0.1, 0.4, 0.8]
 damage_values: [51.0, 21.0, 11.0, 0.0]
 
+normalization_mode: symmetric_training
 normalization_a: 2.0
 normalization_b: 1.0
 clip_observation: true
+reward_profile: zheng_series_1v1
 event_reward_mode: per_step
 draw_as_loss: true
+r_den0: 0.01
+r_win0: 50.0
+r_lose0: -50.0
+
+pursuit:
+  angle_weight: 1.0
+  distance_weight: 0.6
+  altitude_weight: 0.2
+  boundary_penalty: 100.0
+  minimum_safe_altitude: 300.0
+  ceiling_margin: 300.0
+  unsafe_flight_path_penalty: 2.0
 
 height_reward:
   H_max: 500.0
@@ -40,3 +54,7 @@ project_assumptions:
   pursuit_angle_weight: 1.0
   pursuit_distance_weight: 0.6
   pursuit_altitude_weight: 0.2
+  multi_terminal_reward:
+    win_weights: [0.3333333333, 0.3333333333, 0.3333333334]
+    lose_weights: [0.3333333333, 0.3333333333, 0.3333333334]
+    draw_reward: 0.0
