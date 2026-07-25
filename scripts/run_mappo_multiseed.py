@@ -23,9 +23,11 @@ def _evaluate_checkpoints(runner: MAPPORunner, run_dir: Path, episodes: int, see
     return evaluations
 
 
-def run_seed(config_path: str, seed: int, total_steps: int, evaluation_episodes: int, evaluation_seed_start: int, device: str, output_root: Path, resume_missing: bool) -> Path:
+def run_seed(config_path: str, seed: int, total_steps: int, validation_episodes: int | None, validation_seed_start: int | None, test_episodes: int | None, test_seed_start: int | None, device: str, output_root: Path, resume_missing: bool) -> Path:
     config = load_mappo_config(config_path)
-    config.update(seed=seed, total_env_steps=total_steps, evaluation_episodes=evaluation_episodes, device=device, run_id="run")
+    config.update(seed=seed, total_env_steps=total_steps, device=device, run_id="run")
+    for key,value in (("validation_episodes",validation_episodes),("validation_seed_start",validation_seed_start),("test_episodes",test_episodes),("test_seed_start",test_seed_start)):
+        if value is not None: config[key]=value
     validate_mappo_config(config)
     seed_root = output_root / f"seed_{seed}"
     run_dir = seed_root / "run"
@@ -47,17 +49,19 @@ def run_seed(config_path: str, seed: int, total_steps: int, evaluation_episodes:
             if metrics.exists(): metrics.replace(run_dir/f"metrics.interrupted.{marker}.csv")
             print(f"seed {seed}: preserved unreadable checkpoint as {preserved}; restarting seed ({error})")
     completed_dir = runner.run()
-    evaluations = _evaluate_checkpoints(runner, completed_dir, evaluation_episodes, evaluation_seed_start)
+    final_summary=yaml.safe_load((completed_dir/"final_summary.yaml").read_text(encoding="utf-8"))
+    evaluations=final_summary["test_evaluations"]
     payload = {
         "seed": seed,
         "config": str(Path(config_path)),
         "total_env_steps": total_steps,
-        "evaluation_episodes": evaluation_episodes,
-        "evaluation_seed_start": evaluation_seed_start,
+        "checkpoint_selection": config["checkpoint_selection"],
+        "validation": {"episodes":config["validation_episodes"],"seed_start":config["validation_seed_start"],"best":final_summary["validation_best_evaluation"],"history":str((completed_dir/"evaluations.csv").resolve())},
+        "test": {"episodes":config["test_episodes"],"seed_start":config["test_seed_start"],"evaluations":evaluations},
+        "evaluations": evaluations,
         "terminal_reward_profile": config["environment"].get("multi_terminal_reward_profile", "not_applicable"),
         "run_dir": str(completed_dir.resolve()),
         "checkpoints": {name: str((completed_dir / "checkpoints" / f"{name}.pt").resolve()) for name in ("initial", "last", "best")},
-        "evaluations": evaluations,
     }
     summary_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     print(summary_path.resolve())
@@ -69,8 +73,10 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--seeds", nargs="+", type=int, required=True)
     parser.add_argument("--total-env-steps", type=int, required=True)
-    parser.add_argument("--evaluation-episodes", type=int, required=True)
-    parser.add_argument("--evaluation-seed-start", type=int, required=True)
+    parser.add_argument("--validation-episodes", type=int)
+    parser.add_argument("--validation-seed-start", type=int)
+    parser.add_argument("--test-episodes", type=int)
+    parser.add_argument("--test-seed-start", type=int)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--output-name", required=True)
     parser.add_argument("--resume-missing", action=argparse.BooleanOptionalAction, default=True)
@@ -82,7 +88,7 @@ def main() -> None:
         print("Single-device safety: seeds are intentionally executed sequentially; --workers is reserved for CPU orchestration.")
     root = Path("outputs/mappo_multiseed") / args.output_name
     for seed in args.seeds:
-        run_seed(args.config, seed, args.total_env_steps, args.evaluation_episodes, args.evaluation_seed_start, args.device, root, args.resume_missing)
+        run_seed(args.config, seed, args.total_env_steps, args.validation_episodes, args.validation_seed_start, args.test_episodes, args.test_seed_start, args.device, root, args.resume_missing)
 
 
 if __name__ == "__main__":

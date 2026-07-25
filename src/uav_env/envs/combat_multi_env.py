@@ -166,7 +166,7 @@ class CombatMultiEnv(BaseUAVEnv):
         self.decision_step = 0
         self.simulation_time = 0.0
         per_aircraft = {
-            u.uav_id: {"nominal_damage": 0.0, "effective_damage": 0.0, "overkill_damage": 0.0, "hits": 0, "contribution_score": 0.0, "cumulative_reward": 0.0, "ground_crashes": 0, "ceiling_violations": 0}
+            u.uav_id: {"nominal_damage": 0.0, "effective_damage": 0.0, "overkill_damage": 0.0, "hits": 0, "attack_area_steps": 0, "contribution_score": 0.0, "cumulative_reward": 0.0, "ground_crashes": 0, "ceiling_violations": 0}
             for u in self.all_aircraft
         }
         self._statistics = {"aircraft": per_aircraft, "collisions": 0, "timeouts": 0}
@@ -333,6 +333,12 @@ class CombatMultiEnv(BaseUAVEnv):
             stats["effective_damage"] += attack.effective_damage
             stats["overkill_damage"] += attack.overkill_damage
             stats["hits"] += int(attack.hit)
+        for red in self.red_aircraft:
+            if red.is_alive and any(
+                blue.is_alive and compute_combat_geometry(red.state, blue.state, self.attack_config).in_attack_area
+                for blue in self.blue_aircraft
+            ):
+                self._statistics["aircraft"][red.uav_id]["attack_area_steps"] += 1
         maxed = self.decision_step >= int(self.config["max_decision_steps"]) or self.simulation_time >= float(self.config["max_episode_seconds"]) - 1.0e-12
         terminated = not any(u.is_alive for u in self.red_aircraft) or not any(u.is_alive for u in self.blue_aircraft)
         truncated = not terminated and maxed

@@ -1,6 +1,7 @@
 inherits: mappo_base.yaml
+checkpoint_selection: combat
 environment:
   kind: 2v2
   scenario: head_on_formation
-  opponent: straight
+  opponent: pursuit
   multi_terminal_reward_profile: project_balanced

@@ -12,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from uav_env.algorithms.mappo.adapter import MAPPOEnvAdapter,SyncCombatVectorEnv
 from uav_env.algorithms.mappo.checkpoint import load_checkpoint,save_checkpoint
-from uav_env.algorithms.mappo.metrics import append_csv,evaluation_key
+from uav_env.algorithms.mappo.metrics import append_csv,combat_outcome_rates,evaluation_key
 from uav_env.algorithms.mappo.networks import CentralizedCritic,SharedActor
 from uav_env.algorithms.mappo.rollout_buffer import RolloutBuffer
 from uav_env.algorithms.mappo.trainer import MAPPOTrainer
@@ -61,7 +61,6 @@ class MAPPORunner:
 
     def _values(self,states: np.ndarray) -> np.ndarray:
         with torch.no_grad(): values=self.critic(torch.as_tensor(states,device=self.device))
-        if self.config.get("use_value_normalization",True): values=self.normalizer.denormalize(values)
         return values.cpu().numpy().astype(np.float32)
 
     def collect(self) -> tuple[RolloutBuffer,dict[str,float]]:
@@ -71,7 +70,6 @@ class MAPPORunner:
             obs=torch.as_tensor(self.current["local_obs"],device=self.device); states=torch.as_tensor(self.current["global_state"],device=self.device); available=torch.as_tensor(self.current["available_actions"],device=self.device)
             with torch.no_grad():
                 dist=torch.distributions.Categorical(logits=self.actor(obs,available)); actions=dist.sample(); log_probs=dist.log_prob(actions); values=self.critic(states); active=np.asarray(self.current["alive_masks"],dtype=bool); entropies.extend(dist.entropy().cpu().numpy()[active].tolist())
-                if self.config.get("use_value_normalization",True): values=self.normalizer.denormalize(values)
             result=self.vector.step(actions.cpu().numpy()); terminal_values=np.zeros_like(values.cpu().numpy())
             for value in actions.cpu().numpy()[active]: action_counts[int(value)]+=1
             self.episode_return_accumulators += np.asarray(result["team_rewards"],dtype=np.float64)
@@ -90,7 +88,7 @@ class MAPPORunner:
                     if self.num_agents==1:
                         episode_crashes.append(float(reason in {"red_ground_crash","blue_ground_crash"})); episode_damages.append(float(statistics.get("red_effective_damage",0.0))); episode_hits.append(float(statistics.get("red_hits",0.0))); attack_occupancies.append(float(statistics.get("red_attack_area_steps",0))/max(float(outcome.decision_steps),1.0))
                     else:
-                        aircraft=statistics.get("aircraft",{}); episode_crashes.append(float(any(float(values.get("ground_crashes",0))>0 for values in aircraft.values()))); episode_damages.append(float(sum(float(aircraft.get(f"red_{i}",{}).get("effective_damage",0.0)) for i in range(self.num_agents)))); episode_hits.append(float(sum(float(aircraft.get(f"red_{i}",{}).get("hits",0.0)) for i in range(self.num_agents))))
+                        aircraft=statistics.get("aircraft",{}); episode_crashes.append(float(any(float(values.get("ground_crashes",0))>0 for values in aircraft.values()))); episode_damages.append(float(sum(float(aircraft.get(f"red_{i}",{}).get("effective_damage",0.0)) for i in range(self.num_agents)))); episode_hits.append(float(sum(float(aircraft.get(f"red_{i}",{}).get("hits",0.0)) for i in range(self.num_agents)))); attack_occupancies.append(float(sum(float(aircraft.get(f"red_{i}",{}).get("attack_area_steps",0.0)) for i in range(self.num_agents)))/max(float(outcome.decision_steps*self.num_agents),1.0))
             critic_masks=np.ones_like(self.current["alive_masks"],dtype=np.float32)
             buffer.insert(actions.cpu().numpy(),log_probs.cpu().numpy(),values.cpu().numpy(),result["rewards"],result["terminated"],result["truncated"],self.current["alive_masks"],critic_masks,result["next_local_obs"],result["next_global_state"],result["next_available_actions"],terminal_values)
             self.current={"local_obs":result["next_local_obs"],"global_state":result["next_global_state"],"alive_masks":result["next_alive_masks"],"available_actions":result["next_available_actions"]}
@@ -102,7 +100,7 @@ class MAPPORunner:
         return buffer,diagnostics
 
     def evaluate(self,episodes: int|None=None,seed_start: int=100000,deterministic: bool|None=None) -> dict[str,float]:
-        count=int(episodes or self.config["evaluation_episodes"]); env_cfg=self.config["environment"]; outcomes=[]; returns=[]; agent_sum_returns=[]; steps=[]; red_crashes=[]; blue_crashes=[]; saturation=[]; frequencies=np.zeros(15); red_survivors=[]; blue_survivors=[]; damages=[]; hits=[]; policy_entropies=[]; logit_margins=[]; terminal_proportions=[]
+        count=int(episodes or self.config["validation_episodes"]); env_cfg=self.config["environment"]; outcomes=[]; returns=[]; agent_sum_returns=[]; steps=[]; red_crashes=[]; blue_crashes=[]; saturation=[]; frequencies=np.zeros(15); red_survivors=[]; blue_survivors=[]; damages=[]; hits=[]; attack_area_steps=[]; policy_entropies=[]; logit_margins=[]; terminal_proportions=[]
         deterministic = bool(self.config.get("deterministic_evaluation", True)) if deterministic is None else deterministic
         for episode in range(count):
             env=MAPPOEnvAdapter(make_1v1_env(env_cfg["scenario"],env_cfg["opponent"]) if env_cfg["kind"]=="1v1" else make_2v2_env(env_cfg["scenario"],env_cfg["opponent"],multi_terminal_reward_profile=env_cfg.get("multi_terminal_reward_profile"))); current=env.reset(seed_start+episode); total=0.; agent_sum_total=0.; absolute_total=0.; terminal_absolute=0.; done=False
@@ -118,12 +116,13 @@ class MAPPORunner:
             outcome=current.info["outcome"]; outcomes.append(outcome); returns.append(total); agent_sum_returns.append(agent_sum_total); terminal_proportions.append(terminal_absolute/max(absolute_total,1e-12)); steps.append(outcome.decision_steps)
             stats=current.info.get("statistics",{}); reason=str(outcome.termination_reason)
             if self.num_agents==1:
-                red_crashes.append(float(reason=="red_ground_crash")); blue_crashes.append(float(reason=="blue_ground_crash")); red_survivors.append(float(outcome.red_alive)); blue_survivors.append(float(outcome.blue_alive)); damages.append(float(stats.get("red_effective_damage",0.0))); hits.append(float(stats.get("red_hits",0)))
+                red_crashes.append(float(reason=="red_ground_crash")); blue_crashes.append(float(reason=="blue_ground_crash")); red_survivors.append(float(outcome.red_alive)); blue_survivors.append(float(outcome.blue_alive)); damages.append(float(stats.get("red_effective_damage",0.0))); hits.append(float(stats.get("red_hits",0))); attack_area_steps.append(float(stats.get("red_attack_area_steps",0)))
             else:
-                aircraft=stats["aircraft"]; red_crashes.append(float(sum(aircraft[f"red_{i}"]["ground_crashes"] for i in range(2))>0)); blue_crashes.append(float(sum(aircraft[f"blue_{i}"]["ground_crashes"] for i in range(2))>0)); red_survivors.append(float(outcome.red_survivors)); blue_survivors.append(float(outcome.blue_survivors)); damages.append(float(sum(aircraft[f"red_{i}"]["effective_damage"] for i in range(2)))); hits.append(float(sum(aircraft[f"red_{i}"]["hits"] for i in range(2))))
+                aircraft=stats["aircraft"]; red_crashes.append(float(sum(aircraft[f"red_{i}"]["ground_crashes"] for i in range(2))>0)); blue_crashes.append(float(sum(aircraft[f"blue_{i}"]["ground_crashes"] for i in range(2))>0)); red_survivors.append(float(outcome.red_survivors)); blue_survivors.append(float(outcome.blue_survivors)); damages.append(float(sum(aircraft[f"red_{i}"]["effective_damage"] for i in range(2)))); hits.append(float(sum(aircraft[f"red_{i}"]["hits"] for i in range(2)))); attack_area_steps.append(float(sum(aircraft[f"red_{i}"].get("attack_area_steps",0) for i in range(2))))
             saturation.append(float(current.info.get("observation_saturation_ratio",np.mean(current.info.get("local_observation_saturation_ratio",[0.])))))
         winners=[o.winner for o in outcomes]
-        result={"red_win_rate":winners.count("red")/count,"blue_win_rate":winners.count("blue")/count,"draw_rate":winners.count("draw")/count,"timeout_rate":sum(o.termination_reason=="timeout" for o in outcomes)/count,"red_crash_rate":float(np.mean(red_crashes)),"blue_crash_rate":float(np.mean(blue_crashes)),"mean_episode_return":float(np.mean(returns)),"mean_team_episode_return":float(np.mean(returns)),"mean_agent_sum_episode_return":float(np.mean(agent_sum_returns)),"mean_per_agent_episode_return":float(np.mean(agent_sum_returns))/self.num_agents,"mean_agent_return":float(np.mean(agent_sum_returns))/self.num_agents,"mean_episode_steps":float(np.mean(steps)),"mean_red_survivors":float(np.mean(red_survivors)),"mean_blue_survivors":float(np.mean(blue_survivors)),"mean_effective_damage":float(np.mean(damages)),"mean_hits":float(np.mean(hits)),"mean_observation_saturation_ratio":float(np.mean(saturation)),"policy_entropy_mean":float(np.mean(policy_entropies)),"logits_top1_top2_margin_mean":float(np.mean(logit_margins)),"terminal_reward_proportion":float(np.mean(terminal_proportions))}
+        combat_rates=combat_outcome_rates(outcomes); overall=combat_rates["overall_red_win_rate"]
+        result={**combat_rates,"red_win_rate":overall,"blue_win_rate":winners.count("blue")/count,"red_crash_rate":float(np.mean(red_crashes)),"blue_crash_rate":float(np.mean(blue_crashes)),"mean_episode_return":float(np.mean(returns)),"mean_team_episode_return":float(np.mean(returns)),"mean_agent_sum_episode_return":float(np.mean(agent_sum_returns)),"mean_per_agent_episode_return":float(np.mean(agent_sum_returns))/self.num_agents,"mean_agent_return":float(np.mean(agent_sum_returns))/self.num_agents,"mean_episode_steps":float(np.mean(steps)),"mean_red_survivors":float(np.mean(red_survivors)),"mean_blue_survivors":float(np.mean(blue_survivors)),"mean_effective_damage":float(np.mean(damages)),"mean_hits":float(np.mean(hits)),"mean_attack_area_steps":float(np.mean(attack_area_steps)),"mean_observation_saturation_ratio":float(np.mean(saturation)),"policy_entropy_mean":float(np.mean(policy_entropies)),"logits_top1_top2_margin_mean":float(np.mean(logit_margins)),"terminal_reward_proportion":float(np.mean(terminal_proportions))}
         result.update({f"action_{i}_frequency":float(frequencies[i]/max(frequencies.sum(),1)) for i in range(15)}); return result
 
     def run(self) -> Path:
@@ -140,16 +139,20 @@ class MAPPORunner:
             for key,value in row.items():
                 if isinstance(value,(int,float)): self.writer.add_scalar(key,value,self.environment_steps)
             if self.environment_steps%int(self.config["evaluation_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]):
-                evaluation={"environment_steps":self.environment_steps,**self.evaluate()}; append_csv(self.output_dir/"evaluations.csv",evaluation)
+                evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))}; append_csv(self.output_dir/"evaluations.csv",evaluation)
                 self.last_evaluation_step=self.environment_steps
-                if self.best_evaluation is None or evaluation_key(evaluation)>evaluation_key(self.best_evaluation): self.best_evaluation=evaluation; self._save("best.pt")
+                if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])): self.best_evaluation=evaluation; self._save("best.pt")
             if self.environment_steps%int(self.config["checkpoint_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]): self._save(f"step_{self.environment_steps}.pt")
             self._save("last.pt")
         if self.last_evaluation_step != self.environment_steps:
-            evaluation={"environment_steps":self.environment_steps,**self.evaluate()};append_csv(self.output_dir/"evaluations.csv",evaluation);self.last_evaluation_step=self.environment_steps
-            if self.best_evaluation is None or evaluation_key(evaluation)>evaluation_key(self.best_evaluation):self.best_evaluation=evaluation;self._save("best.pt")
+            evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))};append_csv(self.output_dir/"evaluations.csv",evaluation);self.last_evaluation_step=self.environment_steps
+            if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])):self.best_evaluation=evaluation;self._save("best.pt")
             self._save("last.pt")
-        summary={"environment_steps":self.environment_steps,"updates":self.update_index,"episodes":self.episodes,"device":str(self.device),"best_evaluation":self.best_evaluation,"actor_parameters":sum(p.numel() for p in self.actor.parameters()),"critic_parameters":sum(p.numel() for p in self.critic.parameters())}; (self.output_dir/"final_summary.yaml").write_text(yaml.safe_dump(summary,sort_keys=False),encoding="utf-8"); self.writer.close(); return self.output_dir
+        test_evaluations={}
+        for label in ("initial","last","best"):
+            self.resume(str(self.output_dir/"checkpoints"/f"{label}.pt"),actor_only=True)
+            test_evaluations[label]=self.evaluate(int(self.config["test_episodes"]),int(self.config["test_seed_start"]),deterministic=True)
+        summary={"environment_steps":self.environment_steps,"updates":self.update_index,"episodes":self.episodes,"device":str(self.device),"checkpoint_selection":self.config["checkpoint_selection"],"validation_best_evaluation":self.best_evaluation,"test_seed_start":self.config["test_seed_start"],"test_episodes":self.config["test_episodes"],"test_evaluations":test_evaluations,"actor_parameters":sum(p.numel() for p in self.actor.parameters()),"critic_parameters":sum(p.numel() for p in self.critic.parameters())}; (self.output_dir/"final_summary.yaml").write_text(yaml.safe_dump(summary,sort_keys=False),encoding="utf-8"); self.writer.close(); return self.output_dir
 
     def _save(self,name: str) -> None:
         runner_state={"vector_envs":self.vector.envs,"current":self.current,"episodes":self.episodes,"episode_return_accumulators":self.episode_return_accumulators,"agent_sum_return_accumulators":self.agent_sum_return_accumulators,"last_evaluation_step":self.last_evaluation_step,"trainer_minibatch_rng_state":self.trainer.minibatch_rng.bit_generator.state}

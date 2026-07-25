@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import pytest
 from uav_env.algorithms.mappo.checkpoint import save_checkpoint,load_checkpoint
 from uav_env.algorithms.mappo.config import load_mappo_config
 from uav_env.algorithms.mappo.networks import SharedActor,CentralizedCritic
@@ -31,3 +32,11 @@ def test_full_resume_reproduces_next_update(tmp_path):
  assert results[0][1]==results[1][1]
  assert all(torch.equal(a,b) for a,b in zip(results[0][2],results[1][2]))
  assert all(torch.equal(a,b) for a,b in zip(results[0][3],results[1][3]))
+
+
+def test_v2_actor_only_allowed_but_full_resume_rejected(tmp_path):
+ a=SharedActor(11);c=CentralizedCritic(10,1);ao=torch.optim.Adam(a.parameters());co=torch.optim.Adam(c.parameters());n=ValueNormalizer();p=tmp_path/"v2.pt"
+ save_checkpoint(p,a,c,ao,co,n,{},0,0,None);data=torch.load(p,weights_only=False);data["version"]=2;torch.save(data,p)
+ load_checkpoint(p,SharedActor(11),actor_only=True)
+ with pytest.raises(ValueError,match="v2 critic value semantics are incompatible with v3 physical-value critic"):
+  load_checkpoint(p,SharedActor(11),CentralizedCritic(10,1),normalizer=ValueNormalizer())

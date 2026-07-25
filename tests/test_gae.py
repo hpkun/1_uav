@@ -8,3 +8,11 @@ def test_terminated_and_truncated_bootstrap():
 def test_three_step_gamma_lambda_one():
  r=np.ones((3,1,1),np.float32);v=np.zeros((4,1,1),np.float32);done=np.zeros((3,1),bool);a,_=compute_gae(r,v,done,done,np.zeros_like(r),1,1);assert np.array_equal(a[:,0,0],[3,2,1])
 
+
+def test_gae_uses_physical_reward_and_value_scale():
+ rewards=np.array([[[25.0]]],np.float32)
+ values=np.array([[[100.0]],[[120.0]]],np.float32)
+ boundaries=np.zeros((1,1),bool)
+ advantages,returns=compute_gae(rewards,values,boundaries,boundaries,np.zeros_like(rewards),.5,1.)
+ assert advantages[0,0,0]==-15.0
+ assert returns[0,0,0]==85.0

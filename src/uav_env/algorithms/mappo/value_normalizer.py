@@ -1,4 +1,8 @@
-"""Serializable running return normalization."""
+"""Serializable physical-return normalization for Critic loss inputs.
+
+This is target normalization, not PopArt. Critic outputs retain physical
+reward-scale semantics; this class does not rescale the network output layer.
+"""
 
 from __future__ import annotations
 

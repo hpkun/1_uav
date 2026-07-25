@@ -35,7 +35,7 @@ def main() -> None:
                 "logits_top1_top2_margin_mean":evaluation["logits_top1_top2_margin_mean"],
                 "terminal_reward_proportion":evaluation["terminal_reward_proportion"],
                 "observation_saturation_ratio":evaluation["mean_observation_saturation_ratio"],
-                "first_non_timeout":int(first_non_timeout),"first_effective_damage":int(first_damage),
+                "first_evaluation_with_non_timeout_step":step if first_non_timeout else "","first_evaluation_with_effective_damage_step":step if first_damage else "",
                 "training_entropy":train.get("entropy",""),"training_clip_fraction":train.get("clip_fraction",""),
                 "training_approx_kl":train.get("approx_kl",""),"critic_explained_variance":train.get("explained_variance",""),
                 # Not retrospectively available in the current evaluation trajectory schema.

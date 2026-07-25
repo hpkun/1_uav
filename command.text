@@ -1,0 +1,363 @@
+请继续修改当前项目。本轮只处理会影响空战对抗训练正确性和结果解释的核心问题，不增加新的通用工程框架，不进入异构、3v2、自博弈、注意力或网络迁移。
+
+需要始终明确：
+
+- 本项目研究的是无人机空战对抗，不是目标追击；
+- tail_chase 只用于最基础的训练链路 smoke test；
+- PursuitOpponent 只是固定规则对手，不是研究目标；
+- 正式能力应通过接敌、占位、攻击、毁伤、防御、生存和结束战斗来评价；
+- 不要通过强化距离接近奖励，把策略改造成单纯追踪器；
+- 不修改现有动力学、攻击区、毁伤概率或论文奖励公式来人为提高胜率。
+
+一、修正 ValueNormalizer 与 Critic 输出空间不一致
+
+当前实现存在明确问题：
+
+1. Critic 网络输出被当作 normalized value；
+2. Runner 使用当前 ValueNormalizer 将其 denormalize 后存入 rollout；
+3. Trainer 收到 rollout 后先更新 ValueNormalizer；
+4. old value 和 return 使用更新后的统计量重新 normalize；
+5. 当前 Critic 输出却仍处于更新前网络所对应的坐标语义；
+6. 因而在第一次 PPO 更新、参数尚未变化时，new value 与 old value 已可能不一致；
+7. value clipping 可能因此错误触发。
+
+本轮采用简单、清楚且可审计的修正，不实现 PopArt。
+
+统一定义：
+
+- Critic 网络始终输出物理奖励尺度下的 value；
+- rollout buffer 中的 value 始终是物理尺度；
+- GAE 和 return 始终是物理尺度；
+- ValueNormalizer 只用于计算 Critic loss 时统一归一化：
+  - new physical value
+  - old physical value
+  - physical return target
+- 三者必须使用同一时刻、同一组 mean/variance；
+- Actor、GAE 和环境奖励不经过 ValueNormalizer。
+
+具体修改：
+
+1. `MAPPORunner._values()`：
+   - 直接返回 Critic 输出；
+   - 删除 ValueNormalizer.denormalize。
+
+2. rollout 收集：
+   - Critic 输出直接作为 physical value 保存；
+   - 删除 collect 中的 denormalize。
+
+3. `MAPPOTrainer.update()`：
+   - 原始 `old_values`、`returns` 都是 physical scale；
+   - 更新 ValueNormalizer 后，使用同一个 normalizer 分别得到：
+     - normalized_returns
+     - normalized_old_values
+     - normalized_new_values
+   - `ppo_value_loss()` 的 new、old、target 必须全部处于 normalized scale；
+   - 当 `use_value_normalization=false` 时，三者全部保持 physical scale。
+
+4. explained variance：
+   - Critic 输出已经是 physical value；
+   - 直接与 physical returns 比较；
+   - 不再调用 denormalize。
+
+5. 文档明确：
+   - Critic 输出 physical value；
+   - ValueNormalizer 是 value-loss target normalization；
+   - 不是 PopArt；
+   - 不会改变 Critic 输出层的数值语义。
+
+6. 检查整个项目，删除所有把 Critic 输出默认解释为 normalized value 的代码和文档。
+
+二、处理旧 checkpoint 兼容问题
+
+由于 Critic 输出语义发生变化：
+
+- checkpoint 版本提升到 v3；
+- v2 checkpoint 允许 `actor_only=True` 加载；
+- v2 checkpoint 不允许 full resume；
+- full resume 时给出明确提示：
+  “v2 critic value semantics are incompatible with v3 physical-value critic”；
+- v3 checkpoint 正常保存和恢复：
+  - Actor
+  - Critic
+  - optimizer
+  - ValueNormalizer
+  - minibatch RNG
+  - environment state。
+
+不要编写复杂迁移器，也不要尝试猜测并转换旧 Critic。
+
+三、增加 ValueNormalizer 核心测试
+
+新增或修改测试，必须验证：
+
+1. `use_value_normalization=false`：
+   - Critic new、old、target 全部使用 physical scale。
+
+2. `use_value_normalization=true`：
+   - new、old、target 使用同一 normalizer；
+   - 在 Critic 参数未更新时：
+     new physical value == old physical value；
+   - 归一化后：
+     normalized new value == normalized old value。
+
+3. 更新 normalizer 均值和方差后：
+   - 未更新网络的 new/old value 差仍为0；
+   - value clipping 不会仅因 normalizer 变化而触发。
+
+4. GAE 使用 physical value。
+
+5. explained variance 使用 physical prediction 和 physical return。
+
+6. v2 full resume 被拒绝；
+7. v2 actor-only 可以加载；
+8. v3 full resume 后下一次 rollout 和更新一致。
+
+四、将“追击测试”与“空战对抗测试”明确分开
+
+修改配置和文档中的实验定位。
+
+1. `tail_chase`：
+
+只标记为：
+
+- smoke；
+- basic learnability；
+- action/reward pipeline check。
+
+不得再将其 best win rate 作为正式空战性能。
+
+2. 正式 1v1 对抗场景：
+
+- head_on；
+- balanced_random。
+
+蓝方使用能够主动机动和攻击的规则对手，例如 PursuitOpponent，但文档必须称其为：
+
+“固定几何规则空战对手”
+
+而不是训练目标。
+
+3. 正式 2v2 对抗场景：
+
+- head_on_formation；
+- offset_formation；
+- balanced_random。
+
+评价内容必须包括：
+
+- 是否完成击毁；
+- 是否造成有效伤害；
+- 是否进入攻击区；
+- 是否存活；
+- 是否超时；
+- 是否仅依靠超时存活数量判胜。
+
+不要新增新的追击奖励，也不要提高距离奖励权重。
+
+五、拆分真正的空战胜利与超时存活胜利
+
+当前 timeout 时根据存活数量判断 winner，这是环境规则，可以保留。
+
+但评估指标必须拆分：
+
+- overall_red_win_rate
+- elimination_win_rate
+- timeout_survival_win_rate
+- decisive_win_rate
+- draw_rate
+- timeout_rate
+
+定义：
+
+`elimination_win_rate`：
+
+- 蓝方全部失效；
+- termination reason 为 blue_eliminated。
+
+`timeout_survival_win_rate`：
+
+- termination reason 为 timeout；
+- 红方因存活数量更多被判胜。
+
+`decisive_win_rate`：
+
+- 红方获胜且不是 timeout。
+
+`overall_red_win_rate`：
+
+- 保留当前所有红胜。
+
+正式报告不能把：
+
+“100% timeout 且红方存活数量更多”
+
+描述成完成了空战制胜。
+
+六、修改 best checkpoint 选择规则
+
+1v1 tail_chase smoke 可以继续使用原简单选择规则。
+
+正式 1v1/2v2 对抗配置使用：
+
+优先级：
+
+1. elimination_win_rate 更高；
+2. decisive_win_rate 更高；
+3. timeout_rate 更低；
+4. mean_effective_damage 更高；
+5. overall_red_win_rate 更高；
+6. mean_team_episode_return 更高。
+
+不得再只按包含 timeout 判胜的总体胜率选择 best checkpoint。
+
+配置增加简单字段：
+
+checkpoint_selection: combat
+
+smoke 配置使用：
+
+checkpoint_selection: smoke
+
+不要实现复杂的可插拔评分系统，只需要两个明确分支。
+
+七、分离 validation 和 final test seeds
+
+这不是额外审计功能，而是避免 best checkpoint 使用同一批样本选取和报告。
+
+配置增加：
+
+validation_seed_start: 100000
+validation_episodes: 100
+
+test_seed_start: 200000
+test_episodes: 200
+
+训练过程中：
+
+- validation seeds 只用于选择 best checkpoint。
+
+训练完成后：
+
+- initial、last、best 都在 test seeds 上重新评估；
+- 最终 summary 只把 test 结果作为正式结果；
+- validation 结果保留用于查看训练过程，但不作为最终性能。
+
+修改多种子脚本，使：
+
+- best checkpoint 根据 validation 选择；
+- seed_summary 中同时保存 validation 和 test；
+- 聚合脚本默认聚合 test 结果。
+
+八、修正跨训练 seed 的置信区间
+
+规则回合中的二项比例继续使用 Wilson interval。
+
+跨训练 seed 的均值，例如3个或5个独立训练 seed，使用 Student t interval：
+
+mean ± t_(n-1,0.975) * sample_std / sqrt(n)
+
+可以直接使用 scipy.stats.t.ppf。
+
+输出中明确字段：
+
+- confidence_interval_method: student_t
+- num_training_seeds
+
+不要将跨训练 seed 的区间裁剪到 [0,1]；原始统计区间保留，展示胜率时可额外提供 clipped display interval，但不能替换原值。
+
+九、保留最少但必要的对抗诊断
+
+不要再扩展大规模审计框架。
+
+正式对抗评估只保留以下核心指标：
+
+- elimination win
+- timeout survival win
+- draw
+- timeout
+- effective damage
+- hit count
+- attack-area steps
+- episode steps
+- red/blue survivors
+- crash
+- team return
+- entropy
+- action frequency
+
+“首次有效伤害步数”字段改名为：
+
+`first_evaluation_with_effective_damage_step`
+
+因为该值只代表第一次定期评估检测到伤害，不是训练过程中的精确首次命中时间。
+
+十、补充最关键的测试
+
+不需要继续增加大量测试文件，可以合并到已有测试中。
+
+必须增加：
+
+1. ValueNormalizer new/old/target 同空间测试；
+2. normalizer 更新不会虚假触发 value clipping；
+3. v2/v3 checkpoint 兼容边界；
+4. elimination win 与 timeout survival win 区分；
+5. combat checkpoint 选择优先 elimination；
+6. validation/test seed 不重合；
+7. Student t interval 手算；
+8. 两个独立 CPU Runner 使用相同 seed：
+   - 第一段 rollout actions 一致；
+   - rewards 一致；
+   - advantages/returns 一致；
+   - 一次 PPO 更新后 Actor/Critic 参数一致。
+
+十一、执行验收
+
+执行：
+
+pip install -e .
+pytest
+
+运行：
+
+python scripts/train_mappo.py \
+    --config configs/mappo_smoke_1v1.yaml \
+    --run-name value_fix_smoke_1v1
+
+python scripts/train_mappo.py \
+    --config configs/mappo_smoke_2v2.yaml \
+    --run-name value_fix_smoke_2v2
+
+再执行两个短对抗探针，不运行大规模正式实验：
+
+1. 1v1 head_on，对固定机动规则对手，3个seed，每个50000步；
+2. 2v2 head_on_formation，对固定机动规则对手，3个seed，每个50000步。
+
+目的只检查：
+
+- value loss 是否稳定；
+- best→last 退化是否仍明显；
+- 是否出现 elimination；
+- timeout 是否仍接近100%；
+- 是否造成有效伤害；
+- 是否出现 NaN/Inf。
+
+不要修改环境参数来改善实验结果。
+
+十二、完成后报告
+
+只报告核心内容：
+
+1. ValueNormalizer Bug 的原因；
+2. 修正后的 Critic/value 数据流；
+3. checkpoint v3 行为；
+4. pytest 结果；
+5. 1v1 对抗短探针；
+6. 2v2 对抗短探针；
+7. elimination 与 timeout survival 的区别；
+8. 是否仍有 best→last 退化；
+9. 是否仍有接近100% timeout；
+10. 下一步是否需要调整 MAPPO 超参数。
+
+不要把 tail_chase 结果作为正式空战结果。
+不要将追击成功等同于空战对抗成功。
+不要增加新的工程基础设施。

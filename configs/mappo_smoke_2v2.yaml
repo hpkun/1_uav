@@ -3,7 +3,9 @@ num_envs: 2
 rollout_length: 32
 total_env_steps: 2048
 evaluation_interval: 1024
-evaluation_episodes: 4
+validation_episodes: 4
+test_episodes: 4
+checkpoint_selection: smoke
 ppo_epochs: 2
 num_mini_batches: 2
 environment:

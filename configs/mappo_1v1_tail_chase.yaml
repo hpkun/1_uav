@@ -1,6 +1,6 @@
 inherits: mappo_base.yaml
+checkpoint_selection: smoke
 environment:
   kind: 1v1
   scenario: tail_chase
   opponent: straight
-

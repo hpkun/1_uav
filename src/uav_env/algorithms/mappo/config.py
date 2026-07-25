@@ -26,6 +26,15 @@ def validate_mappo_config(config: dict[str, Any]) -> None:
     for key in ("ppo_epochs", "num_mini_batches", "num_envs", "rollout_length"):
         if not isinstance(config.get(key), int) or int(config[key]) <= 0:
             raise ValueError(f"{key} must be a positive integer")
+    for key in ("validation_seed_start", "validation_episodes", "test_seed_start", "test_episodes"):
+        if not isinstance(config.get(key), int) or int(config[key]) < 0 or (key.endswith("episodes") and int(config[key]) == 0):
+            raise ValueError(f"{key} must be a valid nonnegative integer and episode counts must be positive")
+    validation_range=set(range(int(config["validation_seed_start"]),int(config["validation_seed_start"])+int(config["validation_episodes"])))
+    test_range=set(range(int(config["test_seed_start"]),int(config["test_seed_start"])+int(config["test_episodes"])))
+    if validation_range & test_range:
+        raise ValueError("validation and test seed ranges must not overlap")
+    if config.get("checkpoint_selection") not in {"smoke","combat"}:
+        raise ValueError("checkpoint_selection must be smoke or combat")
     agents = 1 if config.get("environment", {}).get("kind") == "1v1" else 2
     total_samples = int(config["num_envs"]) * int(config["rollout_length"]) * agents
     if int(config["num_mini_batches"]) > total_samples:

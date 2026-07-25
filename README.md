@@ -17,7 +17,7 @@ conda run -n uav python scripts/smoke_test.py
 ## 环境与公平性评估
 
 ```bash
-python scripts/run_1v1_episode.py --scenario tail_chase --opponent straight --red-policy pursuit --seed 1
+python scripts/run_1v1_episode.py --scenario head_on --opponent pursuit --red-policy pursuit --seed 1
 python scripts/run_2v2_episode.py --scenario head_on_formation --opponent pursuit --red-policy pursuit --seed 1
 python scripts/evaluate_symmetry.py --episodes 100
 ```
@@ -29,11 +29,13 @@ python scripts/evaluate_symmetry.py --episodes 100
 ```bash
 python scripts/train_mappo.py --config configs/mappo_smoke_1v1.yaml --run-name smoke_1v1
 python scripts/train_mappo.py --config configs/mappo_smoke_2v2.yaml --run-name smoke_2v2
-python scripts/train_mappo.py --config configs/mappo_1v1_tail_chase.yaml --total-env-steps 50000 --run-name probe_1v1_tail_chase
-python scripts/evaluate_mappo.py --checkpoint <best.pt> --episodes 100 --seed-start 100000 --deterministic
+python scripts/train_mappo.py --config configs/mappo_1v1_head_on.yaml --total-env-steps 50000 --run-name probe_1v1_head_on
+python scripts/evaluate_mappo.py --checkpoint <best.pt> --episodes 200 --seed-start 200000 --deterministic
 ```
 
 输出位于 `outputs/mappo/<experiment>/<run-id>/`，包含配置、CSV、TensorBoard、initial/last/best checkpoint 和最终摘要。详见 [MAPPO 设计](docs/mappo_design.md)、[训练协议](docs/mappo_training_protocol.md)及[可学习性检查表](docs/environment_learnability_checklist.md)。
+
+`tail_chase` 只用于 smoke、basic learnability 和动作/奖励链路检查，不作为正式空战性能。正式 1v1 使用 `head_on`、`balanced_random`，正式 2v2 使用 `head_on_formation`、`offset_formation`、`balanced_random`。`PursuitOpponent` 是固定几何规则空战对手，不是研究目标。正式报告区分击毁胜利、非超时胜利和按存活数量得到的超时胜利。
 
 默认训练归一化为 `symmetric_training`；`paper_linear` 仅用于复核论文线性变量形式。1v1/2v2 是项目的同构实验环境，不应被描述为论文正式 3v2 复现。
 

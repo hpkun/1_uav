@@ -7,7 +7,8 @@ from typing import Any
 import numpy as np
 import torch
 
-CHECKPOINT_VERSION=2
+CHECKPOINT_VERSION=3
+INCOMPATIBLE_V2_MESSAGE = "v2 critic value semantics are incompatible with v3 physical-value critic"
 
 def save_checkpoint(path: Path, actor, critic, actor_optimizer, critic_optimizer, normalizer, config: dict[str,Any], environment_steps: int, update_index: int, best_evaluation: dict[str,Any] | None, runner_state: dict[str, Any] | None = None) -> None:
     path.parent.mkdir(parents=True,exist_ok=True)
@@ -17,6 +18,11 @@ def save_checkpoint(path: Path, actor, critic, actor_optimizer, critic_optimizer
 
 def load_checkpoint(path: str|Path, actor, critic=None, actor_optimizer=None, critic_optimizer=None, normalizer=None, actor_only: bool=False, map_location="cpu") -> dict[str,Any]:
     data=torch.load(path,map_location=map_location,weights_only=False)
+    version=int(data.get("version",1))
+    if not actor_only and version < CHECKPOINT_VERSION:
+        if version == 2: raise ValueError(INCOMPATIBLE_V2_MESSAGE)
+        raise ValueError(f"checkpoint v{version} is incompatible with v3 physical-value critic")
+    if version > CHECKPOINT_VERSION: raise ValueError(f"checkpoint v{version} is newer than supported v{CHECKPOINT_VERSION}")
     try: actor.load_state_dict(data["actor"])
     except RuntimeError as error: raise ValueError(f"Actor dimensions are incompatible: {error}") from error
     if not actor_only:

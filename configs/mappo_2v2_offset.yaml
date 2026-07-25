@@ -1,4 +1,5 @@
 inherits: mappo_base.yaml
+checkpoint_selection: combat
 environment:
   kind: 2v2
   scenario: offset_formation

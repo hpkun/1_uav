@@ -38,25 +38,30 @@ def _rule_episode(config: dict, policy: str, seed: int) -> dict[str, float]:
     environment = config["environment"]
     if environment["kind"] == "1v1":
         _, result = run_episode(environment["scenario"], environment["opponent"], seed, policy)
+        overall=float(result.outcome == "red"); timeout=float(result.termination_reason == "timeout")
         return {
             "team_episode_return": result.cumulative_reward, "agent_sum_episode_return": result.cumulative_reward,
-            "red_win": float(result.outcome == "red"),
+            "overall_red_win":overall,"elimination_win":float(overall and result.termination_reason=="blue_eliminated"),
+            "timeout_survival_win":float(overall and timeout),"decisive_win":float(overall and not timeout),
             "blue_win": float(result.outcome == "blue"), "draw": float(result.outcome == "draw"),
-            "timeout": float(result.termination_reason == "timeout"),
+            "timeout":timeout,
             "effective_damage": result.red_damage,
             "hit_count": float(result.red_hits),
+            "attack_area_steps":float(result.red_attack_area_steps),"red_survivors":float(result.red_health>0),"blue_survivors":float(result.blue_health>0),
             "episode_steps": float(result.decision_steps),
             "red_crash": float(result.red_ground_crash), "blue_crash": float(result.blue_ground_crash),
         }
-    _, result = run_2v2_episode(environment["scenario"], environment["opponent"], seed, policy, terminal_reward_profile=environment.get("multi_terminal_reward_profile"))
+    env, result = run_2v2_episode(environment["scenario"], environment["opponent"], seed, policy, terminal_reward_profile=environment.get("multi_terminal_reward_profile")); overall=float(result.winner=="red"); timeout=float(result.timeout); stats=env.get_statistics()["aircraft"]
     return {
         "team_episode_return": result.team_cumulative_reward,
         "agent_sum_episode_return": result.agent_sum_cumulative_reward,
-        "red_win": float(result.winner == "red"),
+        "overall_red_win":overall,"elimination_win":float(overall and result.termination_reason=="blue_eliminated"),
+        "timeout_survival_win":float(overall and timeout),"decisive_win":float(overall and not timeout),
         "blue_win": float(result.winner == "blue"), "draw": float(result.winner == "draw"),
         "timeout": float(result.timeout),
         "effective_damage": float(sum(result.red_effective_damage.values())),
         "hit_count": float(sum(result.red_hits.values())),
+        "attack_area_steps":float(sum(stats[f"red_{i}"].get("attack_area_steps",0) for i in range(2))),"red_survivors":float(result.red_survivors),"blue_survivors":float(result.blue_survivors),
         "episode_steps": float(result.decision_steps),
         "red_crash": float(result.red_ground_crashes > 0), "blue_crash": float(result.blue_ground_crashes > 0),
     }
@@ -71,10 +76,12 @@ def _checkpoint_evaluator(checkpoint: Path, config: dict) -> Callable[[int], dic
         return {
             "team_episode_return": result["mean_team_episode_return"],
             "agent_sum_episode_return": result["mean_agent_sum_episode_return"],
-            "red_win": result["red_win_rate"],
+            "overall_red_win":result["overall_red_win_rate"],"elimination_win":result["elimination_win_rate"],
+            "timeout_survival_win":result["timeout_survival_win_rate"],"decisive_win":result["decisive_win_rate"],
             "blue_win": result["blue_win_rate"], "draw": result["draw_rate"], "timeout": result["timeout_rate"],
             "effective_damage": result["mean_effective_damage"],
             "hit_count": result["mean_hits"],
+            "attack_area_steps":result["mean_attack_area_steps"],"red_survivors":result["mean_red_survivors"],"blue_survivors":result["mean_blue_survivors"],
             "episode_steps": result["mean_episode_steps"],
             "red_crash": result["red_crash_rate"], "blue_crash": result["blue_crash_rate"],
         }
@@ -114,10 +121,10 @@ def main() -> None:
     rows: list[dict[str, float | int | str]] = []
     for policy, source, evaluate in evaluators:
         samples = [evaluate(args.seed_start + offset) for offset in range(args.episodes)]
-        for metric in ("team_episode_return", "agent_sum_episode_return", "red_win", "blue_win", "draw", "timeout", "red_crash", "blue_crash", "effective_damage", "hit_count", "episode_steps"):
+        for metric in ("team_episode_return", "agent_sum_episode_return", "overall_red_win", "elimination_win", "timeout_survival_win", "decisive_win", "blue_win", "draw", "timeout", "red_crash", "blue_crash", "effective_damage", "hit_count", "attack_area_steps", "red_survivors", "blue_survivors", "episode_steps"):
             mean, std, low, high = _summary([sample[metric] for sample in samples])
             interval="normal"
-            if metric in {"red_win", "blue_win", "draw", "timeout", "red_crash", "blue_crash"}:
+            if metric in {"overall_red_win", "elimination_win", "timeout_survival_win", "decisive_win", "blue_win", "draw", "timeout", "red_crash", "blue_crash"}:
                 low, high = _wilson([sample[metric] for sample in samples]); interval="wilson"
             rows.append({
                 "policy": policy, "metric": metric, "episodes": args.episodes,

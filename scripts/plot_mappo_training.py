@@ -19,6 +19,6 @@ def main()->None:
     if not run_dir:p.error("a run directory is required")
     root=Path(run_dir);out=root/"plots";out.mkdir(exist_ok=True)
     for name in ("rollout_return_mean","policy_loss","value_loss","entropy","observation_saturation_mean","approx_kl","clip_fraction"): plot(root/"metrics.csv","environment_steps",name,out/f"{name}.png")
-    for name in ("red_win_rate","blue_win_rate","draw_rate","timeout_rate","red_crash_rate","blue_crash_rate","mean_episode_steps"): plot(root/"evaluations.csv","environment_steps",name,out/f"{name}.png")
+    for name in ("overall_red_win_rate","elimination_win_rate","timeout_survival_win_rate","decisive_win_rate","draw_rate","timeout_rate","red_crash_rate","blue_crash_rate","mean_effective_damage","mean_attack_area_steps","mean_episode_steps"): plot(root/"evaluations.csv","environment_steps",name,out/f"{name}.png")
     plot_actions(root/"evaluations.csv",out/"action_distribution.png")
 if __name__=="__main__":main()

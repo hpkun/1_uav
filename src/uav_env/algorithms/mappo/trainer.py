@@ -97,6 +97,24 @@ def explained_variance(prediction: torch.Tensor, target: torch.Tensor, mask: tor
     return 1.0 - torch.var(target - prediction, unbiased=False) / variance
 
 
+def value_loss_inputs(
+    new_physical: torch.Tensor,
+    old_physical: torch.Tensor,
+    target_physical: torch.Tensor,
+    normalizer: ValueNormalizer,
+    use_value_normalization: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Put physical new/old/target values in one loss space using one snapshot."""
+
+    if not use_value_normalization:
+        return new_physical, old_physical, target_physical
+    return (
+        normalizer.normalize(new_physical),
+        normalizer.normalize(old_physical),
+        normalizer.normalize(target_physical),
+    )
+
+
 class MAPPOTrainer:
     def __init__(self, actor: SharedActor, critic: CentralizedCritic, config: dict[str, Any], normalizer: ValueNormalizer, device: torch.device) -> None:
         self.actor, self.critic, self.config, self.normalizer, self.device = actor, critic, config, normalizer, device
@@ -121,8 +139,9 @@ class MAPPOTrainer:
             advantages = normalized_advantages
         if c.get("use_value_normalization", True):
             self.normalizer.update(returns[critic_mask.bool()])
-            norm_returns = self.normalizer.normalize(returns)
-            norm_old_values = self.normalizer.normalize(old_values)
+            _, norm_old_values, norm_returns = value_loss_inputs(
+                old_values, old_values, returns, self.normalizer, True,
+            )
         else:
             norm_returns, norm_old_values = returns, old_values
         total = actions.numel()
@@ -159,7 +178,14 @@ class MAPPOTrainer:
                     actor_grad = torch.zeros(())
 
                 all_values = self.critic(st)
-                new_value = all_values.gather(-1, agent_ids[:, None]).squeeze(-1)
+                new_physical = all_values.gather(-1, agent_ids[:, None]).squeeze(-1)
+                new_value, _, _ = value_loss_inputs(
+                    new_physical,
+                    old_values.reshape(-1)[idx],
+                    returns.reshape(-1)[idx],
+                    self.normalizer,
+                    bool(c.get("use_value_normalization", True)),
+                )
                 value_loss = ppo_value_loss(
                     new_value, ov, target, cm, float(c["value_clip_param"]),
                     bool(c.get("use_clipped_value_loss", True)), bool(c.get("use_huber_loss", True)),
@@ -178,8 +204,6 @@ class MAPPOTrainer:
         result = {name: float(values[:, i].mean()) for i, name in enumerate(names)}
         with torch.no_grad():
             predicted = self.critic(states.reshape(-1, states.shape[-1]))
-            if c.get("use_value_normalization", True):
-                predicted = self.normalizer.denormalize(predicted)
             predicted = predicted.reshape(*states.shape[:2], buffer.num_agents)
             explained = explained_variance(predicted, returns, critic_mask)
         result.update(

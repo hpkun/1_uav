@@ -5,7 +5,11 @@ num_envs: 8
 rollout_length: 128
 total_env_steps: 1000000
 evaluation_interval: 20000
-evaluation_episodes: 100
+validation_seed_start: 100000
+validation_episodes: 100
+test_seed_start: 200000
+test_episodes: 200
+checkpoint_selection: smoke
 checkpoint_interval: 50000
 log_interval: 1
 deterministic_evaluation: true
@@ -33,4 +37,3 @@ environment:
   kind: 1v1
   scenario: tail_chase
   opponent: straight
-
