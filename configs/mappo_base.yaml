@@ -1,7 +1,8 @@
 algorithm: mappo
 seed: 1
 device: auto
-num_envs: 8
+num_envs: 4
+vector_env: parallel
 rollout_length: 128
 total_env_steps: 1000000
 evaluation_interval: 20000

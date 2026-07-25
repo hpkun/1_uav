@@ -7,7 +7,7 @@ from typing import Sequence
 import numpy as np
 
 from uav_env.actions.discrete_15 import DiscreteAction15
-from uav_env.combat.multi_combat import TargetAssignment, assign_targets
+from uav_env.combat.multi_combat import TargetAssignment, assign_nearest_targets_independently, assign_targets
 from uav_env.entities.uav import UAV
 from uav_env.opponents.base import RuleOpponent
 
@@ -23,10 +23,10 @@ class TeamRuleController:
         self.rng = np.random.default_rng(seed)
 
     def select_actions(self, team: Sequence[UAV], opponents: Sequence[UAV]) -> tuple[list[DiscreteAction15], list[TargetAssignment]]:
-        """Return ID-ordered actions and unique-first nearest assignments."""
+        """Return ID-ordered actions and fixed-size nearest assignments."""
 
         ordered = sorted(team, key=lambda u: u.uav_id)
-        assignments = assign_targets(ordered, opponents)
+        assignments = assign_nearest_targets_independently(ordered, opponents) if len(ordered) == 3 else assign_targets(ordered, opponents)
         assignment_map = {item.attacker_id: item.target_id for item in assignments}
         target_map = {u.uav_id: u for u in opponents}
         actions: list[DiscreteAction15] = []

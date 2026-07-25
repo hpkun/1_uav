@@ -77,6 +77,31 @@ def assign_targets(attackers: Sequence[UAV], targets: Sequence[UAV]) -> list[Tar
     return assignments
 
 
+def assign_nearest_targets_independently(attackers: Sequence[UAV], targets: Sequence[UAV]) -> list[TargetAssignment]:
+    """Assign each living attacker its nearest living target independently.
+
+    Target reuse is allowed. Equal distances are resolved by target UAV ID,
+    and returned assignments are ordered by attacker UAV ID.
+    """
+
+    living_targets = sorted((u for u in targets if u.is_alive), key=lambda u: u.uav_id)
+    assignments: list[TargetAssignment] = []
+    for attacker in sorted((u for u in attackers if u.is_alive), key=lambda u: u.uav_id):
+        if not living_targets:
+            break
+        ranked = sorted(
+            living_targets,
+            key=lambda target: (
+                float(np.linalg.norm(target.state.position_vector() - attacker.state.position_vector())),
+                target.uav_id,
+            ),
+        )
+        target = ranked[0]
+        distance = float(np.linalg.norm(target.state.position_vector() - attacker.state.position_vector()))
+        assignments.append(TargetAssignment(attacker.uav_id, target.uav_id, distance))
+    return assignments
+
+
 def resolve_multi_attacks(
     aircraft: Sequence[UAV],
     attack_config: AttackZoneConfig,

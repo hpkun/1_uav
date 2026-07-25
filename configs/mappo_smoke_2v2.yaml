@@ -1,5 +1,6 @@
 inherits: mappo_base.yaml
 num_envs: 2
+vector_env: sync
 rollout_length: 32
 total_env_steps: 2048
 evaluation_interval: 1024

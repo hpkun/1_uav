@@ -1,4 +1,4 @@
-"""Fixed homogeneous 2v2 local observations adapted from 2024 entity blocks."""
+"""Fixed homogeneous 2v2/3v3 local observations using stable entity blocks."""
 
 from __future__ import annotations
 
@@ -18,6 +18,14 @@ ENEMY_FEATURES = ["dx", "dy", "altitude_self", "distance", "relative_pitch", "re
 MULTI_OBSERVATION_FEATURE_NAMES = [f"ally_0_{name}" for name in ALLY_FEATURES] + [f"enemy_{slot}_{name}" for slot in range(2) for name in ENEMY_FEATURES]
 
 
+def multi_observation_feature_names(ally_count: int, enemy_count: int) -> list[str]:
+    """Return stable slot-major feature names for a fixed team size."""
+
+    return [f"ally_{slot}_{name}" for slot in range(ally_count) for name in ALLY_FEATURES] + [
+        f"enemy_{slot}_{name}" for slot in range(enemy_count) for name in ENEMY_FEATURES
+    ]
+
+
 @dataclass(frozen=True)
 class MultiObservationResult:
     """Raw/normalized local observations and fixed entity masks."""
@@ -34,8 +42,8 @@ class MultiObservationResult:
     saturated_feature_names: list[list[str]]
 
 
-def multi_observation_specs(config: NormalizationConfig) -> list[FeatureSpec]:
-    """Return the 28 explicit feature semantics."""
+def multi_observation_specs(config: NormalizationConfig, ally_count: int = 1, enemy_count: int = 2) -> list[FeatureSpec]:
+    """Return explicit repeated entity-block normalization semantics."""
 
     h, a, v = config.horizontal_reference, config.angle_reference, config.speed_difference_reference
     ally = [
@@ -50,7 +58,7 @@ def multi_observation_specs(config: NormalizationConfig) -> list[FeatureSpec]:
         *[FeatureSpec(name, v, "signed") for name in ("dvx", "dvy", "dvz")],
         FeatureSpec("attack_angle", a, "nonnegative"), FeatureSpec("escape_angle", a, "nonnegative"),
     ]
-    return ally + enemy + enemy
+    return ally * ally_count + enemy * enemy_count
 
 
 def _ally_block(own: UAV, ally: UAV) -> NDArray[np.float64]:
@@ -71,12 +79,15 @@ def _enemy_block(own: UAV, enemy: UAV) -> NDArray[np.float64]:
 
 
 def build_multi_observations(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: NormalizationConfig) -> MultiObservationResult:
-    """Build two red-agent rows, each containing one ally and two enemy blocks."""
+    """Build fixed red-agent rows for homogeneous 2v2 or 3v3 combat."""
 
     reds = sorted(red_aircraft, key=lambda u: u.uav_id)
     blues = sorted(blue_aircraft, key=lambda u: u.uav_id)
-    if len(reds) != 2 or len(blues) != 2:
-        raise ValueError("The current multi observation supports exactly homogeneous 2v2")
+    if len(reds) != len(blues) or len(reds) not in {2, 3}:
+        raise ValueError("Multi observations support equal homogeneous team sizes of 2 or 3")
+    ally_count, enemy_count = len(reds) - 1, len(blues)
+    observation_dim = ally_count * len(ALLY_FEATURES) + enemy_count * len(ENEMY_FEATURES)
+    feature_names = multi_observation_feature_names(ally_count, enemy_count)
     raw_rows: list[NDArray[np.float64]] = []
     norm_rows: list[NDArray[np.float64]] = []
     ally_masks: list[list[int]] = []
@@ -84,37 +95,42 @@ def build_multi_observations(red_aircraft: Sequence[UAV], blue_aircraft: Sequenc
     saturation_counts: list[int] = []
     saturation_ratios: list[float] = []
     saturation_masks: list[NDArray[np.bool_]] = []
-    specs = multi_observation_specs(config)
+    specs = multi_observation_specs(config, ally_count, enemy_count)
     for own in reds:
-        ally = next(u for u in reds if u.uav_id != own.uav_id)
+        ranked_allies = sorted(
+            (u for u in reds if u.uav_id != own.uav_id),
+            key=lambda u: (not u.is_alive, float(np.linalg.norm(u.state.position_vector() - own.state.position_vector())), u.uav_id),
+        )
         ranked_blues = sorted(blues, key=lambda u: (not u.is_alive, float(np.linalg.norm(u.state.position_vector() - own.state.position_vector())), u.uav_id))
-        ally_mask = int(ally.is_alive)
+        ally_mask = [int(u.is_alive) for u in ranked_allies]
         enemy_mask = [int(u.is_alive) for u in ranked_blues]
         if not own.is_alive:
-            raw = np.zeros(28, dtype=np.float64)
+            raw = np.zeros(observation_dim, dtype=np.float64)
             normalized = raw.copy()
-            saturated = np.zeros(28, dtype=bool)
+            saturated = np.zeros(observation_dim, dtype=bool)
             saturation_count, saturation_ratio = 0, 0.0
         else:
             raw = np.concatenate([
-                _ally_block(own, ally) if ally.is_alive else np.zeros(6),
+                *[_ally_block(own, ally) if ally.is_alive else np.zeros(6) for ally in ranked_allies],
                 *[_enemy_block(own, enemy) if enemy.is_alive else np.zeros(11) for enemy in ranked_blues],
             ]).astype(np.float64)
             result = normalize_by_specs(raw, specs, config)
             normalized = result.values
             saturated = result.saturated_mask.copy()
-            if not ally.is_alive:
-                normalized[:6] = 0.0
-                saturated[:6] = False
+            for slot, ally in enumerate(ranked_allies):
+                if not ally.is_alive:
+                    normalized[slot * 6: (slot + 1) * 6] = 0.0
+                    saturated[slot * 6: (slot + 1) * 6] = False
+            enemy_offset = ally_count * 6
             for slot, enemy in enumerate(ranked_blues):
                 if not enemy.is_alive:
-                    normalized[6 + slot * 11: 6 + (slot + 1) * 11] = 0.0
-                    saturated[6 + slot * 11: 6 + (slot + 1) * 11] = False
+                    normalized[enemy_offset + slot * 11: enemy_offset + (slot + 1) * 11] = 0.0
+                    saturated[enemy_offset + slot * 11: enemy_offset + (slot + 1) * 11] = False
             saturation_count = int(np.count_nonzero(saturated))
-            saturation_ratio = saturation_count / 28.0
+            saturation_ratio = saturation_count / float(observation_dim)
         raw_rows.append(raw)
         norm_rows.append(normalized)
-        ally_masks.append([ally_mask])
+        ally_masks.append(ally_mask)
         enemy_masks.append(enemy_mask)
         saturation_counts.append(saturation_count)
         saturation_ratios.append(saturation_ratio)
@@ -122,9 +138,9 @@ def build_multi_observations(red_aircraft: Sequence[UAV], blue_aircraft: Sequenc
     return MultiObservationResult(
         np.stack(raw_rows), np.stack(norm_rows), np.asarray(ally_masks, dtype=np.int8),
         np.asarray(enemy_masks, dtype=np.int8), np.asarray([int(u.is_alive) for u in reds], dtype=np.int8),
-        list(MULTI_OBSERVATION_FEATURE_NAMES), np.asarray(saturation_counts, dtype=np.int64),
+        feature_names, np.asarray(saturation_counts, dtype=np.int64),
         np.asarray(saturation_ratios, dtype=np.float64), np.stack(saturation_masks),
-        [[name for name, flag in zip(MULTI_OBSERVATION_FEATURE_NAMES, mask) if flag] for mask in saturation_masks],
+        [[name for name, flag in zip(feature_names, mask) if flag] for mask in saturation_masks],
     )
 
 

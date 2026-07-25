@@ -1,0 +1,16 @@
+inherits: mappo_base.yaml
+num_envs: 4
+vector_env: parallel
+rollout_length: 64
+total_env_steps: 4096
+evaluation_interval: 4096
+validation_episodes: 10
+test_episodes: 10
+checkpoint_selection: combat
+ppo_epochs: 2
+num_mini_batches: 2
+environment:
+  kind: 3v3
+  scenario: head_on_formation
+  opponent: pursuit
+  multi_terminal_reward_profile: paper_2024_exact

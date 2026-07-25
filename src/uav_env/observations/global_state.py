@@ -1,4 +1,4 @@
-"""Fixed 40-dimensional centralized state for homogeneous 2v2."""
+"""Fixed centralized state for homogeneous 2v2 and 3v3 combat."""
 
 from __future__ import annotations
 
@@ -18,6 +18,17 @@ PAIR_FEATURES = ["distance", "relative_pitch", "relative_yaw", "dvx", "dvy", "dv
 GLOBAL_STATE_FEATURE_NAMES = ["red_0_failure", "red_1_failure"] + [
     f"red_{r}_blue_{b}_{name}" for r in range(2) for b in range(2) for name in PAIR_FEATURES
 ] + ["red_0_last_action", "red_1_last_action"]
+
+
+def global_state_feature_names(team_size: int) -> list[str]:
+    """Return stable red-major centralized-state feature names."""
+
+    return [f"red_{index}_failure" for index in range(team_size)] + [
+        f"red_{red}_blue_{blue}_{name}"
+        for red in range(team_size)
+        for blue in range(team_size)
+        for name in PAIR_FEATURES
+    ] + [f"red_{index}_last_action" for index in range(team_size)]
 
 
 @dataclass(frozen=True)
@@ -44,12 +55,13 @@ def _pair_block(red: UAV, blue: UAV) -> NDArray[np.float64]:
     ], dtype=np.float64)
 
 
-def build_global_state_2v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: NormalizationConfig, epsilon: float = 1.0) -> GlobalStateResult:
-    """Build fixed red-major pair ordering and red last-action fields."""
+def build_global_state(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: NormalizationConfig, epsilon: float = 1.0) -> GlobalStateResult:
+    """Build fixed red-major pair ordering for equal team sizes of 2 or 3."""
 
     reds, blues = sorted(red_aircraft, key=lambda u: u.uav_id), sorted(blue_aircraft, key=lambda u: u.uav_id)
-    if len(reds) != 2 or len(blues) != 2:
-        raise ValueError("Global state currently supports exactly 2v2")
+    if len(reds) != len(blues) or len(reds) not in {2, 3}:
+        raise ValueError("Global state supports equal homogeneous team sizes of 2 or 3")
+    team_size = len(reds)
     failures = [epsilon * ((-1.0) ** int(u.state.damaged)) for u in reds]
     pairs = np.concatenate([_pair_block(red, blue) for red in reds for blue in blues])
     actions = [float(u.state.last_action if u.state.last_action is not None else int(DiscreteAction15.LEVEL_HOLD)) for u in reds]
@@ -60,8 +72,16 @@ def build_global_state_2v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[
         *[FeatureSpec(name, config.speed_difference_reference, "signed") for name in ("dvx", "dvy", "dvz")],
         *[FeatureSpec(name, np.pi, "nonnegative") for name in ("velocity_vector_angle", "attack_angle", "escape_angle")],
     ]
-    specs = [FeatureSpec("red_failure", 1.0, "failure") for _ in range(2)] + pair_specs * 4 + [FeatureSpec("last_action", 14.0, "action") for _ in range(2)]
+    specs = [FeatureSpec("red_failure", 1.0, "failure") for _ in range(team_size)] + pair_specs * (team_size * team_size) + [FeatureSpec("last_action", 14.0, "action") for _ in range(team_size)]
     result = normalize_by_specs(raw, specs, config)
-    names = list(GLOBAL_STATE_FEATURE_NAMES)
+    names = global_state_feature_names(team_size)
     return GlobalStateResult(raw, result.values, names, result.saturation_count, result.saturation_ratio,
                              result.saturated_mask, [name for name, flag in zip(names, result.saturated_mask) if flag])
+
+
+def build_global_state_2v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: NormalizationConfig, epsilon: float = 1.0) -> GlobalStateResult:
+    """Backward-compatible 2v2 entry point."""
+
+    if len(red_aircraft) != 2 or len(blue_aircraft) != 2:
+        raise ValueError("build_global_state_2v2 requires exactly 2v2")
+    return build_global_state(red_aircraft, blue_aircraft, config, epsilon)

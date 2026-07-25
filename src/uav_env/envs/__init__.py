@@ -28,10 +28,25 @@ def make_2v2_env(
 ) -> CombatMultiEnv:
     """Construct the fixed homogeneous 2v2 experiment environment."""
 
-    config = load_multi_experiment_config(config_name, scenario)
+    config = load_multi_experiment_config(config_name, scenario, team_size=2)
     if multi_terminal_reward_profile is not None:
         config["multi_terminal_reward_profile"] = multi_terminal_reward_profile
     return CombatMultiEnv(config, scenario, opponent, seed)
 
 
-__all__ = ["BaseUAVEnv", "Combat1v1Env", "CombatMultiEnv", "make_1v1_env", "make_2v2_env"]
+def make_3v3_env(
+    scenario: str = "head_on_formation",
+    opponent: str = "pursuit",
+    config_name: str = "paper_2024_homogeneous",
+    seed: int | None = None,
+    multi_terminal_reward_profile: str | None = None,
+) -> CombatMultiEnv:
+    """Construct the fixed homogeneous 3v3 head-on experiment environment."""
+
+    config = load_multi_experiment_config(config_name, scenario, team_size=3)
+    if multi_terminal_reward_profile is not None:
+        config["multi_terminal_reward_profile"] = multi_terminal_reward_profile
+    return CombatMultiEnv(config, scenario, opponent, seed)
+
+
+__all__ = ["BaseUAVEnv", "Combat1v1Env", "CombatMultiEnv", "make_1v1_env", "make_2v2_env", "make_3v3_env"]

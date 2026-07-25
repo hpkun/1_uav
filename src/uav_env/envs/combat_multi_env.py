@@ -1,4 +1,4 @@
-"""Runnable homogeneous 2v2 Gymnasium combat environment."""
+"""Runnable fixed homogeneous 2v2/3v3 Gymnasium combat environment."""
 
 from __future__ import annotations
 
@@ -18,14 +18,14 @@ from uav_env.combat.attack_geometry import AttackZoneConfig, compute_combat_geom
 from uav_env.combat.collision import has_collision
 from uav_env.combat.damage import DamageConfig
 from uav_env.combat.events import CombatEvent, EpisodeOutcome
-from uav_env.combat.multi_combat import AttackAttempt, ResolvedAttack, TargetAssignment, assign_targets, resolve_multi_attacks
+from uav_env.combat.multi_combat import AttackAttempt, ResolvedAttack, TargetAssignment, assign_nearest_targets_independently, assign_targets, resolve_multi_attacks
 from uav_env.core.enums import CombatEventType, Team
 from uav_env.core.state import UAVState
 from uav_env.dynamics.propagation import propagate_state
 from uav_env.entities.type_profiles import UAVTypeProfile, profile_from_config
 from uav_env.entities.uav import UAV
 from uav_env.envs.base_env import BaseUAVEnv
-from uav_env.observations.global_state import GlobalStateResult, build_global_state_2v2
+from uav_env.observations.global_state import GlobalStateResult, build_global_state
 from uav_env.observations.multi_observation import MultiObservationResult, build_multi_observations
 from uav_env.observations.normalization import NormalizationConfig
 from uav_env.opponents.base import RuleOpponent
@@ -38,23 +38,30 @@ from uav_env.utils.config import validate_experiment_config
 
 
 class CombatMultiEnv(BaseUAVEnv):
-    """Fixed homogeneous 2-red versus 2-blue experiment environment."""
+    """Fixed homogeneous equal-team experiment for team sizes two or three."""
 
     metadata = {"render_modes": []}
 
     def __init__(self, config: dict[str, Any], scenario_name: str | None = None, opponent: str = "straight", seed: int | None = None) -> None:
         validate_experiment_config(config)
-        if int(config["red_count"]) != 2 or int(config["blue_count"]) != 2:
-            raise ValueError("CombatMultiEnv currently supports exactly homogeneous 2v2")
+        self.red_count = int(config["red_count"])
+        self.blue_count = int(config["blue_count"])
+        if self.red_count != self.blue_count or self.red_count not in {2, 3}:
+            raise ValueError("CombatMultiEnv supports equal homogeneous team sizes of 2 or 3")
         self.config = deepcopy(config)
         self.scenario_name = scenario_name or str(config["scenario_name"])
+        if self.red_count == 3 and self.scenario_name != "head_on_formation":
+            raise ValueError("Fixed 3v3 currently supports only head_on_formation")
+        self.num_red_agents = self.red_count
+        self.local_observation_dim = (self.red_count - 1) * 6 + self.blue_count * 11
+        self.global_state_dim = self.red_count + self.red_count * self.blue_count * 9 + self.red_count
         self.profile: UAVTypeProfile = profile_from_config(config)
         self.attack_config = AttackZoneConfig.from_config(config)
         self.damage_config = DamageConfig.from_config(config)
         self.normalization_config = NormalizationConfig.from_config(config)
-        self.action_space = spaces.MultiDiscrete([15, 15])
+        self.action_space = spaces.MultiDiscrete([15] * self.red_count)
         bounds = (-1.0, 1.0) if self.normalization_config.mode == "symmetric_training" else (-np.inf, np.inf)
-        self.observation_space = spaces.Box(bounds[0], bounds[1], shape=(2, 28), dtype=np.float64)
+        self.observation_space = spaces.Box(bounds[0], bounds[1], shape=(self.red_count, self.local_observation_dim), dtype=np.float64)
         self._initial_seed = seed
         self._has_reset = False
         self._current_seed: int | None = None
@@ -107,10 +114,13 @@ class CombatMultiEnv(BaseUAVEnv):
             speed = float(self.config["initial_speed"])
             offset_y = float(self.config.get("blue_lateral_offset", 0.0))
             offset_z = float(self.config.get("blue_altitude_offset", 0.0))
-            reds = [self._state(Team.RED, -distance / 2.0, sign * spacing / 2.0, altitude, speed, 0.0) for sign in (-1.0, 1.0)]
-            blues = [self._state(Team.BLUE, distance / 2.0, sign * spacing / 2.0 + offset_y, altitude + offset_z, speed, pi) for sign in (-1.0, 1.0)]
+            lateral_positions = [(index - (self.red_count - 1) / 2.0) * spacing for index in range(self.red_count)]
+            reds = [self._state(Team.RED, -distance / 2.0, y, altitude, speed, 0.0) for y in lateral_positions]
+            blues = [self._state(Team.BLUE, distance / 2.0, y + offset_y, altitude + offset_z, speed, pi) for y in lateral_positions]
             return reds, blues
         if scenario == "balanced_random":
+            if self.red_count != 2:
+                raise ValueError("balanced_random is retained only for 2v2")
             extent = float(self.config["initial_xy_extent"])
             same_min = float(self.config["same_team_minimum_separation"])
             opposing_min = max(float(self.config["opposing_team_minimum_separation"]), float(self.config["attack_distance_max"]) + 1.0)
@@ -132,10 +142,10 @@ class CombatMultiEnv(BaseUAVEnv):
         return build_multi_observations(self.red_aircraft, self.blue_aircraft, self.normalization_config)
 
     def _global_state(self) -> GlobalStateResult:
-        return build_global_state_2v2(self.red_aircraft, self.blue_aircraft, self.normalization_config)
+        return build_global_state(self.red_aircraft, self.blue_aircraft, self.normalization_config)
 
     def _available_action_mask(self) -> NDArray[np.int8]:
-        mask = np.ones((2, 15), dtype=np.int8)
+        mask = np.ones((self.red_count, 15), dtype=np.int8)
         for index, aircraft in enumerate(self.red_aircraft):
             if not aircraft.is_alive:
                 mask[index] = 0
@@ -143,7 +153,7 @@ class CombatMultiEnv(BaseUAVEnv):
         return mask
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[NDArray[np.float64], dict[str, Any]]:
-        """Reset a reproducible 2v2 scenario and all fixed slots."""
+        """Reset a reproducible fixed-size multi-aircraft scenario."""
 
         effective = seed if seed is not None else (self._initial_seed if not self._has_reset else None)
         gym.Env.reset(self, seed=effective)
@@ -300,15 +310,19 @@ class CombatMultiEnv(BaseUAVEnv):
         return event, contribution
 
     def step(self, action: Any) -> tuple[NDArray[np.float64], float, bool, bool, dict[str, Any]]:
-        """Advance one synchronized four-aircraft decision step."""
+        """Advance one synchronized multi-aircraft decision step."""
 
-        if len(self.red_aircraft) != 2:
+        if len(self.red_aircraft) != self.red_count:
             raise RuntimeError("reset() must be called before step()")
         actions_array = np.asarray(action)
-        if actions_array.shape != (2,) or not self.action_space.contains(actions_array):
-            raise ValueError("Red action must be a valid length-2 MultiDiscrete action")
+        if actions_array.shape != (self.red_count,) or not self.action_space.contains(actions_array):
+            raise ValueError(f"Red action must be a valid length-{self.red_count} MultiDiscrete action")
         red_actions = [DiscreteAction15(int(value)) if aircraft.is_alive else DiscreteAction15.LEVEL_HOLD for value, aircraft in zip(actions_array, self.red_aircraft)]
-        assignments = assign_targets(self.blue_aircraft, self.red_aircraft)
+        assignments = (
+            assign_nearest_targets_independently(self.blue_aircraft, self.red_aircraft)
+            if self.blue_count == 3
+            else assign_targets(self.blue_aircraft, self.red_aircraft)
+        )
         blue_actions = self._blue_actions(assignments)
         action_map = {u.uav_id: action for u, action in zip(self.red_aircraft, red_actions)} | {u.uav_id: action for u, action in zip(self.blue_aircraft, blue_actions)}
         for aircraft in self.all_aircraft:
@@ -333,12 +347,13 @@ class CombatMultiEnv(BaseUAVEnv):
             stats["effective_damage"] += attack.effective_damage
             stats["overkill_damage"] += attack.overkill_damage
             stats["hits"] += int(attack.hit)
-        for red in self.red_aircraft:
-            if red.is_alive and any(
-                blue.is_alive and compute_combat_geometry(red.state, blue.state, self.attack_config).in_attack_area
-                for blue in self.blue_aircraft
+        for attacker in self.all_aircraft:
+            opponents = self.blue_aircraft if attacker.team == int(Team.RED) else self.red_aircraft
+            if attacker.is_alive and any(
+                target.is_alive and compute_combat_geometry(attacker.state, target.state, self.attack_config).in_attack_area
+                for target in opponents
             ):
-                self._statistics["aircraft"][red.uav_id]["attack_area_steps"] += 1
+                self._statistics["aircraft"][attacker.uav_id]["attack_area_steps"] += 1
         maxed = self.decision_step >= int(self.config["max_decision_steps"]) or self.simulation_time >= float(self.config["max_episode_seconds"]) - 1.0e-12
         terminated = not any(u.is_alive for u in self.red_aircraft) or not any(u.is_alive for u in self.blue_aircraft)
         truncated = not terminated and maxed
@@ -422,3 +437,10 @@ class CombatMultiEnv(BaseUAVEnv):
         """Return fixed agent-alive and available-action masks."""
 
         return {"agent_alive_mask": np.asarray([int(u.is_alive) for u in self.red_aircraft], dtype=np.int8), "available_action_mask": self._available_action_mask()}
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Keep checkpoint state compact while preserving current dynamics state."""
+
+        state = self.__dict__.copy()
+        state["_trajectory"] = self._trajectory[-1:] if self._trajectory else []
+        return state

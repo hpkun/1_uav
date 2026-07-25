@@ -126,8 +126,9 @@ def load_multi_experiment_config(
     config_name: str = "paper_2024_homogeneous",
     scenario: str = "head_on_formation",
     config_directory: str | Path | None = None,
+    team_size: int = 2,
 ) -> dict[str, Any]:
-    """Load and validate the three supported homogeneous 2v2 scenarios."""
+    """Load a fixed homogeneous 2v2 scenario or the 3v3 head-on scenario."""
 
     directory = Path(config_directory) if config_directory is not None else project_root() / "configs"
     scenario_files = {
@@ -136,10 +137,14 @@ def load_multi_experiment_config(
         "balanced_random": "scenario_2v2_balanced.yaml",
     }
     if scenario not in scenario_files:
-        raise ValueError(f"Unknown 2v2 scenario: {scenario!r}")
+        raise ValueError(f"Unknown multi-aircraft scenario: {scenario!r}")
+    if team_size not in {2, 3}:
+        raise ValueError("team_size must be 2 or 3")
+    if team_size == 3 and scenario != "head_on_formation":
+        raise ValueError("Fixed 3v3 currently supports only head_on_formation")
     paper_path = directory / f"{config_name}.yaml"
     config = deep_merge(load_yaml(directory / "base.yaml"), load_yaml(paper_path), load_yaml(directory / scenario_files[scenario]))
+    config["red_count"] = team_size
+    config["blue_count"] = team_size
     validate_experiment_config(config)
-    if int(config["red_count"]) != 2 or int(config["blue_count"]) != 2:
-        raise ValueError("This milestone supports exactly homogeneous 2v2")
     return config

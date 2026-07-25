@@ -35,7 +35,12 @@ def validate_mappo_config(config: dict[str, Any]) -> None:
         raise ValueError("validation and test seed ranges must not overlap")
     if config.get("checkpoint_selection") not in {"smoke","combat"}:
         raise ValueError("checkpoint_selection must be smoke or combat")
-    agents = 1 if config.get("environment", {}).get("kind") == "1v1" else 2
+    if config.get("vector_env") not in {"sync", "parallel"}:
+        raise ValueError("vector_env must be sync or parallel")
+    kind = config.get("environment", {}).get("kind")
+    if kind not in {"1v1", "2v2", "3v3"}:
+        raise ValueError("environment kind must be 1v1, 2v2, or 3v3")
+    agents = {"1v1": 1, "2v2": 2, "3v3": 3}[kind]
     total_samples = int(config["num_envs"]) * int(config["rollout_length"]) * agents
     if int(config["num_mini_batches"]) > total_samples:
         raise ValueError(f"num_mini_batches cannot exceed rollout samples ({total_samples})")
