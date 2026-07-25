@@ -147,12 +147,11 @@ class MAPPORunner:
                 evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))}; append_csv(self.output_dir/"evaluations.csv",evaluation)
                 self.last_evaluation_step=self.environment_steps
                 if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])): self.best_evaluation=evaluation; self._save("best.pt")
-            if self.environment_steps%int(self.config["checkpoint_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]): self._save(f"step_{self.environment_steps}.pt")
-            self._save("last.pt")
+            if self.environment_steps < total and self.environment_steps%int(self.config["checkpoint_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]): self._save(f"step_{self.environment_steps}.pt")
         if self.last_evaluation_step != self.environment_steps:
             evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))};append_csv(self.output_dir/"evaluations.csv",evaluation);self.last_evaluation_step=self.environment_steps
             if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])):self.best_evaluation=evaluation;self._save("best.pt")
-            self._save("last.pt")
+        self._save("last.pt")
         test_evaluations={}
         for label in ("initial","last","best"):
             self.resume(str(self.output_dir/"checkpoints"/f"{label}.pt"),actor_only=True)
@@ -164,8 +163,27 @@ class MAPPORunner:
 
         try:
             return self._run_impl()
+        except KeyboardInterrupt:
+            latest = self._latest_step_checkpoint()
+            if latest is None:
+                print("Training interrupted; no step checkpoint is available. Workers are closing.")
+            else:
+                print(f"Training interrupted; resume from the latest step checkpoint: {latest.resolve()}")
+            raise
         finally:
             self.close()
+
+    def _latest_step_checkpoint(self) -> Path | None:
+        """Return the highest existing periodic step checkpoint without saving."""
+
+        checkpoints = self.output_dir / "checkpoints"
+        candidates: list[tuple[int, Path]] = []
+        for path in checkpoints.glob("step_*.pt"):
+            try:
+                candidates.append((int(path.stem.removeprefix("step_")), path))
+            except ValueError:
+                continue
+        return max(candidates, default=(0, None), key=lambda item: item[0])[1]
 
     def close(self) -> None:
         """Close vector workers and the TensorBoard writer idempotently."""

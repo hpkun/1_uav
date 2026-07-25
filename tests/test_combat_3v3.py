@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 import numpy as np
+import pytest
 import torch
 
 from scripts.run_3v3_episode import run_3v3_episode
@@ -85,3 +86,39 @@ def test_3v3_parallel_rollout_and_update_change_networks(tmp_path) -> None:
     assert any(not torch.equal(before, after) for before, after in zip(actor_before, runner.actor.parameters()))
     assert any(not torch.equal(before, after) for before, after in zip(critic_before, runner.critic.parameters()))
     assert np.all(np.isfinite(list(metrics.values())))
+
+
+def test_parallel_run_saves_periodic_step_and_one_final_last(tmp_path) -> None:
+    config = load_mappo_config("configs/mappo_smoke_3v3.yaml")
+    config.update(
+        rollout_length=1, total_env_steps=8, checkpoint_interval=4, evaluation_interval=1000,
+        ppo_epochs=1, num_mini_batches=1, validation_episodes=1, test_episodes=1,
+        device="cpu", run_id="checkpoint_schedule",
+    )
+    runner = MAPPORunner(config, "3v3_schedule", tmp_path)
+    output = runner.run()
+    checkpoints = output / "checkpoints"
+    assert (checkpoints / "initial.pt").is_file()
+    assert (checkpoints / "step_4.pt").is_file()
+    assert not (checkpoints / "step_8.pt").exists()
+    assert (checkpoints / "best.pt").is_file()
+    assert (checkpoints / "last.pt").is_file()
+    assert not any(runner.vector.workers_alive)
+
+
+def test_keyboard_interrupt_does_not_create_extra_checkpoint_and_closes_workers(tmp_path, monkeypatch, capsys) -> None:
+    config = load_mappo_config("configs/mappo_smoke_3v3.yaml")
+    config.update(rollout_length=1, total_env_steps=8, device="cpu", run_id="interrupted")
+    runner = MAPPORunner(config, "3v3_interrupt", tmp_path)
+
+    def interrupt_collect():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "collect", interrupt_collect)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run()
+    checkpoints = runner.output_dir / "checkpoints"
+    assert (checkpoints / "initial.pt").is_file()
+    assert not (checkpoints / "last.pt").exists()
+    assert "no step checkpoint is available" in capsys.readouterr().out
+    assert not any(runner.vector.workers_alive)
