@@ -20,3 +20,9 @@ Use `scripts/run_mappo_multiseed.py` for sequential single-device seeds. Each `s
 Checkpoint v3 preserves networks, optimizers, ValueNormalizer, Python/NumPy/Torch RNG, vector environments, partial episode return accumulators, and the Trainer's independent minibatch generator state. A v2 checkpoint may initialize the Actor only; full v2 resume is rejected because its Critic value semantics are incompatible.
 
 `overall_red_win_rate` includes timeout survivor-count wins. `elimination_win_rate` requires `blue_eliminated`; `timeout_survival_win_rate` is a red timeout win by survivor count; `decisive_win_rate` is any red non-timeout win. A timeout-survival win must not be reported as completing air-combat victory.
+
+## Fixed homogeneous 3v3 reporting
+
+For the audited 3v3 target, report fixed homogeneous 3v3 separately from all 1v1/2v2 probes. The 3v3 configuration uses 45D local observations, 87D global state, shared feed-forward Actor, centralized Critic, and the 4-process parallel smoke setup. Do not present 1v1 transfer, heterogeneous 3v2, attention, GRU, self-play, or network migration as implemented.
+
+Before formal 3v3 training claims, run `scripts/audit_3v3_environment.py` and review `docs/3v3_environment_audit.md`. The audit currently records P1 unresolved items for health/state aliasing, distance-ranked entity slot swaps, and timeout survivor-count terminal semantics. Timeout survivor-count wins and elimination wins must remain separate in tables and checkpoint selection notes.

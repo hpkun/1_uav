@@ -24,3 +24,12 @@
 | 未实现 | 预测威胁四个子函数、雷达、异构、循环/注意力网络、自博弈和迁移 | 明确保留 |
 
 `damaged` 只表示失效并退出战斗，始终与 `alive` 相反；非致命命中只设置 `ever_hit`。战果统计同时保存名义、有效和过杀伤害，默认报告有效伤害。
+# Fixed homogeneous 3v3 audit assumptions
+
+- The current audited target is fixed homogeneous 3v3, not heterogeneous 3v2 and not a transfer experiment.
+- The 3v3 Actor input is 45D local observation; the Critic input is 87D global state plus explicit agent identity.
+- The baseline is shared feed-forward CTDE MAPPO. It does not implement attention, GRU, self-play, network migration, or the 2024 paper's three-subnetwork transfer Actor.
+- The destroyed-agent reward lifecycle is fixed for fixed red slots: pre-destruction normal rewards, one current-step event/damaged dense branch, post-destruction zero dense/event rewards, and terminal allocation retained for every slot.
+- The damaged dense branch negative cap is project-defined. It resolves the conflict where the literal Algorithm 2 branch can become positive, while the paper text states damaged UAVs receive negative reward.
+- Timeout survivor-count wins are project outcome semantics and must be reported separately from elimination wins.
+- The 3v3 audit currently leaves health omission, blue alive/action omission in global state, distance-ranked slot swaps, and timeout terminal semantics as unresolved issues.

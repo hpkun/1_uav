@@ -40,3 +40,14 @@ python scripts/evaluate_mappo.py --checkpoint <best.pt> --episodes 200 --seed-st
 默认训练归一化为 `symmetric_training`；`paper_linear` 仅用于复核论文线性变量形式。1v1/2v2 是项目的同构实验环境，不应被描述为论文正式 3v2 复现。
 
 多机终局奖励已根据根目录 2024 原论文 PDF 的式（21）—（25）逐项核验，正式默认是 `paper_2024_exact`；旧项目比例公式保留为 `project_balanced` 供消融比较。权重数值仍是项目配置，不声称为论文公开参数。
+## Fixed homogeneous 3v3 audit
+
+The current formal environment target is fixed homogeneous 3v3: 45-dimensional local observations, 87-dimensional global state, shared feed-forward Actor, centralized Critic, and 4-process parallel execution in the smoke configuration. It does not include 1v1 transfer, heterogeneous 3v2, attention, GRU, self-play, or network migration.
+
+Run the reproducible audit with:
+
+```bash
+conda run -n uav python scripts/audit_3v3_environment.py
+```
+
+The audit writes `outputs/audit/3v3_environment_audit.json` and `.csv`; the human report is `docs/3v3_environment_audit.md`. The audit documents the fixed-slot destruction reward lifecycle fix, the project-defined negative cap for damaged dense rewards, and unresolved observation/global-state aliasing risks. Timeout survivor-count wins and elimination wins must be reported separately. The audit is not a claim that the current 3v3 environment has passed learnability validation.
