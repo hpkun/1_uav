@@ -10,6 +10,17 @@ from uav_env.algorithms.mappo.config import load_mappo_config
 from uav_env.algorithms.mappo.runner import MAPPORunner
 from uav_env.combat.multi_combat import assign_nearest_targets_independently
 from uav_env.envs import make_3v3_env
+from uav_env.rewards.multi_reward import individual_situation_reward
+
+
+def _zero_dense_breakdown(breakdown) -> None:
+    assert breakdown.situation == 0.0
+    assert breakdown.event == 0.0
+    assert breakdown.raw_dense == 0.0
+    assert breakdown.assigned_dense == 0.0
+    assert breakdown.terminal == 0.0
+    assert breakdown.total == 0.0
+    assert breakdown.contribution_score == 0.0
 
 
 def test_3v3_reset_and_step_shapes() -> None:
@@ -25,6 +36,76 @@ def test_3v3_reset_and_step_shapes() -> None:
     assert observation.shape == (3, 45)
     assert set(info["agent_rewards"]) == {"red_0", "red_1", "red_2"}
     assert np.isfinite(reward) and np.all(np.isfinite(observation))
+
+
+def test_3v3_situation_reward_uses_living_blue_set(monkeypatch) -> None:
+    env = make_3v3_env(seed=13, multi_terminal_reward_profile="paper_2024_exact")
+    env.reset(seed=13)
+    env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, health=0.0, alive=False, damaged=True)
+    values = {"blue_0": 99.0, "blue_1": 2.0, "blue_2": 1.0}
+
+    def fake_pair(previous_red, previous_blue, red, blue, config):
+        return values[blue.type_id]
+
+    monkeypatch.setattr("uav_env.rewards.multi_reward.pair_situation_reward", fake_pair)
+    for blue in env.blue_aircraft:
+        blue.state.type_id = blue.uav_id
+    previous = {u.uav_id: u.state.copy() for u in env.all_aircraft}
+    assert individual_situation_reward(env.red_aircraft[0], env.blue_aircraft, previous, env.config) == 2.0
+
+
+def test_3v3_previously_dead_red_slot_stays_zero_for_nonterminal_steps() -> None:
+    env = make_3v3_env(seed=17, multi_terminal_reward_profile="paper_2024_exact")
+    env.reset(seed=17)
+    env.red_aircraft[0].state = replace(env.red_aircraft[0].state, health=0.0, alive=False, damaged=True)
+    for _ in range(2):
+        _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
+        assert not terminated
+        assert not truncated
+        _zero_dense_breakdown(info["agent_reward_breakdowns"]["red_0"])
+
+
+def test_3v3_red_destroyed_this_step_receives_one_event_then_zero_afterward() -> None:
+    env = make_3v3_env(seed=19, multi_terminal_reward_profile="paper_2024_exact")
+    env.reset(seed=19)
+    min_altitude = float(env.config["min_altitude"])
+    env.red_aircraft[0].state = replace(env.red_aircraft[0].state, z=min_altitude, health=300.0, alive=True, damaged=False, crashed=False)
+    _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
+    assert not terminated
+    assert not truncated
+    breakdown = info["agent_reward_breakdowns"]["red_0"]
+    active_raw = [item.raw_dense for item in info["agent_reward_breakdowns"].values() if item.raw_dense != 0.0 or item.event != 0.0 or item.situation != 0.0]
+    assert breakdown.situation == 0.0
+    assert breakdown.event == pytest.approx(-0.5)
+    assert breakdown.raw_dense == pytest.approx(-0.5)
+    assert breakdown.assigned_dense == pytest.approx(-float(env.config["r_den0"]) * 3 - min(active_raw))
+    _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
+    assert not terminated
+    assert not truncated
+    _zero_dense_breakdown(info["agent_reward_breakdowns"]["red_0"])
+
+
+def test_3v3_fixed_slots_zero_after_prior_death_but_terminal_allocation_remains() -> None:
+    env = make_3v3_env(seed=23, multi_terminal_reward_profile="paper_2024_exact")
+    env.reset(seed=23)
+    env.red_aircraft[0].state = replace(env.red_aircraft[0].state, health=0.0, alive=False, damaged=True)
+    _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
+    assert not terminated
+    assert not truncated
+    _zero_dense_breakdown(info["agent_reward_breakdowns"]["red_0"])
+
+    for blue in env.blue_aircraft:
+        blue.state = replace(blue.state, health=0.0, alive=False, damaged=True)
+    _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
+    assert terminated
+    assert not truncated
+    breakdown = info["agent_reward_breakdowns"]["red_0"]
+    assert breakdown.situation == 0.0
+    assert breakdown.event == 0.0
+    assert breakdown.raw_dense == 0.0
+    assert breakdown.assigned_dense == 0.0
+    assert breakdown.terminal != 0.0
+    assert breakdown.total == pytest.approx(breakdown.terminal)
 
 
 def test_independent_nearest_targets_allow_reuse_and_break_ties_by_id() -> None:

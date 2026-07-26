@@ -79,18 +79,31 @@ def individual_situation_reward(red: UAV, living_blues: Sequence[UAV], previous_
     return max(values) if values else 0.0
 
 
-def assign_dense_rewards(raw_dense: Mapping[str, float], alive: Mapping[str, bool], r_den0: float = 0.01) -> dict[str, float]:
-    """Implement published Algorithm 2 branches plus the documented negative-alive convention."""
+def assign_dense_rewards(
+    raw_dense: Mapping[str, float],
+    damaged: Mapping[str, bool],
+    total_team_size: int,
+    r_den0: float = 0.01,
+) -> dict[str, float]:
+    """Assign active dense rewards with the paper Algorithm 2 semantics.
 
-    count = len(raw_dense)
-    if count == 0 or set(raw_dense) != set(alive):
-        raise ValueError("raw_dense and alive must contain the same nonempty agents")
+    ``raw_dense`` contains only red UAVs that were alive at the start of this
+    decision step. ``damaged`` marks which of those UAVs became dead during
+    this step. The Algorithm 2 team size ``nr`` remains the fixed red team
+    size, not the number of surviving aircraft.
+    """
+
+    count = int(total_team_size)
+    if count <= 0:
+        raise ValueError("total_team_size must be positive")
+    if not raw_dense or set(raw_dense) != set(damaged):
+        raise ValueError("raw_dense and damaged must contain the same nonempty active agents")
     minimum = min(raw_dense.values())
-    positive = {key: value for key, value in raw_dense.items() if alive[key] and value > 0.01}
+    positive = {key: value for key, value in raw_dense.items() if not damaged[key] and value > 0.01}
     alpha = sum(positive.values())
     result: dict[str, float] = {}
     for agent_id, value in raw_dense.items():
-        if not alive[agent_id]:
+        if damaged[agent_id]:
             result[agent_id] = -r_den0 * count - minimum
         elif value > 0.01:
             factor = r_den0 * count + 0.003 * len(positive) / count + 0.007 * alpha / count

@@ -278,20 +278,21 @@ class CombatMultiEnv(BaseUAVEnv):
 
     def _event_reward(self, red: UAV, resolved: Sequence[ResolvedAttack], boundary: dict[str, str], collision_ids: set[str]) -> tuple[float, float]:
         event, contribution = 0.0, 0.0
-        for blue in self.blue_aircraft:
-            if not blue.is_alive:
-                continue
-            own = compute_combat_geometry(red.state, blue.state, self.attack_config)
-            enemy = compute_combat_geometry(blue.state, red.state, self.attack_config)
-            if own.in_advantage_area:
-                event += advantage_reward(own.distance, own.target_escape_angle, float(self.config["advantage_distance_min"]), float(self.config["advantage_distance_max"]))
-                contribution += 1.0
-            if enemy.in_advantage_area:
-                event -= 1.0
-            if own.in_attack_area:
-                event += 0.3
-            if enemy.in_attack_area:
-                event -= 0.3
+        if red.is_alive:
+            for blue in self.blue_aircraft:
+                if not blue.is_alive:
+                    continue
+                own = compute_combat_geometry(red.state, blue.state, self.attack_config)
+                enemy = compute_combat_geometry(blue.state, red.state, self.attack_config)
+                if own.in_advantage_area:
+                    event += advantage_reward(own.distance, own.target_escape_angle, float(self.config["advantage_distance_min"]), float(self.config["advantage_distance_max"]))
+                    contribution += 1.0
+                if enemy.in_advantage_area:
+                    event -= 1.0
+                if own.in_attack_area:
+                    event += 0.3
+                if enemy.in_attack_area:
+                    event -= 0.3
         for attack in resolved:
             if attack.attacker_id == red.uav_id and attack.hit:
                 event += 0.8
@@ -328,6 +329,7 @@ class CombatMultiEnv(BaseUAVEnv):
         for aircraft in self.all_aircraft:
             aircraft.state = replace(aircraft.state, last_action=int(action_map[aircraft.uav_id]))
         previous_states = {u.uav_id: u.state.copy() for u in self.all_aircraft}
+        red_alive_at_step_start = {red.uav_id: bool(red.is_alive) for red in self.red_aircraft}
         substeps, boundary, executed = self._propagate_all(action_map)
         collision_pairs, collision_ids = self._resolve_collisions()
         combat_result = resolve_multi_attacks(
@@ -336,6 +338,11 @@ class CombatMultiEnv(BaseUAVEnv):
         )
         for aircraft in self.all_aircraft:
             aircraft.state = combat_result.updated_states[aircraft.uav_id]
+        red_damaged_this_step = {
+            red.uav_id: red_alive_at_step_start[red.uav_id] and not red.is_alive
+            for red in self.red_aircraft
+        }
+        step_active_ids = {red_id for red_id, was_alive in red_alive_at_step_start.items() if was_alive}
         self.decision_step += 1
         self.simulation_time += executed * float(self.config["physics_dt"])
         for aircraft_id, kind in boundary.items():
@@ -364,21 +371,34 @@ class CombatMultiEnv(BaseUAVEnv):
         event_values: dict[str, float] = {}
         step_contributions: dict[str, float] = {}
         for red in self.red_aircraft:
+            if red.uav_id not in step_active_ids:
+                event_values[red.uav_id] = 0.0
+                step_contributions[red.uav_id] = 0.0
+                continue
             situation = individual_situation_reward(red, self.blue_aircraft, previous_states, self.config) if red.is_alive else 0.0
             event, contribution = self._event_reward(red, combat_result.resolved_attacks, boundary, collision_ids)
             event_values[red.uav_id] = event
             step_contributions[red.uav_id] = contribution
             raw_dense[red.uav_id] = situation + event
             self._statistics["aircraft"][red.uav_id]["contribution_score"] += contribution
-        assigned = assign_dense_rewards(raw_dense, {u.uav_id: u.is_alive for u in self.red_aircraft}, float(self.config["r_den0"]))
+        assigned = (
+            assign_dense_rewards(
+                raw_dense,
+                {red_id: red_damaged_this_step[red_id] for red_id in raw_dense},
+                self.red_count,
+                float(self.config["r_den0"]),
+            )
+            if raw_dense
+            else {}
+        )
         terminal = multi_terminal_reward_allocations(outcome, self.red_aircraft, {u.uav_id: self._statistics["aircraft"][u.uav_id]["contribution_score"] for u in self.red_aircraft}, self.config)
         breakdowns: dict[str, MultiAgentRewardBreakdown] = {}
         for red in self.red_aircraft:
-            situation = raw_dense[red.uav_id] - event_values[red.uav_id]
-            allocation=terminal[red.uav_id]; total = assigned[red.uav_id] + allocation.reward
+            situation = raw_dense.get(red.uav_id, 0.0) - event_values[red.uav_id]
+            allocation=terminal[red.uav_id]; dense_reward = assigned.get(red.uav_id, 0.0); total = dense_reward + allocation.reward
             breakdowns[red.uav_id] = MultiAgentRewardBreakdown(
-                situation=situation, event=event_values[red.uav_id], raw_dense=raw_dense[red.uav_id],
-                assigned_dense=assigned[red.uav_id], terminal=allocation.reward, total=total,
+                situation=situation, event=event_values[red.uav_id], raw_dense=raw_dense.get(red.uav_id, 0.0),
+                assigned_dense=dense_reward, terminal=allocation.reward, total=total,
                 contribution_score=step_contributions[red.uav_id], terminal_profile=allocation.profile,
                 terminal_team_base=allocation.team_base, terminal_allocation_factor=allocation.allocation_factor,
                 terminal_base_share_component=allocation.base_share_component,
