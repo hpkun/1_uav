@@ -104,7 +104,13 @@ def assign_dense_rewards(
     result: dict[str, float] = {}
     for agent_id, value in raw_dense.items():
         if damaged[agent_id]:
-            result[agent_id] = -r_den0 * count - minimum
+            paper_value = -r_den0 * count - minimum
+            damage_penalty = -r_den0 * count
+            # The literal paper branch can become positive when the active
+            # minimum is negative, while the text says damaged UAVs receive a
+            # negative reward.  This explicit project assumption caps it at a
+            # negative value without changing the published branch otherwise.
+            result[agent_id] = min(paper_value, damage_penalty)
         elif value > 0.01:
             factor = r_den0 * count + 0.003 * len(positive) / count + 0.007 * alpha / count
             result[agent_id] = factor * value / alpha if alpha > 0.0 else 0.0

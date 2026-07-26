@@ -14,5 +14,11 @@ def test_dense_assignment_hand_calculation() -> None:
 def test_dense_assignment_uses_fixed_team_size_and_active_minimum() -> None:
     result = assign_dense_rewards({"red_1": 0.2, "red_2": -0.4}, {"red_1": True, "red_2": False}, 3, 0.01)
     assert set(result) == {"red_1", "red_2"}
-    assert result["red_1"] == pytest.approx(-0.03 - (-0.4))
+    assert result["red_1"] == pytest.approx(-0.03)
+    assert result["red_1"] != pytest.approx(0.37)
     assert result["red_2"] == pytest.approx(-0.4)
+
+
+def test_dense_assignment_keeps_negative_literal_damage_branch() -> None:
+    result = assign_dense_rewards({"red_0": 0.2, "red_1": 0.1}, {"red_0": True, "red_1": False}, 3, 0.01)
+    assert result["red_0"] == pytest.approx(-0.13)

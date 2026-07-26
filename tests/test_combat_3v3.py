@@ -8,7 +8,7 @@ from scripts.run_3v3_episode import run_3v3_episode
 from uav_env.algorithms.mappo.adapter import CombatEnvDescription, ParallelCombatVectorEnv
 from uav_env.algorithms.mappo.config import load_mappo_config
 from uav_env.algorithms.mappo.runner import MAPPORunner
-from uav_env.combat.multi_combat import assign_nearest_targets_independently
+from uav_env.combat.multi_combat import MultiCombatStepResult, ResolvedAttack, assign_nearest_targets_independently
 from uav_env.envs import make_3v3_env
 from uav_env.rewards.multi_reward import individual_situation_reward
 
@@ -78,7 +78,39 @@ def test_3v3_red_destroyed_this_step_receives_one_event_then_zero_afterward() ->
     assert breakdown.situation == 0.0
     assert breakdown.event == pytest.approx(-0.5)
     assert breakdown.raw_dense == pytest.approx(-0.5)
-    assert breakdown.assigned_dense == pytest.approx(-float(env.config["r_den0"]) * 3 - min(active_raw))
+    expected = min(-float(env.config["r_den0"]) * 3 - min(active_raw), -float(env.config["r_den0"]) * 3)
+    assert breakdown.assigned_dense == pytest.approx(expected)
+    assert breakdown.assigned_dense < 0.0
+    _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
+    assert not terminated
+    assert not truncated
+    _zero_dense_breakdown(info["agent_reward_breakdowns"]["red_0"])
+
+
+def test_3v3_red_destroyed_by_attack_this_step_never_gets_positive_dense(monkeypatch) -> None:
+    env = make_3v3_env(seed=29, multi_terminal_reward_profile="paper_2024_exact")
+    env.reset(seed=29)
+
+    def fake_resolve_multi_attacks(aircraft, attack_config, damage_config, rng, sample_team_order=None):
+        states = {u.uav_id: u.state.copy() for u in aircraft}
+        states["red_0"] = replace(states["red_0"], health=0.0, alive=False, damaged=True, ever_hit=True)
+        return MultiCombatStepResult(
+            states,
+            [],
+            [ResolvedAttack("blue_0", "red_0", 100.0, 0.0, 300.0, 300.0, 0.0, True, True)],
+        )
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", fake_resolve_multi_attacks)
+    _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
+    assert not terminated
+    assert not truncated
+    breakdown = info["agent_reward_breakdowns"]["red_0"]
+    active_raw = [item.raw_dense for item in info["agent_reward_breakdowns"].values() if item.raw_dense != 0.0 or item.event != 0.0 or item.situation != 0.0]
+    expected = min(-float(env.config["r_den0"]) * 3 - min(active_raw), -float(env.config["r_den0"]) * 3)
+    assert breakdown.situation == 0.0
+    assert breakdown.event == pytest.approx(-2.5)
+    assert breakdown.assigned_dense == pytest.approx(expected)
+    assert breakdown.assigned_dense < 0.0
     _, _, terminated, truncated, info = env.step(np.zeros(3, dtype=np.int64))
     assert not terminated
     assert not truncated
