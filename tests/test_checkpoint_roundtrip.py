@@ -43,11 +43,41 @@ def test_v2_actor_only_allowed_but_full_resume_rejected(tmp_path):
 
 
 def test_checkpoint_schema_metadata_rejects_legacy_to_v2_resume(tmp_path):
- a=SharedActor(62);c=CentralizedCritic(60,3);ao=torch.optim.Adam(a.parameters());co=torch.optim.Adam(c.parameters());n=ValueNormalizer();p=tmp_path/"schema.pt"
- cfg={"environment":{"environment_schema_version":"homogeneous_3v3_v2","observation_schema":"fixed_id_body_62d","global_state_schema":"full_entity_60d","reward_profile":"project_3v3_v2","scenario_profile":"head_on_mirrored_jitter_v2"}}
- meta=schema_metadata(cfg,62,60,3)
+ a=SharedActor(63);c=CentralizedCritic(61,3);ao=torch.optim.Adam(a.parameters());co=torch.optim.Adam(c.parameters());n=ValueNormalizer();p=tmp_path/"schema.pt"
+ cfg={"environment":{"environment_schema_version":"homogeneous_3v3_v2_timeaware","observation_schema":"fixed_id_body_time_63d","global_state_schema":"full_entity_time_61d","reward_profile":"project_3v3_v2","scenario_profile":"head_on_mirrored_jitter_v2"}}
+ meta=schema_metadata(cfg,63,61,3)
  save_checkpoint(p,a,c,ao,co,n,cfg,0,0,None,metadata=meta)
- load_checkpoint(p,SharedActor(62),CentralizedCritic(60,3),normalizer=ValueNormalizer(),expected_metadata=meta)
+ load_checkpoint(p,SharedActor(63),CentralizedCritic(61,3),normalizer=ValueNormalizer(),expected_metadata=meta)
  legacy={**meta,"observation_schema":"legacy","obs_dim":45}
  with pytest.raises(ValueError,match="checkpoint schema mismatch"):
-  load_checkpoint(p,SharedActor(62),CentralizedCritic(60,3),normalizer=ValueNormalizer(),expected_metadata=legacy)
+  load_checkpoint(p,SharedActor(63),CentralizedCritic(61,3),normalizer=ValueNormalizer(),expected_metadata=legacy)
+
+
+def test_legacy_v3_without_schema_metadata_full_resume_only_to_legacy(tmp_path):
+ a=SharedActor(45);c=CentralizedCritic(87,3);ao=torch.optim.Adam(a.parameters());co=torch.optim.Adam(c.parameters());n=ValueNormalizer();p=tmp_path/"legacy_no_schema.pt"
+ cfg={"environment":{"kind":"3v3","scenario":"head_on_formation","opponent":"pursuit"}}
+ save_checkpoint(p,a,c,ao,co,n,cfg,123,7,{"score":1.0},metadata=schema_metadata({"environment":{}},45,87,3))
+ data=torch.load(p,weights_only=False);del data["schema_metadata"];torch.save(data,p)
+ legacy_expected={"environment_schema_version":"legacy","observation_schema":"legacy","global_state_schema":"legacy","reward_profile":"legacy","scenario_profile":"legacy","obs_dim":45,"state_dim":87,"num_agents":3}
+ restored=load_checkpoint(p,SharedActor(45),CentralizedCritic(87,3),normalizer=ValueNormalizer(),expected_metadata=legacy_expected)
+ assert restored["environment_steps"]==123
+ assert restored["update_index"]==7
+ v2_expected={"environment_schema_version":"homogeneous_3v3_v2_timeaware","observation_schema":"fixed_id_body_time_63d","global_state_schema":"full_entity_time_61d","reward_profile":"project_3v3_v2","scenario_profile":"head_on_mirrored_jitter_v2","obs_dim":63,"state_dim":61,"num_agents":3}
+ with pytest.raises(ValueError,match="legacy checkpoint without schema metadata cannot resume into homogeneous_3v3_v2_timeaware"):
+  load_checkpoint(p,SharedActor(63),CentralizedCritic(61,3),normalizer=ValueNormalizer(),expected_metadata=v2_expected)
+
+
+def test_old_62d_60d_v2_checkpoint_rejected_by_timeaware_schema(tmp_path):
+ a=SharedActor(62);c=CentralizedCritic(60,3);ao=torch.optim.Adam(a.parameters());co=torch.optim.Adam(c.parameters());n=ValueNormalizer();p=tmp_path/"old_v2.pt"
+ old_cfg={"environment":{"environment_schema_version":"homogeneous_3v3_v2","observation_schema":"fixed_id_body_62d","global_state_schema":"full_entity_60d","reward_profile":"project_3v3_v2","scenario_profile":"head_on_mirrored_jitter_v2"}}
+ save_checkpoint(p,a,c,ao,co,n,old_cfg,0,0,None,metadata=schema_metadata(old_cfg,62,60,3))
+ expected={"environment_schema_version":"homogeneous_3v3_v2_timeaware","observation_schema":"fixed_id_body_time_63d","global_state_schema":"full_entity_time_61d","reward_profile":"project_3v3_v2","scenario_profile":"head_on_mirrored_jitter_v2","obs_dim":63,"state_dim":61,"num_agents":3}
+ with pytest.raises(ValueError,match="checkpoint schema mismatch"):
+  load_checkpoint(p,SharedActor(63),CentralizedCritic(61,3),normalizer=ValueNormalizer(),expected_metadata=expected)
+
+
+def test_critic_dimension_error_is_wrapped(tmp_path):
+ a=SharedActor(45);c=CentralizedCritic(87,3);ao=torch.optim.Adam(a.parameters());co=torch.optim.Adam(c.parameters());n=ValueNormalizer();p=tmp_path/"critic_bad.pt"
+ save_checkpoint(p,a,c,ao,co,n,{},0,0,None)
+ with pytest.raises(ValueError,match="Critic dimensions are incompatible"):
+  load_checkpoint(p,SharedActor(45),CentralizedCritic(61,3),normalizer=ValueNormalizer())

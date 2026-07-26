@@ -19,12 +19,16 @@ from uav_env.observations.single_observation import relative_angles, safe_vector
 ALLY_FEATURES = ["distance", "relative_pitch", "relative_yaw", "dvx", "dvy", "dvz"]
 ENEMY_FEATURES = ["dx", "dy", "altitude_self", "distance", "relative_pitch", "relative_yaw", "dvx", "dvy", "dvz", "attack_angle", "escape_angle"]
 MULTI_OBSERVATION_FEATURE_NAMES = [f"ally_0_{name}" for name in ALLY_FEATURES] + [f"enemy_{slot}_{name}" for slot in range(2) for name in ENEMY_FEATURES]
-V2_OWN_FEATURES = ["own_altitude", "own_speed", "own_flight_path_angle", "own_heading_sin", "own_heading_cos", "own_health_ratio", "own_last_action"]
+V2_OWN_FEATURES = ["own_altitude", "own_speed", "own_flight_path_angle", "own_heading_sin", "own_heading_cos", "own_health_ratio", "own_last_action", "episode_progress"]
 V2_ALLY_FEATURES = ["alive_flag", "body_relative_x", "body_relative_y", "relative_z", "body_relative_vx", "body_relative_vy", "relative_vz", "health_ratio"]
 V2_ENEMY_FEATURES = [
     "alive_flag", "body_relative_x", "body_relative_y", "relative_z", "body_relative_vx", "body_relative_vy", "relative_vz",
     "distance", "body_relative_bearing", "body_relative_elevation", "attack_angle", "escape_angle", "health_ratio",
 ]
+V2_OWN_SIZE = len(V2_OWN_FEATURES)
+V2_ALLY_SIZE = len(V2_ALLY_FEATURES)
+V2_ENEMY_SIZE = len(V2_ENEMY_FEATURES)
+V2_LOCAL_OBSERVATION_DIM = V2_OWN_SIZE + 2 * V2_ALLY_SIZE + 3 * V2_ENEMY_SIZE
 
 
 def multi_observation_feature_names(ally_count: int, enemy_count: int) -> list[str]:
@@ -36,7 +40,7 @@ def multi_observation_feature_names(ally_count: int, enemy_count: int) -> list[s
 
 
 def multi_observation_feature_names_v2() -> list[str]:
-    """Return the fixed 62D homogeneous 3v3 V2 local-observation names."""
+    """Return the fixed 63D homogeneous 3v3 time-aware V2 local-observation names."""
 
     return [
         *V2_OWN_FEATURES,
@@ -46,7 +50,7 @@ def multi_observation_feature_names_v2() -> list[str]:
 
 
 def multi_observation_feature_names_v2_for_agent(red_id: str) -> list[str]:
-    """Return row-specific 62D names with true fixed entity IDs for audit/debug."""
+    """Return row-specific 63D names with true fixed entity IDs for audit/debug."""
 
     red_ids = ["red_0", "red_1", "red_2"]
     if red_id not in red_ids:
@@ -112,7 +116,7 @@ def _enemy_block(own: UAV, enemy: UAV) -> NDArray[np.float64]:
     ], dtype=np.float64)
 
 
-def _body_relative_kinematics(own: UAV, target: UAV) -> tuple[float, float, float, float, float, float, float, float]:
+def _body_relative_kinematics(own: UAV, target: UAV) -> tuple[float, float, float, float, float, float, float, float, float]:
     dx = target.state.x - own.state.x
     dy = target.state.y - own.state.y
     dz = target.state.z - own.state.z
@@ -146,6 +150,8 @@ def _normalize_v2(raw: NDArray[np.float64], names: list[str], config: dict[str, 
             transformed = 2.0 * value - 1.0
         elif name == "own_last_action" or name.endswith("last_action"):
             transformed = 2.0 * value / 14.0 - 1.0
+        elif name == "episode_progress":
+            transformed = 2.0 * float(np.clip(value, 0.0, 1.0)) - 1.0
         elif name == "own_speed":
             transformed = 2.0 * (value - min_speed) / speed_span - 1.0
         elif name == "own_altitude":
@@ -169,6 +175,31 @@ def _normalize_v2(raw: NDArray[np.float64], names: list[str], config: dict[str, 
         normalized[index] = transformed
     saturated = np.abs(normalized) > 1.0
     return np.clip(normalized, -1.0, 1.0), saturated
+
+
+def _clear_dead_v2_slots(
+    normalized: NDArray[np.float64],
+    saturated: NDArray[np.bool_],
+    allies: Sequence[UAV],
+    enemies: Sequence[UAV],
+) -> None:
+    """Ensure dead entity slots normalize to alive=-1 and all other fields zero."""
+
+    for slot, ally in enumerate(allies):
+        if not ally.is_alive:
+            start = V2_OWN_SIZE + slot * V2_ALLY_SIZE
+            end = start + V2_ALLY_SIZE
+            normalized[start] = -1.0
+            normalized[start + 1:end] = 0.0
+            saturated[start:end] = False
+    enemy_offset = V2_OWN_SIZE + 2 * V2_ALLY_SIZE
+    for slot, enemy in enumerate(enemies):
+        if not enemy.is_alive:
+            start = enemy_offset + slot * V2_ENEMY_SIZE
+            end = start + V2_ENEMY_SIZE
+            normalized[start] = -1.0
+            normalized[start + 1:end] = 0.0
+            saturated[start:end] = False
 
 
 def _ally_block_v2(own: UAV, ally: UAV, config: dict[str, object]) -> NDArray[np.float64]:
@@ -255,8 +286,14 @@ def build_multi_observations(red_aircraft: Sequence[UAV], blue_aircraft: Sequenc
     )
 
 
-def build_multi_observations_v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: dict[str, object], attack_config: object) -> MultiObservationResult:
-    """Build fixed-ID body-frame 62D observations for homogeneous 3v3 V2."""
+def build_multi_observations_v2(
+    red_aircraft: Sequence[UAV],
+    blue_aircraft: Sequence[UAV],
+    config: dict[str, object],
+    attack_config: object,
+    episode_progress: float,
+) -> MultiObservationResult:
+    """Build fixed-ID body-frame 63D observations for homogeneous 3v3 time-aware V2."""
 
     reds = sorted(red_aircraft, key=lambda u: u.uav_id)
     blues = sorted(blue_aircraft, key=lambda u: u.uav_id)
@@ -270,14 +307,14 @@ def build_multi_observations_v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequ
     enemy_masks: list[list[int]] = []
     for own in reds:
         if not own.is_alive:
-            raw = np.zeros(62, dtype=np.float64)
+            raw = np.zeros(V2_LOCAL_OBSERVATION_DIM, dtype=np.float64)
             normalized = raw.copy()
-            saturated = np.zeros(62, dtype=bool)
+            saturated = np.zeros(V2_LOCAL_OBSERVATION_DIM, dtype=bool)
         else:
             own_action = float(own.state.last_action if own.state.last_action is not None else 0.0)
             own_block = np.asarray([
                 own.state.z, own.state.speed, own.state.flight_path_angle, sin(own.state.heading_angle),
-                cos(own.state.heading_angle), own.state.health / float(config["initial_health"]), own_action,
+                cos(own.state.heading_angle), own.state.health / float(config["initial_health"]), own_action, episode_progress,
             ], dtype=np.float64)
             allies = [ally for ally in reds if ally.uav_id != own.uav_id]
             raw = np.concatenate([
@@ -286,6 +323,7 @@ def build_multi_observations_v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequ
                 *[_enemy_block_v2(own, enemy, attack_config, config) for enemy in blues],
             ]).astype(np.float64)
             normalized, saturated = _normalize_v2(raw, names, config)
+            _clear_dead_v2_slots(normalized, saturated, allies, blues)
         raw_rows.append(raw)
         norm_rows.append(normalized)
         saturated_masks.append(saturated)
@@ -295,7 +333,7 @@ def build_multi_observations_v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequ
     return MultiObservationResult(
         np.stack(raw_rows), np.stack(norm_rows), np.asarray(ally_masks, dtype=np.int8),
         np.asarray(enemy_masks, dtype=np.int8), np.asarray([int(u.is_alive) for u in reds], dtype=np.int8),
-        names, saturation_counts, saturation_counts.astype(np.float64) / 62.0, np.stack(saturated_masks),
+        names, saturation_counts, saturation_counts.astype(np.float64) / float(V2_LOCAL_OBSERVATION_DIM), np.stack(saturated_masks),
         [[name for name, flag in zip(names, mask) if flag] for mask in saturated_masks],
         {red.uav_id: multi_observation_feature_names_v2_for_agent(red.uav_id) for red in reds},
     )

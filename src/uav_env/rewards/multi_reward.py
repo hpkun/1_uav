@@ -153,9 +153,33 @@ def multi_terminal_reward_allocations(
     if str(config.get("reward_profile")) == "project_3v3_v2":
         if outcome.termination_reason == "timeout":
             value = float(config.get("timeout_reward", -4.0))
-            return {u.uav_id: TerminalRewardAllocation(value, profile, value, 1.0, 1.0) for u in red_aircraft}
+            return {
+                u.uav_id: TerminalRewardAllocation(
+                    reward=value,
+                    profile="project_3v3_v2_timeout",
+                    team_base=value,
+                    allocation_factor=1.0,
+                    base_share_component=0.0,
+                    survival_component=0.0,
+                    contribution_component=0.0,
+                    health_component=0.0,
+                    alive_count=sum(u.is_alive for u in red_aircraft),
+                    contribution_denominator=0.0,
+                    health_denominator=0.0,
+                )
+                for u in red_aircraft
+            }
         if outcome.termination_reason == "simultaneous_elimination":
-            return {u.uav_id: TerminalRewardAllocation(0.0, profile, 0.0, 0.0) for u in red_aircraft}
+            return {
+                u.uav_id: TerminalRewardAllocation(
+                    reward=0.0,
+                    profile="project_3v3_v2_simultaneous_elimination",
+                    team_base=0.0,
+                    allocation_factor=0.0,
+                    alive_count=sum(u.is_alive for u in red_aircraft),
+                )
+                for u in red_aircraft
+            }
     assumptions = config["project_assumptions"]["multi_terminal_reward"]
     if outcome.winner == "draw":
         value=float(assumptions["draw_reward"])

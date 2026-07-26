@@ -37,9 +37,9 @@
 # Fixed homogeneous 3v3 V2 assumptions
 
 - V2 is still fixed homogeneous 3v3 only. It is not heterogeneous 3v2, transfer learning, attention, GRU, self-play, radar, or continuous action control.
-- The V2 Actor input is a 62D project-defined fixed-ID body-frame observation designed to remove the legacy health omission and distance-ranked slot-swap risks.
-- The V2 Critic input is a 60D project-defined full-entity global state ordered `red_0..red_2, blue_0..blue_2`.
+- The formal V2 Actor input is a 63D project-defined fixed-ID body-frame observation designed to remove the legacy health omission, distance-ranked slot-swap risks, and finite-horizon time aliasing. The earlier 62D form is a development smoke schema only.
+- The formal V2 Critic input is a 61D project-defined full-entity global state ordered `red_0..red_2, blue_0..blue_2`, followed by `episode_progress`. The earlier 60D form is a development smoke schema only.
 - The V2 train/validation/test scenario is mirrored head-on with bounded jitter. The symmetric no-jitter stress scene is diagnostic only and is not used for checkpoint selection.
 - The V2 reward profile keeps the paper-derived situation/terminal structure where applicable, but splits geometry shaping from combat events before Algorithm 2. Combat events are added directly after dense assignment.
 - V2 timeout terminal reward is the configured fixed penalty for each red slot; timeout survivor-count outcome statistics remain separate from elimination outcomes.
-- Checkpoint schema metadata is a project safety mechanism to prevent full-resume mixing between legacy and V2 observation/state/reward definitions.
+- Checkpoint schema metadata is a project safety mechanism to prevent full-resume mixing between legacy, old 62D/60D V2, and formal time-aware V2 definitions. Legacy v3 checkpoints without metadata may full-resume only into legacy environments and rely on network state-dict dimensions for final compatibility checks.

@@ -37,15 +37,23 @@ def load_checkpoint(path: str|Path, actor, critic=None, actor_optimizer=None, cr
         raise ValueError(f"checkpoint v{version} is incompatible with v3 physical-value critic")
     if version > CHECKPOINT_VERSION: raise ValueError(f"checkpoint v{version} is newer than supported v{CHECKPOINT_VERSION}")
     if not actor_only and expected_metadata is not None:
-        actual=data.get("schema_metadata", schema_metadata(data.get("config", {})))
-        for key in ("environment_schema_version","observation_schema","global_state_schema","reward_profile","scenario_profile","obs_dim","state_dim","num_agents"):
-            if actual.get(key) != expected_metadata.get(key):
-                raise ValueError(f"checkpoint schema mismatch for {key}: checkpoint={actual.get(key)!r}, expected={expected_metadata.get(key)!r}")
+        if "schema_metadata" not in data:
+            legacy_expected = all(expected_metadata.get(key) == "legacy" for key in ("environment_schema_version", "observation_schema", "global_state_schema"))
+            if not legacy_expected:
+                target = expected_metadata.get("environment_schema_version")
+                raise ValueError(f"legacy checkpoint without schema metadata cannot resume into {target}")
+        else:
+            actual=data["schema_metadata"]
+            for key in ("environment_schema_version","observation_schema","global_state_schema","reward_profile","scenario_profile","obs_dim","state_dim","num_agents"):
+                if actual.get(key) != expected_metadata.get(key):
+                    raise ValueError(f"checkpoint schema mismatch for {key}: checkpoint={actual.get(key)!r}, expected={expected_metadata.get(key)!r}")
     try: actor.load_state_dict(data["actor"])
     except RuntimeError as error: raise ValueError(f"Actor dimensions are incompatible: {error}") from error
     if not actor_only:
         if critic is None or normalizer is None: raise ValueError("Full resume requires critic and normalizer")
-        critic.load_state_dict(data["critic"]); normalizer.load_state_dict(data["value_normalizer"])
+        try: critic.load_state_dict(data["critic"])
+        except RuntimeError as error: raise ValueError(f"Critic dimensions are incompatible: {error}") from error
+        normalizer.load_state_dict(data["value_normalizer"])
         if actor_optimizer is not None: actor_optimizer.load_state_dict(data["actor_optimizer"])
         if critic_optimizer is not None: critic_optimizer.load_state_dict(data["critic_optimizer"])
         random.setstate(data["python_rng"]); np.random.set_state(data["numpy_rng"]); torch.set_rng_state(data["torch_rng"].cpu())

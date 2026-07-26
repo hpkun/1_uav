@@ -418,24 +418,38 @@ def run_rule_episode(seed: int, red_policy_name: str, scenario: str = "head_on_f
     stats = env.get_statistics()["aircraft"]
     red_ids = [f"red_{index}" for index in range(3)]
     blue_ids = [f"blue_{index}" for index in range(3)]
-    attempts = sum(len(step.get("attack_attempts", [])) for step in env.get_trajectory())
+    def side_sum(ids: list[str], key: str) -> float:
+        return float(sum(float(stats[uav_id].get(key, 0.0)) for uav_id in ids))
+
     summary = {
         "winner": outcome.winner or "none",
         "reason": outcome.termination_reason,
         "red_survivors": int(outcome.red_survivors),
         "blue_survivors": int(outcome.blue_survivors),
         "steps": int(outcome.decision_steps),
-        "red_attack_area_steps": sum(int(stats[key]["attack_area_steps"]) for key in red_ids),
-        "blue_attack_area_steps": sum(int(stats[key]["attack_area_steps"]) for key in blue_ids),
-        "attack_attempts": attempts,
-        "red_hits": sum(int(stats[key]["hits"]) for key in red_ids),
-        "blue_hits": sum(int(stats[key]["hits"]) for key in blue_ids),
-        "red_effective_damage": sum(float(stats[key]["effective_damage"]) for key in red_ids),
-        "blue_effective_damage": sum(float(stats[key]["effective_damage"]) for key in blue_ids),
-        "red_crashes": sum(int(stats[key]["ground_crashes"]) for key in red_ids),
-        "blue_crashes": sum(int(stats[key]["ground_crashes"]) for key in blue_ids),
+        "red_attack_attempts": side_sum(red_ids, "attack_attempts"),
+        "blue_attack_attempts": side_sum(blue_ids, "attack_attempts"),
+        "red_hits": side_sum(red_ids, "hits"),
+        "blue_hits": side_sum(blue_ids, "hits"),
+        "red_nominal_damage": side_sum(red_ids, "nominal_damage"),
+        "blue_nominal_damage": side_sum(blue_ids, "nominal_damage"),
+        "red_effective_damage": side_sum(red_ids, "effective_damage"),
+        "blue_effective_damage": side_sum(blue_ids, "effective_damage"),
+        "red_overkill_damage": side_sum(red_ids, "overkill_damage"),
+        "blue_overkill_damage": side_sum(blue_ids, "overkill_damage"),
+        "red_attack_area_steps": side_sum(red_ids, "attack_area_steps"),
+        "blue_attack_area_steps": side_sum(blue_ids, "attack_area_steps"),
+        "red_ground_crashes": side_sum(red_ids, "ground_crashes"),
+        "blue_ground_crashes": side_sum(blue_ids, "ground_crashes"),
+        "red_ceiling_violations": side_sum(red_ids, "ceiling_violations"),
+        "blue_ceiling_violations": side_sum(blue_ids, "ceiling_violations"),
+        "red_collisions": side_sum(red_ids, "collisions"),
+        "blue_collisions": side_sum(blue_ids, "collisions"),
         "team_return": team_return,
     }
+    summary["attack_attempts"] = summary["red_attack_attempts"] + summary["blue_attack_attempts"]
+    summary["red_crashes"] = summary["red_ground_crashes"]
+    summary["blue_crashes"] = summary["blue_ground_crashes"]
     return summary, dict(reward_sums)
 
 
@@ -447,21 +461,16 @@ def aggregate_rule(policy: str, episodes: int = 100, scenario: str = "head_on_fo
     reward_sums = [item[1] for item in completed]
     reasons = Counter(item["reason"] for item in summaries)
     winners = Counter(item["winner"] for item in summaries)
-    return {
+    result = {
         "episodes": episodes,
         "winners": dict(winners),
         "reasons": dict(reasons),
+        "red_timeout_survival_wins": sum(item["winner"] == "red" and item["reason"] == "timeout" for item in summaries),
+        "blue_timeout_survival_wins": sum(item["winner"] == "blue" and item["reason"] == "timeout" for item in summaries),
         "red_elimination_wins": sum(item["winner"] == "red" and item["reason"] == "blue_eliminated" for item in summaries),
         "blue_elimination_wins": sum(item["winner"] == "blue" and item["reason"] == "red_eliminated" for item in summaries),
         "timeouts": reasons.get("timeout", 0),
         "draws": winners.get("draw", 0),
-        "mean_red_survivors": mean(item["red_survivors"] for item in summaries),
-        "mean_blue_survivors": mean(item["blue_survivors"] for item in summaries),
-        "mean_attack_area_steps": mean(item["red_attack_area_steps"] + item["blue_attack_area_steps"] for item in summaries),
-        "mean_attack_attempts": mean(item["attack_attempts"] for item in summaries),
-        "mean_hits": mean(item["red_hits"] + item["blue_hits"] for item in summaries),
-        "mean_effective_damage": mean(item["red_effective_damage"] + item["blue_effective_damage"] for item in summaries),
-        "mean_crashes": mean(item["red_crashes"] + item["blue_crashes"] for item in summaries),
         "mean_episode_steps": mean(item["steps"] for item in summaries),
         "mean_team_return": mean(item["team_return"] for item in summaries),
         "reward_scale": {
@@ -469,6 +478,15 @@ def aggregate_rule(policy: str, episodes: int = 100, scenario: str = "head_on_fo
             for key in ("situation", "event", "assigned_dense", "terminal", "absolute_total", "negative_event", "positive_event")
         },
     }
+    for name in ("attack_attempts","hits","nominal_damage","effective_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions","survivors"):
+        result[f"mean_red_{name}"] = mean(item[f"red_{name}"] for item in summaries)
+        result[f"mean_blue_{name}"] = mean(item[f"blue_{name}"] for item in summaries)
+    result["mean_attack_attempts"] = result["mean_red_attack_attempts"] + result["mean_blue_attack_attempts"]
+    result["mean_hits"] = result["mean_red_hits"] + result["mean_blue_hits"]
+    result["mean_effective_damage"] = result["mean_red_effective_damage"] + result["mean_blue_effective_damage"]
+    result["mean_attack_area_steps"] = result["mean_red_attack_area_steps"] + result["mean_blue_attack_area_steps"]
+    result["mean_crashes"] = result["mean_red_ground_crashes"] + result["mean_blue_ground_crashes"]
+    return result
 
 
 def audit_blue_rule_and_rule_experiments(audit: Audit) -> None:
@@ -583,12 +601,24 @@ def audit_v2_environment(audit: Audit) -> None:
     env = new_env(101, "head_on_mirrored_jitter_v2")
     obs, info = env.reset(seed=101)
     checks = {
-        "local_62d": obs.shape == (3, 62),
-        "global_60d": info["global_state"].shape == (60,),
-        "feature_names_62d": info["local_observation_feature_names"] == multi_observation_feature_names_v2(),
+        "schema_timeaware": env.environment_schema_version == "homogeneous_3v3_v2_timeaware",
+        "local_63d": obs.shape == (3, 63),
+        "global_61d": info["global_state"].shape == (61,),
+        "feature_names_63d": info["local_observation_feature_names"] == multi_observation_feature_names_v2(),
         "per_agent_feature_names_true_ids": info["local_observation_feature_names_by_agent"]["red_0"] == multi_observation_feature_names_v2_for_agent("red_0"),
-        "feature_names_60d": info["global_state_feature_names"] == global_state_feature_names_v2(),
+        "feature_names_61d": info["global_state_feature_names"] == global_state_feature_names_v2(),
+        "reset_progress_normalized": info["local_observations_raw"][0, 7] == 0.0 and info["local_observations"][0, 7] == -1.0 and info["global_state_raw"][60] == 0.0 and info["global_state"][60] == -1.0,
     }
+    env.decision_step = 399
+    late_obs = env._observations()
+    late_state = env._global_state()
+    env.decision_step = 0
+    start_obs = env._observations()
+    start_state = env._global_state()
+    checks["time_markov_only_progress_changes"] = np.flatnonzero(np.abs(start_obs.raw[0] - late_obs.raw[0]) > 1e-12).tolist() == [7] and np.flatnonzero(np.abs(start_state.raw - late_state.raw) > 1e-12).tolist() == [60]
+    env.decision_step = 400
+    checks["timeout_progress_one"] = env._observations().normalized[0, 7] == 1.0 and env._global_state().normalized[60] == 1.0
+    env.decision_step = 0
     base_obs = env._observations().raw[0].copy()
     env.red_aircraft[0].state = replace(env.red_aircraft[0].state, heading_angle=pi / 2)
     checks["actor_heading_distinguishable"] = not np.array_equal(base_obs, env._observations().raw[0])
@@ -601,19 +631,21 @@ def audit_v2_environment(audit: Audit) -> None:
     env = new_env(101, "symmetric_stress_test_v2"); env.reset(seed=101)
     own = env.red_aircraft[1]
     env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, x=own.state.x + 100.0, y=own.state.y + 100.0)
-    left = env._observations().raw[1][31]
+    left = env._observations().raw[1][32]
     env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, y=own.state.y - 100.0)
-    right = env._observations().raw[1][31]
+    right = env._observations().raw[1][32]
     checks["body_bearing_left_right"] = left > 0.0 and right < 0.0
     slots = []
     for offset in (2.0, 0.1, -0.1, -2.0):
         env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, x=own.state.x + 100.0, y=own.state.y + offset)
         env.blue_aircraft[1].state = replace(env.blue_aircraft[1].state, x=own.state.x + 100.0, y=own.state.y - offset)
         raw = env._observations().raw[1]
-        slots.append((float(raw[25]), float(raw[38])))
+        slots.append((float(raw[26]), float(raw[39])))
     checks["fixed_enemy_slots"] = slots[0][0] > 0.0 and slots[-1][0] < 0.0 and slots[0][1] < 0.0
     env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, alive=False, damaged=True, health=0.0, x=9999.0)
-    checks["dead_local_slot_zero"] = bool(env._observations().raw[1][23] == -1.0 and np.allclose(env._observations().raw[1][24:36], 0.0))
+    local_dead = env._observations()
+    checks["dead_local_slot_zero"] = bool(local_dead.raw[1][24] == -1.0 and np.allclose(local_dead.raw[1][25:37], 0.0))
+    checks["dead_local_normalized_zero"] = bool(np.allclose(local_dead.normalized[1][24:37], [-1.0, *([0.0] * 12)]) and not np.any(local_dead.saturated_feature_masks[1][24:37]))
 
     env = new_env(102, "head_on_mirrored_jitter_v2"); env.reset(seed=102)
     base_state = env._global_state().raw.copy()
@@ -633,12 +665,17 @@ def audit_v2_environment(audit: Audit) -> None:
     checks["critic_markov_distinctions"] = all(distinctions)
     env = new_env(102, "head_on_mirrored_jitter_v2"); env.reset(seed=102)
     env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, alive=False, damaged=True, health=0.0, x=9999.0)
-    checks["dead_global_slot_zero"] = bool(env._global_state().raw[30] == -1.0 and np.allclose(env._global_state().raw[31:39], 0.0))
+    dead_global = env._global_state()
+    checks["dead_global_slot_zero"] = bool(dead_global.raw[30] == -1.0 and np.allclose(dead_global.raw[31:39], 0.0))
+    checks["dead_global_normalized_zero"] = bool(np.allclose(dead_global.normalized[30:40], [-1.0, *([0.0] * 9)]) and not np.any(dead_global.saturated_feature_mask[30:40]) and dead_global.raw[60] == 0.0)
 
     terminal = multi_terminal_reward_allocations(EpisodeOutcome("red", True, True, "timeout", 400, 200.0, 3, 2), env.red_aircraft, {}, env.config)
     checks["timeout_minus_four"] = {item.reward for item in terminal.values()} == {-4.0}
+    checks["timeout_profile"] = {item.profile for item in terminal.values()} == {"project_3v3_v2_timeout"}
+    simultaneous = multi_terminal_reward_allocations(EpisodeOutcome("draw", False, False, "simultaneous_elimination", 20, 10.0, 0, 0), env.red_aircraft, {}, env.config)
+    checks["simultaneous_profile"] = {item.reward for item in simultaneous.values()} == {0.0} and {item.profile for item in simultaneous.values()} == {"project_3v3_v2_simultaneous_elimination"}
     win = multi_terminal_reward_allocations(EpisodeOutcome("red", True, False, "blue_eliminated", 10, 5.0, 3, 0), env.red_aircraft, {}, env.config)
-    checks["elimination_uses_win_formula"] = all(item.reward > 0.0 for item in win.values())
+    checks["elimination_uses_win_formula"] = all(item.reward > 0.0 and item.profile == "paper_2024_exact" for item in win.values())
     env.red_aircraft[0].state = replace(env.red_aircraft[0].state, z=float(env.config["min_altitude"]), health=300.0, alive=True, damaged=False, crashed=False)
     _, _, _, _, step_info = env.step(np.zeros(3, dtype=np.int64))
     bd = step_info["agent_reward_breakdowns"]["red_0"]
@@ -653,14 +690,15 @@ def audit_v2_environment(audit: Audit) -> None:
     vector = ParallelCombatVectorEnv(CombatEnvDescription("3v3", "head_on_mirrored_jitter_v2", "pursuit", "paper_2024_exact"), 4, 301)
     try:
         reset = vector.reset()
-        checks["parallel_v2_shapes"] = reset["local_obs"].shape == (4, 3, 62) and reset["global_state"].shape == (4, 60)
+        checks["parallel_v2_shapes"] = reset["local_obs"].shape == (4, 3, 63) and reset["global_state"].shape == (4, 61)
     finally:
         vector.close()
     audit.artifacts["v2_rule_experiments"] = {policy: aggregate_rule(policy, 100, "head_on_mirrored_jitter_v2") for policy in ("pursuit", "straight", "random")}
     audit.artifacts["v2_symmetric_stress_rule"] = {"pursuit": aggregate_rule("pursuit", 100, "symmetric_stress_test_v2")}
-    attack_warning = audit.artifacts["v2_rule_experiments"]["pursuit"]["mean_attack_attempts"] == 0.0
+    pursuit_rule = audit.artifacts["v2_rule_experiments"]["pursuit"]
+    attack_warning = pursuit_rule["mean_red_attack_attempts"] == 0.0 or pursuit_rule["mean_blue_attack_attempts"] == 0.0
     status = "fail" if not all(checks.values()) else ("warn" if attack_warning else "pass")
-    audit.add("v2_environment", "homogeneous_3v3_v2 observation, state, reward, reset, and diagnostics", status, "P1" if status == "warn" else "P0", "v2", "V2 fixes the audited state/slot/reward/timeout semantics; rule pursuit reachability remains a warning if attack attempts are zero.", {"checks": checks, "all_checks_pass": all(checks.values()), "slot_trace": slots, "pursuit_attack_warning": attack_warning, "rule_stats": audit.artifacts["v2_rule_experiments"], "stress": audit.artifacts["v2_symmetric_stress_rule"]})
+    audit.add("v2_environment", "homogeneous_3v3_v2_timeaware observation, state, reward, reset, and diagnostics", status, "P1" if status == "warn" else "P0", "v2", "Time-aware V2 fixes the audited state/slot/reward/timeout semantics; pursuit reachability is a warning if either side has zero attack attempts.", {"checks": checks, "all_checks_pass": all(checks.values()), "slot_trace": slots, "pursuit_attack_warning": attack_warning, "rule_stats": audit.artifacts["v2_rule_experiments"], "stress": audit.artifacts["v2_symmetric_stress_rule"]})
 
 
 def flatten_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:

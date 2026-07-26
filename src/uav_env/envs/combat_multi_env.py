@@ -50,13 +50,14 @@ class CombatMultiEnv(BaseUAVEnv):
             raise ValueError("CombatMultiEnv supports equal homogeneous team sizes of 2 or 3")
         self.config = deepcopy(config)
         self.environment_schema_version = str(config.get("environment_schema_version", "legacy"))
-        self.is_v2 = self.environment_schema_version == "homogeneous_3v3_v2"
+        self.is_v2 = self.environment_schema_version in {"homogeneous_3v3_v2", "homogeneous_3v3_v2_timeaware"}
+        self.is_timeaware_v2 = self.environment_schema_version == "homogeneous_3v3_v2_timeaware"
         self.scenario_name = scenario_name or str(config["scenario_name"])
         if self.red_count == 3 and self.scenario_name not in {"head_on_formation", "head_on_mirrored_jitter_v2", "symmetric_stress_test_v2"}:
             raise ValueError("Fixed 3v3 currently supports only head-on legacy or V2 scenarios")
         self.num_red_agents = self.red_count
-        self.local_observation_dim = 62 if self.is_v2 else (self.red_count - 1) * 6 + self.blue_count * 11
-        self.global_state_dim = 60 if self.is_v2 else self.red_count + self.red_count * self.blue_count * 9 + self.red_count
+        self.local_observation_dim = 63 if self.is_v2 else (self.red_count - 1) * 6 + self.blue_count * 11
+        self.global_state_dim = 61 if self.is_v2 else self.red_count + self.red_count * self.blue_count * 9 + self.red_count
         self.profile: UAVTypeProfile = profile_from_config(config)
         self.attack_config = AttackZoneConfig.from_config(config)
         self.damage_config = DamageConfig.from_config(config)
@@ -165,13 +166,16 @@ class CombatMultiEnv(BaseUAVEnv):
 
     def _observations(self) -> MultiObservationResult:
         if self.is_v2:
-            return build_multi_observations_v2(self.red_aircraft, self.blue_aircraft, self.config, self.attack_config)
+            return build_multi_observations_v2(self.red_aircraft, self.blue_aircraft, self.config, self.attack_config, self._episode_progress())
         return build_multi_observations(self.red_aircraft, self.blue_aircraft, self.normalization_config)
 
     def _global_state(self) -> GlobalStateResult:
         if self.is_v2:
-            return build_global_state_v2(self.red_aircraft, self.blue_aircraft, self.config)
+            return build_global_state_v2(self.red_aircraft, self.blue_aircraft, self.config, self._episode_progress())
         return build_global_state(self.red_aircraft, self.blue_aircraft, self.normalization_config)
+
+    def _episode_progress(self) -> float:
+        return float(np.clip(self.decision_step / float(self.config["max_decision_steps"]), 0.0, 1.0))
 
     def _available_action_mask(self) -> NDArray[np.int8]:
         mask = np.ones((self.red_count, 15), dtype=np.int8)
@@ -205,7 +209,7 @@ class CombatMultiEnv(BaseUAVEnv):
         self.decision_step = 0
         self.simulation_time = 0.0
         per_aircraft = {
-            u.uav_id: {"attack_attempts": 0, "nominal_damage": 0.0, "effective_damage": 0.0, "overkill_damage": 0.0, "hits": 0, "attack_area_steps": 0, "contribution_score": 0.0, "cumulative_reward": 0.0, "ground_crashes": 0, "ceiling_violations": 0}
+            u.uav_id: {"attack_attempts": 0, "nominal_damage": 0.0, "effective_damage": 0.0, "overkill_damage": 0.0, "hits": 0, "attack_area_steps": 0, "contribution_score": 0.0, "cumulative_reward": 0.0, "ground_crashes": 0, "ceiling_violations": 0, "collisions": 0}
             for u in self.all_aircraft
         }
         self._statistics = {"aircraft": per_aircraft, "collisions": 0, "timeouts": 0}
@@ -232,7 +236,7 @@ class CombatMultiEnv(BaseUAVEnv):
             "global_state_saturation_ratio": global_state.saturation_ratio,
             "global_state_saturated_feature_names": global_state.saturated_feature_names,
             "statistics": self.get_statistics(), "outcome": self._outcome(False), "simulation_time": self.simulation_time,
-            "decision_step": self.decision_step, "scenario_name": self.scenario_name, "seed": self._current_seed,
+            "decision_step": self.decision_step, "episode_progress": self._episode_progress(), "scenario_name": self.scenario_name, "seed": self._current_seed,
         }
         if not reset:
             info.update(extra)
@@ -388,6 +392,9 @@ class CombatMultiEnv(BaseUAVEnv):
         for aircraft_id, kind in boundary.items():
             self._statistics["aircraft"][aircraft_id][f"{kind}_crashes" if kind == "ground" else "ceiling_violations"] += 1
         self._statistics["collisions"] += len(collision_pairs)
+        for first, second in collision_pairs:
+            self._statistics["aircraft"][first]["collisions"] += 1
+            self._statistics["aircraft"][second]["collisions"] += 1
         for attempt in combat_result.attack_attempts:
             self._statistics["aircraft"][attempt.attacker_id]["attack_attempts"] += 1
         for attack in combat_result.resolved_attacks:

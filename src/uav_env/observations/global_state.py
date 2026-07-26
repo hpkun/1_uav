@@ -23,6 +23,8 @@ V2_ENTITY_FEATURES = [
     "alive_flag", "health_ratio", "absolute_x", "absolute_y", "absolute_z", "speed",
     "flight_path_angle", "heading_sin", "heading_cos", "last_action",
 ]
+V2_ENTITY_SIZE = len(V2_ENTITY_FEATURES)
+V2_GLOBAL_STATE_DIM = 6 * V2_ENTITY_SIZE + 1
 
 
 def global_state_feature_names(team_size: int) -> list[str]:
@@ -37,9 +39,9 @@ def global_state_feature_names(team_size: int) -> list[str]:
 
 
 def global_state_feature_names_v2() -> list[str]:
-    """Return the fixed 60D full-entity V2 global-state names."""
+    """Return the fixed 61D full-entity time-aware V2 global-state names."""
 
-    return [f"{prefix}_{index}_{name}" for prefix in ("red", "blue") for index in range(3) for name in V2_ENTITY_FEATURES]
+    return [f"{prefix}_{index}_{name}" for prefix in ("red", "blue") for index in range(3) for name in V2_ENTITY_FEATURES] + ["episode_progress"]
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,8 @@ def _normalize_v2_global(raw: NDArray[np.float64], names: list[str], config: dic
             transformed = value / max_theta
         elif name.endswith("last_action"):
             transformed = 2.0 * value / 14.0 - 1.0
+        elif name == "episode_progress":
+            transformed = 2.0 * float(np.clip(value, 0.0, 1.0)) - 1.0
         else:
             raise ValueError(f"Unknown V2 global-state feature: {name}")
         output[index] = transformed
@@ -131,18 +135,35 @@ def _entity_block_v2(aircraft: UAV, config: dict[str, object]) -> NDArray[np.flo
     ], dtype=np.float64)
 
 
-def build_global_state_v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: dict[str, object]) -> GlobalStateResult:
-    """Build fixed-ID 60D full-entity global state for homogeneous 3v3 V2."""
+def _clear_dead_global_v2_slots(
+    normalized: NDArray[np.float64],
+    saturated: NDArray[np.bool_],
+    aircraft: Sequence[UAV],
+) -> None:
+    """Ensure dead entity blocks normalize to alive=-1 and nine following zeros."""
+
+    for slot, entity in enumerate(aircraft):
+        if not entity.is_alive:
+            start = slot * V2_ENTITY_SIZE
+            normalized[start] = -1.0
+            normalized[start + 1:start + V2_ENTITY_SIZE] = 0.0
+            saturated[start:start + V2_ENTITY_SIZE] = False
+
+
+def build_global_state_v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: dict[str, object], episode_progress: float) -> GlobalStateResult:
+    """Build fixed-ID 61D full-entity global state for homogeneous 3v3 time-aware V2."""
 
     reds, blues = sorted(red_aircraft, key=lambda u: u.uav_id), sorted(blue_aircraft, key=lambda u: u.uav_id)
     if len(reds) != 3 or len(blues) != 3:
         raise ValueError("V2 global state requires fixed homogeneous 3v3")
     names = global_state_feature_names_v2()
-    raw = np.concatenate([*[_entity_block_v2(u, config) for u in reds], *[_entity_block_v2(u, config) for u in blues]]).astype(np.float64)
+    entities = [*reds, *blues]
+    raw = np.concatenate([*[_entity_block_v2(u, config) for u in entities], np.asarray([episode_progress], dtype=np.float64)]).astype(np.float64)
     normalized, saturated = _normalize_v2_global(raw, names, config)
+    _clear_dead_global_v2_slots(normalized, saturated, entities)
     saturation_count = int(np.count_nonzero(saturated))
     return GlobalStateResult(
-        raw, normalized, names, saturation_count, saturation_count / 60.0,
+        raw, normalized, names, saturation_count, saturation_count / float(V2_GLOBAL_STATE_DIM),
         saturated, [name for name, flag in zip(names, saturated) if flag],
     )
 

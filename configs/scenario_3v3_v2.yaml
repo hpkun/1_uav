@@ -1,7 +1,7 @@
 scenario_name: head_on_mirrored_jitter_v2
-environment_schema_version: homogeneous_3v3_v2
-observation_schema: fixed_id_body_62d
-global_state_schema: full_entity_60d
+environment_schema_version: homogeneous_3v3_v2_timeaware
+observation_schema: fixed_id_body_time_63d
+global_state_schema: full_entity_time_61d
 reward_profile: project_3v3_v2
 scenario_profile: head_on_mirrored_jitter_v2
 multi_terminal_reward_profile: paper_2024_exact

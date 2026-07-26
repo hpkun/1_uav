@@ -45,4 +45,6 @@ total_reward = dense_reward + terminal_reward
 
 `geometry_event` contains attack-zone and advantage-zone shaping events. Combat events bypass Algorithm 2 and are added directly: successful hit, destroyed target, being attacked, being destroyed, boundary, and collision components. This keeps one-step combat events from being redistributed through team dense assignment.
 
-Timeout outcome statistics still record the survivor-count winner, but V2 terminal reward for `timeout` is the configured `timeout_reward` for every red slot. The elimination cases still use `paper_2024_exact`; simultaneous elimination remains zero terminal reward.
+Timeout outcome statistics still record the survivor-count winner, but V2 terminal reward for `timeout` is the configured `timeout_reward` for every red slot and is labeled with profile `project_3v3_v2_timeout`. Simultaneous elimination remains zero terminal reward and is labeled `project_3v3_v2_simultaneous_elimination`. Only `blue_eliminated` and `red_eliminated` continue to use `paper_2024_exact`.
+
+Training diagnostics record each V2 reward component at four scales: per completed episode, per environment decision step, per alive red agent-step, and per fixed red agent episode. If a rollout contains no completed episode, the episode-normalized scales are reported as zero rather than NaN.
