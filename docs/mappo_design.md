@@ -8,8 +8,10 @@ PPO policy and value calculations are exposed as pure functions. `use_huber_loss
 
 Value data flow is deliberately physical-scale. The Critic output layer, rollout values, terminal bootstrap values, GAE, and returns all use the environment reward scale. `ValueNormalizer` is used only inside the Critic loss: after updating its statistics, the same mean/variance snapshot transforms new physical predictions, old physical predictions, and physical return targets before value clipping. It is target normalization, not PopArt, and it never changes the Critic output layer's numerical meaning. Explained variance compares physical Critic predictions directly with physical returns.
 
-## Fixed homogeneous 3v3 status
+## Fixed homogeneous 3v3 V2 status
 
-For the current 3v3 audit target, the Actor is still a shared feed-forward MLP that consumes 45D local observations, and the Critic consumes the 87D global state plus agent identity. The implementation intentionally does not include the 2024 paper's transfer network, three-subnetwork Actor, GRU, attention, self-play, heterogeneous 3v2, or network migration.
+The legacy fixed homogeneous 3v3 path remains available with 45D local observations and an 87D centralized state for backward compatibility and audit comparison. It should be treated as a legacy experimental interface with known observation/state sufficiency risks.
 
-The 3v3 audit found that shapes, masks, terminal-state retention, and finite GAE are working, but it also records unresolved state sufficiency risks: local observations omit health and use distance-ranked slots, while the global state omits health, blue damaged flags, and blue last actions. These findings are documented in `docs/3v3_environment_audit.md` and should not be described as solved by MAPPO.
+The V2 fixed homogeneous 3v3 path is selected by `environment_schema_version: homogeneous_3v3_v2`. It keeps the same shared feed-forward Actor and centralized feed-forward Critic code, but changes the environment interface to a 62D fixed-ID body-frame local observation and a 60D full-entity global state. Checkpoints store this schema metadata and full resume rejects mismatched environment, observation, state, reward, scenario, dimension, or agent-count metadata. Actor-only loading still relies on model tensor shape compatibility.
+
+The implementation intentionally still does not include the 2024 paper's transfer network, three-subnetwork Actor, GRU, attention, self-play, heterogeneous 3v2, or network migration.

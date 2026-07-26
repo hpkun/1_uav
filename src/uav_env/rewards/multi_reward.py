@@ -35,6 +35,16 @@ class MultiAgentRewardBreakdown:
     terminal_alive_count: int = 0
     terminal_contribution_denominator: float = 0.0
     terminal_health_denominator: float = 0.0
+    geometry_event: float = 0.0
+    combat_event: float = 0.0
+    raw_shape: float = 0.0
+    assigned_shape: float = 0.0
+    dense_reward: float = 0.0
+    hit_event_reward: float = 0.0
+    destroy_event_reward: float = 0.0
+    attacked_event_penalty: float = 0.0
+    destroyed_event_penalty: float = 0.0
+    boundary_collision_penalty: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -140,6 +150,12 @@ def multi_terminal_reward_allocations(
     profile = str(config.get("multi_terminal_reward_profile", "project_balanced"))
     if outcome.termination_reason == "ongoing":
         return {u.uav_id: TerminalRewardAllocation(0.0, profile, 0.0, 0.0) for u in red_aircraft}
+    if str(config.get("reward_profile")) == "project_3v3_v2":
+        if outcome.termination_reason == "timeout":
+            value = float(config.get("timeout_reward", -4.0))
+            return {u.uav_id: TerminalRewardAllocation(value, profile, value, 1.0, 1.0) for u in red_aircraft}
+        if outcome.termination_reason == "simultaneous_elimination":
+            return {u.uav_id: TerminalRewardAllocation(0.0, profile, 0.0, 0.0) for u in red_aircraft}
     assumptions = config["project_assumptions"]["multi_terminal_reward"]
     if outcome.winner == "draw":
         value=float(assumptions["draw_reward"])

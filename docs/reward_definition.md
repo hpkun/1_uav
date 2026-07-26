@@ -31,3 +31,18 @@ Project numerical conventions, not paper equations: on a win with `beta=0`, ever
 The fixed-slot 3v3 environment keeps `red_0`, `red_1`, and `red_2` reward breakdowns for MAPPO at every step. A red UAV that was already destroyed before a non-terminal step receives zero situation, event, raw dense, assigned dense, terminal, total, and contribution score. A UAV destroyed during the current step keeps only the Table 2 event(s) triggered in that step, has situation reward zero after the transition, and enters the Algorithm 2 damaged branch once. Later non-terminal steps are zero again. Terminal allocation remains `paper_2024_exact` for all fixed red slots.
 
 The damaged dense branch records the literal Algorithm 2 value as `paper_value = -r_den0*nr - min(Phi_r,den)`, but the project caps the final value by `damage_penalty = -r_den0*nr` using `min(paper_value, damage_penalty)`. This is a project-defined assumption because the literal formula can become positive when the active minimum is negative, while the paper text states damaged UAVs should receive negative reward. It is not documented as a verbatim paper equation.
+
+## Fixed homogeneous 3v3 V2 reward split
+
+The V2 profile `project_3v3_v2` separates reward components before Algorithm 2:
+
+```text
+shape_raw = situation + geometry_event
+assigned_shape = Algorithm2(shape_raw, damaged)
+dense_reward = assigned_shape + combat_event
+total_reward = dense_reward + terminal_reward
+```
+
+`geometry_event` contains attack-zone and advantage-zone shaping events. Combat events bypass Algorithm 2 and are added directly: successful hit, destroyed target, being attacked, being destroyed, boundary, and collision components. This keeps one-step combat events from being redistributed through team dense assignment.
+
+Timeout outcome statistics still record the survivor-count winner, but V2 terminal reward for `timeout` is the configured `timeout_reward` for every red slot. The elimination cases still use `paper_2024_exact`; simultaneous elimination remains zero terminal reward.

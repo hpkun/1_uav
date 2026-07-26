@@ -177,3 +177,21 @@ Outputs:
 - `outputs/audit/3v3_environment_audit.csv`
 
 The audit run found no NaN, Inf, fixed-shape error, worker exception, or obvious program-order damage bias in the checked paths. It did find observation/state aliasing and timeout semantics issues that should be considered before claiming formal 3v3 learnability.
+
+## V2 upgrade audit addendum
+
+The V2 upgrade keeps the legacy 45D/87D interface available, but adds a separate fixed homogeneous 3v3 schema:
+
+- `environment_schema_version: homogeneous_3v3_v2`
+- `observation_schema: fixed_id_body_62d`
+- `global_state_schema: full_entity_60d`
+- `reward_profile: project_3v3_v2`
+- `scenario_profile: head_on_mirrored_jitter_v2`
+
+V2 local observations are 62D: own-state fields, two fixed red ally slots, and three fixed blue enemy slots. Relative position and velocity are expressed in the observer body frame, headings are represented with sine/cosine, health ratios are observable, and dead entity slots use `alive_flag=-1` with all remaining fields zero. Debug metadata also exposes per-red feature names with true entity IDs.
+
+V2 global state is 60D: six fixed entities ordered `red_0..red_2, blue_0..blue_2`, with alive flag, health ratio, absolute position, speed, flight-path angle, heading sine/cosine, and last action. Dead entities are represented by `alive_flag=-1`, zeros for the remaining physical fields, and `LEVEL_HOLD` as the default last action.
+
+The V2 reward path uses `shape_raw = situation + geometry_event` for Algorithm 2 assignment. Combat event rewards bypass Algorithm 2 and are added directly. Timeout terminal reward is the configured fixed penalty for each red slot, while elimination terminal rewards continue to use `paper_2024_exact`.
+
+The updated audit script records both legacy findings and V2 checks. Legacy warnings are preserved as historical compatibility findings; they do not apply to the V2 62D/60D interface.

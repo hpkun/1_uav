@@ -33,3 +33,13 @@
 - The damaged dense branch negative cap is project-defined. It resolves the conflict where the literal Algorithm 2 branch can become positive, while the paper text states damaged UAVs receive negative reward.
 - Timeout survivor-count wins are project outcome semantics and must be reported separately from elimination wins.
 - The 3v3 audit currently leaves health omission, blue alive/action omission in global state, distance-ranked slot swaps, and timeout terminal semantics as unresolved issues.
+
+# Fixed homogeneous 3v3 V2 assumptions
+
+- V2 is still fixed homogeneous 3v3 only. It is not heterogeneous 3v2, transfer learning, attention, GRU, self-play, radar, or continuous action control.
+- The V2 Actor input is a 62D project-defined fixed-ID body-frame observation designed to remove the legacy health omission and distance-ranked slot-swap risks.
+- The V2 Critic input is a 60D project-defined full-entity global state ordered `red_0..red_2, blue_0..blue_2`.
+- The V2 train/validation/test scenario is mirrored head-on with bounded jitter. The symmetric no-jitter stress scene is diagnostic only and is not used for checkpoint selection.
+- The V2 reward profile keeps the paper-derived situation/terminal structure where applicable, but splits geometry shaping from combat events before Algorithm 2. Combat events are added directly after dense assignment.
+- V2 timeout terminal reward is the configured fixed penalty for each red slot; timeout survivor-count outcome statistics remain separate from elimination outcomes.
+- Checkpoint schema metadata is a project safety mechanism to prevent full-resume mixing between legacy and V2 observation/state/reward definitions.

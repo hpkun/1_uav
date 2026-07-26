@@ -30,6 +30,8 @@ from uav_env.envs import make_3v3_env
 from uav_env.envs.combat_multi_env import CombatMultiEnv
 from uav_env.observations.global_state import build_global_state
 from uav_env.observations.multi_observation import build_multi_observations
+from uav_env.observations.global_state import global_state_feature_names_v2
+from uav_env.observations.multi_observation import multi_observation_feature_names_v2, multi_observation_feature_names_v2_for_agent
 from uav_env.opponents.random import RandomOpponent
 from uav_env.opponents.straight import StraightOpponent
 from uav_env.opponents.pursuit import PursuitOpponent
@@ -91,8 +93,8 @@ class Audit:
         )
 
 
-def new_env(seed: int = 1) -> CombatMultiEnv:
-    return make_3v3_env("head_on_formation", "pursuit", seed=seed, multi_terminal_reward_profile="paper_2024_exact")
+def new_env(seed: int = 1, scenario: str = "head_on_formation") -> CombatMultiEnv:
+    return make_3v3_env(scenario, "pursuit", seed=seed, multi_terminal_reward_profile="paper_2024_exact")
 
 
 def make_pursuit(env: CombatMultiEnv) -> PursuitOpponent:
@@ -391,8 +393,8 @@ def audit_slot_stability(audit: Audit) -> None:
     audit.add("slot_stability", "distance-ranked enemy slot stability", "warn" if switched else "pass", "P1" if switched else "P2", "project_defined", "Enemy blocks are sorted by current distance, so ordinary MLP inputs can experience entity-slot jumps at crossings.", {"rows": rows, "mlp_note": "The shared feed-forward Actor has no permutation-equivariant structure."})
 
 
-def run_rule_episode(seed: int, red_policy_name: str) -> tuple[dict[str, Any], dict[str, float]]:
-    env = new_env(seed)
+def run_rule_episode(seed: int, red_policy_name: str, scenario: str = "head_on_formation") -> tuple[dict[str, Any], dict[str, float]]:
+    env = new_env(seed, scenario)
     env.reset(seed=seed)
     controller = TeamRuleController(red_policy_name, make_policy(red_policy_name, env), seed + 1_000_003)
     terminated = truncated = False
@@ -437,8 +439,8 @@ def run_rule_episode(seed: int, red_policy_name: str) -> tuple[dict[str, Any], d
     return summary, dict(reward_sums)
 
 
-def aggregate_rule(policy: str, episodes: int = 100) -> dict[str, Any]:
-    tasks = [(10_000 + offset, policy) for offset in range(episodes)]
+def aggregate_rule(policy: str, episodes: int = 100, scenario: str = "head_on_formation") -> dict[str, Any]:
+    tasks = [(10_000 + offset, policy, scenario) for offset in range(episodes)]
     with mp.get_context("spawn").Pool(processes=4) as pool:
         completed = pool.starmap(run_rule_episode, tasks)
     summaries = [item[0] for item in completed]
@@ -577,6 +579,90 @@ def audit_mappo_interface(audit: Audit) -> None:
     audit.add("mappo_interface", "fixed 3-agent MAPPO adapter and vector interface", "pass" if ok else "fail", "P0", "project_defined", "Adapter exposes 3 rewards, 45-d Actor observations, 87-d Critic state, fixed masks, terminal-state retention, and finite GAE.", {"conditions": conditions, "reset_shapes": {"local": reset.local_obs.shape, "global": reset.global_state.shape}, "vector_shapes": {key: np.asarray(value).shape for key, value in reset_vec.items() if key in {"local_obs", "global_state", "available_actions"}}, "gae_adv": adv.tolist()})
 
 
+def audit_v2_environment(audit: Audit) -> None:
+    env = new_env(101, "head_on_mirrored_jitter_v2")
+    obs, info = env.reset(seed=101)
+    checks = {
+        "local_62d": obs.shape == (3, 62),
+        "global_60d": info["global_state"].shape == (60,),
+        "feature_names_62d": info["local_observation_feature_names"] == multi_observation_feature_names_v2(),
+        "per_agent_feature_names_true_ids": info["local_observation_feature_names_by_agent"]["red_0"] == multi_observation_feature_names_v2_for_agent("red_0"),
+        "feature_names_60d": info["global_state_feature_names"] == global_state_feature_names_v2(),
+    }
+    base_obs = env._observations().raw[0].copy()
+    env.red_aircraft[0].state = replace(env.red_aircraft[0].state, heading_angle=pi / 2)
+    checks["actor_heading_distinguishable"] = not np.array_equal(base_obs, env._observations().raw[0])
+    env = new_env(101, "head_on_mirrored_jitter_v2"); env.reset(seed=101)
+    base_obs = env._observations().raw[0].copy(); env.red_aircraft[0].state = replace(env.red_aircraft[0].state, health=1.0)
+    checks["actor_own_health_distinguishable"] = not np.array_equal(base_obs, env._observations().raw[0])
+    env = new_env(101, "head_on_mirrored_jitter_v2"); env.reset(seed=101)
+    base_obs = env._observations().raw[0].copy(); env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, health=1.0)
+    checks["actor_enemy_health_distinguishable"] = not np.array_equal(base_obs, env._observations().raw[0])
+    env = new_env(101, "symmetric_stress_test_v2"); env.reset(seed=101)
+    own = env.red_aircraft[1]
+    env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, x=own.state.x + 100.0, y=own.state.y + 100.0)
+    left = env._observations().raw[1][31]
+    env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, y=own.state.y - 100.0)
+    right = env._observations().raw[1][31]
+    checks["body_bearing_left_right"] = left > 0.0 and right < 0.0
+    slots = []
+    for offset in (2.0, 0.1, -0.1, -2.0):
+        env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, x=own.state.x + 100.0, y=own.state.y + offset)
+        env.blue_aircraft[1].state = replace(env.blue_aircraft[1].state, x=own.state.x + 100.0, y=own.state.y - offset)
+        raw = env._observations().raw[1]
+        slots.append((float(raw[25]), float(raw[38])))
+    checks["fixed_enemy_slots"] = slots[0][0] > 0.0 and slots[-1][0] < 0.0 and slots[0][1] < 0.0
+    env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, alive=False, damaged=True, health=0.0, x=9999.0)
+    checks["dead_local_slot_zero"] = bool(env._observations().raw[1][23] == -1.0 and np.allclose(env._observations().raw[1][24:36], 0.0))
+
+    env = new_env(102, "head_on_mirrored_jitter_v2"); env.reset(seed=102)
+    base_state = env._global_state().raw.copy()
+    distinctions = []
+    for mutator in (
+        lambda e: setattr(e.red_aircraft[0], "state", replace(e.red_aircraft[0].state, z=1.0)),
+        lambda e: setattr(e.red_aircraft[0], "state", replace(e.red_aircraft[0].state, speed=150.0)),
+        lambda e: setattr(e.red_aircraft[0], "state", replace(e.red_aircraft[0].state, health=1.0)),
+        lambda e: setattr(e.blue_aircraft[0], "state", replace(e.blue_aircraft[0].state, health=1.0)),
+        lambda e: setattr(e.blue_aircraft[0], "state", replace(e.blue_aircraft[0].state, alive=False, damaged=True, health=0.0)),
+        lambda e: setattr(e.blue_aircraft[0], "state", replace(e.blue_aircraft[0].state, last_action=int(DiscreteAction15.RIGHT_HOLD))),
+        lambda e: setattr(e.blue_aircraft[0], "state", replace(e.blue_aircraft[0].state, heading_angle=1.0)),
+        lambda e: setattr(e.blue_aircraft[0], "state", replace(e.blue_aircraft[0].state, flight_path_angle=0.1)),
+    ):
+        env2 = new_env(102, "head_on_mirrored_jitter_v2"); env2.reset(seed=102); mutator(env2)
+        distinctions.append(not np.array_equal(base_state, env2._global_state().raw))
+    checks["critic_markov_distinctions"] = all(distinctions)
+    env = new_env(102, "head_on_mirrored_jitter_v2"); env.reset(seed=102)
+    env.blue_aircraft[0].state = replace(env.blue_aircraft[0].state, alive=False, damaged=True, health=0.0, x=9999.0)
+    checks["dead_global_slot_zero"] = bool(env._global_state().raw[30] == -1.0 and np.allclose(env._global_state().raw[31:39], 0.0))
+
+    terminal = multi_terminal_reward_allocations(EpisodeOutcome("red", True, True, "timeout", 400, 200.0, 3, 2), env.red_aircraft, {}, env.config)
+    checks["timeout_minus_four"] = {item.reward for item in terminal.values()} == {-4.0}
+    win = multi_terminal_reward_allocations(EpisodeOutcome("red", True, False, "blue_eliminated", 10, 5.0, 3, 0), env.red_aircraft, {}, env.config)
+    checks["elimination_uses_win_formula"] = all(item.reward > 0.0 for item in win.values())
+    env.red_aircraft[0].state = replace(env.red_aircraft[0].state, z=float(env.config["min_altitude"]), health=300.0, alive=True, damaged=False, crashed=False)
+    _, _, _, _, step_info = env.step(np.zeros(3, dtype=np.int64))
+    bd = step_info["agent_reward_breakdowns"]["red_0"]
+    checks["combat_event_not_assigned_shape"] = bd.combat_event == -0.5 and bd.assigned_shape <= -0.03 and bd.dense_reward <= -0.53
+
+    a = new_env(201, "head_on_mirrored_jitter_v2"); b = new_env(201, "head_on_mirrored_jitter_v2"); c = new_env(202, "head_on_mirrored_jitter_v2")
+    a.reset(seed=201); b.reset(seed=201); c.reset(seed=202)
+    checks["same_seed_jitter_reproducible"] = [u.state.to_kinematic_vector().tolist() for u in a.all_aircraft] == [u.state.to_kinematic_vector().tolist() for u in b.all_aircraft]
+    checks["different_seed_jitter_changes"] = [u.state.to_kinematic_vector().tolist() for u in a.all_aircraft] != [u.state.to_kinematic_vector().tolist() for u in c.all_aircraft]
+    stress = new_env(203, "symmetric_stress_test_v2"); stress.reset(seed=203)
+    checks["symmetric_stress_exact"] = [u.state.x for u in stress.red_aircraft] == [-900.0, -900.0, -900.0] and [u.state.x for u in stress.blue_aircraft] == [900.0, 900.0, 900.0]
+    vector = ParallelCombatVectorEnv(CombatEnvDescription("3v3", "head_on_mirrored_jitter_v2", "pursuit", "paper_2024_exact"), 4, 301)
+    try:
+        reset = vector.reset()
+        checks["parallel_v2_shapes"] = reset["local_obs"].shape == (4, 3, 62) and reset["global_state"].shape == (4, 60)
+    finally:
+        vector.close()
+    audit.artifacts["v2_rule_experiments"] = {policy: aggregate_rule(policy, 100, "head_on_mirrored_jitter_v2") for policy in ("pursuit", "straight", "random")}
+    audit.artifacts["v2_symmetric_stress_rule"] = {"pursuit": aggregate_rule("pursuit", 100, "symmetric_stress_test_v2")}
+    attack_warning = audit.artifacts["v2_rule_experiments"]["pursuit"]["mean_attack_attempts"] == 0.0
+    status = "fail" if not all(checks.values()) else ("warn" if attack_warning else "pass")
+    audit.add("v2_environment", "homogeneous_3v3_v2 observation, state, reward, reset, and diagnostics", status, "P1" if status == "warn" else "P0", "v2", "V2 fixes the audited state/slot/reward/timeout semantics; rule pursuit reachability remains a warning if attack attempts are zero.", {"checks": checks, "all_checks_pass": all(checks.values()), "slot_trace": slots, "pursuit_attack_warning": attack_warning, "rule_stats": audit.artifacts["v2_rule_experiments"], "stress": audit.artifacts["v2_symmetric_stress_rule"]})
+
+
 def flatten_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
     flattened = []
     for row in rows:
@@ -599,6 +685,7 @@ def main() -> None:
     audit_rewards(audit)
     audit_terminal_semantics(audit)
     audit_mappo_interface(audit)
+    audit_v2_environment(audit)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     payload = {"rows": to_builtin(audit.rows), "artifacts": to_builtin(audit.artifacts)}

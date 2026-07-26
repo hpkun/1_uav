@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import pytest
-from uav_env.algorithms.mappo.checkpoint import save_checkpoint,load_checkpoint
+from uav_env.algorithms.mappo.checkpoint import save_checkpoint,load_checkpoint,schema_metadata
 from uav_env.algorithms.mappo.config import load_mappo_config
 from uav_env.algorithms.mappo.networks import SharedActor,CentralizedCritic
 from uav_env.algorithms.mappo.runner import MAPPORunner
@@ -40,3 +40,14 @@ def test_v2_actor_only_allowed_but_full_resume_rejected(tmp_path):
  load_checkpoint(p,SharedActor(11),actor_only=True)
  with pytest.raises(ValueError,match="v2 critic value semantics are incompatible with v3 physical-value critic"):
   load_checkpoint(p,SharedActor(11),CentralizedCritic(10,1),normalizer=ValueNormalizer())
+
+
+def test_checkpoint_schema_metadata_rejects_legacy_to_v2_resume(tmp_path):
+ a=SharedActor(62);c=CentralizedCritic(60,3);ao=torch.optim.Adam(a.parameters());co=torch.optim.Adam(c.parameters());n=ValueNormalizer();p=tmp_path/"schema.pt"
+ cfg={"environment":{"environment_schema_version":"homogeneous_3v3_v2","observation_schema":"fixed_id_body_62d","global_state_schema":"full_entity_60d","reward_profile":"project_3v3_v2","scenario_profile":"head_on_mirrored_jitter_v2"}}
+ meta=schema_metadata(cfg,62,60,3)
+ save_checkpoint(p,a,c,ao,co,n,cfg,0,0,None,metadata=meta)
+ load_checkpoint(p,SharedActor(62),CentralizedCritic(60,3),normalizer=ValueNormalizer(),expected_metadata=meta)
+ legacy={**meta,"observation_schema":"legacy","obs_dim":45}
+ with pytest.raises(ValueError,match="checkpoint schema mismatch"):
+  load_checkpoint(p,SharedActor(62),CentralizedCritic(60,3),normalizer=ValueNormalizer(),expected_metadata=legacy)

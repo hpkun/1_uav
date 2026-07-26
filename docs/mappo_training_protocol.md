@@ -21,8 +21,10 @@ Checkpoint v3 preserves networks, optimizers, ValueNormalizer, Python/NumPy/Torc
 
 `overall_red_win_rate` includes timeout survivor-count wins. `elimination_win_rate` requires `blue_eliminated`; `timeout_survival_win_rate` is a red timeout win by survivor count; `decisive_win_rate` is any red non-timeout win. A timeout-survival win must not be reported as completing air-combat victory.
 
-## Fixed homogeneous 3v3 reporting
+## Fixed homogeneous 3v3 V2 reporting
 
-For the audited 3v3 target, report fixed homogeneous 3v3 separately from all 1v1/2v2 probes. The 3v3 configuration uses 45D local observations, 87D global state, shared feed-forward Actor, centralized Critic, and the 4-process parallel smoke setup. Do not present 1v1 transfer, heterogeneous 3v2, attention, GRU, self-play, or network migration as implemented.
+Report fixed homogeneous 3v3 V2 separately from legacy 45D/87D probes and all 1v1/2v2 experiments. The V2 configuration uses 62D fixed-ID body-frame local observations, a 60D full-entity global state, a shared feed-forward Actor, a centralized Critic, and the same 4-process parallel smoke setup. Do not present 1v1 transfer, heterogeneous 3v2, attention, GRU, self-play, or network migration as implemented.
 
-Before formal 3v3 training claims, run `scripts/audit_3v3_environment.py` and review `docs/3v3_environment_audit.md`. The audit currently records P1 unresolved items for health/state aliasing, distance-ranked entity slot swaps, and timeout survivor-count terminal semantics. Timeout survivor-count wins and elimination wins must remain separate in tables and checkpoint selection notes.
+The V2 training/validation/test scenario is `head_on_mirrored_jitter_v2`. `symmetric_stress_test_v2` is an additional final diagnostic for last/best checkpoints only and must not be used for checkpoint selection. A timeout in V2 keeps survivor-count outcome statistics, but terminal reward is the configured timeout penalty for every red slot; timeout survival and elimination wins must remain separate in tables.
+
+Before formal 3v3 V2 training claims, run `scripts/audit_3v3_environment.py`, `pytest`, and a short MAPPO smoke such as `configs/mappo_smoke_3v3_v2.yaml`. A 4096-step smoke validates plumbing, shapes, workers, logging, and finite numerical behavior; it is not convergence evidence.
