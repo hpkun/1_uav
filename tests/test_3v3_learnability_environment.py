@@ -79,15 +79,22 @@ def test_learnability_config_is_isolated_from_formal_v2() -> None:
     assert formal["formation_lateral_spacing"] == pytest.approx(500.0)
     for field in ("longitudinal_jitter", "lateral_jitter", "altitude_jitter", "speed_jitter", "heading_jitter"):
         assert learn[field] == pytest.approx(0.25 * formal[field])
+    base_mappo = load_mappo_config("configs/mappo_smoke_1v1.yaml")
     formal_mappo = load_mappo_config("configs/mappo_3v3_v2.yaml")
     learn_mappo = load_mappo_config("configs/mappo_learnability_3v3.yaml")
+    assert base_mappo["run_symmetric_stress_test"] is False
     assert formal_mappo["environment"]["scenario"] == FORMAL_SCENARIO
     assert formal_mappo["environment"]["opponent"] == "pursuit"
     assert formal_mappo["total_env_steps"] == 300000
+    assert formal_mappo["run_symmetric_stress_test"] is True
     assert learn_mappo["environment"]["scenario"] == LEARNABILITY_SCENARIO
     assert learn_mappo["environment"]["opponent"] == "straight"
     assert learn_mappo["seed"] == 1
     assert learn_mappo["total_env_steps"] == 50000
+    assert learn_mappo["evaluation_interval"] == 10000
+    assert learn_mappo["validation_episodes"] == 10
+    assert learn_mappo["test_episodes"] == 10
+    assert learn_mappo["run_symmetric_stress_test"] is False
 
 
 def test_learnability_reset_determinism_geometry_shapes_and_straight_blue() -> None:

@@ -25,7 +25,7 @@ python scripts/train_mappo.py \
   --run-name learnability_3v3_seed1
 ```
 
-This configuration uses one training seed, four parallel workers, `head_on_learnability_v1`, and blue `StraightOpponent`. It is capped at 50k environment steps and is a basic learnability gate, not a formal paper experiment.
+This configuration uses one training seed, four parallel workers, `head_on_learnability_v1`, and blue `StraightOpponent`. It is capped at 50k environment steps with `evaluation_interval: 10000`, `validation_episodes: 10`, `test_episodes: 10`, and `run_symmetric_stress_test: false`. That gives about five small validation passes and avoids low-information evaluation overhead before learning begins. `symmetric_stress_test_v2` is disabled in Stage 1. This is a basic learnability gate, not a formal paper experiment.
 
 Stage 1 passes only if training or deterministic validation shows evidence that return improvement is coupled to combat behavior:
 
@@ -47,3 +47,5 @@ opponent: pursuit
 ```
 
 Then it is reasonable to consider a second training seed, longer runs, checkpoint comparisons, multi-seed statistics, and paper-style reporting. Before Stage 1 passes, do not run 300k training, multi-seed training, or bulk checkpoint comparisons.
+
+Formal strong-opponent configs may explicitly enable `symmetric_stress_test_v2` with `run_symmetric_stress_test: true`; other configs leave that switch off.

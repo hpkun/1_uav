@@ -7,6 +7,7 @@ evaluation_interval: 20000
 validation_episodes: 100
 test_episodes: 200
 checkpoint_selection: combat
+run_symmetric_stress_test: true
 environment:
   kind: 3v3
   scenario: head_on_mirrored_jitter_v2

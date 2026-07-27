@@ -13,6 +13,11 @@ htmlcov/
 venv/
 env/
 
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
 # Build
 build/
 dist/
@@ -28,6 +33,20 @@ tensorboard/
 events.out.tfevents.*
 **/events.out.tfevents.*
 
+# Local caches and scratch directories
+.cache/
+tmp/
+temp/
+artifacts/
+
+# Archives and packaged outputs
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
 # Profiling and temporary files
 *.prof
 *.trace
@@ -37,6 +56,12 @@ events.out.tfevents.*
 *.bak
 *.swp
 *~
+
+# Process and crash artifacts
+nohup.out
+*.pid
+core
+core.*
 
 # IDE and OS
 .vscode/

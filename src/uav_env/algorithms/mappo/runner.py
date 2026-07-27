@@ -308,7 +308,7 @@ class MAPPORunner:
             self.resume(str(self.output_dir/"checkpoints"/f"{label}.pt"),actor_only=True)
             test_evaluations[label]=self.evaluate(int(self.config["test_episodes"]),int(self.config["test_seed_start"]),deterministic=True)
         symmetric_stress_test={}
-        if self.schema_metadata.get("environment_schema_version") == "homogeneous_3v3_v2_timeaware":
+        if self.schema_metadata.get("environment_schema_version") == "homogeneous_3v3_v2_timeaware" and bool(self.config.get("run_symmetric_stress_test", False)):
             for label in ("last","best"):
                 self.resume(str(self.output_dir/"checkpoints"/f"{label}.pt"),actor_only=True)
                 symmetric_stress_test[label]=self.evaluate(int(self.config["test_episodes"]),int(self.config["test_seed_start"]),deterministic=True,scenario="symmetric_stress_test_v2")

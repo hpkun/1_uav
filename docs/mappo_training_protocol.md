@@ -29,9 +29,11 @@ Use `configs/mappo_learnability_3v3.yaml`:
 - opponent: `straight`
 - seed: `1`
 - total environment steps: `50000`
-- validation/test episodes: `20`
+- evaluation interval: `10000`
+- validation/test episodes: `10`
+- run symmetric stress test: `false`
 
-This stage asks whether fixed homogeneous 3v3 MAPPO can learn approach, attack-area entry, attacks, hits, or damage in a lower-difficulty environment without changing rewards or MAPPO algorithms. A 4096-step smoke of this config is allowed to verify workers, shapes, GAE, PPO update, finite numerics, and checkpoint writing. It is not evidence of learned combat behavior.
+This stage asks whether fixed homogeneous 3v3 MAPPO can learn approach, attack-area entry, attacks, hits, or damage in a lower-difficulty environment without changing rewards or MAPPO algorithms. Stage 1 runs about five small validation passes and keeps evaluation episodes intentionally small so early runs do not spend most of their time on low-information evaluations. `symmetric_stress_test_v2` is disabled here. A 4096-step smoke of this config is allowed to verify workers, shapes, GAE, PPO update, finite numerics, and checkpoint writing. It is not evidence of learned combat behavior.
 
 Do not run 300k training, multi-seed training, or bulk checkpoint comparisons before Stage 1 passes.
 
@@ -51,3 +53,5 @@ project_3v3_v2
 ```
 
 Only after Stage 1 passes should training return to the formal pursuit-opponent environment and consider longer runs, additional seeds, checkpoint comparisons, or paper-style statistics.
+
+`symmetric_stress_test_v2` is enabled only by formal strong-opponent configurations that explicitly set `run_symmetric_stress_test: true`.
