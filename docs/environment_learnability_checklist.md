@@ -1,30 +1,49 @@
 # Environment Learnability Checklist
 
-训练前后均应检查：
+This checklist is for the fixed homogeneous 3v3 time-aware V2 environment. It separates environment reachability, basic MAPPO learnability, and formal strong-opponent experiments. Do not treat one failed short run as proof that the environment is impossible to learn.
 
-- 局部观测和全局状态的平均/最大饱和率，并定位饱和字段；
-- dense、event、terminal 奖励各分量尺度，以及 terminal reward 占总回报比例；
-- 随机策略、规则策略和学习策略的撞地率、超时率与 episode length；
-- 动作熵、15 类动作频率和是否发生动作塌缩；
-- value explained variance、value/return 尺度及是否发散；
-- PPO clip fraction、approx KL、ratio、梯度范数是否有限；
-- 对 straight、pursuit 和 random 基线的胜率；
-- 相同独立评估 seed 上 initial、last、best 的配对差异；
-- 多训练 seed 的均值、标准差、95% 置信区间；
-- 对称性报告中的阵营胜率差、撞地差、配对结果一致率；
-- 是否出现 NaN/Inf、无可用动作行、reset state 被误用于 truncated bootstrap。
+## Stage 0: deterministic environment checks
 
-任何单个 seed 的胜利轨迹、短期 loss 下降或规则对手胜率都不能单独证明环境可学习或算法收敛。
+Stage 0 does not run learning. It verifies that the environment and MAPPO interface are controllable and finite.
 
-## Fixed 3v3 V2 reward-ordering gate
+- `head_on_learnability_v1` must use `homogeneous_3v3_v2_timeaware`, `fixed_id_body_time_63d`, `full_entity_time_61d`, and `project_3v3_v2`.
+- Local observations must be `(3, 63)` and global state must be `(61,)`.
+- `episode_progress` must reset to `-1` in normalized observations/state and reach `+1` at the 400-step timeout.
+- Basic action tests must show left/right, accelerate/decelerate, and climb/dive effects with finite outputs and distinguishable Actor observations.
+- A fixed-seed rule-pursuit red team against straight blue in `head_on_learnability_v1` must produce red attack attempts, hits, and effective damage through the real environment step path.
+- Four parallel workers must reset, step, report `(4, 3, 63)` and `(4, 61)` tensors, and close cleanly.
 
-Before treating any 300k-scale fixed homogeneous 3v3 V2 run as learnability evidence, run `scripts/diagnose_3v3_reward_ordering.py` on `head_on_mirrored_jitter_v2`.
+`scripts/diagnose_3v3_reward_ordering.py` is kept as an optional fixed-policy environment and reward-ordering helper. It is not the current development mainline and should not be expanded into checkpoint ranking, historical trend analysis, or new statistical machinery.
 
-- Red rule pursuit is used to test whether active combat is reachable through the real environment dynamics, attack, and reward interfaces.
-- Red straight and random baselines test whether the current reward accidentally favors delay, straight flight, or random behavior over active engagement.
-- Learned Actor checkpoints, when provided, are loaded actor-only and compared with the rule policies on the same paired seeds.
-- Reward components are accumulated across the whole episode, not sampled from the final step.
-- Current reward coefficients and terminal formulas are not changed by this diagnostic.
-- Timeout survivor-count wins, elimination wins, and draws must remain separate in reports.
-- Interrupted runs can still be diagnosed from `metrics.csv` and `evaluations.csv` with `scripts/analyze_mappo_run.py`.
-- Short training probes are meaningful only after fixed-policy reward ordering is understood.
+## Stage 1: single-seed basic learnability
+
+Use only:
+
+```bash
+python scripts/train_mappo.py \
+  --config configs/mappo_learnability_3v3.yaml \
+  --run-name learnability_3v3_seed1
+```
+
+This configuration uses one training seed, four parallel workers, `head_on_learnability_v1`, and blue `StraightOpponent`. It is capped at 50k environment steps and is a basic learnability gate, not a formal paper experiment.
+
+Stage 1 passes only if training or deterministic validation shows evidence that return improvement is coupled to combat behavior:
+
+- red attack attempts remain nonzero rather than appearing as one-off noise;
+- red hits or effective damage do not stay at zero;
+- attack-area occupancy appears during training or validation;
+- return improvement is accompanied by attack, hit, or damage improvement;
+- improvement is not merely a rising timeout rate or survivor-count timeout outcome.
+
+Stage 1 does not require formal win rate against the strong pursuit opponent.
+
+## Stage 2: formal strong-opponent environment
+
+Only after Stage 1 passes should experiments return to:
+
+```text
+head_on_mirrored_jitter_v2
+opponent: pursuit
+```
+
+Then it is reasonable to consider a second training seed, longer runs, checkpoint comparisons, multi-seed statistics, and paper-style reporting. Before Stage 1 passes, do not run 300k training, multi-seed training, or bulk checkpoint comparisons.

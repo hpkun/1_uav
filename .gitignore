@@ -1,11 +1,45 @@
+# Python
 __pycache__/
 *.py[cod]
-*.egg-info/
 .pytest_cache/
 .coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
 .venv/
 venv/
+env/
+
+# Build
 build/
 dist/
-*.png
+*.egg-info/
+
+# Training and experiment outputs
 outputs/
+logs/
+*.log
+runs/
+wandb/
+tensorboard/
+events.out.tfevents.*
+**/events.out.tfevents.*
+
+# Profiling and temporary files
+*.prof
+*.trace
+*.trace.json
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

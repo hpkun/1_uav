@@ -1,0 +1,18 @@
+inherits: mappo_base.yaml
+seed: 1
+num_envs: 4
+vector_env: parallel
+rollout_length: 128
+total_env_steps: 50000
+evaluation_interval: 5000
+validation_seed_start: 10000
+validation_episodes: 20
+test_seed_start: 20000
+test_episodes: 20
+checkpoint_interval: 10000
+checkpoint_selection: combat
+environment:
+  kind: 3v3
+  scenario: head_on_learnability_v1
+  opponent: straight
+  multi_terminal_reward_profile: paper_2024_exact

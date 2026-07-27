@@ -66,7 +66,7 @@ class CombatMultiEnv(BaseUAVEnv):
             if self.red_count != 3 or self.blue_count != 3:
                 raise ValueError("time-aware V2 requires fixed red_count=3 and blue_count=3")
         self.scenario_name = scenario_name or str(config["scenario_name"])
-        if self.red_count == 3 and self.scenario_name not in {"head_on_formation", "head_on_mirrored_jitter_v2", "symmetric_stress_test_v2"}:
+        if self.red_count == 3 and self.scenario_name not in {"head_on_formation", "head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2"}:
             raise ValueError("Fixed 3v3 currently supports only head-on legacy or V2 scenarios")
         self.num_red_agents = self.red_count
         self.local_observation_dim = 63 if self.is_v2 else (self.red_count - 1) * 6 + self.blue_count * 11
@@ -123,7 +123,7 @@ class CombatMultiEnv(BaseUAVEnv):
         )
 
     def _initialize_scenario(self, scenario: str) -> tuple[list[UAVState], list[UAVState]]:
-        if scenario in {"head_on_mirrored_jitter_v2", "symmetric_stress_test_v2"}:
+        if scenario in {"head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2"}:
             if self.red_count != 3:
                 raise ValueError("V2 scenarios are fixed homogeneous 3v3 only")
             distance = float(self.config["initial_team_distance"])

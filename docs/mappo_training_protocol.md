@@ -1,10 +1,10 @@
-# MAPPO training protocol
+# MAPPO Training Protocol
 
-Run from WSL with the `uav` conda environment. Training, validation, and final test roles are distinct. Validation seeds are used only during training and select `best.pt`; after training, initial/last/best are reevaluated on a non-overlapping test range. `final_summary.yaml` treats only test results as formal performance.
+Run commands from WSL with the `uav` conda environment. Training, validation, and final test roles are distinct: validation seeds select `best.pt`, and final test seeds are held out for reporting.
 
-`checkpoint_selection: smoke` retains the simple overall-win/crash/return ordering and is limited to pipeline smoke such as `tail_chase`. Formal `head_on`, `balanced_random`, `head_on_formation`, `offset_formation`, and multi-aircraft balanced configurations use `checkpoint_selection: combat`: elimination win rate, overall red win rate, effective damage, survivor difference, hits, attack-area steps, team return, lower red crash rate, then lower timeout rate. Timeout rate is deliberately last so a 0-win, 0-damage, no-survivor fast failure cannot beat a checkpoint with survival, damage, or better return only because it timed out less often.
+`checkpoint_selection: smoke` is only for pipeline smoke runs. Formal and learnability 3v3 runs use `checkpoint_selection: combat`, ranked by elimination win rate, overall red win rate, effective damage, survivor difference, hits, attack-area steps, team return, lower red crash rate, and finally lower timeout rate. Timeout rate is deliberately last so fast 0-win failures are not selected over checkpoints with survival, damage, or better return.
 
-Formal return semantics are:
+Return semantics are:
 
 ```text
 team_step_reward = mean(agent_rewards)
@@ -13,24 +13,41 @@ agent_sum_episode_return = sum_t sum(agent_rewards)
 mean_per_agent_episode_return = agent_sum_episode_return / num_agents
 ```
 
-Training still optimizes each agent's own rewards. `mean_episode_return` is retained only as an alias for team return. All rules and MAPPO comparisons use the same definition; in 1v1 all three returns coincide.
+`overall_red_win_rate` includes timeout survivor-count wins. `elimination_win_rate` requires `blue_eliminated`. `timeout_survival_win_rate` is a red timeout win by survivor count. Timeout survivor-count wins, elimination wins, and draws must remain separate in reports.
 
-Use `scripts/run_mappo_multiseed.py` for sequential single-device seeds. Each `seed_summary.yaml` records validation provenance separately from final test evaluations. Use `scripts/aggregate_mappo_multiseed.py` to aggregate test results by default. Across independent training seeds it reports a Student-t 95% interval, sample standard deviation, median, and min/max. Per-episode binary rule comparisons continue to use Wilson intervals. A smoke test or one favorable seed demonstrates pipeline execution, not convergence.
+## Stage 0: environment-only checks
 
-Checkpoint v3 preserves networks, optimizers, ValueNormalizer, Python/NumPy/Torch RNG, vector environments, partial episode return accumulators, and the Trainer's independent minibatch generator state. A v2 checkpoint may initialize the Actor only; full v2 resume is rejected because its Critic value semantics are incompatible.
+Stage 0 verifies code and environment mechanics without learning. Run `pytest -q`; the learnability tests check schemas, shapes, deterministic reset, action controllability, rule-pursuit reachability against straight blue, timeout progress, and four-worker vector execution.
 
-`overall_red_win_rate` includes timeout survivor-count wins. `elimination_win_rate` requires `blue_eliminated`; `timeout_survival_win_rate` is a red timeout win by survivor count; `decisive_win_rate` is any red non-timeout win. A timeout-survival win must not be reported as completing air-combat victory.
+The optional helper `scripts/diagnose_3v3_reward_ordering.py` may be used to compare fixed policies, but it is not the main development path and should not be expanded into historical run analysis or bulk checkpoint ranking.
 
-## Fixed homogeneous 3v3 V2 reporting
+## Stage 1: basic 3v3 learnability
 
-Report fixed homogeneous 3v3 V2 separately from legacy 45D/87D probes and all 1v1/2v2 experiments. The formal V2 configuration uses 63D fixed-ID body-frame local observations, a 61D full-entity global state, a shared feed-forward Actor, a centralized Critic, and the same 4-process parallel smoke setup. Do not present 1v1 transfer, heterogeneous 3v2, attention, GRU, self-play, or network migration as implemented.
+Use `configs/mappo_learnability_3v3.yaml`:
 
-The V2 training/validation/test scenario is `head_on_mirrored_jitter_v2`. `symmetric_stress_test_v2` is an additional final diagnostic for last/best checkpoints only and must not be used for checkpoint selection. A timeout in V2 keeps survivor-count outcome statistics, but terminal reward is the configured timeout penalty for every red slot with profile `project_3v3_v2_timeout`; only elimination terminal allocations use `paper_2024_exact`. Timeout survival and elimination wins must remain separate in tables.
+- scenario: `head_on_learnability_v1`
+- opponent: `straight`
+- seed: `1`
+- total environment steps: `50000`
+- validation/test episodes: `20`
 
-Although the Gymnasium interface reports a V2 timeout as `truncated=True`, MAPPO treats it as the true finite-horizon endpoint of that episode and does not bootstrap the Critic from the timeout terminal state. Legacy time-limit truncation keeps the previous bootstrap behavior through an explicit `truncation_bootstrap_mask`.
+This stage asks whether fixed homogeneous 3v3 MAPPO can learn approach, attack-area entry, attacks, hits, or damage in a lower-difficulty environment without changing rewards or MAPPO algorithms. A 4096-step smoke of this config is allowed to verify workers, shapes, GAE, PPO update, finite numerics, and checkpoint writing. It is not evidence of learned combat behavior.
 
-Before formal 3v3 V2 training claims, run `scripts/audit_3v3_environment.py`, `pytest`, and a short MAPPO smoke such as `configs/mappo_smoke_3v3_v2.yaml`. A 4096-step smoke validates plumbing, shapes, workers, logging, red/blue combat statistics, reward component diagnostics, and finite numerical behavior; it is not convergence evidence.
+Do not run 300k training, multi-seed training, or bulk checkpoint comparisons before Stage 1 passes.
 
-Before launching or interpreting a 300k-scale 3v3 V2 run, first run `scripts/diagnose_3v3_reward_ordering.py`. The diagnostic compares red `pursuit`, `straight`, and `random` against the same blue `PursuitOpponent` in `head_on_mirrored_jitter_v2` with identical paired seeds. Rule pursuit checks whether active combat is reachable through the real environment interface; straight and random check whether the current reward ranks delay-like behavior above active engagement. Optional learned Actor checkpoints are loaded actor-only and compared on the same seeds. This diagnostic does not modify the reward.
+## Stage 2: formal V2 strong opponent
 
-Interrupted training directories remain diagnosable with `scripts/analyze_mappo_run.py` using the existing `metrics.csv`, `evaluations.csv`, and checkpoint directory. The report keeps elimination wins, timeout survivor-count wins, and draws separate. A short or failed run is evidence for a specific failure mode, not proof that the environment is absolutely unlearnable.
+The formal V2 setting remains:
+
+```text
+configs/scenario_3v3_v2.yaml
+configs/mappo_3v3_v2.yaml
+head_on_mirrored_jitter_v2
+opponent: pursuit
+homogeneous_3v3_v2_timeaware
+fixed_id_body_time_63d
+full_entity_time_61d
+project_3v3_v2
+```
+
+Only after Stage 1 passes should training return to the formal pursuit-opponent environment and consider longer runs, additional seeds, checkpoint comparisons, or paper-style statistics.
