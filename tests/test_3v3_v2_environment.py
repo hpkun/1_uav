@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from uav_env.actions.discrete_15 import DiscreteAction15
-from uav_env.algorithms.mappo.adapter import CombatEnvDescription, ParallelCombatVectorEnv, make_adapter_from_description
+from uav_env.algorithms.mappo.adapter import CombatEnvDescription, ParallelCombatVectorEnv, SyncCombatVectorEnv, make_adapter_from_description
 from uav_env.algorithms.mappo.config import load_mappo_config
 from uav_env.algorithms.mappo.runner import MAPPORunner
 from uav_env.combat.events import EpisodeOutcome
@@ -144,6 +144,47 @@ def test_v2_episode_progress_values_and_time_markov_state() -> None:
     assert env._global_state().normalized[60] == pytest.approx(1.0)
 
 
+def test_v2_real_400th_step_timeout_terminal_and_vector_autoreset(monkeypatch) -> None:
+    def no_attacks(aircraft, attack_config, damage_config, rng, sample_team_order=None):
+        return MultiCombatStepResult({u.uav_id: u.state.copy() for u in aircraft}, [], [])
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", no_attacks)
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.CombatMultiEnv._resolve_collisions", lambda self: ([], set()))
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.CombatMultiEnv._blue_actions", lambda self, assignments: [DiscreteAction15.LEVEL_HOLD] * 3)
+    vector = SyncCombatVectorEnv([lambda: make_adapter_from_description(CombatEnvDescription("3v3", "symmetric_stress_test_v2", "pursuit", "paper_2024_exact"))], 400)
+    try:
+        reset = vector.reset()
+        assert reset["local_obs"][0, :, 7].tolist() == [-1.0, -1.0, -1.0]
+        assert reset["global_state"][0, 60] == pytest.approx(-1.0)
+        result = None
+        for _ in range(399):
+            result = vector.step(np.zeros((1, 3), dtype=np.int64))
+            assert not result["terminated"][0]
+            assert not result["truncated"][0]
+        assert result is not None
+        assert result["terminal_steps"][0].info["decision_step"] == 399
+        assert result["terminal_steps"][0].global_state[60] == pytest.approx(2.0 * 399.0 / 400.0 - 1.0)
+        result = vector.step(np.zeros((1, 3), dtype=np.int64))
+        terminal = result["terminal_steps"][0]
+        reset_step = result["reset_steps"][0]
+        assert not terminal.terminated and terminal.truncated
+        assert terminal.info["outcome"].termination_reason == "timeout"
+        assert terminal.info["decision_step"] == 400
+        assert terminal.info["episode_progress"] == pytest.approx(1.0)
+        assert terminal.local_obs[:, 7].tolist() == [1.0, 1.0, 1.0]
+        assert terminal.global_state[60] == pytest.approx(1.0)
+        assert {b.terminal for b in terminal.info["agent_reward_breakdowns"].values()} == {-4.0}
+        assert {b.terminal_profile for b in terminal.info["agent_reward_breakdowns"].values()} == {"project_3v3_v2_timeout"}
+        assert reset_step is not None
+        assert reset_step.info["decision_step"] == 0
+        assert reset_step.local_obs[:, 7].tolist() == [-1.0, -1.0, -1.0]
+        assert reset_step.global_state[60] == pytest.approx(-1.0)
+        assert result["next_global_state"][0, 60] == pytest.approx(-1.0)
+        assert terminal.global_state[60] != result["next_global_state"][0, 60]
+    finally:
+        vector.close()
+
+
 def test_v2_jitter_reproducible_and_symmetric_stress_exact() -> None:
     a = make_3v3_env("head_on_mirrored_jitter_v2", seed=5)
     b = make_3v3_env("head_on_mirrored_jitter_v2", seed=5)
@@ -208,6 +249,20 @@ def test_v2_parallel_worker_shapes() -> None:
     finally:
         vector.close()
     assert not any(vector.workers_alive)
+
+
+def test_old_development_v2_runtime_schema_is_rejected() -> None:
+    from uav_env.envs.combat_multi_env import CombatMultiEnv
+    from uav_env.utils.config import load_yaml, deep_merge, project_root
+
+    root = project_root()
+    config = deep_merge(load_yaml(root / "configs" / "base.yaml"), load_yaml(root / "configs" / "paper_2024_homogeneous.yaml"), load_yaml(root / "configs" / "scenario_3v3_v2.yaml"))
+    config["environment_schema_version"] = "homogeneous_3v3_v2"
+    config["observation_schema"] = "fixed_id_body_62d"
+    config["global_state_schema"] = "full_entity_60d"
+    config["red_count"] = config["blue_count"] = 3
+    with pytest.raises(ValueError, match="development-only 62D/60D schema"):
+        CombatMultiEnv(config, "head_on_mirrored_jitter_v2", "pursuit")
 
 
 def test_v2_rollout_reward_components_include_nonterminal_steps(tmp_path) -> None:

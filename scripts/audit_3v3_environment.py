@@ -581,7 +581,7 @@ def audit_mappo_interface(audit: Audit) -> None:
     terminated = np.asarray([[True], [False]])
     truncated = np.asarray([[False], [True]])
     terminal_values = np.ones((2, 1, 3), dtype=np.float32)
-    adv, returns = compute_gae(rewards, values, terminated, truncated, terminal_values, 0.99, 0.95)
+    adv, returns = compute_gae(rewards, values, terminated, truncated, terminal_values, np.ones_like(terminated, dtype=np.float32), 0.99, 0.95)
     conditions = {
         "reset_local_shape": reset.local_obs.shape == (3, 45),
         "reset_global_shape": reset.global_state.shape == (87,),
@@ -619,6 +619,38 @@ def audit_v2_environment(audit: Audit) -> None:
     env.decision_step = 400
     checks["timeout_progress_one"] = env._observations().normalized[0, 7] == 1.0 and env._global_state().normalized[60] == 1.0
     env.decision_step = 0
+    old_config = dict(env.config)
+    old_config["environment_schema_version"] = "homogeneous_3v3_v2"
+    old_config["observation_schema"] = "fixed_id_body_62d"
+    old_config["global_state_schema"] = "full_entity_60d"
+    try:
+        CombatMultiEnv(old_config, "head_on_mirrored_jitter_v2", "pursuit")
+        checks["old_v2_runtime_schema_rejected"] = False
+    except ValueError as error:
+        checks["old_v2_runtime_schema_rejected"] = "development-only 62D/60D schema" in str(error)
+    no_bootstrap_adv, _ = compute_gae(
+        np.asarray([[[1.0]]], dtype=np.float32),
+        np.asarray([[[2.0]], [[99.0]]], dtype=np.float32),
+        np.asarray([[False]]),
+        np.asarray([[True]]),
+        np.asarray([[[10.0]]], dtype=np.float32),
+        np.asarray([[0.0]], dtype=np.float32),
+        0.99,
+        1.0,
+    )
+    legacy_bootstrap_adv, _ = compute_gae(
+        np.asarray([[[1.0]]], dtype=np.float32),
+        np.asarray([[[2.0]], [[99.0]]], dtype=np.float32),
+        np.asarray([[False]]),
+        np.asarray([[True]]),
+        np.asarray([[[10.0]]], dtype=np.float32),
+        np.asarray([[1.0]], dtype=np.float32),
+        0.99,
+        1.0,
+    )
+    checks["timeaware_timeout_gae_no_bootstrap"] = float(no_bootstrap_adv[0, 0, 0]) == -1.0
+    checks["legacy_truncated_gae_bootstrap"] = isclose(float(legacy_bootstrap_adv[0, 0, 0]), 8.9, rel_tol=1e-6, abs_tol=1e-6)
+    checks["codex_spec_absent"] = not Path("CODEX_SPEC.md").exists()
     base_obs = env._observations().raw[0].copy()
     env.red_aircraft[0].state = replace(env.red_aircraft[0].state, heading_angle=pi / 2)
     checks["actor_heading_distinguishable"] = not np.array_equal(base_obs, env._observations().raw[0])
@@ -687,6 +719,20 @@ def audit_v2_environment(audit: Audit) -> None:
     checks["different_seed_jitter_changes"] = [u.state.to_kinematic_vector().tolist() for u in a.all_aircraft] != [u.state.to_kinematic_vector().tolist() for u in c.all_aircraft]
     stress = new_env(203, "symmetric_stress_test_v2"); stress.reset(seed=203)
     checks["symmetric_stress_exact"] = [u.state.x for u in stress.red_aircraft] == [-900.0, -900.0, -900.0] and [u.state.x for u in stress.blue_aircraft] == [900.0, 900.0, 900.0]
+    timeout_env = new_env(204, "symmetric_stress_test_v2")
+    timeout_env.reset(seed=204)
+    real_timeout_info: dict[str, Any] | None = None
+    for _ in range(400):
+        _, _, terminated, truncated, real_timeout_info = timeout_env.step(np.zeros(3, dtype=np.int64))
+        if terminated or truncated:
+            break
+    checks["real_400th_terminal_progress_one"] = bool(
+        real_timeout_info is not None
+        and real_timeout_info["outcome"].termination_reason == "timeout"
+        and real_timeout_info["decision_step"] == 400
+        and real_timeout_info["global_state"][60] == 1.0
+        and np.allclose(real_timeout_info["local_observations"][:, 7], 1.0)
+    )
     vector = ParallelCombatVectorEnv(CombatEnvDescription("3v3", "head_on_mirrored_jitter_v2", "pursuit", "paper_2024_exact"), 4, 301)
     try:
         reset = vector.reset()

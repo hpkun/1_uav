@@ -42,7 +42,7 @@ python scripts/evaluate_mappo.py --checkpoint <best.pt> --episodes 200 --seed-st
 多机终局奖励已根据根目录 2024 原论文 PDF 的式（21）—（25）逐项核验，正式默认是 `paper_2024_exact`；旧项目比例公式保留为 `project_balanced` 供消融比较。权重数值仍是项目配置，不声称为论文公开参数。
 ## Fixed homogeneous 3v3 audit and V2
 
-The legacy fixed homogeneous 3v3 interface remains available with 45-dimensional local observations and an 87-dimensional global state. The formal V2 interface is selected by `environment_schema_version: homogeneous_3v3_v2_timeaware` and uses 63-dimensional fixed-ID body-frame Actor observations, a 61-dimensional full-entity Critic state, mirrored head-on jitter resets, schema-aware MAPPO checkpoints, and a reward split where combat events bypass Algorithm 2. The added `episode_progress` field resolves finite-horizon time aliasing; the earlier 62D/60D V2 smoke schema is treated as a development checkpoint schema only.
+The legacy fixed homogeneous 3v3 interface remains available with 45-dimensional local observations and an 87-dimensional global state. The formal V2 interface is selected by `environment_schema_version: homogeneous_3v3_v2_timeaware` and uses 63-dimensional fixed-ID body-frame Actor observations, a 61-dimensional full-entity Critic state, mirrored head-on jitter resets, schema-aware MAPPO checkpoints, and a reward split where combat events bypass Algorithm 2. The added `episode_progress` field resolves finite-horizon time aliasing; the earlier 62D/60D V2 smoke schema is a development checkpoint schema only and is not runnable.
 
 The project still does not include 1v1 transfer, heterogeneous 3v2, attention, GRU, self-play, or network migration.
 
@@ -52,7 +52,7 @@ Run the reproducible audit with:
 conda run -n uav python scripts/audit_3v3_environment.py
 ```
 
-The audit writes `outputs/audit/3v3_environment_audit.json` and `.csv`; the human report is `docs/3v3_environment_audit.md`. Legacy warnings are preserved for comparison. V2 checks cover 63D/61D shapes, progress values, fixed-ID slots, body-frame geometry, health observability, dead-slot normalization, reward split, timeout terminal profile, red/blue combat statistics, parallel worker shapes, and rule-vs-rule diagnostics.
+The audit writes `outputs/audit/3v3_environment_audit.json` and `.csv`; the human report is `docs/3v3_environment_audit.md`. Legacy warnings are preserved for comparison. V2 checks cover 63D/61D shapes, progress values, fixed-ID slots, body-frame geometry, health observability, dead-slot normalization, reward split, timeout terminal profile, no-bootstrap time-aware timeout GAE, red/blue combat statistics, parallel worker shapes, and rule-vs-rule diagnostics.
 
 Run the 4096-step V2 smoke with:
 

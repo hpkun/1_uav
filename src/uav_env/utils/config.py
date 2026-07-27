@@ -150,5 +150,7 @@ def load_multi_experiment_config(
     config = deep_merge(load_yaml(directory / "base.yaml"), load_yaml(paper_path), load_yaml(directory / scenario_files[scenario]))
     config["red_count"] = team_size
     config["blue_count"] = team_size
+    if config.get("environment_schema_version") == "homogeneous_3v3_v2":
+        raise ValueError("homogeneous_3v3_v2 was a development-only 62D/60D schema and is not runnable; use homogeneous_3v3_v2_timeaware")
     validate_experiment_config(config)
     return config

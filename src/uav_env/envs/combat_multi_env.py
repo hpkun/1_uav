@@ -50,8 +50,21 @@ class CombatMultiEnv(BaseUAVEnv):
             raise ValueError("CombatMultiEnv supports equal homogeneous team sizes of 2 or 3")
         self.config = deepcopy(config)
         self.environment_schema_version = str(config.get("environment_schema_version", "legacy"))
-        self.is_v2 = self.environment_schema_version in {"homogeneous_3v3_v2", "homogeneous_3v3_v2_timeaware"}
+        if self.environment_schema_version == "homogeneous_3v3_v2":
+            raise ValueError("homogeneous_3v3_v2 was a development-only 62D/60D schema and is not runnable; use homogeneous_3v3_v2_timeaware")
+        self.is_v2 = self.environment_schema_version == "homogeneous_3v3_v2_timeaware"
         self.is_timeaware_v2 = self.environment_schema_version == "homogeneous_3v3_v2_timeaware"
+        if self.is_timeaware_v2:
+            required = {
+                "observation_schema": "fixed_id_body_time_63d",
+                "global_state_schema": "full_entity_time_61d",
+                "reward_profile": "project_3v3_v2",
+            }
+            for key, expected in required.items():
+                if str(config.get(key)) != expected:
+                    raise ValueError(f"time-aware V2 requires {key}={expected}, got {config.get(key)!r}")
+            if self.red_count != 3 or self.blue_count != 3:
+                raise ValueError("time-aware V2 requires fixed red_count=3 and blue_count=3")
         self.scenario_name = scenario_name or str(config["scenario_name"])
         if self.red_count == 3 and self.scenario_name not in {"head_on_formation", "head_on_mirrored_jitter_v2", "symmetric_stress_test_v2"}:
             raise ValueError("Fixed 3v3 currently supports only head-on legacy or V2 scenarios")

@@ -27,4 +27,6 @@ Report fixed homogeneous 3v3 V2 separately from legacy 45D/87D probes and all 1v
 
 The V2 training/validation/test scenario is `head_on_mirrored_jitter_v2`. `symmetric_stress_test_v2` is an additional final diagnostic for last/best checkpoints only and must not be used for checkpoint selection. A timeout in V2 keeps survivor-count outcome statistics, but terminal reward is the configured timeout penalty for every red slot with profile `project_3v3_v2_timeout`; only elimination terminal allocations use `paper_2024_exact`. Timeout survival and elimination wins must remain separate in tables.
 
+Although the Gymnasium interface reports a V2 timeout as `truncated=True`, MAPPO treats it as the true finite-horizon endpoint of that episode and does not bootstrap the Critic from the timeout terminal state. Legacy time-limit truncation keeps the previous bootstrap behavior through an explicit `truncation_bootstrap_mask`.
+
 Before formal 3v3 V2 training claims, run `scripts/audit_3v3_environment.py`, `pytest`, and a short MAPPO smoke such as `configs/mappo_smoke_3v3_v2.yaml`. A 4096-step smoke validates plumbing, shapes, workers, logging, red/blue combat statistics, reward component diagnostics, and finite numerical behavior; it is not convergence evidence. Current time-aware V2 still needs a 300k-scale learnability validation before performance claims.

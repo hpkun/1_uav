@@ -19,7 +19,19 @@ def test_runner_mid_episode_state_roundtrip(tmp_path):
  assert restored.environment_steps==2 and restored.update_index==1
  assert np.array_equal(source.current["local_obs"],restored.current["local_obs"])
  assert source.vector.envs[0].env.decision_step==restored.vector.envs[0].env.decision_step
- source.writer.close();restored.writer.close()
+ source.close();restored.close()
+
+
+def test_runner_checkpoint_restores_reward_component_accumulators(tmp_path):
+ c=load_mappo_config("configs/mappo_smoke_3v3_v2.yaml");c.update(num_envs=1,vector_env="sync",rollout_length=2,device="cpu",run_id="component_source")
+ source=MAPPORunner(c,"component_checkpoint",tmp_path)
+ source.reward_component_episode_accumulators["geometry_event_reward"][0]=12.5
+ source._save("state.pt")
+ restored_config=dict(c);restored_config["run_id"]="component_restored";restored=MAPPORunner(restored_config,"component_checkpoint",tmp_path)
+ restored.resume(str(source.output_dir/"checkpoints"/"state.pt"))
+ assert restored.reward_component_episode_accumulators["geometry_event_reward"][0]==12.5
+ assert all(values.shape == (1,) for values in restored.reward_component_episode_accumulators.values())
+ source.close();restored.close()
 
 
 def test_full_resume_reproduces_next_update(tmp_path):
