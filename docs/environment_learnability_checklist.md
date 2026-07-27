@@ -15,3 +15,16 @@
 - 是否出现 NaN/Inf、无可用动作行、reset state 被误用于 truncated bootstrap。
 
 任何单个 seed 的胜利轨迹、短期 loss 下降或规则对手胜率都不能单独证明环境可学习或算法收敛。
+
+## Fixed 3v3 V2 reward-ordering gate
+
+Before treating any 300k-scale fixed homogeneous 3v3 V2 run as learnability evidence, run `scripts/diagnose_3v3_reward_ordering.py` on `head_on_mirrored_jitter_v2`.
+
+- Red rule pursuit is used to test whether active combat is reachable through the real environment dynamics, attack, and reward interfaces.
+- Red straight and random baselines test whether the current reward accidentally favors delay, straight flight, or random behavior over active engagement.
+- Learned Actor checkpoints, when provided, are loaded actor-only and compared with the rule policies on the same paired seeds.
+- Reward components are accumulated across the whole episode, not sampled from the final step.
+- Current reward coefficients and terminal formulas are not changed by this diagnostic.
+- Timeout survivor-count wins, elimination wins, and draws must remain separate in reports.
+- Interrupted runs can still be diagnosed from `metrics.csv` and `evaluations.csv` with `scripts/analyze_mappo_run.py`.
+- Short training probes are meaningful only after fixed-policy reward ordering is understood.

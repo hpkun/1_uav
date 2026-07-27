@@ -37,9 +37,31 @@ def test_elimination_and_timeout_survival_wins_are_distinct():
 
 
 def test_combat_checkpoint_selection_prioritizes_elimination():
- base={"elimination_win_rate":0.,"decisive_win_rate":0.,"timeout_rate":0.,"mean_effective_damage":300.,"overall_red_win_rate":1.,"mean_team_episode_return":100.}
+ base={"elimination_win_rate":0.,"timeout_rate":0.,"mean_effective_damage":300.,"overall_red_win_rate":1.,"mean_team_episode_return":100.}
  elimination={**base,"elimination_win_rate":.01,"timeout_rate":1.,"mean_effective_damage":0.,"overall_red_win_rate":.01,"mean_team_episode_return":-100.}
  assert evaluation_key(elimination,"combat")>evaluation_key(base,"combat")
+
+
+def test_combat_checkpoint_selection_does_not_prefer_fast_failure_when_winless():
+ fast_failure={"timeout_rate":0.0,"mean_red_survivors":0.0,"mean_blue_survivors":3.0,"mean_effective_damage":0.0,"mean_team_episode_return":-100.0}
+ surviving_damage={"timeout_rate":1.0,"mean_red_survivors":2.0,"mean_blue_survivors":3.0,"mean_effective_damage":20.0,"mean_team_episode_return":-20.0}
+ assert evaluation_key(surviving_damage,"combat")>evaluation_key(fast_failure,"combat")
+
+
+def test_combat_checkpoint_selection_prioritizes_effective_damage_at_equal_wins():
+ low_damage={"elimination_win_rate":0.0,"overall_red_win_rate":0.0,"mean_effective_damage":1.0,"mean_survivor_difference":0.0}
+ high_damage={**low_damage,"mean_effective_damage":2.0,"timeout_rate":1.0}
+ assert evaluation_key(high_damage,"combat")>evaluation_key(low_damage,"combat")
+
+
+def test_combat_checkpoint_selection_prioritizes_survivor_difference_after_damage():
+ lower_survival={"elimination_win_rate":0.0,"overall_red_win_rate":0.0,"mean_effective_damage":2.0,"mean_red_survivors":1.0,"mean_blue_survivors":3.0}
+ higher_survival={**lower_survival,"mean_red_survivors":2.0}
+ assert evaluation_key(higher_survival,"combat")>evaluation_key(lower_survival,"combat")
+
+
+def test_combat_checkpoint_selection_accepts_legacy_evaluation_dict():
+ assert evaluation_key({"overall_red_win_rate":0.0},"combat") == (0.0,0.0,0.0,0.0,0.0,0.0,0.0,-0.0,-0.0)
 
 
 def test_validation_and_test_seed_ranges_must_not_overlap():
