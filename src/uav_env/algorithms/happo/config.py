@@ -53,11 +53,15 @@ def validate_happo_config(config: dict[str, Any]) -> None:
         raise ValueError("actor_num_mini_batches cannot exceed rollout samples")
     if int(config["critic_num_mini_batches"]) > int(config["num_envs"]) * int(config["rollout_length"]):
         raise ValueError("critic_num_mini_batches cannot exceed rollout samples")
-    for key in ("clip_param", "value_clip_param", "gamma", "gae_lambda", "actor_lr", "critic_lr"):
+    for key in ("clip_param", "value_clip_param", "gamma", "gae_lambda", "actor_lr", "critic_lr", "optimizer_eps", "weight_decay"):
         if not np.isfinite(float(config[key])):
             raise ValueError(f"{key} must be finite")
     if not 0.0 <= float(config["gamma"]) <= 1.0 or not 0.0 <= float(config["gae_lambda"]) <= 1.0:
         raise ValueError("gamma and gae_lambda must be in [0, 1]")
+    if float(config["optimizer_eps"]) <= 0.0:
+        raise ValueError("optimizer_eps must be positive")
+    if float(config["weight_decay"]) < 0.0:
+        raise ValueError("weight_decay must be nonnegative")
     for key in ("actor_hidden_sizes", "critic_hidden_sizes"):
         sizes = config.get(key)
         if not isinstance(sizes, list) or not sizes or any(not isinstance(size, int) or size <= 0 for size in sizes):

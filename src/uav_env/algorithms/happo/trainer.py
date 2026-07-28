@@ -80,11 +80,13 @@ class HAPPOTrainer:
         self.config = config
         self.normalizer = normalizer
         self.device = device
+        optimizer_eps = float(config.get("optimizer_eps", 1.0e-5))
+        weight_decay = float(config.get("weight_decay", 0.0))
         self.actor_optimizers = [
-            torch.optim.Adam(actor.parameters(), lr=float(config["actor_lr"]))
+            torch.optim.Adam(actor.parameters(), lr=float(config["actor_lr"]), eps=optimizer_eps, weight_decay=weight_decay)
             for actor in actors.actors
         ]
-        self.critic_optimizer = torch.optim.Adam(critic.parameters(), lr=float(config["critic_lr"]))
+        self.critic_optimizer = torch.optim.Adam(critic.parameters(), lr=float(config["critic_lr"]), eps=optimizer_eps, weight_decay=weight_decay)
         seed = int(config.get("seed", 0))
         self.order_rng = np.random.default_rng(seed + 271_828)
         self.actor_minibatch_rngs = [np.random.default_rng(seed + 104_729 + i * 997) for i in range(len(actors))]

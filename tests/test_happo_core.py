@@ -14,10 +14,14 @@ from uav_env.algorithms.mappo.value_normalizer import ValueNormalizer
 
 def test_independent_actor_parameters_do_not_share_storage() -> None:
     actors = IndependentActorSet([4, 4, 4], [3, 3, 3], [8], seed=7)
+    same_seed = IndependentActorSet([4, 4, 4], [3, 3, 3], [8], seed=7)
     assert actors[0] is not actors[1] and actors[1] is not actors[2]
     ptrs = [{p.data_ptr() for p in actor.parameters()} for actor in actors.actors]
     assert ptrs[0].isdisjoint(ptrs[1])
     assert ptrs[0].isdisjoint(ptrs[2])
+    assert any(not torch.equal(a, b) for a, b in zip(actors[0].parameters(), actors[1].parameters()))
+    for agent_id in range(3):
+        assert all(torch.equal(a, b) for a, b in zip(actors[agent_id].parameters(), same_seed[agent_id].parameters()))
     before_1 = [p.detach().clone() for p in actors[1].parameters()]
     before_2 = [p.detach().clone() for p in actors[2].parameters()]
     opt = torch.optim.Adam(actors[0].parameters(), lr=0.01)
@@ -134,3 +138,81 @@ def test_scalar_gae_uses_team_reward_not_per_agent_rewards() -> None:
     assert advantages[0, 0] == pytest.approx(-1.0)
     critic = JointCentralizedCritic(61)
     assert critic(torch.zeros(2, 61)).shape == (2,)
+
+    first = HAPPORolloutBuffer(2, 1, 3, 3, 4, action_dim=2)
+    second = HAPPORolloutBuffer(2, 1, 3, 3, 4, action_dim=2)
+    for buffer in (first, second):
+        buffer.team_rewards[:, 0] = np.asarray([1.0, 2.0], dtype=np.float32)
+        buffer.values[:, 0] = np.asarray([0.1, 0.2, 0.3], dtype=np.float32)
+    first.agent_rewards[:] = 100.0
+    second.agent_rewards[:] = -100.0
+    first.finish(np.asarray([0.3], dtype=np.float32), 0.99, 0.95)
+    second.finish(np.asarray([0.3], dtype=np.float32), 0.99, 0.95)
+    assert np.allclose(first.advantages, second.advantages)
+    assert np.allclose(first.returns, second.returns)
+
+
+def test_happo_factor_is_updated_once_per_actor_not_per_minibatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import uav_env.algorithms.happo.trainer as trainer_module
+
+    cfg = {
+        "seed": 1,
+        "actor_lr": 0.01,
+        "critic_lr": 0.01,
+        "optimizer_eps": 1.0e-5,
+        "weight_decay": 0.0,
+        "clip_param": 0.2,
+        "value_clip_param": 0.2,
+        "ppo_epochs": 2,
+        "actor_num_mini_batches": 2,
+        "critic_epochs": 1,
+        "critic_num_mini_batches": 1,
+        "entropy_coef": 0.01,
+        "value_loss_coef": 1.0,
+        "max_grad_norm": 10.0,
+        "normalize_advantages": True,
+        "use_value_normalization": False,
+        "use_clipped_value_loss": True,
+        "use_huber_loss": True,
+        "huber_delta": 10.0,
+        "fixed_agent_order": True,
+    }
+    calls = {"count": 0}
+    original = trainer_module.update_happo_factor
+
+    def counting_factor(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(trainer_module, "update_happo_factor", counting_factor)
+    actors = IndependentActorSet([3, 3, 3], [2, 2, 2], [8], seed=1)
+    trainer = HAPPOTrainer(actors, JointCentralizedCritic(4, [8]), cfg, ValueNormalizer(), torch.device("cpu"))
+    buffer = HAPPORolloutBuffer(4, 1, 3, 3, 4, action_dim=2)
+    buffer.observations[:] = np.random.default_rng(1).normal(size=buffer.observations.shape).astype(np.float32)
+    buffer.global_states[:] = np.random.default_rng(2).normal(size=buffer.global_states.shape).astype(np.float32)
+    buffer.available_action_masks[:] = True
+    buffer.alive_masks[:] = 1.0
+    buffer.actions[:] = np.random.default_rng(3).integers(0, 2, size=buffer.actions.shape)
+    buffer.old_log_probs[:] = -0.7
+    buffer.advantages[:] = 1.0
+    buffer.returns[:] = 1.0
+    metrics = trainer.update(buffer)
+    assert calls["count"] == 3
+    assert metrics["factor_update_count"] == pytest.approx(3.0)
+
+
+def test_happo_adam_uses_configured_eps_and_weight_decay() -> None:
+    cfg = {
+        "seed": 1,
+        "actor_lr": 0.01,
+        "critic_lr": 0.02,
+        "optimizer_eps": 1.0e-4,
+        "weight_decay": 0.123,
+        "fixed_agent_order": True,
+    }
+    actors = IndependentActorSet([3, 3, 3], [2, 2, 2], [8], seed=1)
+    trainer = HAPPOTrainer(actors, JointCentralizedCritic(4, [8]), cfg, ValueNormalizer(), torch.device("cpu"))
+    assert trainer.actor_optimizers[0].param_groups[0]["eps"] == pytest.approx(1.0e-4)
+    assert trainer.actor_optimizers[0].param_groups[0]["weight_decay"] == pytest.approx(0.123)
+    assert trainer.critic_optimizer.param_groups[0]["eps"] == pytest.approx(1.0e-4)
+    assert trainer.critic_optimizer.param_groups[0]["weight_decay"] == pytest.approx(0.123)

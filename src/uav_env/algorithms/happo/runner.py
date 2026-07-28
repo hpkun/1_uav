@@ -23,6 +23,21 @@ from uav_env.algorithms.mappo.metrics import append_csv, combat_outcome_rates, e
 from uav_env.algorithms.mappo.value_normalizer import ValueNormalizer
 from uav_env.algorithms.mappo.runner import resolve_device
 
+REWARD_COMPONENT_NAMES = (
+    "situation_reward",
+    "geometry_event_reward",
+    "raw_shape_reward",
+    "assigned_shape_reward",
+    "combat_event_reward",
+    "dense_reward",
+    "terminal_reward",
+    "hit_event_reward",
+    "destroy_event_reward",
+    "attacked_event_penalty",
+    "destroyed_event_penalty",
+    "boundary_collision_penalty",
+)
+
 
 class HAPPORunner:
     """Paper-aligned HAPPO baseline with joint rewards and scalar critic."""
@@ -79,7 +94,11 @@ class HAPPORunner:
         self.episodes = 0
         self.episode_team_return_accumulators = np.zeros(int(config["num_envs"]), dtype=np.float64)
         self.episode_agent_sum_return_accumulators = np.zeros(int(config["num_envs"]), dtype=np.float64)
+        self.reward_component_episode_accumulators = {
+            name: np.zeros(int(config["num_envs"]), dtype=np.float64) for name in REWARD_COMPONENT_NAMES
+        }
         self.last_evaluation_step: int | None = None
+        self._closed = False
 
     def _values(self, states: np.ndarray) -> np.ndarray:
         with torch.no_grad():
@@ -129,6 +148,10 @@ class HAPPORunner:
         episode_timeouts: list[float] = []
         side_names = ("attack_attempts", "hits", "effective_damage", "nominal_damage", "overkill_damage", "attack_area_steps", "ground_crashes", "ceiling_violations", "collisions", "survivors")
         side_rollout = {f"{team}_{name}": [] for team in ("red", "blue") for name in side_names}
+        component_values = {name: [] for name in REWARD_COMPONENT_NAMES}
+        component_totals = {name: 0.0 for name in REWARD_COMPONENT_NAMES}
+        component_abs_totals = {name: 0.0 for name in REWARD_COMPONENT_NAMES}
+        component_episode_values = {name: [] for name in REWARD_COMPONENT_NAMES}
         truncated_episode_count = 0
         truncation_no_bootstrap_count = 0
         for _ in range(t):
@@ -146,6 +169,30 @@ class HAPPORunner:
             truncation_bootstrap_mask = np.zeros(e, dtype=np.float32)
             self.episode_team_return_accumulators += np.asarray(result["team_rewards"], dtype=np.float64)
             self.episode_agent_sum_return_accumulators += np.asarray(result["agent_reward_sums"], dtype=np.float64)
+            for env_index, info in enumerate(result.get("infos", [])):
+                step_components = {name: 0.0 for name in REWARD_COMPONENT_NAMES}
+                for breakdown in info.get("agent_reward_breakdowns", {}).values():
+                    per_agent = {
+                        "situation_reward": float(breakdown.situation),
+                        "geometry_event_reward": float(breakdown.geometry_event),
+                        "raw_shape_reward": float(breakdown.raw_shape),
+                        "assigned_shape_reward": float(breakdown.assigned_shape),
+                        "combat_event_reward": float(breakdown.combat_event),
+                        "dense_reward": float(breakdown.dense_reward),
+                        "terminal_reward": float(breakdown.terminal),
+                        "hit_event_reward": float(breakdown.hit_event_reward),
+                        "destroy_event_reward": float(breakdown.destroy_event_reward),
+                        "attacked_event_penalty": float(breakdown.attacked_event_penalty),
+                        "destroyed_event_penalty": float(breakdown.destroyed_event_penalty),
+                        "boundary_collision_penalty": float(breakdown.boundary_collision_penalty),
+                    }
+                    for name, value in per_agent.items():
+                        component_values[name].append(value)
+                        step_components[name] += value
+                for name, value in step_components.items():
+                    component_totals[name] += value
+                    component_abs_totals[name] += abs(value)
+                    self.reward_component_episode_accumulators[name][env_index] += value
             for index, step in enumerate(result["terminal_steps"]):
                 if step.truncated:
                     truncated_episode_count += 1
@@ -160,6 +207,9 @@ class HAPPORunner:
                     rollout_agent_sum_returns.append(float(self.episode_agent_sum_return_accumulators[index]))
                     self.episode_team_return_accumulators[index] = 0.0
                     self.episode_agent_sum_return_accumulators[index] = 0.0
+                    for name in REWARD_COMPONENT_NAMES:
+                        component_episode_values[name].append(float(self.reward_component_episode_accumulators[name][index]))
+                        self.reward_component_episode_accumulators[name][index] = 0.0
                     outcome = step.info["outcome"]
                     episode_timeouts.append(float(outcome.termination_reason == "timeout"))
                     stats = step.info.get("statistics", {})
@@ -204,6 +254,7 @@ class HAPPORunner:
             "team_reward_mean": float(buffer.team_rewards.mean()),
             "joint_advantage_raw_mean": float(buffer.advantages.mean()),
             "joint_advantage_raw_std": float(buffer.advantages.std()),
+            "agent_reward_sum_mean": float(buffer.agent_rewards.sum(axis=2).mean()),
         }
         for agent_id in range(self.num_agents):
             total = max(action_counts[agent_id].sum(), 1.0)
@@ -213,12 +264,19 @@ class HAPPORunner:
             diagnostics[f"actor_{agent_id}_top1_top2_margin_collect"] = float(np.mean(margin_records[agent_id])) if margin_records[agent_id] else 0.0
         for name, values in side_rollout.items():
             diagnostics[f"rollout_{name}_mean"] = float(np.mean(values)) if values else 0.0
+        for name in REWARD_COMPONENT_NAMES:
+            diagnostics[f"{name}_mean"] = float(np.mean(component_values[name])) if component_values[name] else 0.0
+            diagnostics[f"{name}_per_step"] = float(component_totals[name] / max(t * e, 1))
+            diagnostics[f"{name}_abs_mean"] = float(component_abs_totals[name] / max(t * e, 1))
+            diagnostics[f"{name}_per_episode"] = float(np.mean(component_episode_values[name])) if component_episode_values[name] else 0.0
         return buffer, diagnostics
 
     def evaluate(self, episodes: int | None = None, seed_start: int = 100000, deterministic: bool | None = None) -> dict[str, float]:
         count = int(episodes or self.config["validation_episodes"])
         deterministic = bool(self.config.get("deterministic_evaluation", True)) if deterministic is None else deterministic
         outcomes, returns, agent_sum_returns, steps = [], [], [], []
+        red_crashes: list[float] = []
+        blue_crashes: list[float] = []
         frequencies = np.zeros((self.num_agents, 15), dtype=np.float64)
         entropy_records = [[] for _ in range(self.num_agents)]
         margin_records = [[] for _ in range(self.num_agents)]
@@ -253,6 +311,8 @@ class HAPPORunner:
             agent_sum_returns.append(agent_sum_total)
             steps.append(outcome.decision_steps)
             aircraft = current.info.get("statistics", {}).get("aircraft", {})
+            red_crashes.append(float(any(float(aircraft.get(f"red_{i}", {}).get("ground_crashes", 0.0)) > 0.0 for i in range(self.num_agents))))
+            blue_crashes.append(float(any(float(aircraft.get(f"blue_{i}", {}).get("ground_crashes", 0.0)) > 0.0 for i in range(self.num_agents))))
             for team in ("red", "blue"):
                 ids = [f"{team}_{i}" for i in range(self.num_agents)]
                 for name in ("attack_attempts", "hits", "effective_damage", "nominal_damage", "overkill_damage", "attack_area_steps", "ground_crashes", "ceiling_violations", "collisions"):
@@ -265,6 +325,9 @@ class HAPPORunner:
             **combat_rates,
             "red_win_rate": combat_rates["overall_red_win_rate"],
             "blue_win_rate": sum(o.winner == "blue" for o in outcomes) / count,
+            "red_crash_rate": float(np.mean(red_crashes)),
+            "blue_crash_rate": float(np.mean(blue_crashes)),
+            "mean_episode_return": float(np.mean(returns)),
             "mean_team_episode_return": float(np.mean(returns)),
             "mean_agent_sum_episode_return": float(np.mean(agent_sum_returns)),
             "mean_per_agent_episode_return": float(np.mean(agent_sum_returns)) / self.num_agents,
@@ -278,6 +341,12 @@ class HAPPORunner:
             result[f"actor_{agent_id}_top1_top2_logit_margin"] = float(np.mean(margin_records[agent_id])) if margin_records[agent_id] else 0.0
         for name, values in side_metrics.items():
             result[f"mean_{name}"] = float(np.mean(values)) if values else 0.0
+        result["mean_effective_damage"] = result["mean_red_effective_damage"]
+        result["mean_hits"] = result["mean_red_hits"]
+        result["mean_attack_area_steps"] = result["mean_red_attack_area_steps"]
+        result["mean_red_survivors"] = result["mean_red_survivors"]
+        result["mean_blue_survivors"] = result["mean_blue_survivors"]
+        result["mean_survivor_difference"] = result["mean_red_survivors"] - result["mean_blue_survivors"]
         return result
 
     def resume(self, path: str, actor_only: bool = False) -> None:
@@ -290,7 +359,7 @@ class HAPPORunner:
             self.normalizer,
             actor_only,
             self.device,
-            None if actor_only else self.schema_metadata,
+            self.schema_metadata,
         )
         if actor_only:
             return
@@ -303,11 +372,31 @@ class HAPPORunner:
         self.episodes = int(state["episodes"])
         self.episode_team_return_accumulators = np.asarray(state["episode_team_return_accumulators"], dtype=np.float64)
         self.episode_agent_sum_return_accumulators = np.asarray(state["episode_agent_sum_return_accumulators"], dtype=np.float64)
+        self._restore_reward_component_accumulators(state.get("reward_component_episode_accumulators"))
         self.last_evaluation_step = state.get("last_evaluation_step")
         self.trainer.order_rng.bit_generator.state = state["agent_order_rng_state"]
         for rng, rng_state in zip(self.trainer.actor_minibatch_rngs, state["actor_minibatch_rng_states"]):
             rng.bit_generator.state = rng_state
         self.trainer.critic_minibatch_rng.bit_generator.state = state["critic_minibatch_rng_state"]
+
+    def _restore_reward_component_accumulators(self, state: Any) -> None:
+        expected_shape = (int(self.config["num_envs"]),)
+        if state is None:
+            self.reward_component_episode_accumulators = {
+                name: np.zeros(expected_shape, dtype=np.float64) for name in REWARD_COMPONENT_NAMES
+            }
+            return
+        missing = set(REWARD_COMPONENT_NAMES) - set(state)
+        extra = set(state) - set(REWARD_COMPONENT_NAMES)
+        if missing or extra:
+            raise ValueError(f"HAPPO reward component accumulator keys mismatch: missing={sorted(missing)}, extra={sorted(extra)}")
+        restored = {}
+        for name in REWARD_COMPONENT_NAMES:
+            values = np.asarray(state[name], dtype=np.float64)
+            if values.shape != expected_shape:
+                raise ValueError(f"HAPPO reward component accumulator {name} shape mismatch: checkpoint={values.shape}, expected={expected_shape}")
+            restored[name] = values.copy()
+        self.reward_component_episode_accumulators = restored
 
     def _save(self, name: str) -> None:
         runner_state = {
@@ -316,6 +405,7 @@ class HAPPORunner:
             "episodes": self.episodes,
             "episode_team_return_accumulators": self.episode_team_return_accumulators,
             "episode_agent_sum_return_accumulators": self.episode_agent_sum_return_accumulators,
+            "reward_component_episode_accumulators": self.reward_component_episode_accumulators,
             "last_evaluation_step": self.last_evaluation_step,
             "agent_order_rng_state": self.trainer.order_rng.bit_generator.state,
             "actor_minibatch_rng_states": [rng.bit_generator.state for rng in self.trainer.actor_minibatch_rngs],
@@ -369,6 +459,37 @@ class HAPPORunner:
             if self.environment_steps < total and self.environment_steps % int(self.config["checkpoint_interval"]) < int(self.config["rollout_length"]) * int(self.config["num_envs"]):
                 self._save(f"step_{self.environment_steps}.pt")
         self._save("last.pt")
+        if self.last_evaluation_step != self.environment_steps:
+            evaluation = {
+                "environment_steps": self.environment_steps,
+                "evaluation_split": "validation",
+                **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"])),
+            }
+            append_csv(self.output_dir / "evaluations.csv", evaluation)
+            self.last_evaluation_step = self.environment_steps
+            if self.best_evaluation is None or evaluation_key(evaluation, str(self.config["checkpoint_selection"])) > evaluation_key(self.best_evaluation, str(self.config["checkpoint_selection"])):
+                self.best_evaluation = evaluation
+                self._save("best.pt")
+        if self.best_evaluation is None:
+            self.best_evaluation = {
+                "environment_steps": self.environment_steps,
+                "evaluation_split": "validation",
+                **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"])),
+            }
+            append_csv(self.output_dir / "evaluations.csv", self.best_evaluation)
+            self.last_evaluation_step = self.environment_steps
+            self._save("best.pt")
+        if not (self.output_dir / "checkpoints" / "best.pt").is_file():
+            self._save("best.pt")
+        test_evaluations = {}
+        for label in ("initial", "last", "best"):
+            self.resume(str(self.output_dir / "checkpoints" / f"{label}.pt"), actor_only=True)
+            test_evaluations[label] = self.evaluate(
+                int(self.config["test_episodes"]),
+                int(self.config["test_seed_start"]),
+                deterministic=True,
+            )
+        wall_time = time.time() - started
         summary = {
             "environment_steps": self.environment_steps,
             "updates": self.update_index,
@@ -376,17 +497,30 @@ class HAPPORunner:
             "device": str(self.device),
             "schema_metadata": self.schema_metadata,
             "validation_best_evaluation": self.best_evaluation,
+            "test_evaluations": test_evaluations,
+            "wall_time": wall_time,
         }
         (self.output_dir / "final_summary.yaml").write_text(yaml.safe_dump(summary, sort_keys=False), encoding="utf-8")
-        self.writer.close()
+        self.writer.flush()
         return self.output_dir
 
     def run(self) -> Path:
         try:
             return self._run_impl()
+        except KeyboardInterrupt:
+            interrupted = self.output_dir / "checkpoints" / "interrupted.pt"
+            try:
+                self._save("interrupted.pt")
+                print(f"HAPPO interrupted; checkpoint saved to {interrupted.resolve()}")
+            except Exception as error:
+                print(f"HAPPO interrupted; failed to save interrupted checkpoint: {error}")
+            raise
         finally:
             self.close()
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self.vector.close()
         self.writer.close()

@@ -80,7 +80,12 @@ def load_happo_checkpoint(
         raise ValueError(f"HAPPO actor count mismatch: checkpoint={data.get('actor_count')}, expected={len(actors)}")
     if expected_metadata is not None:
         actual = data.get("schema_metadata", {})
-        for key in ("environment_schema_version", "observation_schema", "global_state_schema", "reward_profile", "scenario_profile", "obs_dim", "state_dim", "num_agents"):
+        keys = (
+            ("environment_schema_version", "observation_schema", "obs_dim", "num_agents")
+            if actor_only
+            else ("environment_schema_version", "observation_schema", "global_state_schema", "reward_profile", "scenario_profile", "obs_dim", "state_dim", "num_agents")
+        )
+        for key in keys:
             if actual.get(key) != expected_metadata.get(key):
                 raise ValueError(f"HAPPO checkpoint schema mismatch for {key}: checkpoint={actual.get(key)!r}, expected={expected_metadata.get(key)!r}")
     for index, actor_state in enumerate(data["actors"]):

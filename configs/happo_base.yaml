@@ -20,6 +20,8 @@ gamma: 0.99
 gae_lambda: 0.95
 actor_lr: 0.0005
 critic_lr: 0.0005
+optimizer_eps: 1.0e-5
+weight_decay: 0.0
 clip_param: 0.2
 value_clip_param: 0.2
 ppo_epochs: 5
