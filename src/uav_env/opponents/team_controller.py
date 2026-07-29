@@ -16,7 +16,7 @@ class TeamRuleController:
     """Apply one rule and the same stable target assignment to either team."""
 
     def __init__(self, name: str, policy: RuleOpponent, seed: int) -> None:
-        if name not in {"straight", "random", "pursuit"}:
+        if name not in {"straight", "random", "pursuit", "greedy_combat"}:
             raise ValueError(f"Unknown team rule: {name!r}")
         self.name = name
         self.policy = policy
@@ -26,7 +26,11 @@ class TeamRuleController:
         """Return ID-ordered actions and fixed-size nearest assignments."""
 
         ordered = sorted(team, key=lambda u: u.uav_id)
-        assignments = assign_nearest_targets_independently(ordered, opponents) if len(ordered) == 3 else assign_targets(ordered, opponents)
+        assignments = (
+            assign_targets(ordered, opponents)
+            if self.name == "greedy_combat" or len(ordered) != 3
+            else assign_nearest_targets_independently(ordered, opponents)
+        )
         assignment_map = {item.attacker_id: item.target_id for item in assignments}
         target_map = {u.uav_id: u for u in opponents}
         actions: list[DiscreteAction15] = []

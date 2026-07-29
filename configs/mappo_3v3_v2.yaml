@@ -11,5 +11,5 @@ run_symmetric_stress_test: true
 environment:
   kind: 3v3
   scenario: head_on_mirrored_jitter_v2
-  opponent: pursuit
+  opponent: greedy_combat
   multi_terminal_reward_profile: paper_2024_exact

@@ -42,6 +42,20 @@ pursuit:
   ceiling_margin: 300.0
   unsafe_flight_path_penalty: 2.0
 
+greedy_combat:
+  offense_weight: 1.0
+  defense_weight: 0.7
+  angle_score_weight: 0.6
+  distance_score_weight: 0.4
+  attack_area_bonus: 0.5
+  advantage_area_bonus: 0.25
+  can_attack_bonus: 2.0
+  incoming_attack_area_penalty: 0.75
+  incoming_advantage_area_penalty: 0.25
+  incoming_can_attack_penalty: 2.0
+  minimum_safe_altitude: 300.0
+  ceiling_margin: 300.0
+
 height_reward:
   H_max: 500.0
   H_adv: 300.0

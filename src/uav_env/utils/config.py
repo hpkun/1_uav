@@ -92,6 +92,39 @@ def validate_experiment_config(config: dict[str, Any]) -> None:
         raise ValueError("min_speed must be less than max_speed")
     if float(config["min_altitude"]) >= float(config["max_altitude"]):
         raise ValueError("min_altitude must be less than max_altitude")
+    greedy = config.get("greedy_combat")
+    if greedy is not None:
+        expected = {
+            "offense_weight",
+            "defense_weight",
+            "angle_score_weight",
+            "distance_score_weight",
+            "attack_area_bonus",
+            "advantage_area_bonus",
+            "can_attack_bonus",
+            "incoming_attack_area_penalty",
+            "incoming_advantage_area_penalty",
+            "incoming_can_attack_penalty",
+            "minimum_safe_altitude",
+            "ceiling_margin",
+        }
+        if not isinstance(greedy, dict):
+            raise ValueError("greedy_combat config must be a mapping")
+        missing = expected - set(greedy)
+        extra = set(greedy) - expected
+        if missing or extra:
+            raise ValueError(f"Invalid greedy_combat config keys: missing={sorted(missing)}, extra={sorted(extra)}")
+        if any(not isfinite(float(greedy[key])) for key in expected):
+            raise ValueError("greedy_combat values must be finite")
+        weight_keys = expected - {"minimum_safe_altitude", "ceiling_margin"}
+        if any(float(greedy[key]) < 0.0 for key in weight_keys):
+            raise ValueError("greedy_combat weights must be nonnegative")
+        if float(greedy["minimum_safe_altitude"]) < float(config["min_altitude"]):
+            raise ValueError("greedy_combat.minimum_safe_altitude must be >= min_altitude")
+        if float(greedy["ceiling_margin"]) < 0.0:
+            raise ValueError("greedy_combat.ceiling_margin must be nonnegative")
+        if not float(greedy["minimum_safe_altitude"]) < float(config["max_altitude"]) - float(greedy["ceiling_margin"]):
+            raise ValueError("greedy_combat minimum safe altitude must be below max_altitude - ceiling_margin")
 
 
 def load_experiment_config(

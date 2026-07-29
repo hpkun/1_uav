@@ -29,6 +29,7 @@ from uav_env.observations.global_state import GlobalStateResult, build_global_st
 from uav_env.observations.multi_observation import MultiObservationResult, build_multi_observations, build_multi_observations_v2
 from uav_env.observations.normalization import NormalizationConfig
 from uav_env.opponents.base import RuleOpponent
+from uav_env.opponents.greedy_combat import GreedyCombatOpponent
 from uav_env.opponents.pursuit import PursuitOpponent
 from uav_env.opponents.random import RandomOpponent
 from uav_env.opponents.straight import StraightOpponent
@@ -113,6 +114,17 @@ class CombatMultiEnv(BaseUAVEnv):
                 float(pursuit["angle_weight"]), float(pursuit["distance_weight"]), float(pursuit["altitude_weight"]),
                 float(pursuit["boundary_penalty"]), float(pursuit["minimum_safe_altitude"]),
                 float(pursuit["ceiling_margin"]), float(pursuit["unsafe_flight_path_penalty"]),
+            )
+        if name == "greedy_combat":
+            return GreedyCombatOpponent(
+                self.profile,
+                self.attack_config,
+                float(self.config["physics_dt"]),
+                int(self.config["physics_steps_per_action"]),
+                float(self.config["gravity"]),
+                float(self.config["min_altitude"]),
+                float(self.config["max_altitude"]),
+                self.config["greedy_combat"],
             )
         raise ValueError(f"Unknown blue policy: {name!r}")
 
@@ -377,9 +389,9 @@ class CombatMultiEnv(BaseUAVEnv):
             raise ValueError(f"Red action must be a valid length-{self.red_count} MultiDiscrete action")
         red_actions = [DiscreteAction15(int(value)) if aircraft.is_alive else DiscreteAction15.LEVEL_HOLD for value, aircraft in zip(actions_array, self.red_aircraft)]
         assignments = (
-            assign_nearest_targets_independently(self.blue_aircraft, self.red_aircraft)
-            if self.blue_count == 3
-            else assign_targets(self.blue_aircraft, self.red_aircraft)
+            assign_targets(self.blue_aircraft, self.red_aircraft)
+            if self.opponent_name == "greedy_combat" or self.blue_count != 3
+            else assign_nearest_targets_independently(self.blue_aircraft, self.red_aircraft)
         )
         blue_actions = self._blue_actions(assignments)
         action_map = {u.uav_id: action for u, action in zip(self.red_aircraft, red_actions)} | {u.uav_id: action for u, action in zip(self.blue_aircraft, blue_actions)}

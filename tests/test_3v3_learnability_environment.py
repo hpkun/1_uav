@@ -84,7 +84,7 @@ def test_learnability_config_is_isolated_from_formal_v2() -> None:
     learn_mappo = load_mappo_config("configs/mappo_learnability_3v3.yaml")
     assert base_mappo["run_symmetric_stress_test"] is False
     assert formal_mappo["environment"]["scenario"] == FORMAL_SCENARIO
-    assert formal_mappo["environment"]["opponent"] == "pursuit"
+    assert formal_mappo["environment"]["opponent"] == "greedy_combat"
     assert formal_mappo["total_env_steps"] == 300000
     assert formal_mappo["run_symmetric_stress_test"] is True
     assert learn_mappo["environment"]["scenario"] == LEARNABILITY_SCENARIO
