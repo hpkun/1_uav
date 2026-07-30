@@ -792,7 +792,12 @@ class CombatMultiEnv(BaseUAVEnv):
             event_values[red.uav_id] = event
             step_contributions[red.uav_id] = contribution
             self._statistics["aircraft"][red.uav_id]["contribution_score"] += contribution
-        if self.is_functional_heterogeneous and str(self.config.get("functional_mode")) != "homogeneous_control" and self.support_agent_id is not None:
+        if (
+            self.is_functional_heterogeneous
+            and str(self.config.get("functional_mode")) != "homogeneous_control"
+            and self.support_agent_id is not None
+            and self.support_agent_id in step_active_ids
+        ):
             positive_combat_events = sum(
                 max(0.0, combat_components.get(red_id, {}).get("hit", 0.0))
                 + max(0.0, combat_components.get(red_id, {}).get("destroy", 0.0))

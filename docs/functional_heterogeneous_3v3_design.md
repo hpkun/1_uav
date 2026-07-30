@@ -128,6 +128,16 @@ It extends the old 61D full-entity state by adding one role flag to each red ent
 
 The critic receives complete entity state and is not visibility-gated.
 
+Combat reward shaping currently also uses complete simulator truth for all
+living blue aircraft when computing `individual_situation_reward` and
+`geometry_event_reward`.  Actor execution information remains visibility-gated
+by local sensing and relay masks; hidden enemy states are not written into actor
+observations.  This is centralized training-time reward shaping for the current
+controlled experiment.  Relay experiments therefore compare actor-available
+situation information, not whether the reward function can access target state.
+A future ablation may add visibility-gated reward shaping, but this environment
+does not implement that variant.
+
 ## 11. Support reward
 
 Support raw shape:
@@ -169,6 +179,13 @@ computed, so it does not depend on red-agent loop order.  Only positive combat
 hit/destroy components from armed combat UAVs are shared; attacked, destroyed,
 boundary and collision penalties are excluded.
 
+Support is eligible for `support_team_event` only if it was alive at the start
+of the current decision step.  If support starts the step alive and is destroyed
+during the same simultaneous attack resolution, it still receives that step's
+team share and also receives the same-step attacked/destroyed penalties.  If it
+was already dead before the step began, its support team event is zero and it
+does not affect team reward or critic targets through later combat events.
+
 For functional heterogeneous and time-aware homogeneous V2 environments the
 per-agent reward assembly is explicitly split as:
 
@@ -188,6 +205,16 @@ Diagnostic fields keep both `assigned_shape` and `assigned_dense`; in this
 schema `assigned_dense` is an alias of the assigned shape term, while
 `dense_reward = assigned_shape + combat_event`.
 
+Support diagnostic subcomponents are raw values:
+
+- `support_position_raw = R_position`
+- `support_coverage_raw = R_coverage`
+- `support_safety_raw = R_safety`
+
+They are not separately weighted contributions.  The total support shape is
+still `0.40 * support_position_raw + 0.35 * support_coverage_raw + 0.25 *
+support_safety_raw`.
+
 ## 12. Mission success
 
 `mission_success = blue_eliminated AND support_alive`
@@ -195,6 +222,11 @@ schema `assigned_dense` is an alias of the assigned shape term, while
 In heterogeneous modes only, mission success adds `+1.0` to each red agent on the terminal blue-eliminated step.
 
 Support death does not terminate the episode.
+
+`terminal_reward_proportion` in MAPPO/HAPPO evaluation and rollout diagnostics
+counts all terminal-related reward, i.e. `terminal_base_reward +
+mission_success_bonus`.  In homogeneous-control and non-mission-success
+episodes this naturally equals the base terminal-only definition.
 
 ## 13. Metrics
 
@@ -223,6 +255,12 @@ The MAPPO evaluation and rollout summaries report episode means with `_mean`
 suffix.  Homogeneous-control mode has no support aircraft; it reports
 `has_support_agent=0` and `support_metrics_applicable=0` so the support metrics
 are not mistaken for failed support behavior.
+
+Checkpoint resume compatibility is limited to reward diagnostic accumulator
+fields.  If an older checkpoint lacks newly added diagnostic accumulators, those
+fields are initialized to zero.  This does not permit cross-schema network
+resume: actor/critic dimensions, schema metadata and optimizer compatibility
+remain strictly checked.
 
 Existing win, timeout, reward, hit, damage, survivor, crash, ceiling and collision metrics remain.
 

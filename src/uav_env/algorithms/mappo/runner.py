@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from uav_env.algorithms.common.output_safety import prepare_output_dir
 from uav_env.algorithms.common.progress_logging import format_evaluation_log, format_training_log
+from uav_env.algorithms.common.reward_diagnostics import allows_truncation_bootstrap, restore_reward_component_accumulators
 from uav_env.algorithms.mappo.adapter import CombatEnvDescription,MAPPOEnvAdapter,ParallelCombatVectorEnv,SyncCombatVectorEnv,make_adapter_from_description
 from uav_env.algorithms.mappo.checkpoint import load_checkpoint,save_checkpoint,schema_metadata
 from uav_env.algorithms.mappo.metrics import append_csv,combat_outcome_rates,evaluation_key
@@ -35,9 +36,9 @@ REWARD_COMPONENT_NAMES = (
     "attacked_event_penalty",
     "destroyed_event_penalty",
     "boundary_collision_penalty",
-    "support_position_reward",
-    "support_coverage_reward",
-    "support_safety_reward",
+    "support_position_raw",
+    "support_coverage_raw",
+    "support_safety_raw",
     "support_team_event_reward",
     "support_loss_adjustment",
 )
@@ -97,31 +98,19 @@ class MAPPORunner:
 
     def _restore_reward_component_accumulators(self, state: Any) -> None:
         expected_shape = (int(self.config["num_envs"]),)
-        if state is None:
-            self.reward_component_episode_accumulators={name: np.zeros(expected_shape,dtype=np.float64) for name in REWARD_COMPONENT_NAMES}
-            return
-        missing = set(REWARD_COMPONENT_NAMES) - set(state)
-        extra = set(state) - set(REWARD_COMPONENT_NAMES)
-        if missing or extra:
-            raise ValueError(f"reward_component_episode_accumulators keys mismatch: missing={sorted(missing)}, extra={sorted(extra)}")
-        restored={}
-        for name in REWARD_COMPONENT_NAMES:
-            values=np.asarray(state[name],dtype=np.float64)
-            if values.shape != expected_shape:
-                raise ValueError(f"reward_component_episode_accumulators[{name}] shape mismatch: checkpoint={values.shape}, expected={expected_shape}")
-            restored[name]=values.copy()
-        self.reward_component_episode_accumulators=restored
+        self.reward_component_episode_accumulators=restore_reward_component_accumulators(
+            state,
+            REWARD_COMPONENT_NAMES,
+            expected_shape,
+            error_prefix="reward_component_episode_accumulators",
+        )
 
     def _allows_truncation_bootstrap(self, step) -> bool:
         if not step.truncated:
             return False
         schema = self.schema_metadata["environment_schema_version"]
         reason = step.info["outcome"].termination_reason
-        if schema == "homogeneous_3v3_v2_timeaware":
-            if reason != "timeout":
-                raise RuntimeError(f"time-aware V2 truncated step must be timeout, got {reason!r}")
-            return False
-        return True
+        return allows_truncation_bootstrap(str(schema), True, str(reason))
 
     def _values(self,states: np.ndarray) -> np.ndarray:
         with torch.no_grad(): values=self.critic(torch.as_tensor(states,device=self.device))
@@ -146,7 +135,7 @@ class MAPPORunner:
         truncated_episode_count=0
         truncation_bootstrap_count=0
         truncation_no_bootstrap_count=0
-        timeaware_timeout_no_bootstrap_count=0
+        terminal_timeout_no_bootstrap_count=0
         for _ in range(t):
             obs=torch.as_tensor(self.current["local_obs"],device=self.device); states=torch.as_tensor(self.current["global_state"],device=self.device); available=torch.as_tensor(self.current["available_actions"],device=self.device)
             with torch.no_grad():
@@ -178,9 +167,9 @@ class MAPPORunner:
                         "attacked_event_penalty": 0.0,
                         "destroyed_event_penalty": 0.0,
                         "boundary_collision_penalty": 0.0,
-                        "support_position_reward": 0.0,
-                        "support_coverage_reward": 0.0,
-                        "support_safety_reward": 0.0,
+                        "support_position_raw": 0.0,
+                        "support_coverage_raw": 0.0,
+                        "support_safety_raw": 0.0,
                         "support_team_event_reward": 0.0,
                         "support_loss_adjustment": 0.0,
                     }
@@ -188,7 +177,8 @@ class MAPPORunner:
                 elif "agent_reward_breakdowns" in info:
                     values_by_component={name: 0.0 for name in REWARD_COMPONENT_NAMES}
                     for breakdown in info["agent_reward_breakdowns"].values():
-                        raw_dense.append(float(breakdown.raw_dense)); assigned_dense.append(float(breakdown.assigned_dense)); event_rewards.append(float(breakdown.event)); terminal_rewards.append(float(breakdown.terminal)); absolute_rewards.append(abs(float(breakdown.total)))
+                        terminal_total = float(breakdown.terminal_base_reward) + float(breakdown.mission_success_bonus)
+                        raw_dense.append(float(breakdown.raw_dense)); assigned_dense.append(float(breakdown.assigned_dense)); event_rewards.append(float(breakdown.event)); terminal_rewards.append(terminal_total); absolute_rewards.append(abs(float(breakdown.total)))
                         per_agent={
                             "situation_reward": float(breakdown.situation),
                             "geometry_event_reward": float(breakdown.geometry_event),
@@ -204,9 +194,9 @@ class MAPPORunner:
                             "attacked_event_penalty": float(breakdown.attacked_event_penalty),
                             "destroyed_event_penalty": float(breakdown.destroyed_event_penalty),
                             "boundary_collision_penalty": float(breakdown.boundary_collision_penalty),
-                            "support_position_reward": float(breakdown.support_position),
-                            "support_coverage_reward": float(breakdown.support_coverage),
-                            "support_safety_reward": float(breakdown.support_safety),
+                            "support_position_raw": float(breakdown.support_position),
+                            "support_coverage_raw": float(breakdown.support_coverage),
+                            "support_safety_raw": float(breakdown.support_safety),
                             "support_team_event_reward": float(breakdown.support_team_event),
                             "support_loss_adjustment": float(breakdown.support_loss_adjustment),
                         }
@@ -229,8 +219,8 @@ class MAPPORunner:
                         terminal_values[index]=0.0
                         truncation_bootstrap_mask[index]=0.0
                         truncation_no_bootstrap_count += 1
-                        if self.schema_metadata["environment_schema_version"] == "homogeneous_3v3_v2_timeaware" and step.info["outcome"].termination_reason == "timeout":
-                            timeaware_timeout_no_bootstrap_count += 1
+                        if str(self.schema_metadata["environment_schema_version"]) in {"homogeneous_3v3_v2_timeaware", "functional_heterogeneous_3v3_v1"} and step.info["outcome"].termination_reason == "timeout":
+                            terminal_timeout_no_bootstrap_count += 1
                 if step.terminated or step.truncated:
                     self.episodes+=1; rollout_returns.append(float(self.episode_return_accumulators[index])); rollout_agent_sum_returns.append(float(self.agent_sum_return_accumulators[index])); self.episode_return_accumulators[index]=0.0; self.agent_sum_return_accumulators[index]=0.0
                     outcome=step.info["outcome"]; statistics=step.info.get("statistics",{}); reason=str(outcome.termination_reason); episode_timeouts.append(float(reason=="timeout"))
@@ -238,7 +228,7 @@ class MAPPORunner:
                         component_episode_values[name].append(float(self.reward_component_episode_accumulators[name][index]))
                         self.reward_component_episode_accumulators[name][index]=0.0
                     if reason == "timeout" and "agent_reward_breakdowns" in step.info:
-                        timeout_terminal_per_agent_rewards.append(float(np.mean([breakdown.terminal for breakdown in step.info["agent_reward_breakdowns"].values()])))
+                        timeout_terminal_per_agent_rewards.append(float(np.mean([breakdown.terminal_base_reward + breakdown.mission_success_bonus for breakdown in step.info["agent_reward_breakdowns"].values()])))
                     if self.num_agents==1:
                         episode_crashes.append(float(reason in {"red_ground_crash","blue_ground_crash"})); episode_damages.append(float(statistics.get("red_effective_damage",0.0))); episode_hits.append(float(statistics.get("red_hits",0.0))); attack_occupancies.append(float(statistics.get("red_attack_area_steps",0))/max(float(outcome.decision_steps),1.0))
                     else:
@@ -256,7 +246,7 @@ class MAPPORunner:
             buffer.insert(actions.cpu().numpy(),log_probs.cpu().numpy(),values.cpu().numpy(),result["rewards"],result["terminated"],result["truncated"],self.current["alive_masks"],critic_masks,result["next_local_obs"],result["next_global_state"],result["next_available_actions"],terminal_values,truncation_bootstrap_mask)
             self.current={"local_obs":result["next_local_obs"],"global_state":result["next_global_state"],"alive_masks":result["next_alive_masks"],"available_actions":result["next_available_actions"]}
         buffer.finish(self._values(self.current["global_state"]),float(self.config["gamma"]),float(self.config["gae_lambda"]))
-        diagnostics={"rollout_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_team_episode_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_agent_sum_episode_return_mean":float(np.mean(rollout_agent_sum_returns)) if rollout_agent_sum_returns else 0.0,"rollout_mean_per_agent_episode_return":float(np.mean(rollout_agent_sum_returns))/self.num_agents if rollout_agent_sum_returns else 0.0,"team_reward_mean":float(np.mean(team_step_rewards)) if team_step_rewards else 0.0,"agent_reward_sum_mean":float(np.mean(agent_sum_step_rewards)) if agent_sum_step_rewards else 0.0,"rollout_episode_count":float(len(rollout_returns)),"observation_saturation_mean":float(np.mean(saturation)) if saturation else 0.0,"observation_saturation_max":float(np.max(saturation)) if saturation else 0.0,"rollout_action_entropy":float(np.mean(entropies)) if entropies else 0.0,"terminal_reward_absolute_proportion":float(np.sum(np.abs(terminal_rewards))/max(np.sum(absolute_rewards),1e-12)),"attack_area_occupancy":float(np.mean(attack_occupancies)) if attack_occupancies else 0.0,"attack_area_occupancy_available":float(bool(attack_occupancies)),"effective_damage":float(np.mean(episode_damages)) if episode_damages else 0.0,"hit_count":float(np.mean(episode_hits)) if episode_hits else 0.0,"timeout_rate":float(np.mean(episode_timeouts)) if episode_timeouts else 0.0,"ground_crash_rate":float(np.mean(episode_crashes)) if episode_crashes else 0.0,"truncated_episode_count":float(truncated_episode_count),"truncation_bootstrap_count":float(truncation_bootstrap_count),"truncation_no_bootstrap_count":float(truncation_no_bootstrap_count),"timeaware_timeout_no_bootstrap_count":float(timeaware_timeout_no_bootstrap_count)}
+        diagnostics={"rollout_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_team_episode_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_agent_sum_episode_return_mean":float(np.mean(rollout_agent_sum_returns)) if rollout_agent_sum_returns else 0.0,"rollout_mean_per_agent_episode_return":float(np.mean(rollout_agent_sum_returns))/self.num_agents if rollout_agent_sum_returns else 0.0,"team_reward_mean":float(np.mean(team_step_rewards)) if team_step_rewards else 0.0,"agent_reward_sum_mean":float(np.mean(agent_sum_step_rewards)) if agent_sum_step_rewards else 0.0,"rollout_episode_count":float(len(rollout_returns)),"observation_saturation_mean":float(np.mean(saturation)) if saturation else 0.0,"observation_saturation_max":float(np.max(saturation)) if saturation else 0.0,"rollout_action_entropy":float(np.mean(entropies)) if entropies else 0.0,"terminal_reward_absolute_proportion":float(np.sum(np.abs(terminal_rewards))/max(np.sum(absolute_rewards),1e-12)),"attack_area_occupancy":float(np.mean(attack_occupancies)) if attack_occupancies else 0.0,"attack_area_occupancy_available":float(bool(attack_occupancies)),"effective_damage":float(np.mean(episode_damages)) if episode_damages else 0.0,"hit_count":float(np.mean(episode_hits)) if episode_hits else 0.0,"timeout_rate":float(np.mean(episode_timeouts)) if episode_timeouts else 0.0,"ground_crash_rate":float(np.mean(episode_crashes)) if episode_crashes else 0.0,"truncated_episode_count":float(truncated_episode_count),"truncation_bootstrap_count":float(truncation_bootstrap_count),"truncation_no_bootstrap_count":float(truncation_no_bootstrap_count),"terminal_timeout_no_bootstrap_count":float(terminal_timeout_no_bootstrap_count),"timeaware_timeout_no_bootstrap_count":float(terminal_timeout_no_bootstrap_count)}
         for name,values_ in (("raw_dense_reward",raw_dense),("assigned_dense_reward",assigned_dense),("event_reward",event_rewards),("terminal_reward",terminal_rewards)):
             diagnostics[f"{name}_mean"]=float(np.mean(values_)) if values_ else 0.0; diagnostics[f"{name}_std"]=float(np.std(values_)) if values_ else 0.0
         for name,values_ in component_values.items():
@@ -298,7 +288,7 @@ class MAPPORunner:
                 for value in action[active]: frequencies[int(value)]+=1
                 current=env.step(action); total+=current.team_reward; agent_sum_total+=current.agent_reward_sum; absolute_total+=abs(current.team_reward)
                 if self.num_agents==1: terminal_absolute+=abs(float(current.info["reward_breakdown"].terminal))
-                else: terminal_absolute+=abs(float(np.mean([v.terminal for v in current.info["agent_reward_breakdowns"].values()])))
+                else: terminal_absolute+=abs(float(np.mean([v.terminal_base_reward + v.mission_success_bonus for v in current.info["agent_reward_breakdowns"].values()])))
                 done=current.terminated or current.truncated
             outcome=current.info["outcome"]; outcomes.append(outcome); returns.append(total); agent_sum_returns.append(agent_sum_total); terminal_proportions.append(terminal_absolute/max(absolute_total,1e-12)); steps.append(outcome.decision_steps)
             stats=current.info.get("statistics",{}); reason=str(outcome.termination_reason)

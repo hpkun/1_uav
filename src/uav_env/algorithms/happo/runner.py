@@ -15,6 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from uav_env.algorithms.common.output_safety import prepare_output_dir
 from uav_env.algorithms.common.progress_logging import format_evaluation_log, format_training_log
+from uav_env.algorithms.common.reward_diagnostics import allows_truncation_bootstrap, restore_reward_component_accumulators
 from uav_env.algorithms.happo.checkpoint import load_happo_checkpoint, save_happo_checkpoint
 from uav_env.algorithms.happo.networks import IndependentActorSet, JointCentralizedCritic
 from uav_env.algorithms.happo.rollout_buffer import HAPPORolloutBuffer
@@ -40,9 +41,9 @@ REWARD_COMPONENT_NAMES = (
     "attacked_event_penalty",
     "destroyed_event_penalty",
     "boundary_collision_penalty",
-    "support_position_reward",
-    "support_coverage_reward",
-    "support_safety_reward",
+    "support_position_raw",
+    "support_coverage_raw",
+    "support_safety_raw",
     "support_team_event_reward",
     "support_loss_adjustment",
 )
@@ -139,10 +140,8 @@ class HAPPORunner:
     def _allows_truncation_bootstrap(self, step: Any) -> bool:
         if not step.truncated:
             return False
-        reason = step.info["outcome"].termination_reason
-        if reason != "timeout":
-            raise RuntimeError(f"time-aware V2 truncated step must be timeout, got {reason!r}")
-        return False
+        reason = str(step.info["outcome"].termination_reason)
+        return allows_truncation_bootstrap(str(self.schema_metadata["environment_schema_version"]), True, reason)
 
     def collect(self) -> tuple[HAPPORolloutBuffer, dict[str, float]]:
         t, e = int(self.config["rollout_length"]), int(self.config["num_envs"])
@@ -195,9 +194,9 @@ class HAPPORunner:
                         "attacked_event_penalty": float(breakdown.attacked_event_penalty),
                         "destroyed_event_penalty": float(breakdown.destroyed_event_penalty),
                         "boundary_collision_penalty": float(breakdown.boundary_collision_penalty),
-                        "support_position_reward": float(breakdown.support_position),
-                        "support_coverage_reward": float(breakdown.support_coverage),
-                        "support_safety_reward": float(breakdown.support_safety),
+                        "support_position_raw": float(breakdown.support_position),
+                        "support_coverage_raw": float(breakdown.support_coverage),
+                        "support_safety_raw": float(breakdown.support_safety),
                         "support_team_event_reward": float(breakdown.support_team_event),
                         "support_loss_adjustment": float(breakdown.support_loss_adjustment),
                     }
@@ -290,6 +289,7 @@ class HAPPORunner:
         count = int(episodes or self.config["validation_episodes"])
         deterministic = bool(self.config.get("deterministic_evaluation", True)) if deterministic is None else deterministic
         outcomes, returns, agent_sum_returns, steps = [], [], [], []
+        terminal_proportions: list[float] = []
         red_crashes: list[float] = []
         blue_crashes: list[float] = []
         frequencies = np.zeros((self.num_agents, 15), dtype=np.float64)
@@ -299,7 +299,7 @@ class HAPPORunner:
         for episode in range(count):
             env = make_adapter_from_description(self.description)
             current = env.reset(seed_start + episode)
-            total, agent_sum_total, done = 0.0, 0.0, False
+            total, agent_sum_total, absolute_total, terminal_absolute, done = 0.0, 0.0, 0.0, 0.0, False
             while not done:
                 action = np.zeros(self.num_agents, dtype=np.int64)
                 with torch.no_grad():
@@ -319,11 +319,15 @@ class HAPPORunner:
                 current = env.step(action)
                 total += current.team_reward
                 agent_sum_total += current.agent_reward_sum
+                absolute_total += abs(current.team_reward)
+                if "agent_reward_breakdowns" in current.info:
+                    terminal_absolute += abs(float(np.mean([v.terminal_base_reward + v.mission_success_bonus for v in current.info["agent_reward_breakdowns"].values()])))
                 done = current.terminated or current.truncated
             outcome = current.info["outcome"]
             outcomes.append(outcome)
             returns.append(total)
             agent_sum_returns.append(agent_sum_total)
+            terminal_proportions.append(terminal_absolute / max(absolute_total, 1.0e-12))
             steps.append(outcome.decision_steps)
             aircraft = current.info.get("statistics", {}).get("aircraft", {})
             red_crashes.append(float(any(float(aircraft.get(f"red_{i}", {}).get("ground_crashes", 0.0)) > 0.0 for i in range(self.num_agents))))
@@ -347,6 +351,7 @@ class HAPPORunner:
             "mean_agent_sum_episode_return": float(np.mean(agent_sum_returns)),
             "mean_per_agent_episode_return": float(np.mean(agent_sum_returns)) / self.num_agents,
             "mean_episode_steps": float(np.mean(steps)),
+            "terminal_reward_proportion": float(np.mean(terminal_proportions)),
         }
         for agent_id in range(self.num_agents):
             total = max(frequencies[agent_id].sum(), 1.0)
@@ -396,22 +401,12 @@ class HAPPORunner:
 
     def _restore_reward_component_accumulators(self, state: Any) -> None:
         expected_shape = (int(self.config["num_envs"]),)
-        if state is None:
-            self.reward_component_episode_accumulators = {
-                name: np.zeros(expected_shape, dtype=np.float64) for name in REWARD_COMPONENT_NAMES
-            }
-            return
-        missing = set(REWARD_COMPONENT_NAMES) - set(state)
-        extra = set(state) - set(REWARD_COMPONENT_NAMES)
-        if missing or extra:
-            raise ValueError(f"HAPPO reward component accumulator keys mismatch: missing={sorted(missing)}, extra={sorted(extra)}")
-        restored = {}
-        for name in REWARD_COMPONENT_NAMES:
-            values = np.asarray(state[name], dtype=np.float64)
-            if values.shape != expected_shape:
-                raise ValueError(f"HAPPO reward component accumulator {name} shape mismatch: checkpoint={values.shape}, expected={expected_shape}")
-            restored[name] = values.copy()
-        self.reward_component_episode_accumulators = restored
+        self.reward_component_episode_accumulators = restore_reward_component_accumulators(
+            state,
+            REWARD_COMPONENT_NAMES,
+            expected_shape,
+            error_prefix="HAPPO reward_component_episode_accumulators",
+        )
 
     def _save(self, name: str) -> None:
         runner_state = {
