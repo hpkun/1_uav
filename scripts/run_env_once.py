@@ -71,6 +71,13 @@ def reward_component_sums(info: dict[str, Any]) -> dict[str, float]:
         "assigned_dense": "assigned_dense",
         "dense_reward": "dense_reward",
         "terminal": "terminal",
+        "terminal_base_reward": "terminal_base_reward",
+        "mission_success_bonus": "mission_success_bonus",
+        "support_position": "support_position",
+        "support_coverage": "support_coverage",
+        "support_safety": "support_safety",
+        "support_team_event": "support_team_event",
+        "support_loss_adjustment": "support_loss_adjustment",
         "total": "total",
     }
     return {
@@ -112,7 +119,26 @@ def assert_finite_numbers(value: Any, path: str = "summary") -> None:
 
 
 def zero_reward_components() -> dict[str, float]:
-    return {key: 0.0 for key in ("situation", "geometry_event", "combat_event", "assigned_shape", "assigned_dense", "dense_reward", "terminal", "total")}
+    return {
+        key: 0.0
+        for key in (
+            "situation",
+            "geometry_event",
+            "combat_event",
+            "assigned_shape",
+            "assigned_dense",
+            "dense_reward",
+            "terminal",
+            "terminal_base_reward",
+            "mission_success_bonus",
+            "support_position",
+            "support_coverage",
+            "support_safety",
+            "support_team_event",
+            "support_loss_adjustment",
+            "total",
+        )
+    }
 
 
 def add_components(total: dict[str, float], step: dict[str, float]) -> None:

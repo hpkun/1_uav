@@ -164,6 +164,30 @@ Support event changes:
 - boundary/collision penalty multiplied by `support_loss_multiplier=1.5`
 - team event share: `clip(0.25 * combat positive hit/destroy events, 0, 1.0)`
 
+The team event is computed after all red agents' own combat events have been
+computed, so it does not depend on red-agent loop order.  Only positive combat
+hit/destroy components from armed combat UAVs are shared; attacked, destroyed,
+boundary and collision penalties are excluded.
+
+For functional heterogeneous and time-aware homogeneous V2 environments the
+per-agent reward assembly is explicitly split as:
+
+`total = assigned_shape + combat_event + terminal_base_reward + mission_success_bonus`
+
+where:
+
+- `assigned_shape` is the Algorithm-2 assignment of the current raw shape
+  reward;
+- `combat_event` contains hit/destroy/attacked/destroyed/boundary events, and
+  for support also includes the support team event and support loss adjustment;
+- `terminal_base_reward` is the selected multi-agent terminal allocation;
+- `mission_success_bonus` is separate from terminal allocation and is zero
+  outside heterogeneous mission success.
+
+Diagnostic fields keep both `assigned_shape` and `assigned_dense`; in this
+schema `assigned_dense` is an alias of the assigned shape term, while
+`dense_reward = assigned_shape + combat_event`.
+
 ## 12. Mission success
 
 `mission_success = blue_eliminated AND support_alive`
@@ -176,6 +200,8 @@ Support death does not terminate the episode.
 
 Functional metrics:
 
+- `has_support_agent`
+- `support_metrics_applicable`
 - `support_survival_rate`
 - `mission_success_rate`
 - `support_detection_coverage_mean`
@@ -185,6 +211,18 @@ Functional metrics:
 - `combat_attack_attempts_mean`
 - `combat_hits_mean`
 - `combat_effective_damage_mean`
+
+Environment `info["functional_metrics"]` stores episode cumulative combat
+quantities with `_total` suffix:
+
+- `combat_attack_attempts_total`
+- `combat_hits_total`
+- `combat_effective_damage_total`
+
+The MAPPO evaluation and rollout summaries report episode means with `_mean`
+suffix.  Homogeneous-control mode has no support aircraft; it reports
+`has_support_agent=0` and `support_metrics_applicable=0` so the support metrics
+are not mistaken for failed support behavior.
 
 Existing win, timeout, reward, hit, damage, survivor, crash, ceiling and collision metrics remain.
 

@@ -169,6 +169,30 @@ class CombatMultiEnv(BaseUAVEnv):
             raise ValueError("detection ranges must be finite positive values")
         if support_range <= combat_range:
             raise ValueError("support_detection_range must be greater than combat_detection_range")
+        finite_nonnegative = (
+            "support_rear_distance",
+            "support_position_tolerance",
+            "support_loss_multiplier",
+            "support_team_event_share",
+            "support_team_event_cap",
+            "mission_success_bonus",
+            "combat_forward_offset",
+            "support_rear_offset",
+            "combat_lateral_spacing",
+            "formation_lateral_spacing",
+        )
+        for key in finite_nonnegative:
+            value = float(self.config[key])
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"{key} must be finite and nonnegative for functional heterogeneous 3v3")
+        if float(self.config["support_position_tolerance"]) <= 0.0:
+            raise ValueError("support_position_tolerance must be positive for functional heterogeneous 3v3")
+        if float(self.config["combat_lateral_spacing"]) <= 0.0 or float(self.config["formation_lateral_spacing"]) <= 0.0:
+            raise ValueError("formation spacings must be positive for functional heterogeneous 3v3")
+        if float(self.config["support_loss_multiplier"]) < 1.0:
+            raise ValueError("support_loss_multiplier must be at least 1.0 so support loss is not weakened")
+        if float(self.config["support_team_event_cap"]) < 0.0:
+            raise ValueError("support_team_event_cap must be nonnegative")
         if mode == "homogeneous_control":
             if roles != ["combat", "combat", "combat"] or relay_enabled:
                 raise ValueError("homogeneous_control requires three combat roles and relay_enabled=false")
@@ -185,6 +209,8 @@ class CombatMultiEnv(BaseUAVEnv):
             armed_red = set(self.combat_agent_ids)
         else:
             raise ValueError(f"Unknown functional_mode: {mode!r}")
+        if mode != "heterogeneous_relay" and relay_enabled:
+            raise ValueError("relay_enabled=true is valid only for heterogeneous_relay")
         self.red_role_by_id = {f"red_{index}": roles[index] for index in range(3)}
         self.armed_by_id = {f"red_{index}": f"red_{index}" in armed_red for index in range(3)}
         self.armed_by_id.update({f"blue_{index}": True for index in range(3)})
@@ -605,16 +631,19 @@ class CombatMultiEnv(BaseUAVEnv):
             return float(stats[f"{prefix}_sum"]) / count if count else 0.0
         combat_ids = self.combat_agent_ids or [f"red_{i}" for i in range(3)]
         aircraft = self._statistics["aircraft"]
+        has_support = bool(self.support_agent_id is not None)
         return {
+            "has_support_agent": float(has_support),
+            "support_metrics_applicable": float(has_support),
             "support_detection_coverage_mean": mean("support_detection_coverage"),
             "relay_visible_enemy_count_mean": mean("relay_visible_enemy_count"),
             "support_incoming_threat_mean": mean("support_incoming_threat"),
             "support_position_error_mean": mean("support_position_error"),
             "mission_success": float(stats.get("mission_success", 0)),
             "support_survived": float(stats.get("support_survived", 0)),
-            "combat_attack_attempts": float(sum(aircraft[key]["attack_attempts"] for key in combat_ids)),
-            "combat_hits": float(sum(aircraft[key]["hits"] for key in combat_ids)),
-            "combat_effective_damage": float(sum(aircraft[key]["effective_damage"] for key in combat_ids)),
+            "combat_attack_attempts_total": float(sum(aircraft[key]["attack_attempts"] for key in combat_ids)),
+            "combat_hits_total": float(sum(aircraft[key]["hits"] for key in combat_ids)),
+            "combat_effective_damage_total": float(sum(aircraft[key]["effective_damage"] for key in combat_ids)),
         }
 
     def step(self, action: Any) -> tuple[NDArray[np.float64], float, bool, bool, dict[str, Any]]:
@@ -696,6 +725,9 @@ class CombatMultiEnv(BaseUAVEnv):
         combat_components: dict[str, dict[str, float]] = {}
         visibility = self._visibility_masks() if self.is_functional_heterogeneous else {"local": np.zeros((self.red_count, self.blue_count), dtype=bool), "relay": np.zeros((self.red_count, self.blue_count), dtype=bool), "final": np.zeros((self.red_count, self.blue_count), dtype=bool)}
         support_components: dict[str, float] = {}
+        support_components_by_id: dict[str, dict[str, float]] = {}
+        support_team_events: dict[str, float] = {}
+        support_loss_adjustments: dict[str, float] = {}
         for red in self.red_aircraft:
             if red.uav_id not in step_active_ids:
                 event_values[red.uav_id] = 0.0
@@ -703,6 +735,9 @@ class CombatMultiEnv(BaseUAVEnv):
                 geometry_values[red.uav_id] = 0.0
                 combat_values[red.uav_id] = 0.0
                 combat_components[red.uav_id] = {"hit": 0.0, "destroy": 0.0, "attacked": 0.0, "destroyed": 0.0, "boundary_collision": 0.0}
+                support_components_by_id[red.uav_id] = {}
+                support_team_events[red.uav_id] = 0.0
+                support_loss_adjustments[red.uav_id] = 0.0
                 continue
             is_support = self.is_functional_heterogeneous and self.red_role_by_id.get(red.uav_id) == "support"
             situation = individual_situation_reward(red, self.blue_aircraft, previous_states, self.config) if red.is_alive and not is_support else 0.0
@@ -713,20 +748,25 @@ class CombatMultiEnv(BaseUAVEnv):
                 combat_event, combat_contribution, components = self._combat_event_reward(red, combat_result.resolved_attacks, boundary, collision_ids)
                 components = dict(components)
                 loss_multiplier = float(self.config["support_loss_multiplier"])
+                support_loss_adjustment = 0.0
                 if components["destroyed"] < 0.0:
-                    combat_event += components["destroyed"] * (loss_multiplier - 1.0)
+                    delta = components["destroyed"] * (loss_multiplier - 1.0)
+                    combat_event += delta
+                    support_loss_adjustment += delta
                     components["destroyed"] *= loss_multiplier
                 if components["boundary_collision"] < 0.0:
-                    combat_event += components["boundary_collision"] * (loss_multiplier - 1.0)
+                    delta = components["boundary_collision"] * (loss_multiplier - 1.0)
+                    combat_event += delta
+                    support_loss_adjustment += delta
                     components["boundary_collision"] *= loss_multiplier
-                combat_event += min(float(self.config["support_team_event_cap"]), max(0.0, float(self.config["support_team_event_share"]) * sum(
-                    comp.get("hit", 0.0) + comp.get("destroy", 0.0) for rid, comp in combat_components.items() if rid in self.combat_agent_ids
-                )))
                 event = combat_event
                 contribution = combat_contribution
                 geometry_values[red.uav_id] = geometry_event
                 combat_values[red.uav_id] = combat_event
                 combat_components[red.uav_id] = components
+                support_components_by_id[red.uav_id] = dict(support_components)
+                support_team_events[red.uav_id] = 0.0
+                support_loss_adjustments[red.uav_id] = support_loss_adjustment
                 raw_dense[red.uav_id] = shape
             elif self.is_v2 or self.is_functional_heterogeneous:
                 geometry_event, geometry_contribution = self._geometry_event_reward(red)
@@ -736,16 +776,36 @@ class CombatMultiEnv(BaseUAVEnv):
                 geometry_values[red.uav_id] = geometry_event
                 combat_values[red.uav_id] = combat_event
                 combat_components[red.uav_id] = components
+                support_components_by_id[red.uav_id] = {}
+                support_team_events[red.uav_id] = 0.0
+                support_loss_adjustments[red.uav_id] = 0.0
                 raw_dense[red.uav_id] = situation + geometry_event
             else:
                 event, contribution = self._event_reward(red, combat_result.resolved_attacks, boundary, collision_ids)
                 geometry_values[red.uav_id] = event
                 combat_values[red.uav_id] = 0.0
                 combat_components[red.uav_id] = {"hit": 0.0, "destroy": 0.0, "attacked": 0.0, "destroyed": 0.0, "boundary_collision": 0.0}
+                support_components_by_id[red.uav_id] = {}
+                support_team_events[red.uav_id] = 0.0
+                support_loss_adjustments[red.uav_id] = 0.0
                 raw_dense[red.uav_id] = situation + event
             event_values[red.uav_id] = event
             step_contributions[red.uav_id] = contribution
             self._statistics["aircraft"][red.uav_id]["contribution_score"] += contribution
+        if self.is_functional_heterogeneous and str(self.config.get("functional_mode")) != "homogeneous_control" and self.support_agent_id is not None:
+            positive_combat_events = sum(
+                max(0.0, combat_components.get(red_id, {}).get("hit", 0.0))
+                + max(0.0, combat_components.get(red_id, {}).get("destroy", 0.0))
+                for red_id in self.combat_agent_ids
+            )
+            support_team_event = min(
+                float(self.config["support_team_event_cap"]),
+                max(0.0, float(self.config["support_team_event_share"]) * positive_combat_events),
+            )
+            if self.support_agent_id in combat_values:
+                combat_values[self.support_agent_id] += support_team_event
+                event_values[self.support_agent_id] += support_team_event
+                support_team_events[self.support_agent_id] = support_team_event
         assigned = (
             assign_dense_rewards(
                 raw_dense,
@@ -761,16 +821,20 @@ class CombatMultiEnv(BaseUAVEnv):
         self._update_functional_metrics(visibility, support_components, outcome)
         breakdowns: dict[str, MultiAgentRewardBreakdown] = {}
         for red in self.red_aircraft:
-            situation = raw_dense.get(red.uav_id, 0.0) - geometry_values[red.uav_id] if self.is_v2 else raw_dense.get(red.uav_id, 0.0) - event_values[red.uav_id]
+            split_shape_event = self.is_v2 or self.is_functional_heterogeneous
+            situation = raw_dense.get(red.uav_id, 0.0) - geometry_values[red.uav_id] if split_shape_event else raw_dense.get(red.uav_id, 0.0) - event_values[red.uav_id]
             allocation=terminal[red.uav_id]
-            dense_reward = assigned.get(red.uav_id, 0.0) + (combat_values[red.uav_id] if self.is_v2 else 0.0)
+            assigned_shape_reward = assigned.get(red.uav_id, 0.0)
+            combat_event_reward = combat_values[red.uav_id] if split_shape_event else 0.0
+            dense_reward = assigned_shape_reward + combat_event_reward
             mission_bonus = float(self.config.get("mission_success_bonus", 0.0)) if mission_success else 0.0
-            terminal_reward = allocation.reward + mission_bonus
-            total = dense_reward + terminal_reward
+            terminal_base_reward = allocation.reward
+            total = dense_reward + terminal_base_reward + mission_bonus
             components = combat_components[red.uav_id]
+            support_breakdown = support_components_by_id.get(red.uav_id, {})
             breakdowns[red.uav_id] = MultiAgentRewardBreakdown(
                 situation=situation, event=event_values[red.uav_id], raw_dense=raw_dense.get(red.uav_id, 0.0),
-                assigned_dense=dense_reward, terminal=terminal_reward, total=total,
+                assigned_dense=assigned_shape_reward, terminal=terminal_base_reward, total=total,
                 contribution_score=step_contributions[red.uav_id], terminal_profile=allocation.profile,
                 terminal_team_base=allocation.team_base, terminal_allocation_factor=allocation.allocation_factor,
                 terminal_base_share_component=allocation.base_share_component,
@@ -781,15 +845,22 @@ class CombatMultiEnv(BaseUAVEnv):
                 terminal_contribution_denominator=allocation.contribution_denominator,
                 terminal_health_denominator=allocation.health_denominator,
                 geometry_event=geometry_values[red.uav_id],
-                combat_event=combat_values[red.uav_id],
+                combat_event=combat_event_reward,
                 raw_shape=raw_dense.get(red.uav_id, 0.0),
-                assigned_shape=assigned.get(red.uav_id, 0.0),
+                assigned_shape=assigned_shape_reward,
                 dense_reward=dense_reward,
+                terminal_base_reward=terminal_base_reward,
+                mission_success_bonus=mission_bonus,
                 hit_event_reward=components["hit"],
                 destroy_event_reward=components["destroy"],
                 attacked_event_penalty=components["attacked"],
                 destroyed_event_penalty=components["destroyed"],
                 boundary_collision_penalty=components["boundary_collision"],
+                support_position=float(support_breakdown.get("support_position", 0.0)),
+                support_coverage=float(support_breakdown.get("support_coverage", 0.0)),
+                support_safety=float(support_breakdown.get("support_safety", 0.0)),
+                support_team_event=float(support_team_events.get(red.uav_id, 0.0)),
+                support_loss_adjustment=float(support_loss_adjustments.get(red.uav_id, 0.0)),
             )
             self._statistics["aircraft"][red.uav_id]["cumulative_reward"] += total
         agent_rewards = {key: value.total for key, value in breakdowns.items()}

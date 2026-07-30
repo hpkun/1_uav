@@ -40,11 +40,18 @@ class MultiAgentRewardBreakdown:
     raw_shape: float = 0.0
     assigned_shape: float = 0.0
     dense_reward: float = 0.0
+    terminal_base_reward: float = 0.0
+    mission_success_bonus: float = 0.0
     hit_event_reward: float = 0.0
     destroy_event_reward: float = 0.0
     attacked_event_penalty: float = 0.0
     destroyed_event_penalty: float = 0.0
     boundary_collision_penalty: float = 0.0
+    support_position: float = 0.0
+    support_coverage: float = 0.0
+    support_safety: float = 0.0
+    support_team_event: float = 0.0
+    support_loss_adjustment: float = 0.0
 
 
 @dataclass(frozen=True)

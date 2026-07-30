@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from uav_env.actions.discrete_15 import DiscreteAction15, get_control
 from uav_env.algorithms.mappo.config import load_mappo_config
-from uav_env.combat.multi_combat import resolve_multi_attacks
+from uav_env.combat.multi_combat import AttackAttempt, MultiCombatStepResult, ResolvedAttack, resolve_multi_attacks
 from uav_env.core.enums import Team
 from uav_env.entities.uav import UAV
 from uav_env.dynamics.propagation import propagate_state
@@ -25,6 +27,26 @@ def _env(mode: str, seed: int = 1):
         cfg["scenario"], cfg["opponent"], seed=seed,
         multi_terminal_reward_profile=cfg["multi_terminal_reward_profile"],
         functional_mode=cfg["functional_mode"], red_roles=cfg["red_roles"], relay_enabled=cfg["relay_enabled"],
+    )
+
+
+def _freeze_physics(env) -> None:
+    env._propagate_all = lambda action_map: ([], {}, 0)
+
+
+def _states(aircraft) -> dict[str, object]:
+    return {u.uav_id: u.state.copy() for u in aircraft}
+
+
+def _assert_reward_closure(breakdown) -> None:
+    assert breakdown.dense_reward == pytest.approx(breakdown.assigned_shape + breakdown.combat_event)
+    assert breakdown.assigned_dense == pytest.approx(breakdown.assigned_shape)
+    assert breakdown.terminal == pytest.approx(breakdown.terminal_base_reward)
+    assert breakdown.total == pytest.approx(
+        breakdown.assigned_shape
+        + breakdown.combat_event
+        + breakdown.terminal_base_reward
+        + breakdown.mission_success_bonus
     )
 
 
@@ -161,6 +183,163 @@ def test_functional_short_step_metrics_and_reward_consistency() -> None:
     assert np.isfinite(reward)
     assert "functional_metrics" in info
     assert "support_detection_coverage_mean" in info["functional_metrics"]
+    assert "combat_attack_attempts_total" in info["functional_metrics"]
+    assert "combat_hits_total" in info["functional_metrics"]
+    assert "combat_effective_damage_total" in info["functional_metrics"]
     rewards = info["agent_rewards"]
     assert reward == pytest.approx(sum(rewards.values()) / 3.0)
+    env.close()
+
+
+def test_functional_combat_events_enter_final_reward(monkeypatch) -> None:
+    env = _env("homogeneous_control")
+    env.reset(seed=20)
+    _freeze_physics(env)
+
+    def fake_resolve(aircraft, attack_config, damage_config, rng, sample_team_order=None, armed_ids=None):
+        return MultiCombatStepResult(
+            _states(aircraft),
+            [AttackAttempt("red_0", "blue_0", 100.0, 0.1, 50.0)],
+            [ResolvedAttack("red_0", "blue_0", 100.0, 0.1, 50.0, 50.0, 0.0, True, False)],
+        )
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", fake_resolve)
+    _, _, _, _, info = env.step(np.asarray([0, 0, 0]))
+    breakdown = info["agent_reward_breakdowns"]["red_0"]
+    assert breakdown.hit_event_reward == pytest.approx(0.8)
+    assert breakdown.combat_event == pytest.approx(0.8)
+    _assert_reward_closure(breakdown)
+    assert info["agent_rewards"]["red_0"] == pytest.approx(breakdown.total)
+    env.close()
+
+
+def test_support_team_event_is_positive_event_share_and_capped(monkeypatch) -> None:
+    env = _env("heterogeneous_relay")
+    env.reset(seed=21)
+    _freeze_physics(env)
+
+    def fake_resolve(aircraft, attack_config, damage_config, rng, sample_team_order=None, armed_ids=None):
+        return MultiCombatStepResult(
+            _states(aircraft),
+            [
+                AttackAttempt("red_0", "blue_0", 100.0, 0.1, 300.0),
+                AttackAttempt("red_1", "blue_1", 100.0, 0.1, 300.0),
+            ],
+            [
+                ResolvedAttack("red_0", "blue_0", 100.0, 0.1, 300.0, 300.0, 0.0, True, True),
+                ResolvedAttack("red_1", "blue_1", 100.0, 0.1, 300.0, 300.0, 0.0, True, True),
+            ],
+        )
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", fake_resolve)
+    _, _, _, _, info = env.step(np.asarray([0, 0, 0]))
+    support = info["agent_reward_breakdowns"]["red_2"]
+    assert support.support_team_event == pytest.approx(1.0)
+    assert support.combat_event == pytest.approx(1.0)
+    _assert_reward_closure(support)
+    env.close()
+
+
+def test_support_team_event_excludes_negative_events(monkeypatch) -> None:
+    env = _env("heterogeneous_relay")
+    env.reset(seed=22)
+    _freeze_physics(env)
+
+    def fake_resolve(aircraft, attack_config, damage_config, rng, sample_team_order=None, armed_ids=None):
+        return MultiCombatStepResult(
+            _states(aircraft),
+            [AttackAttempt("blue_0", "red_0", 100.0, 0.1, 50.0)],
+            [ResolvedAttack("blue_0", "red_0", 100.0, 0.1, 50.0, 50.0, 0.0, True, False)],
+        )
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", fake_resolve)
+    _, _, _, _, info = env.step(np.asarray([0, 0, 0]))
+    assert info["agent_reward_breakdowns"]["red_0"].attacked_event_penalty == pytest.approx(-0.9)
+    assert info["agent_reward_breakdowns"]["red_2"].support_team_event == pytest.approx(0.0)
+    env.close()
+
+
+def test_support_loss_multiplier_is_explicit_breakdown(monkeypatch) -> None:
+    env = _env("heterogeneous_relay")
+    env.reset(seed=23)
+    _freeze_physics(env)
+
+    def fake_resolve(aircraft, attack_config, damage_config, rng, sample_team_order=None, armed_ids=None):
+        states = _states(aircraft)
+        states["red_2"] = replace(states["red_2"], health=0.0, alive=False, damaged=True, ever_hit=True)
+        return MultiCombatStepResult(
+            states,
+            [AttackAttempt("blue_0", "red_2", 100.0, 0.1, 300.0)],
+            [ResolvedAttack("blue_0", "red_2", 100.0, 0.1, 300.0, 300.0, 0.0, True, True)],
+        )
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", fake_resolve)
+    _, _, _, _, info = env.step(np.asarray([0, 0, 0]))
+    support = info["agent_reward_breakdowns"]["red_2"]
+    assert support.attacked_event_penalty == pytest.approx(-0.9)
+    assert support.destroyed_event_penalty == pytest.approx(-2.4)
+    assert support.support_loss_adjustment == pytest.approx(-0.8)
+    assert support.combat_event == pytest.approx(-3.3)
+    _assert_reward_closure(support)
+    env.close()
+
+
+def test_heterogeneous_mission_success_bonus_is_terminal_only(monkeypatch) -> None:
+    env = _env("heterogeneous_relay")
+    env.reset(seed=24)
+    _freeze_physics(env)
+
+    def fake_resolve(aircraft, attack_config, damage_config, rng, sample_team_order=None, armed_ids=None):
+        states = _states(aircraft)
+        for blue_id in ("blue_0", "blue_1", "blue_2"):
+            states[blue_id] = replace(states[blue_id], health=0.0, alive=False, damaged=True, ever_hit=True)
+        return MultiCombatStepResult(
+            states,
+            [
+                AttackAttempt("red_0", "blue_0", 100.0, 0.1, 300.0),
+                AttackAttempt("red_1", "blue_1", 100.0, 0.1, 300.0),
+                AttackAttempt("red_0", "blue_2", 100.0, 0.1, 300.0),
+            ],
+            [
+                ResolvedAttack("red_0", "blue_0", 100.0, 0.1, 300.0, 300.0, 0.0, True, True),
+                ResolvedAttack("red_1", "blue_1", 100.0, 0.1, 300.0, 300.0, 0.0, True, True),
+                ResolvedAttack("red_0", "blue_2", 100.0, 0.1, 300.0, 300.0, 0.0, True, True),
+            ],
+        )
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", fake_resolve)
+    _, _, terminated, truncated, info = env.step(np.asarray([0, 0, 0]))
+    assert terminated
+    assert not truncated
+    assert info["outcome"].termination_reason == "blue_eliminated"
+    assert info["functional_metrics"]["mission_success"] == pytest.approx(1.0)
+    for breakdown in info["agent_reward_breakdowns"].values():
+        assert breakdown.mission_success_bonus == pytest.approx(1.0)
+        _assert_reward_closure(breakdown)
+    env.close()
+
+
+def test_homogeneous_control_has_no_support_metrics_or_mission_bonus(monkeypatch) -> None:
+    env = _env("homogeneous_control")
+    env.reset(seed=25)
+    _freeze_physics(env)
+
+    def fake_resolve(aircraft, attack_config, damage_config, rng, sample_team_order=None, armed_ids=None):
+        states = _states(aircraft)
+        for blue_id in ("blue_0", "blue_1", "blue_2"):
+            states[blue_id] = replace(states[blue_id], health=0.0, alive=False, damaged=True, ever_hit=True)
+        return MultiCombatStepResult(
+            states,
+            [],
+            [ResolvedAttack("red_2", "blue_2", 100.0, 0.1, 300.0, 300.0, 0.0, True, True)],
+        )
+
+    monkeypatch.setattr("uav_env.envs.combat_multi_env.resolve_multi_attacks", fake_resolve)
+    _, _, terminated, _, info = env.step(np.asarray([0, 0, 0]))
+    assert terminated
+    metrics = info["functional_metrics"]
+    assert metrics["has_support_agent"] == pytest.approx(0.0)
+    assert metrics["support_metrics_applicable"] == pytest.approx(0.0)
+    assert metrics["mission_success"] == pytest.approx(0.0)
+    assert all(b.mission_success_bonus == 0.0 for b in info["agent_reward_breakdowns"].values())
     env.close()

@@ -28,11 +28,18 @@ REWARD_COMPONENT_NAMES = (
     "combat_event_reward",
     "dense_reward",
     "terminal_reward",
+    "terminal_base_reward",
+    "mission_success_bonus",
     "hit_event_reward",
     "destroy_event_reward",
     "attacked_event_penalty",
     "destroyed_event_penalty",
     "boundary_collision_penalty",
+    "support_position_reward",
+    "support_coverage_reward",
+    "support_safety_reward",
+    "support_team_event_reward",
+    "support_loss_adjustment",
 )
 
 
@@ -135,7 +142,7 @@ class MAPPORunner:
         rollout_alive_agent_steps=0.0
         side_names=("attack_attempts","hits","nominal_damage","effective_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions","survivors")
         side_rollout={f"{team}_{name}":[] for team in ("red","blue") for name in side_names}
-        functional_rollout={name: [] for name in ("support_detection_coverage_mean","relay_visible_enemy_count_mean","support_incoming_threat_mean","support_position_error_mean","mission_success","support_survived","combat_attack_attempts","combat_hits","combat_effective_damage")}
+        functional_rollout={name: [] for name in ("has_support_agent","support_metrics_applicable","support_detection_coverage_mean","relay_visible_enemy_count_mean","support_incoming_threat_mean","support_position_error_mean","mission_success","support_survived","combat_attack_attempts_total","combat_hits_total","combat_effective_damage_total")}
         truncated_episode_count=0
         truncation_bootstrap_count=0
         truncation_no_bootstrap_count=0
@@ -164,11 +171,18 @@ class MAPPORunner:
                         "combat_event_reward": float(breakdown.total-breakdown.dense-breakdown.terminal),
                         "dense_reward": float(breakdown.dense),
                         "terminal_reward": float(breakdown.terminal),
+                        "terminal_base_reward": float(breakdown.terminal),
+                        "mission_success_bonus": 0.0,
                         "hit_event_reward": 0.0,
                         "destroy_event_reward": 0.0,
                         "attacked_event_penalty": 0.0,
                         "destroyed_event_penalty": 0.0,
                         "boundary_collision_penalty": 0.0,
+                        "support_position_reward": 0.0,
+                        "support_coverage_reward": 0.0,
+                        "support_safety_reward": 0.0,
+                        "support_team_event_reward": 0.0,
+                        "support_loss_adjustment": 0.0,
                     }
                     raw_dense.append(float(breakdown.dense)); assigned_dense.append(float(breakdown.dense)); event_rewards.append(values_by_component["combat_event_reward"]); terminal_rewards.append(float(breakdown.terminal)); absolute_rewards.append(abs(float(breakdown.total)))
                 elif "agent_reward_breakdowns" in info:
@@ -183,11 +197,18 @@ class MAPPORunner:
                             "combat_event_reward": float(breakdown.combat_event),
                             "dense_reward": float(breakdown.dense_reward),
                             "terminal_reward": float(breakdown.terminal),
+                            "terminal_base_reward": float(breakdown.terminal_base_reward),
+                            "mission_success_bonus": float(breakdown.mission_success_bonus),
                             "hit_event_reward": float(breakdown.hit_event_reward),
                             "destroy_event_reward": float(breakdown.destroy_event_reward),
                             "attacked_event_penalty": float(breakdown.attacked_event_penalty),
                             "destroyed_event_penalty": float(breakdown.destroyed_event_penalty),
                             "boundary_collision_penalty": float(breakdown.boundary_collision_penalty),
+                            "support_position_reward": float(breakdown.support_position),
+                            "support_coverage_reward": float(breakdown.support_coverage),
+                            "support_safety_reward": float(breakdown.support_safety),
+                            "support_team_event_reward": float(breakdown.support_team_event),
+                            "support_loss_adjustment": float(breakdown.support_loss_adjustment),
                         }
                         for name,value in per_agent.items():
                             component_values[name].append(value)
@@ -251,7 +272,14 @@ class MAPPORunner:
         for name,values_ in side_rollout.items():
             diagnostics[f"rollout_{name}_mean"]=float(np.mean(values_)) if values_ else 0.0
         for name,values_ in functional_rollout.items():
-            output_name = "mission_success_rate" if name == "mission_success" else "support_survival_rate" if name == "support_survived" else name
+            output_name = (
+                "mission_success_rate" if name == "mission_success"
+                else "support_survival_rate" if name == "support_survived"
+                else "combat_attack_attempts_mean" if name == "combat_attack_attempts_total"
+                else "combat_hits_mean" if name == "combat_hits_total"
+                else "combat_effective_damage_mean" if name == "combat_effective_damage_total"
+                else name
+            )
             diagnostics[f"rollout_{output_name}"]=float(np.mean(values_)) if values_ else 0.0
         diagnostics["red_ground_crash_rate"]=float(np.mean([v > 0.0 for v in side_rollout["red_ground_crashes"]])) if side_rollout["red_ground_crashes"] else 0.0
         diagnostics["blue_ground_crash_rate"]=float(np.mean([v > 0.0 for v in side_rollout["blue_ground_crashes"]])) if side_rollout["blue_ground_crashes"] else 0.0
@@ -259,7 +287,7 @@ class MAPPORunner:
         return buffer,diagnostics
 
     def evaluate(self,episodes: int|None=None,seed_start: int=100000,deterministic: bool|None=None,scenario: str|None=None) -> dict[str,float]:
-        count=int(episodes or self.config["validation_episodes"]); env_cfg=self.config["environment"]; outcomes=[]; returns=[]; agent_sum_returns=[]; steps=[]; red_crashes=[]; blue_crashes=[]; saturation=[]; frequencies=np.zeros(15); red_survivors=[]; blue_survivors=[]; damages=[]; hits=[]; attack_area_steps=[]; policy_entropies=[]; logit_margins=[]; terminal_proportions=[]; collisions=[]; side_metrics={f"{team}_{name}":[] for team in ("red","blue") for name in ("attack_attempts","hits","effective_damage","nominal_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions","survivors")}; functional_metrics={name: [] for name in ("support_detection_coverage_mean","relay_visible_enemy_count_mean","support_incoming_threat_mean","support_position_error_mean","mission_success","support_survived","combat_attack_attempts","combat_hits","combat_effective_damage")}
+        count=int(episodes or self.config["validation_episodes"]); env_cfg=self.config["environment"]; outcomes=[]; returns=[]; agent_sum_returns=[]; steps=[]; red_crashes=[]; blue_crashes=[]; saturation=[]; frequencies=np.zeros(15); red_survivors=[]; blue_survivors=[]; damages=[]; hits=[]; attack_area_steps=[]; policy_entropies=[]; logit_margins=[]; terminal_proportions=[]; collisions=[]; side_metrics={f"{team}_{name}":[] for team in ("red","blue") for name in ("attack_attempts","hits","effective_damage","nominal_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions","survivors")}; functional_metrics={name: [] for name in ("has_support_agent","support_metrics_applicable","support_detection_coverage_mean","relay_visible_enemy_count_mean","support_incoming_threat_mean","support_position_error_mean","mission_success","support_survived","combat_attack_attempts_total","combat_hits_total","combat_effective_damage_total")}
         deterministic = bool(self.config.get("deterministic_evaluation", True)) if deterministic is None else deterministic
         for episode in range(count):
             description=CombatEnvDescription(str(env_cfg["kind"]),str(scenario or env_cfg["scenario"]),str(env_cfg["opponent"]),env_cfg.get("multi_terminal_reward_profile"),env_cfg.get("functional_mode"),tuple(env_cfg["red_roles"]) if "red_roles" in env_cfg else None,env_cfg.get("relay_enabled")); env=make_adapter_from_description(description); current=env.reset(seed_start+episode); total=0.; agent_sum_total=0.; absolute_total=0.; terminal_absolute=0.; done=False
@@ -296,7 +324,14 @@ class MAPPORunner:
         for name, values in side_metrics.items():
             result[f"mean_{name}"] = float(np.mean(values)) if values else 0.0
         for name, values in functional_metrics.items():
-            output_name = "support_survival_rate" if name == "support_survived" else "mission_success_rate" if name == "mission_success" else name
+            output_name = (
+                "support_survival_rate" if name == "support_survived"
+                else "mission_success_rate" if name == "mission_success"
+                else "combat_attack_attempts_mean" if name == "combat_attack_attempts_total"
+                else "combat_hits_mean" if name == "combat_hits_total"
+                else "combat_effective_damage_mean" if name == "combat_effective_damage_total"
+                else name
+            )
             result[output_name] = float(np.mean(values)) if values else 0.0
         result["mean_collisions"] = float(np.mean(collisions)) if collisions else 0.0
         result.update({f"action_{i}_frequency":float(frequencies[i]/max(frequencies.sum(),1)) for i in range(15)}); return result

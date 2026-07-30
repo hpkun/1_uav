@@ -44,7 +44,12 @@ def make_3v3_env(
     red_roles: list[str] | None = None,
     relay_enabled: bool | None = None,
 ) -> CombatMultiEnv:
-    """Construct the fixed homogeneous 3v3 head-on experiment environment."""
+    """Construct a fixed 3v3 head-on experiment environment.
+
+    The default remains the homogeneous V2 environment.  Functional-mode
+    overrides opt into the same-maneuver, dual-role functional heterogeneous
+    3v3 schema without changing this factory's public call shape.
+    """
 
     config = load_multi_experiment_config(config_name, scenario, team_size=3)
     if multi_terminal_reward_profile is not None:

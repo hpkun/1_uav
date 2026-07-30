@@ -33,11 +33,18 @@ REWARD_COMPONENT_NAMES = (
     "combat_event_reward",
     "dense_reward",
     "terminal_reward",
+    "terminal_base_reward",
+    "mission_success_bonus",
     "hit_event_reward",
     "destroy_event_reward",
     "attacked_event_penalty",
     "destroyed_event_penalty",
     "boundary_collision_penalty",
+    "support_position_reward",
+    "support_coverage_reward",
+    "support_safety_reward",
+    "support_team_event_reward",
+    "support_loss_adjustment",
 )
 
 
@@ -181,11 +188,18 @@ class HAPPORunner:
                         "combat_event_reward": float(breakdown.combat_event),
                         "dense_reward": float(breakdown.dense_reward),
                         "terminal_reward": float(breakdown.terminal),
+                        "terminal_base_reward": float(breakdown.terminal_base_reward),
+                        "mission_success_bonus": float(breakdown.mission_success_bonus),
                         "hit_event_reward": float(breakdown.hit_event_reward),
                         "destroy_event_reward": float(breakdown.destroy_event_reward),
                         "attacked_event_penalty": float(breakdown.attacked_event_penalty),
                         "destroyed_event_penalty": float(breakdown.destroyed_event_penalty),
                         "boundary_collision_penalty": float(breakdown.boundary_collision_penalty),
+                        "support_position_reward": float(breakdown.support_position),
+                        "support_coverage_reward": float(breakdown.support_coverage),
+                        "support_safety_reward": float(breakdown.support_safety),
+                        "support_team_event_reward": float(breakdown.support_team_event),
+                        "support_loss_adjustment": float(breakdown.support_loss_adjustment),
                     }
                     for name, value in per_agent.items():
                         component_values[name].append(value)
