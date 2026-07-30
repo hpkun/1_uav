@@ -20,13 +20,14 @@ from uav_env.combat.damage import DamageConfig
 from uav_env.combat.events import CombatEvent, EpisodeOutcome
 from uav_env.combat.multi_combat import AttackAttempt, ResolvedAttack, TargetAssignment, assign_nearest_targets_independently, assign_targets, resolve_multi_attacks
 from uav_env.core.enums import CombatEventType, Team
+from uav_env.core.enums import CombatRole, role_flag
 from uav_env.core.state import UAVState
 from uav_env.dynamics.propagation import propagate_state
 from uav_env.entities.type_profiles import UAVTypeProfile, profile_from_config
 from uav_env.entities.uav import UAV
 from uav_env.envs.base_env import BaseUAVEnv
-from uav_env.observations.global_state import GlobalStateResult, build_global_state, build_global_state_v2
-from uav_env.observations.multi_observation import MultiObservationResult, build_multi_observations, build_multi_observations_v2
+from uav_env.observations.global_state import GlobalStateResult, build_global_state, build_global_state_functional_heterogeneous, build_global_state_v2
+from uav_env.observations.multi_observation import MultiObservationResult, build_multi_observations, build_multi_observations_functional_heterogeneous, build_multi_observations_v2
 from uav_env.observations.normalization import NormalizationConfig
 from uav_env.opponents.base import RuleOpponent
 from uav_env.opponents.greedy_combat import GreedyCombatOpponent
@@ -55,6 +56,7 @@ class CombatMultiEnv(BaseUAVEnv):
             raise ValueError("homogeneous_3v3_v2 was a development-only 62D/60D schema and is not runnable; use homogeneous_3v3_v2_timeaware")
         self.is_v2 = self.environment_schema_version == "homogeneous_3v3_v2_timeaware"
         self.is_timeaware_v2 = self.environment_schema_version == "homogeneous_3v3_v2_timeaware"
+        self.is_functional_heterogeneous = self.environment_schema_version == "functional_heterogeneous_3v3_v1"
         if self.is_timeaware_v2:
             required = {
                 "observation_schema": "fixed_id_body_time_63d",
@@ -66,12 +68,24 @@ class CombatMultiEnv(BaseUAVEnv):
                     raise ValueError(f"time-aware V2 requires {key}={expected}, got {config.get(key)!r}")
             if self.red_count != 3 or self.blue_count != 3:
                 raise ValueError("time-aware V2 requires fixed red_count=3 and blue_count=3")
+        if self.is_functional_heterogeneous:
+            required = {
+                "observation_schema": "fixed_id_role_visibility_time_69d",
+                "global_state_schema": "full_entity_role_time_64d",
+                "reward_profile": "functional_heterogeneous_3v3_v1",
+                "scenario_profile": "head_on_functional_heterogeneous_v1",
+            }
+            for key, expected in required.items():
+                if str(config.get(key)) != expected:
+                    raise ValueError(f"functional heterogeneous 3v3 requires {key}={expected}, got {config.get(key)!r}")
+            if self.red_count != 3 or self.blue_count != 3:
+                raise ValueError("functional heterogeneous schema requires fixed red_count=3 and blue_count=3")
         self.scenario_name = scenario_name or str(config["scenario_name"])
-        if self.red_count == 3 and self.scenario_name not in {"head_on_formation", "head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2"}:
+        if self.red_count == 3 and self.scenario_name not in {"head_on_formation", "head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2", "head_on_functional_heterogeneous_v1"}:
             raise ValueError("Fixed 3v3 currently supports only head-on legacy or V2 scenarios")
         self.num_red_agents = self.red_count
-        self.local_observation_dim = 63 if self.is_v2 else (self.red_count - 1) * 6 + self.blue_count * 11
-        self.global_state_dim = 61 if self.is_v2 else self.red_count + self.red_count * self.blue_count * 9 + self.red_count
+        self.local_observation_dim = 69 if self.is_functional_heterogeneous else 63 if self.is_v2 else (self.red_count - 1) * 6 + self.blue_count * 11
+        self.global_state_dim = 64 if self.is_functional_heterogeneous else 61 if self.is_v2 else self.red_count + self.red_count * self.blue_count * 9 + self.red_count
         self.profile: UAVTypeProfile = profile_from_config(config)
         self.attack_config = AttackZoneConfig.from_config(config)
         self.damage_config = DamageConfig.from_config(config)
@@ -94,6 +108,14 @@ class CombatMultiEnv(BaseUAVEnv):
         self._statistics: dict[str, Any] = {}
         self._previous_states: dict[str, UAVState] = {}
         self.damage_sample_team_order: tuple[int, ...] | None = None
+        self.red_role_by_id: dict[str, str] = {}
+        self.armed_by_id: dict[str, bool] = {}
+        self.support_agent_id: str | None = None
+        self.combat_agent_ids: list[str] = []
+        self._last_support_heading: np.ndarray | None = None
+        self._current_visibility: dict[str, NDArray[np.bool_]] | None = None
+        if self.is_functional_heterogeneous:
+            self._configure_functional_roles()
 
     @property
     def all_aircraft(self) -> list[UAV]:
@@ -134,7 +156,69 @@ class CombatMultiEnv(BaseUAVEnv):
             last_action=int(DiscreteAction15.LEVEL_HOLD),
         )
 
+    def _configure_functional_roles(self) -> None:
+        mode = str(self.config.get("functional_mode", "heterogeneous_relay"))
+        roles = [str(value) for value in self.config.get("red_roles", [])]
+        if len(roles) != 3 or any(role not in {CombatRole.COMBAT.value, CombatRole.SUPPORT.value} for role in roles):
+            raise ValueError("functional red_roles must contain exactly three combat/support roles")
+        support_count = roles.count(CombatRole.SUPPORT.value)
+        relay_enabled = bool(self.config.get("relay_enabled", False))
+        combat_range = float(self.config["combat_detection_range"])
+        support_range = float(self.config["support_detection_range"])
+        if not np.isfinite(combat_range) or not np.isfinite(support_range) or combat_range <= 0.0 or support_range <= 0.0:
+            raise ValueError("detection ranges must be finite positive values")
+        if support_range <= combat_range:
+            raise ValueError("support_detection_range must be greater than combat_detection_range")
+        if mode == "homogeneous_control":
+            if roles != ["combat", "combat", "combat"] or relay_enabled:
+                raise ValueError("homogeneous_control requires three combat roles and relay_enabled=false")
+            self.support_agent_id = None
+            self.combat_agent_ids = [f"red_{i}" for i in range(3)]
+            armed_red = set(self.combat_agent_ids)
+        elif mode in {"heterogeneous_no_relay", "heterogeneous_relay"}:
+            if roles != ["combat", "combat", "support"] or support_count != 1:
+                raise ValueError("heterogeneous modes require red_roles=[combat, combat, support]")
+            if relay_enabled != (mode == "heterogeneous_relay"):
+                raise ValueError("relay_enabled may be true only for heterogeneous_relay")
+            self.support_agent_id = "red_2"
+            self.combat_agent_ids = ["red_0", "red_1"]
+            armed_red = set(self.combat_agent_ids)
+        else:
+            raise ValueError(f"Unknown functional_mode: {mode!r}")
+        self.red_role_by_id = {f"red_{index}": roles[index] for index in range(3)}
+        self.armed_by_id = {f"red_{index}": f"red_{index}" in armed_red for index in range(3)}
+        self.armed_by_id.update({f"blue_{index}": True for index in range(3)})
+
     def _initialize_scenario(self, scenario: str) -> tuple[list[UAVState], list[UAVState]]:
+        if scenario == "head_on_functional_heterogeneous_v1":
+            if self.red_count != 3:
+                raise ValueError("functional heterogeneous scenario is fixed 3v3 only")
+            distance = float(self.config["initial_team_distance"])
+            spacing = float(self.config["formation_lateral_spacing"])
+            altitude = float(self.config["initial_altitude"])
+            speed = float(self.config["initial_speed"])
+            red_base_x = -distance / 2.0
+            red_nominal = [
+                (red_base_x + float(self.config["combat_forward_offset"]), -float(self.config["combat_lateral_spacing"]) / 2.0),
+                (red_base_x + float(self.config["combat_forward_offset"]), float(self.config["combat_lateral_spacing"]) / 2.0),
+                (red_base_x - float(self.config["support_rear_offset"]), 0.0),
+            ]
+            blue_nominal = [(distance / 2.0, (index - 1.0) * spacing) for index in range(3)]
+            jitter_enabled = bool(self.config.get("mirror_jitter_enabled", True))
+            reds: list[UAVState] = []
+            blues: list[UAVState] = []
+            for (red_x, red_y), (blue_x, blue_y) in zip(red_nominal, blue_nominal):
+                if jitter_enabled:
+                    longitudinal = float(self.rng.uniform(-float(self.config["longitudinal_jitter"]), float(self.config["longitudinal_jitter"])))
+                    lateral = float(self.rng.uniform(-float(self.config["lateral_jitter"]), float(self.config["lateral_jitter"])))
+                    z_jitter = float(self.rng.uniform(-float(self.config["altitude_jitter"]), float(self.config["altitude_jitter"])))
+                    speed_jitter = float(self.rng.uniform(-float(self.config["speed_jitter"]), float(self.config["speed_jitter"])))
+                    heading_jitter = float(self.rng.uniform(-float(self.config["heading_jitter"]), float(self.config["heading_jitter"])))
+                else:
+                    longitudinal = lateral = z_jitter = speed_jitter = heading_jitter = 0.0
+                reds.append(self._state(Team.RED, red_x + longitudinal, red_y + lateral, altitude + z_jitter, speed + speed_jitter, heading_jitter))
+                blues.append(self._state(Team.BLUE, blue_x - longitudinal, blue_y - lateral, altitude - z_jitter, speed + speed_jitter, pi + heading_jitter))
+            return reds, blues
         if scenario in {"head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2"}:
             if self.red_count != 3:
                 raise ValueError("V2 scenarios are fixed homogeneous 3v3 only")
@@ -190,14 +274,49 @@ class CombatMultiEnv(BaseUAVEnv):
         raise ValueError(f"Unknown 2v2 scenario: {scenario!r}")
 
     def _observations(self) -> MultiObservationResult:
+        if self.is_functional_heterogeneous:
+            visibility = self._visibility_masks()
+            self._current_visibility = visibility
+            return build_multi_observations_functional_heterogeneous(
+                self.red_aircraft, self.blue_aircraft, self.config, self.attack_config,
+                self._episode_progress(), self.red_role_by_id, visibility["final"],
+            )
         if self.is_v2:
             return build_multi_observations_v2(self.red_aircraft, self.blue_aircraft, self.config, self.attack_config, self._episode_progress())
         return build_multi_observations(self.red_aircraft, self.blue_aircraft, self.normalization_config)
 
     def _global_state(self) -> GlobalStateResult:
+        if self.is_functional_heterogeneous:
+            return build_global_state_functional_heterogeneous(self.red_aircraft, self.blue_aircraft, self.config, self._episode_progress(), self.red_role_by_id)
         if self.is_v2:
             return build_global_state_v2(self.red_aircraft, self.blue_aircraft, self.config, self._episode_progress())
         return build_global_state(self.red_aircraft, self.blue_aircraft, self.normalization_config)
+
+    def _visibility_masks(self) -> dict[str, NDArray[np.bool_]]:
+        local = np.zeros((self.red_count, self.blue_count), dtype=bool)
+        relay = np.zeros_like(local)
+        final = np.zeros_like(local)
+        if not self.is_functional_heterogeneous:
+            alive = np.asarray([[blue.is_alive for blue in self.blue_aircraft] for _ in self.red_aircraft], dtype=bool)
+            return {"local": alive.copy(), "relay": relay, "final": alive.copy()}
+        support_visible = np.zeros(self.blue_count, dtype=bool)
+        support_index = int(self.support_agent_id.split("_")[1]) if self.support_agent_id is not None else -1
+        for red_index, red in enumerate(self.red_aircraft):
+            role = self.red_role_by_id.get(red.uav_id, "combat")
+            detection_range = float(self.config["support_detection_range"] if role == "support" else self.config["combat_detection_range"])
+            if red.is_alive:
+                for blue_index, blue in enumerate(self.blue_aircraft):
+                    if blue.is_alive and np.linalg.norm(blue.state.position_vector() - red.state.position_vector()) <= detection_range:
+                        local[red_index, blue_index] = True
+            if red_index == support_index:
+                support_visible = local[red_index].copy()
+        final[:] = local
+        if bool(self.config.get("relay_enabled", False)) and support_index >= 0 and self.red_aircraft[support_index].is_alive:
+            for red_index, red in enumerate(self.red_aircraft):
+                if self.red_role_by_id.get(red.uav_id) == "combat":
+                    relay[red_index] = np.logical_and(support_visible, np.logical_not(local[red_index]))
+                    final[red_index] = np.logical_or(local[red_index], support_visible)
+        return {"local": local, "relay": relay, "final": final}
 
     def _episode_progress(self) -> float:
         return float(np.clip(self.decision_step / float(self.config["max_decision_steps"]), 0.0, 1.0))
@@ -238,6 +357,15 @@ class CombatMultiEnv(BaseUAVEnv):
             for u in self.all_aircraft
         }
         self._statistics = {"aircraft": per_aircraft, "collisions": 0, "timeouts": 0}
+        if self.is_functional_heterogeneous:
+            self._statistics["functional"] = {
+                "support_detection_coverage_sum": 0.0, "support_detection_coverage_count": 0,
+                "relay_visible_enemy_count_sum": 0.0, "relay_visible_enemy_count_count": 0,
+                "support_incoming_threat_sum": 0.0, "support_incoming_threat_count": 0,
+                "support_position_error_sum": 0.0, "support_position_error_count": 0,
+                "mission_success": 0, "support_survived": 0,
+            }
+            self._last_support_heading = None
         self._previous_states = {u.uav_id: u.state.copy() for u in self.all_aircraft}
         self._trajectory = [{"decision_step": 0, "simulation_time": 0.0, "states": deepcopy(self._previous_states), "red_actions": None, "blue_actions": None, "events": []}]
         return self._build_step_output_info(reset=True)
@@ -263,6 +391,19 @@ class CombatMultiEnv(BaseUAVEnv):
             "statistics": self.get_statistics(), "outcome": self._outcome(False), "simulation_time": self.simulation_time,
             "decision_step": self.decision_step, "episode_progress": self._episode_progress(), "scenario_name": self.scenario_name, "seed": self._current_seed,
         }
+        if self.is_functional_heterogeneous:
+            visibility = self._current_visibility or self._visibility_masks()
+            info.update({
+                "enemy_visible_masks": visibility["final"].astype(np.int8),
+                "enemy_local_visible_masks": visibility["local"].astype(np.int8),
+                "enemy_relay_visible_masks": visibility["relay"].astype(np.int8),
+                "red_role_flags": np.asarray([role_flag(self.red_role_by_id[f"red_{index}"]) for index in range(3)], dtype=np.float64),
+                "red_roles": dict(self.red_role_by_id),
+                "armed_by_id": dict(self.armed_by_id),
+                "functional_mode": self.config.get("functional_mode"),
+                "relay_enabled": bool(self.config.get("relay_enabled", False)),
+                "functional_metrics": self._functional_metric_means(),
+            })
         if not reset:
             info.update(extra)
         return local.normalized, info
@@ -379,6 +520,103 @@ class CombatMultiEnv(BaseUAVEnv):
             event -= 0.5; components["boundary_collision"] -= 0.5
         return event, contribution, components
 
+    def _support_position_reward(self, support: UAV) -> tuple[float, float]:
+        alive_combats = [red for red in self.red_aircraft if red.uav_id in self.combat_agent_ids and red.is_alive]
+        if not alive_combats or not support.is_alive:
+            return 0.0, 0.0
+        centroid = np.mean([red.state.position_vector() for red in alive_combats], axis=0)
+        heading_raw = np.asarray([sum(np.cos(red.state.heading_angle) for red in alive_combats), sum(np.sin(red.state.heading_angle) for red in alive_combats), 0.0], dtype=np.float64)
+        norm = float(np.linalg.norm(heading_raw[:2]))
+        if norm > 1.0e-9:
+            heading = heading_raw / norm
+            self._last_support_heading = heading
+        elif self._last_support_heading is not None:
+            heading = self._last_support_heading
+        else:
+            heading = np.asarray([np.cos(support.state.heading_angle), np.sin(support.state.heading_angle), 0.0], dtype=np.float64)
+        reference = centroid - float(self.config["support_rear_distance"]) * heading
+        error = float(np.linalg.norm((support.state.position_vector() - reference)[:2]))
+        reward = float(np.clip(1.0 - error / float(self.config["support_position_tolerance"]), -1.0, 1.0))
+        return reward, error
+
+    def _support_coverage_reward(self, support: UAV, visibility: dict[str, NDArray[np.bool_]]) -> tuple[float, float]:
+        alive_blue = [index for index, blue in enumerate(self.blue_aircraft) if blue.is_alive]
+        if not support.is_alive or not alive_blue or self.support_agent_id is None:
+            return 0.0, 0.0
+        support_index = int(self.support_agent_id.split("_")[1])
+        detected = sum(bool(visibility["local"][support_index, index]) for index in alive_blue)
+        coverage = detected / len(alive_blue)
+        return float(coverage), float(coverage)
+
+    def _support_threat_reward(self, support: UAV) -> tuple[float, float]:
+        if not support.is_alive:
+            return 0.0, 0.0
+        threats = []
+        for blue in self.blue_aircraft:
+            if not blue.is_alive:
+                continue
+            geometry = compute_combat_geometry(blue.state, support.state, self.attack_config)
+            if geometry.can_attack:
+                threats.append(1.0)
+            elif geometry.in_attack_area or geometry.in_advantage_area:
+                threats.append(0.5)
+            else:
+                threats.append(0.0)
+        threat = max(threats) if threats else 0.0
+        return -float(threat), float(threat)
+
+    def _support_shape_reward(self, support: UAV, visibility: dict[str, NDArray[np.bool_]]) -> tuple[float, dict[str, float]]:
+        position, error = self._support_position_reward(support)
+        coverage, coverage_metric = self._support_coverage_reward(support, visibility)
+        safety, threat = self._support_threat_reward(support)
+        shape = 0.40 * position + 0.35 * coverage + 0.25 * safety
+        return shape, {"support_position": position, "support_coverage": coverage, "support_safety": safety, "support_position_error": error, "support_detection_coverage": coverage_metric, "support_incoming_threat": threat}
+
+    def _update_functional_metrics(self, visibility: dict[str, NDArray[np.bool_]], support_components: dict[str, float], outcome: EpisodeOutcome) -> None:
+        if not self.is_functional_heterogeneous:
+            return
+        stats = self._statistics["functional"]
+        support = next((red for red in self.red_aircraft if red.uav_id == self.support_agent_id), None)
+        alive_blue = any(blue.is_alive for blue in self.blue_aircraft)
+        if support is not None and support.is_alive and alive_blue:
+            stats["support_detection_coverage_sum"] += float(support_components.get("support_detection_coverage", 0.0))
+            stats["support_detection_coverage_count"] += 1
+            stats["support_incoming_threat_sum"] += float(support_components.get("support_incoming_threat", 0.0))
+            stats["support_incoming_threat_count"] += 1
+        if support is not None and support.is_alive and any(red.uav_id in self.combat_agent_ids and red.is_alive for red in self.red_aircraft):
+            stats["support_position_error_sum"] += float(support_components.get("support_position_error", 0.0))
+            stats["support_position_error_count"] += 1
+        if bool(self.config.get("relay_enabled", False)):
+            for red_index, red in enumerate(self.red_aircraft):
+                if red.uav_id in self.combat_agent_ids and red.is_alive:
+                    stats["relay_visible_enemy_count_sum"] += float(np.count_nonzero(visibility["relay"][red_index]))
+                    stats["relay_visible_enemy_count_count"] += 1
+        if outcome.termination_reason != "ongoing":
+            support_alive = bool(support is not None and support.is_alive)
+            stats["support_survived"] = int(support_alive)
+            stats["mission_success"] = int(outcome.termination_reason == "blue_eliminated" and support_alive and str(self.config.get("functional_mode")) != "homogeneous_control")
+
+    def _functional_metric_means(self) -> dict[str, float]:
+        if not self.is_functional_heterogeneous or "functional" not in self._statistics:
+            return {}
+        stats = self._statistics["functional"]
+        def mean(prefix: str) -> float:
+            count = int(stats[f"{prefix}_count"])
+            return float(stats[f"{prefix}_sum"]) / count if count else 0.0
+        combat_ids = self.combat_agent_ids or [f"red_{i}" for i in range(3)]
+        aircraft = self._statistics["aircraft"]
+        return {
+            "support_detection_coverage_mean": mean("support_detection_coverage"),
+            "relay_visible_enemy_count_mean": mean("relay_visible_enemy_count"),
+            "support_incoming_threat_mean": mean("support_incoming_threat"),
+            "support_position_error_mean": mean("support_position_error"),
+            "mission_success": float(stats.get("mission_success", 0)),
+            "support_survived": float(stats.get("support_survived", 0)),
+            "combat_attack_attempts": float(sum(aircraft[key]["attack_attempts"] for key in combat_ids)),
+            "combat_hits": float(sum(aircraft[key]["hits"] for key in combat_ids)),
+            "combat_effective_damage": float(sum(aircraft[key]["effective_damage"] for key in combat_ids)),
+        }
+
     def step(self, action: Any) -> tuple[NDArray[np.float64], float, bool, bool, dict[str, Any]]:
         """Advance one synchronized multi-aircraft decision step."""
 
@@ -401,10 +639,17 @@ class CombatMultiEnv(BaseUAVEnv):
         red_alive_at_step_start = {red.uav_id: bool(red.is_alive) for red in self.red_aircraft}
         substeps, boundary, executed = self._propagate_all(action_map)
         collision_pairs, collision_ids = self._resolve_collisions()
-        combat_result = resolve_multi_attacks(
-            self.all_aircraft, self.attack_config, self.damage_config, self.rng,
-            self.damage_sample_team_order,
-        )
+        if self.is_functional_heterogeneous:
+            combat_result = resolve_multi_attacks(
+                self.all_aircraft, self.attack_config, self.damage_config, self.rng,
+                self.damage_sample_team_order,
+                armed_ids={key for key, armed in self.armed_by_id.items() if armed},
+            )
+        else:
+            combat_result = resolve_multi_attacks(
+                self.all_aircraft, self.attack_config, self.damage_config, self.rng,
+                self.damage_sample_team_order,
+            )
         for aircraft in self.all_aircraft:
             aircraft.state = combat_result.updated_states[aircraft.uav_id]
         red_damaged_this_step = {
@@ -429,6 +674,8 @@ class CombatMultiEnv(BaseUAVEnv):
             stats["overkill_damage"] += attack.overkill_damage
             stats["hits"] += int(attack.hit)
         for attacker in self.all_aircraft:
+            if self.is_functional_heterogeneous and not self.armed_by_id.get(attacker.uav_id, True):
+                continue
             opponents = self.blue_aircraft if attacker.team == int(Team.RED) else self.red_aircraft
             if attacker.is_alive and any(
                 target.is_alive and compute_combat_geometry(attacker.state, target.state, self.attack_config).in_attack_area
@@ -447,6 +694,8 @@ class CombatMultiEnv(BaseUAVEnv):
         geometry_values: dict[str, float] = {}
         combat_values: dict[str, float] = {}
         combat_components: dict[str, dict[str, float]] = {}
+        visibility = self._visibility_masks() if self.is_functional_heterogeneous else {"local": np.zeros((self.red_count, self.blue_count), dtype=bool), "relay": np.zeros((self.red_count, self.blue_count), dtype=bool), "final": np.zeros((self.red_count, self.blue_count), dtype=bool)}
+        support_components: dict[str, float] = {}
         for red in self.red_aircraft:
             if red.uav_id not in step_active_ids:
                 event_values[red.uav_id] = 0.0
@@ -455,8 +704,31 @@ class CombatMultiEnv(BaseUAVEnv):
                 combat_values[red.uav_id] = 0.0
                 combat_components[red.uav_id] = {"hit": 0.0, "destroy": 0.0, "attacked": 0.0, "destroyed": 0.0, "boundary_collision": 0.0}
                 continue
-            situation = individual_situation_reward(red, self.blue_aircraft, previous_states, self.config) if red.is_alive else 0.0
-            if self.is_v2:
+            is_support = self.is_functional_heterogeneous and self.red_role_by_id.get(red.uav_id) == "support"
+            situation = individual_situation_reward(red, self.blue_aircraft, previous_states, self.config) if red.is_alive and not is_support else 0.0
+            if self.is_functional_heterogeneous and is_support:
+                shape, support_components = self._support_shape_reward(red, visibility)
+                geometry_event = 0.0
+                geometry_contribution = 0.0
+                combat_event, combat_contribution, components = self._combat_event_reward(red, combat_result.resolved_attacks, boundary, collision_ids)
+                components = dict(components)
+                loss_multiplier = float(self.config["support_loss_multiplier"])
+                if components["destroyed"] < 0.0:
+                    combat_event += components["destroyed"] * (loss_multiplier - 1.0)
+                    components["destroyed"] *= loss_multiplier
+                if components["boundary_collision"] < 0.0:
+                    combat_event += components["boundary_collision"] * (loss_multiplier - 1.0)
+                    components["boundary_collision"] *= loss_multiplier
+                combat_event += min(float(self.config["support_team_event_cap"]), max(0.0, float(self.config["support_team_event_share"]) * sum(
+                    comp.get("hit", 0.0) + comp.get("destroy", 0.0) for rid, comp in combat_components.items() if rid in self.combat_agent_ids
+                )))
+                event = combat_event
+                contribution = combat_contribution
+                geometry_values[red.uav_id] = geometry_event
+                combat_values[red.uav_id] = combat_event
+                combat_components[red.uav_id] = components
+                raw_dense[red.uav_id] = shape
+            elif self.is_v2 or self.is_functional_heterogeneous:
                 geometry_event, geometry_contribution = self._geometry_event_reward(red)
                 combat_event, combat_contribution, components = self._combat_event_reward(red, combat_result.resolved_attacks, boundary, collision_ids)
                 event = geometry_event + combat_event
@@ -485,16 +757,20 @@ class CombatMultiEnv(BaseUAVEnv):
             else {}
         )
         terminal = multi_terminal_reward_allocations(outcome, self.red_aircraft, {u.uav_id: self._statistics["aircraft"][u.uav_id]["contribution_score"] for u in self.red_aircraft}, self.config)
+        mission_success = self.is_functional_heterogeneous and str(self.config.get("functional_mode")) != "homogeneous_control" and outcome.termination_reason == "blue_eliminated" and self.support_agent_id is not None and any(red.uav_id == self.support_agent_id and red.is_alive for red in self.red_aircraft)
+        self._update_functional_metrics(visibility, support_components, outcome)
         breakdowns: dict[str, MultiAgentRewardBreakdown] = {}
         for red in self.red_aircraft:
             situation = raw_dense.get(red.uav_id, 0.0) - geometry_values[red.uav_id] if self.is_v2 else raw_dense.get(red.uav_id, 0.0) - event_values[red.uav_id]
             allocation=terminal[red.uav_id]
             dense_reward = assigned.get(red.uav_id, 0.0) + (combat_values[red.uav_id] if self.is_v2 else 0.0)
-            total = dense_reward + allocation.reward
+            mission_bonus = float(self.config.get("mission_success_bonus", 0.0)) if mission_success else 0.0
+            terminal_reward = allocation.reward + mission_bonus
+            total = dense_reward + terminal_reward
             components = combat_components[red.uav_id]
             breakdowns[red.uav_id] = MultiAgentRewardBreakdown(
                 situation=situation, event=event_values[red.uav_id], raw_dense=raw_dense.get(red.uav_id, 0.0),
-                assigned_dense=dense_reward, terminal=allocation.reward, total=total,
+                assigned_dense=dense_reward, terminal=terminal_reward, total=total,
                 contribution_score=step_contributions[red.uav_id], terminal_profile=allocation.profile,
                 terminal_team_base=allocation.team_base, terminal_allocation_factor=allocation.allocation_factor,
                 terminal_base_share_component=allocation.base_share_component,

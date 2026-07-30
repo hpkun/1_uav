@@ -58,7 +58,7 @@ class HAPPORunner:
         run_id = str(config["run_id"]) if "run_id" in config and config["run_id"] is not None else datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_dir = prepare_output_dir(output_root, run_name, run_id)
         env_cfg = config["environment"]
-        self.description = CombatEnvDescription(str(env_cfg["kind"]), str(env_cfg["scenario"]), str(env_cfg["opponent"]), env_cfg.get("multi_terminal_reward_profile"))
+        self.description = CombatEnvDescription(str(env_cfg["kind"]), str(env_cfg["scenario"]), str(env_cfg["opponent"]), env_cfg.get("multi_terminal_reward_profile"), env_cfg.get("functional_mode"), tuple(env_cfg["red_roles"]) if "red_roles" in env_cfg else None, env_cfg.get("relay_enabled"))
         probe = make_adapter_from_description(self.description)
         self.num_agents, self.obs_dim, self.state_dim = probe.num_agents, probe.obs_dim, probe.state_dim
         if self.num_agents != 3:

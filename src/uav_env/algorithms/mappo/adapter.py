@@ -159,6 +159,9 @@ class CombatEnvDescription:
     scenario: str
     opponent: str
     multi_terminal_reward_profile: str | None = None
+    functional_mode: str | None = None
+    red_roles: tuple[str, ...] | None = None
+    relay_enabled: bool | None = None
 
 
 def make_adapter_from_description(description: CombatEnvDescription, seed: int | None = None) -> MAPPOEnvAdapter:
@@ -177,6 +180,9 @@ def make_adapter_from_description(description: CombatEnvDescription, seed: int |
         env = make_3v3_env(
             description.scenario, description.opponent, seed=seed,
             multi_terminal_reward_profile=description.multi_terminal_reward_profile,
+            functional_mode=description.functional_mode,
+            red_roles=list(description.red_roles) if description.red_roles is not None else None,
+            relay_enabled=description.relay_enabled,
         )
     else:
         raise ValueError(f"Unknown environment kind: {description.kind!r}")

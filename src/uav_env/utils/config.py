@@ -171,14 +171,15 @@ def load_multi_experiment_config(
         "head_on_mirrored_jitter_v2": "scenario_3v3_v2.yaml",
         "head_on_learnability_v1": "scenario_3v3_learnability_v1.yaml",
         "symmetric_stress_test_v2": "scenario_3v3_symmetric_stress_v2.yaml",
+        "head_on_functional_heterogeneous_v1": "scenario_3v3_functional_heterogeneous_v1.yaml",
     }
     if scenario not in scenario_files:
         raise ValueError(f"Unknown multi-aircraft scenario: {scenario!r}")
     if team_size not in {2, 3}:
         raise ValueError("team_size must be 2 or 3")
-    if team_size == 3 and scenario not in {"head_on_formation", "head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2"}:
+    if team_size == 3 and scenario not in {"head_on_formation", "head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2", "head_on_functional_heterogeneous_v1"}:
         raise ValueError("Fixed 3v3 currently supports only head-on legacy or V2 scenarios")
-    if scenario in {"head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2"} and team_size != 3:
+    if scenario in {"head_on_mirrored_jitter_v2", "head_on_learnability_v1", "symmetric_stress_test_v2", "head_on_functional_heterogeneous_v1"} and team_size != 3:
         raise ValueError("V2 fixed homogeneous scenarios require team_size=3")
     paper_path = directory / f"{config_name}.yaml"
     config = deep_merge(load_yaml(directory / "base.yaml"), load_yaml(paper_path), load_yaml(directory / scenario_files[scenario]))

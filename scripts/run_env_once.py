@@ -150,6 +150,9 @@ def run_once(config_path: str, algorithm: str, seed: int, policy: str, max_steps
         str(env_cfg["scenario"]),
         str(env_cfg["opponent"]),
         env_cfg.get("multi_terminal_reward_profile"),
+        env_cfg.get("functional_mode"),
+        tuple(env_cfg["red_roles"]) if "red_roles" in env_cfg else None,
+        env_cfg.get("relay_enabled"),
     )
     adapter = make_adapter_from_description(description, seed)
     rng = np.random.default_rng(seed)

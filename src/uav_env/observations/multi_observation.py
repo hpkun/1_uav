@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from uav_env.entities.uav import UAV
+from uav_env.core.enums import role_flag
 from uav_env.core.geometry import normalize_angle
 from uav_env.combat.attack_geometry import compute_combat_geometry
 from uav_env.observations.normalization import FeatureSpec, NormalizationConfig, normalize_by_specs
@@ -29,6 +30,13 @@ V2_OWN_SIZE = len(V2_OWN_FEATURES)
 V2_ALLY_SIZE = len(V2_ALLY_FEATURES)
 V2_ENEMY_SIZE = len(V2_ENEMY_FEATURES)
 V2_LOCAL_OBSERVATION_DIM = V2_OWN_SIZE + 2 * V2_ALLY_SIZE + 3 * V2_ENEMY_SIZE
+FH_OWN_FEATURES = [*V2_OWN_FEATURES, "own_role_support_flag"]
+FH_ALLY_FEATURES = [*V2_ALLY_FEATURES, "role_support_flag"]
+FH_ENEMY_FEATURES = [
+    "alive_flag", "visible_flag", "body_relative_x", "body_relative_y", "relative_z", "body_relative_vx", "body_relative_vy", "relative_vz",
+    "distance", "body_relative_bearing", "body_relative_elevation", "attack_angle", "escape_angle", "health_ratio",
+]
+FH_LOCAL_OBSERVATION_DIM = len(FH_OWN_FEATURES) + 2 * len(FH_ALLY_FEATURES) + 3 * len(FH_ENEMY_FEATURES)
 
 
 def multi_observation_feature_names(ally_count: int, enemy_count: int) -> list[str]:
@@ -46,6 +54,16 @@ def multi_observation_feature_names_v2() -> list[str]:
         *V2_OWN_FEATURES,
         *[f"ally_{slot}_{name}" for slot in range(2) for name in V2_ALLY_FEATURES],
         *[f"blue_{slot}_{name}" for slot in range(3) for name in V2_ENEMY_FEATURES],
+    ]
+
+
+def multi_observation_feature_names_functional_heterogeneous() -> list[str]:
+    """Return fixed 69D functional-heterogeneous local observation names."""
+
+    return [
+        *FH_OWN_FEATURES,
+        *[f"ally_{slot}_{name}" for slot in range(2) for name in FH_ALLY_FEATURES],
+        *[f"blue_{slot}_{name}" for slot in range(3) for name in FH_ENEMY_FEATURES],
     ]
 
 
@@ -144,7 +162,7 @@ def _normalize_v2(raw: NDArray[np.float64], names: list[str], config: dict[str, 
     max_theta = max(abs(float(config["min_flight_path_angle"])), abs(float(config["max_flight_path_angle"])), 1.0e-12)
     normalized = np.zeros_like(raw)
     for index, (name, value) in enumerate(zip(names, raw)):
-        if name.endswith("alive_flag") or name in {"own_heading_sin", "own_heading_cos"}:
+        if name.endswith("alive_flag") or name.endswith("visible_flag") or name.endswith("role_support_flag") or name in {"own_heading_sin", "own_heading_cos"}:
             transformed = value
         elif name.endswith("health_ratio") or name == "own_health_ratio":
             transformed = 2.0 * value - 1.0
@@ -218,6 +236,21 @@ def _enemy_block_v2(own: UAV, enemy: UAV, attack_config: object, config: dict[st
         1.0, body_x, body_y, dz, body_vx, body_vy, relative_vz, distance, bearing, elevation,
         geometry.attacker_attack_angle, geometry.target_escape_angle, enemy.state.health / float(config["initial_health"]),
     ], dtype=np.float64)
+
+
+def _enemy_block_functional(
+    own: UAV,
+    enemy: UAV,
+    attack_config: object,
+    config: dict[str, object],
+    visible: bool,
+) -> NDArray[np.float64]:
+    if not enemy.is_alive:
+        return np.asarray([-1.0, -1.0, *([0.0] * 12)], dtype=np.float64)
+    if not visible:
+        return np.asarray([0.0, -1.0, *([0.0] * 12)], dtype=np.float64)
+    base = _enemy_block_v2(own, enemy, attack_config, config)
+    return np.asarray([1.0, 1.0, *base[1:]], dtype=np.float64)
 
 
 def build_multi_observations(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[UAV], config: NormalizationConfig) -> MultiObservationResult:
@@ -336,6 +369,81 @@ def build_multi_observations_v2(
         names, saturation_counts, saturation_counts.astype(np.float64) / float(V2_LOCAL_OBSERVATION_DIM), np.stack(saturated_masks),
         [[name for name, flag in zip(names, mask) if flag] for mask in saturated_masks],
         {red.uav_id: multi_observation_feature_names_v2_for_agent(red.uav_id) for red in reds},
+    )
+
+
+def build_multi_observations_functional_heterogeneous(
+    red_aircraft: Sequence[UAV],
+    blue_aircraft: Sequence[UAV],
+    config: dict[str, object],
+    attack_config: object,
+    episode_progress: float,
+    red_roles: dict[str, str],
+    enemy_visible_masks: NDArray[np.bool_],
+) -> MultiObservationResult:
+    """Build fixed-ID 69D observations with role flags and visibility masks."""
+
+    reds = sorted(red_aircraft, key=lambda u: u.uav_id)
+    blues = sorted(blue_aircraft, key=lambda u: u.uav_id)
+    if len(reds) != 3 or len(blues) != 3:
+        raise ValueError("Functional heterogeneous observations require fixed 3v3")
+    if enemy_visible_masks.shape != (3, 3):
+        raise ValueError("enemy_visible_masks must have shape (3, 3)")
+    names = multi_observation_feature_names_functional_heterogeneous()
+    raw_rows: list[NDArray[np.float64]] = []
+    norm_rows: list[NDArray[np.float64]] = []
+    saturated_masks: list[NDArray[np.bool_]] = []
+    ally_masks: list[list[int]] = []
+    enemy_masks: list[list[int]] = []
+    for red_index, own in enumerate(reds):
+        if not own.is_alive:
+            raw = np.zeros(FH_LOCAL_OBSERVATION_DIM, dtype=np.float64)
+            normalized = raw.copy()
+            saturated = np.zeros(FH_LOCAL_OBSERVATION_DIM, dtype=bool)
+        else:
+            own_action = float(own.state.last_action if own.state.last_action is not None else 0.0)
+            own_block = np.asarray([
+                own.state.z, own.state.speed, own.state.flight_path_angle, sin(own.state.heading_angle),
+                cos(own.state.heading_angle), own.state.health / float(config["initial_health"]), own_action,
+                episode_progress, role_flag(red_roles[own.uav_id]),
+            ], dtype=np.float64)
+            allies = [ally for ally in reds if ally.uav_id != own.uav_id]
+            ally_blocks = []
+            for ally in allies:
+                ally_blocks.append(np.asarray([*_ally_block_v2(own, ally, config), role_flag(red_roles[ally.uav_id])], dtype=np.float64))
+            raw = np.concatenate([
+                own_block,
+                *ally_blocks,
+                *[_enemy_block_functional(own, enemy, attack_config, config, bool(enemy_visible_masks[red_index, blue_index])) for blue_index, enemy in enumerate(blues)],
+            ]).astype(np.float64)
+            normalized, saturated = _normalize_v2(raw, names, config)
+            for slot, ally in enumerate(allies):
+                if not ally.is_alive:
+                    start = len(FH_OWN_FEATURES) + slot * len(FH_ALLY_FEATURES)
+                    normalized[start] = -1.0
+                    normalized[start + 1:start + len(FH_ALLY_FEATURES) - 1] = 0.0
+                    normalized[start + len(FH_ALLY_FEATURES) - 1] = role_flag(red_roles[ally.uav_id])
+                    saturated[start:start + len(FH_ALLY_FEATURES)] = False
+            enemy_offset = len(FH_OWN_FEATURES) + 2 * len(FH_ALLY_FEATURES)
+            for slot, enemy in enumerate(blues):
+                if not enemy.is_alive or not bool(enemy_visible_masks[red_index, slot]):
+                    start = enemy_offset + slot * len(FH_ENEMY_FEATURES)
+                    normalized[start] = -1.0 if not enemy.is_alive else 0.0
+                    normalized[start + 1] = -1.0
+                    normalized[start + 2:start + len(FH_ENEMY_FEATURES)] = 0.0
+                    saturated[start:start + len(FH_ENEMY_FEATURES)] = False
+        raw_rows.append(raw)
+        norm_rows.append(normalized)
+        saturated_masks.append(saturated)
+        ally_masks.append([int(ally.is_alive) for ally in reds if ally.uav_id != own.uav_id])
+        enemy_masks.append([int(enemy.is_alive and enemy_visible_masks[red_index, idx]) for idx, enemy in enumerate(blues)])
+    saturation_counts = np.asarray([int(np.count_nonzero(mask)) for mask in saturated_masks], dtype=np.int64)
+    return MultiObservationResult(
+        np.stack(raw_rows), np.stack(norm_rows), np.asarray(ally_masks, dtype=np.int8),
+        np.asarray(enemy_masks, dtype=np.int8), np.asarray([int(u.is_alive) for u in reds], dtype=np.int8),
+        names, saturation_counts, saturation_counts.astype(np.float64) / float(FH_LOCAL_OBSERVATION_DIM), np.stack(saturated_masks),
+        [[name for name, flag in zip(names, mask) if flag] for mask in saturated_masks],
+        {red.uav_id: names[:] for red in reds},
     )
 
 

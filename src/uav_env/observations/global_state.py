@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from uav_env.actions.discrete_15 import DiscreteAction15
+from uav_env.core.enums import role_flag
 from uav_env.entities.uav import UAV
 from uav_env.observations.normalization import FeatureSpec, NormalizationConfig, normalize_by_specs
 from uav_env.observations.single_observation import relative_angles, safe_vector_angle
@@ -25,6 +26,7 @@ V2_ENTITY_FEATURES = [
 ]
 V2_ENTITY_SIZE = len(V2_ENTITY_FEATURES)
 V2_GLOBAL_STATE_DIM = 6 * V2_ENTITY_SIZE + 1
+FH_GLOBAL_STATE_DIM = 3 * (V2_ENTITY_SIZE + 1) + 3 * V2_ENTITY_SIZE + 1
 
 
 def global_state_feature_names(team_size: int) -> list[str]:
@@ -42,6 +44,16 @@ def global_state_feature_names_v2() -> list[str]:
     """Return the fixed 61D full-entity time-aware V2 global-state names."""
 
     return [f"{prefix}_{index}_{name}" for prefix in ("red", "blue") for index in range(3) for name in V2_ENTITY_FEATURES] + ["episode_progress"]
+
+
+def global_state_feature_names_functional_heterogeneous() -> list[str]:
+    """Return fixed 64D full-entity global-state names with red role flags."""
+
+    return [
+        *[f"red_{index}_{name}" for index in range(3) for name in [*V2_ENTITY_FEATURES, "role_support_flag"]],
+        *[f"blue_{index}_{name}" for index in range(3) for name in V2_ENTITY_FEATURES],
+        "episode_progress",
+    ]
 
 
 @dataclass(frozen=True)
@@ -101,7 +113,7 @@ def _normalize_v2_global(raw: NDArray[np.float64], names: list[str], config: dic
     max_theta = max(abs(float(config["min_flight_path_angle"])), abs(float(config["max_flight_path_angle"])), 1.0e-12)
     output = np.zeros_like(raw)
     for index, (name, value) in enumerate(zip(names, raw)):
-        if name.endswith("alive_flag") or name.endswith("heading_sin") or name.endswith("heading_cos"):
+        if name.endswith("alive_flag") or name.endswith("heading_sin") or name.endswith("heading_cos") or name.endswith("role_support_flag"):
             transformed = value
         elif name.endswith("health_ratio"):
             transformed = 2.0 * value - 1.0
@@ -164,6 +176,43 @@ def build_global_state_v2(red_aircraft: Sequence[UAV], blue_aircraft: Sequence[U
     saturation_count = int(np.count_nonzero(saturated))
     return GlobalStateResult(
         raw, normalized, names, saturation_count, saturation_count / float(V2_GLOBAL_STATE_DIM),
+        saturated, [name for name, flag in zip(names, saturated) if flag],
+    )
+
+
+def build_global_state_functional_heterogeneous(
+    red_aircraft: Sequence[UAV],
+    blue_aircraft: Sequence[UAV],
+    config: dict[str, object],
+    episode_progress: float,
+    red_roles: dict[str, str],
+) -> GlobalStateResult:
+    """Build fixed-ID 64D centralized state with full visibility and red roles."""
+
+    reds, blues = sorted(red_aircraft, key=lambda u: u.uav_id), sorted(blue_aircraft, key=lambda u: u.uav_id)
+    if len(reds) != 3 or len(blues) != 3:
+        raise ValueError("Functional heterogeneous global state requires fixed 3v3")
+    names = global_state_feature_names_functional_heterogeneous()
+    red_blocks = [np.asarray([*_entity_block_v2(u, config), role_flag(red_roles[u.uav_id])], dtype=np.float64) for u in reds]
+    raw = np.concatenate([*red_blocks, *[_entity_block_v2(u, config) for u in blues], np.asarray([episode_progress], dtype=np.float64)]).astype(np.float64)
+    normalized, saturated = _normalize_v2_global(raw, names, config)
+    for slot, red in enumerate(reds):
+        if not red.is_alive:
+            start = slot * (V2_ENTITY_SIZE + 1)
+            normalized[start] = -1.0
+            normalized[start + 1:start + V2_ENTITY_SIZE] = 0.0
+            normalized[start + V2_ENTITY_SIZE] = role_flag(red_roles[red.uav_id])
+            saturated[start:start + V2_ENTITY_SIZE + 1] = False
+    blue_offset = 3 * (V2_ENTITY_SIZE + 1)
+    for slot, blue in enumerate(blues):
+        if not blue.is_alive:
+            start = blue_offset + slot * V2_ENTITY_SIZE
+            normalized[start] = -1.0
+            normalized[start + 1:start + V2_ENTITY_SIZE] = 0.0
+            saturated[start:start + V2_ENTITY_SIZE] = False
+    saturation_count = int(np.count_nonzero(saturated))
+    return GlobalStateResult(
+        raw, normalized, names, saturation_count, saturation_count / float(FH_GLOBAL_STATE_DIM),
         saturated, [name for name, flag in zip(names, saturated) if flag],
     )
 

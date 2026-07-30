@@ -46,7 +46,7 @@ class MAPPORunner:
         torch.use_deterministic_algorithms(True,warn_only=True); self.device=resolve_device(str(config["device"])); print(f"MAPPO device: {self.device}")
         run_id=str(config["run_id"]) if "run_id" in config and config["run_id"] is not None else datetime.now().strftime("%Y%m%d_%H%M%S"); self.output_dir=prepare_output_dir(output_root,run_name,run_id)
         env_cfg=config["environment"]
-        description=CombatEnvDescription(str(env_cfg["kind"]),str(env_cfg["scenario"]),str(env_cfg["opponent"]),env_cfg.get("multi_terminal_reward_profile"))
+        description=CombatEnvDescription(str(env_cfg["kind"]),str(env_cfg["scenario"]),str(env_cfg["opponent"]),env_cfg.get("multi_terminal_reward_profile"),env_cfg.get("functional_mode"),tuple(env_cfg["red_roles"]) if "red_roles" in env_cfg else None,env_cfg.get("relay_enabled"))
         probe=make_adapter_from_description(description); self.num_agents,self.obs_dim,self.state_dim=probe.num_agents,probe.obs_dim,probe.state_dim; probe.env.close()
         if hasattr(probe.env, "config"):
             for key in ("environment_schema_version","observation_schema","global_state_schema","reward_profile","scenario_profile"):
@@ -135,6 +135,7 @@ class MAPPORunner:
         rollout_alive_agent_steps=0.0
         side_names=("attack_attempts","hits","nominal_damage","effective_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions","survivors")
         side_rollout={f"{team}_{name}":[] for team in ("red","blue") for name in side_names}
+        functional_rollout={name: [] for name in ("support_detection_coverage_mean","relay_visible_enemy_count_mean","support_incoming_threat_mean","support_position_error_mean","mission_success","support_survived","combat_attack_attempts","combat_hits","combat_effective_damage")}
         truncated_episode_count=0
         truncation_bootstrap_count=0
         truncation_no_bootstrap_count=0
@@ -226,6 +227,10 @@ class MAPPORunner:
                             for name in ("attack_attempts","hits","nominal_damage","effective_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions"):
                                 side_rollout[f"{team}_{name}"].append(float(sum(float(aircraft.get(key,{}).get(name,0.0)) for key in ids)))
                         side_rollout["red_survivors"].append(float(outcome.red_survivors)); side_rollout["blue_survivors"].append(float(outcome.blue_survivors))
+                        functional=step.info.get("functional_metrics",{})
+                        for name in functional_rollout:
+                            if name in functional:
+                                functional_rollout[name].append(float(functional[name]))
             critic_masks=np.ones_like(self.current["alive_masks"],dtype=np.float32)
             buffer.insert(actions.cpu().numpy(),log_probs.cpu().numpy(),values.cpu().numpy(),result["rewards"],result["terminated"],result["truncated"],self.current["alive_masks"],critic_masks,result["next_local_obs"],result["next_global_state"],result["next_available_actions"],terminal_values,truncation_bootstrap_mask)
             self.current={"local_obs":result["next_local_obs"],"global_state":result["next_global_state"],"alive_masks":result["next_alive_masks"],"available_actions":result["next_available_actions"]}
@@ -245,16 +250,19 @@ class MAPPORunner:
         diagnostics["timeout_terminal_episode_count"]=float(len(timeout_terminal_per_agent_rewards))
         for name,values_ in side_rollout.items():
             diagnostics[f"rollout_{name}_mean"]=float(np.mean(values_)) if values_ else 0.0
+        for name,values_ in functional_rollout.items():
+            output_name = "mission_success_rate" if name == "mission_success" else "support_survival_rate" if name == "support_survived" else name
+            diagnostics[f"rollout_{output_name}"]=float(np.mean(values_)) if values_ else 0.0
         diagnostics["red_ground_crash_rate"]=float(np.mean([v > 0.0 for v in side_rollout["red_ground_crashes"]])) if side_rollout["red_ground_crashes"] else 0.0
         diagnostics["blue_ground_crash_rate"]=float(np.mean([v > 0.0 for v in side_rollout["blue_ground_crashes"]])) if side_rollout["blue_ground_crashes"] else 0.0
         diagnostics.update({f"stochastic_action_{i}_frequency":float(action_counts[i]/max(action_counts.sum(),1.0)) for i in range(15)})
         return buffer,diagnostics
 
     def evaluate(self,episodes: int|None=None,seed_start: int=100000,deterministic: bool|None=None,scenario: str|None=None) -> dict[str,float]:
-        count=int(episodes or self.config["validation_episodes"]); env_cfg=self.config["environment"]; outcomes=[]; returns=[]; agent_sum_returns=[]; steps=[]; red_crashes=[]; blue_crashes=[]; saturation=[]; frequencies=np.zeros(15); red_survivors=[]; blue_survivors=[]; damages=[]; hits=[]; attack_area_steps=[]; policy_entropies=[]; logit_margins=[]; terminal_proportions=[]; collisions=[]; side_metrics={f"{team}_{name}":[] for team in ("red","blue") for name in ("attack_attempts","hits","effective_damage","nominal_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions","survivors")}
+        count=int(episodes or self.config["validation_episodes"]); env_cfg=self.config["environment"]; outcomes=[]; returns=[]; agent_sum_returns=[]; steps=[]; red_crashes=[]; blue_crashes=[]; saturation=[]; frequencies=np.zeros(15); red_survivors=[]; blue_survivors=[]; damages=[]; hits=[]; attack_area_steps=[]; policy_entropies=[]; logit_margins=[]; terminal_proportions=[]; collisions=[]; side_metrics={f"{team}_{name}":[] for team in ("red","blue") for name in ("attack_attempts","hits","effective_damage","nominal_damage","overkill_damage","attack_area_steps","ground_crashes","ceiling_violations","collisions","survivors")}; functional_metrics={name: [] for name in ("support_detection_coverage_mean","relay_visible_enemy_count_mean","support_incoming_threat_mean","support_position_error_mean","mission_success","support_survived","combat_attack_attempts","combat_hits","combat_effective_damage")}
         deterministic = bool(self.config.get("deterministic_evaluation", True)) if deterministic is None else deterministic
         for episode in range(count):
-            description=CombatEnvDescription(str(env_cfg["kind"]),str(scenario or env_cfg["scenario"]),str(env_cfg["opponent"]),env_cfg.get("multi_terminal_reward_profile")); env=make_adapter_from_description(description); current=env.reset(seed_start+episode); total=0.; agent_sum_total=0.; absolute_total=0.; terminal_absolute=0.; done=False
+            description=CombatEnvDescription(str(env_cfg["kind"]),str(scenario or env_cfg["scenario"]),str(env_cfg["opponent"]),env_cfg.get("multi_terminal_reward_profile"),env_cfg.get("functional_mode"),tuple(env_cfg["red_roles"]) if "red_roles" in env_cfg else None,env_cfg.get("relay_enabled")); env=make_adapter_from_description(description); current=env.reset(seed_start+episode); total=0.; agent_sum_total=0.; absolute_total=0.; terminal_absolute=0.; done=False
             while not done:
                 with torch.no_grad():
                     logits=self.actor(torch.as_tensor(current.local_obs,device=self.device),torch.as_tensor(current.available_action_mask,device=self.device))
@@ -277,12 +285,19 @@ class MAPPORunner:
                         side_metrics[f"{team}_{name}"].append(float(sum(aircraft[key].get(name,0.0) for key in ids)))
                 side_metrics["red_survivors"].append(float(outcome.red_survivors)); side_metrics["blue_survivors"].append(float(outcome.blue_survivors))
             saturation.append(float(current.info.get("observation_saturation_ratio",np.mean(current.info.get("local_observation_saturation_ratio",[0.])))))
+            functional=current.info.get("functional_metrics",{})
+            for name in functional_metrics:
+                if name in functional:
+                    functional_metrics[name].append(float(functional[name]))
         winners=[o.winner for o in outcomes]
         combat_rates=combat_outcome_rates(outcomes); overall=combat_rates["overall_red_win_rate"]
         mean_red_survivors=float(np.mean(red_survivors)); mean_blue_survivors=float(np.mean(blue_survivors))
         result={**combat_rates,"red_win_rate":overall,"blue_win_rate":winners.count("blue")/count,"red_crash_rate":float(np.mean(red_crashes)),"blue_crash_rate":float(np.mean(blue_crashes)),"mean_episode_return":float(np.mean(returns)),"mean_team_episode_return":float(np.mean(returns)),"mean_agent_sum_episode_return":float(np.mean(agent_sum_returns)),"mean_per_agent_episode_return":float(np.mean(agent_sum_returns))/self.num_agents,"mean_agent_return":float(np.mean(agent_sum_returns))/self.num_agents,"mean_episode_steps":float(np.mean(steps)),"mean_red_survivors":mean_red_survivors,"mean_blue_survivors":mean_blue_survivors,"mean_survivor_difference":mean_red_survivors-mean_blue_survivors,"mean_effective_damage":float(np.mean(damages)),"mean_hits":float(np.mean(hits)),"mean_attack_area_steps":float(np.mean(attack_area_steps)),"mean_observation_saturation_ratio":float(np.mean(saturation)),"policy_entropy_mean":float(np.mean(policy_entropies)),"logits_top1_top2_margin_mean":float(np.mean(logit_margins)),"terminal_reward_proportion":float(np.mean(terminal_proportions))}
         for name, values in side_metrics.items():
             result[f"mean_{name}"] = float(np.mean(values)) if values else 0.0
+        for name, values in functional_metrics.items():
+            output_name = "support_survival_rate" if name == "support_survived" else "mission_success_rate" if name == "mission_success" else name
+            result[output_name] = float(np.mean(values)) if values else 0.0
         result["mean_collisions"] = float(np.mean(collisions)) if collisions else 0.0
         result.update({f"action_{i}_frequency":float(frequencies[i]/max(frequencies.sum(),1)) for i in range(15)}); return result
 

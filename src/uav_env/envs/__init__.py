@@ -40,12 +40,21 @@ def make_3v3_env(
     config_name: str = "paper_2024_homogeneous",
     seed: int | None = None,
     multi_terminal_reward_profile: str | None = None,
+    functional_mode: str | None = None,
+    red_roles: list[str] | None = None,
+    relay_enabled: bool | None = None,
 ) -> CombatMultiEnv:
     """Construct the fixed homogeneous 3v3 head-on experiment environment."""
 
     config = load_multi_experiment_config(config_name, scenario, team_size=3)
     if multi_terminal_reward_profile is not None:
         config["multi_terminal_reward_profile"] = multi_terminal_reward_profile
+    if functional_mode is not None:
+        config["functional_mode"] = functional_mode
+    if red_roles is not None:
+        config["red_roles"] = list(red_roles)
+    if relay_enabled is not None:
+        config["relay_enabled"] = bool(relay_enabled)
     return CombatMultiEnv(config, scenario, opponent, seed)
 
 

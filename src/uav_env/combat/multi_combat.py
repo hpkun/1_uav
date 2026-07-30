@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from collections import defaultdict
-from typing import Sequence
+from typing import Collection, Sequence
 
 import numpy as np
 
@@ -108,6 +108,7 @@ def resolve_multi_attacks(
     damage_config: DamageConfig,
     rng: np.random.Generator,
     sample_team_order: tuple[int, ...] | None = None,
+    armed_ids: Collection[str] | None = None,
 ) -> MultiCombatStepResult:
     """Select nearest attackable targets, sample first, then update every target simultaneously."""
 
@@ -119,6 +120,8 @@ def resolve_multi_attacks(
         sampling_order = ordered
     attempts: list[AttackAttempt] = []
     for attacker in sampling_order:
+        if armed_ids is not None and attacker.uav_id not in armed_ids:
+            continue
         candidates: list[tuple[float, str, UAV]] = []
         for target in ordered:
             if target.team == attacker.team:
