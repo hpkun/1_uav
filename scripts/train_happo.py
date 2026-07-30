@@ -18,6 +18,8 @@ def main() -> None:
     parser.add_argument("--resume")
     parser.add_argument("--load-actors-only")
     parser.add_argument("--run-name", default="happo")
+    parser.add_argument("--run-id")
+    parser.add_argument("--log-interval", type=int)
     args = parser.parse_args()
     config = load_happo_config(args.config)
     for key, value in (
@@ -25,6 +27,8 @@ def main() -> None:
         ("device", args.device),
         ("total_env_steps", args.total_env_steps),
         ("num_envs", args.num_envs),
+        ("run_id", args.run_id),
+        ("log_interval", args.log_interval),
     ):
         if value is not None:
             config[key] = value

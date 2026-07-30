@@ -21,7 +21,7 @@ from uav_env.algorithms.mappo.adapter import CombatEnvDescription, ParallelComba
 from uav_env.algorithms.mappo.checkpoint import schema_metadata
 from uav_env.algorithms.mappo.metrics import append_csv, combat_outcome_rates, evaluation_key
 from uav_env.algorithms.mappo.value_normalizer import ValueNormalizer
-from uav_env.algorithms.mappo.runner import resolve_device
+from uav_env.algorithms.mappo.runner import format_evaluation_log, format_training_log, resolve_device
 
 REWARD_COMPONENT_NAMES = (
     "situation_reward",
@@ -436,22 +436,28 @@ class HAPPORunner:
             metrics = self.trainer.update(buffer)
             self.environment_steps += int(self.config["rollout_length"]) * int(self.config["num_envs"])
             self.update_index += 1
+            elapsed = time.time() - started
             row = {
                 "environment_steps": self.environment_steps,
                 "decisions": self.environment_steps * self.num_agents,
                 "episodes": self.episodes,
                 "update_index": self.update_index,
-                "wall_time": time.time() - started,
+                "wall_time": elapsed,
+                "samples_per_second": self.environment_steps / max(elapsed, 1e-9),
                 **metrics,
                 **rollout,
             }
             append_csv(self.output_dir / "metrics.csv", row)
+            log_interval = int(self.config.get("log_interval", 1))
+            if log_interval > 0 and self.update_index % log_interval == 0:
+                print(format_training_log("HAPPO", row), flush=True)
             for key, value in row.items():
                 if isinstance(value, (int, float)):
                     self.writer.add_scalar(key, value, self.environment_steps)
             if self.environment_steps % int(self.config["evaluation_interval"]) < int(self.config["rollout_length"]) * int(self.config["num_envs"]):
                 evaluation = {"environment_steps": self.environment_steps, "evaluation_split": "validation", **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"]))}
                 append_csv(self.output_dir / "evaluations.csv", evaluation)
+                print(format_evaluation_log("HAPPO", evaluation), flush=True)
                 self.last_evaluation_step = self.environment_steps
                 if self.best_evaluation is None or evaluation_key(evaluation, str(self.config["checkpoint_selection"])) > evaluation_key(self.best_evaluation, str(self.config["checkpoint_selection"])):
                     self.best_evaluation = evaluation
@@ -466,6 +472,7 @@ class HAPPORunner:
                 **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"])),
             }
             append_csv(self.output_dir / "evaluations.csv", evaluation)
+            print(format_evaluation_log("HAPPO", evaluation), flush=True)
             self.last_evaluation_step = self.environment_steps
             if self.best_evaluation is None or evaluation_key(evaluation, str(self.config["checkpoint_selection"])) > evaluation_key(self.best_evaluation, str(self.config["checkpoint_selection"])):
                 self.best_evaluation = evaluation
@@ -477,6 +484,7 @@ class HAPPORunner:
                 **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"])),
             }
             append_csv(self.output_dir / "evaluations.csv", self.best_evaluation)
+            print(format_evaluation_log("HAPPO", self.best_evaluation), flush=True)
             self.last_evaluation_step = self.environment_steps
             self._save("best.pt")
         if not (self.output_dir / "checkpoints" / "best.pt").is_file():

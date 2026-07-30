@@ -37,6 +37,49 @@ REWARD_COMPONENT_NAMES = (
 def resolve_device(name: str) -> torch.device:
     return torch.device("cuda" if name=="auto" and torch.cuda.is_available() else "cpu" if name=="auto" else name)
 
+
+def _metric(row: dict[str, Any], key: str, default: float = 0.0) -> float:
+    value = row.get(key, default)
+    return float(value) if isinstance(value, (int, float)) else default
+
+
+def format_training_log(algorithm: str, row: dict[str, Any]) -> str:
+    """Build a compact stdout line for long server runs."""
+
+    return (
+        f"[{algorithm} update {int(row['update_index']):04d}] "
+        f"steps={int(row['environment_steps'])} "
+        f"episodes={int(row['episodes'])} "
+        f"team_return={_metric(row, 'rollout_team_episode_return_mean'):.3f} "
+        f"per_agent_return={_metric(row, 'rollout_mean_per_agent_episode_return'):.3f} "
+        f"team_reward={_metric(row, 'team_reward_mean'):.4f} "
+        f"red_hits={_metric(row, 'rollout_red_hits_mean'):.2f} "
+        f"blue_hits={_metric(row, 'rollout_blue_hits_mean'):.2f} "
+        f"red_damage={_metric(row, 'rollout_red_effective_damage_mean'):.1f} "
+        f"blue_damage={_metric(row, 'rollout_blue_effective_damage_mean'):.1f} "
+        f"timeout={_metric(row, 'timeout_rate'):.2f} "
+        f"entropy={_metric(row, 'rollout_action_entropy', _metric(row, 'actor_0_policy_entropy_collect')):.3f} "
+        f"sps={_metric(row, 'samples_per_second'):.1f}"
+    )
+
+
+def format_evaluation_log(algorithm: str, evaluation: dict[str, Any]) -> str:
+    """Build a compact stdout line for validation/test visibility."""
+
+    return (
+        f"[{algorithm} eval:{evaluation.get('evaluation_split', 'validation')}] "
+        f"steps={int(evaluation['environment_steps'])} "
+        f"red_win={_metric(evaluation, 'red_win_rate'):.3f} "
+        f"elim_win={_metric(evaluation, 'elimination_red_win_rate'):.3f} "
+        f"timeout_win={_metric(evaluation, 'timeout_survival_red_win_rate'):.3f} "
+        f"return={_metric(evaluation, 'mean_team_episode_return'):.3f} "
+        f"red_hits={_metric(evaluation, 'mean_red_hits', _metric(evaluation, 'mean_hits')):.2f} "
+        f"blue_hits={_metric(evaluation, 'mean_blue_hits'):.2f} "
+        f"red_damage={_metric(evaluation, 'mean_red_effective_damage', _metric(evaluation, 'mean_effective_damage')):.1f} "
+        f"blue_damage={_metric(evaluation, 'mean_blue_effective_damage'):.1f}"
+    )
+
+
 class MAPPORunner:
     def __init__(self, config: dict[str,Any], run_name: str, output_root: str|Path="outputs/mappo") -> None:
         self.config=config; self.seed=int(config["seed"]); random.seed(self.seed); np.random.seed(self.seed); torch.manual_seed(self.seed)
@@ -292,15 +335,20 @@ class MAPPORunner:
                 for group in self.trainer.critic_optimizer.param_groups: group["lr"]=float(self.config["critic_lr"])*fraction
             buffer,rollout=self.collect(); metrics=self.trainer.update(buffer); self.environment_steps+=int(self.config["rollout_length"])*int(self.config["num_envs"]); self.update_index+=1
             elapsed=time.time()-started; row={"environment_steps":self.environment_steps,"decisions":self.environment_steps*self.num_agents,"episodes":self.episodes,"update_index":self.update_index,"wall_time":elapsed,"samples_per_second":(self.environment_steps-start_steps)/max(elapsed,1e-9),**metrics,**rollout}; append_csv(self.output_dir/"metrics.csv",row)
+            log_interval = int(self.config.get("log_interval", 1))
+            if log_interval > 0 and self.update_index % log_interval == 0:
+                print(format_training_log("MAPPO", row), flush=True)
             for key,value in row.items():
                 if isinstance(value,(int,float)): self.writer.add_scalar(key,value,self.environment_steps)
             if self.environment_steps%int(self.config["evaluation_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]):
                 evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))}; append_csv(self.output_dir/"evaluations.csv",evaluation)
+                print(format_evaluation_log("MAPPO", evaluation), flush=True)
                 self.last_evaluation_step=self.environment_steps
                 if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])): self.best_evaluation=evaluation; self._save("best.pt")
             if self.environment_steps < total and self.environment_steps%int(self.config["checkpoint_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]): self._save(f"step_{self.environment_steps}.pt")
         if self.last_evaluation_step != self.environment_steps:
             evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))};append_csv(self.output_dir/"evaluations.csv",evaluation);self.last_evaluation_step=self.environment_steps
+            print(format_evaluation_log("MAPPO", evaluation), flush=True)
             if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])):self.best_evaluation=evaluation;self._save("best.pt")
         self._save("last.pt")
         test_evaluations={}

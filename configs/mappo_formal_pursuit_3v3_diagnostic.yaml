@@ -1,0 +1,19 @@
+inherits: mappo_3v3_v2.yaml
+seed: 1
+num_envs: 16
+vector_env: parallel
+rollout_length: 128
+total_env_steps: 300000
+evaluation_interval: 50000
+validation_seed_start: 10000
+validation_episodes: 20
+test_seed_start: 20000
+test_episodes: 20
+checkpoint_interval: 50000
+checkpoint_selection: combat
+run_symmetric_stress_test: false
+environment:
+  kind: 3v3
+  scenario: head_on_mirrored_jitter_v2
+  opponent: pursuit
+  multi_terminal_reward_profile: paper_2024_exact
