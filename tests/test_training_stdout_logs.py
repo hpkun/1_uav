@@ -1,48 +1,104 @@
-from uav_env.algorithms.mappo.runner import format_evaluation_log, format_training_log
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+
+from uav_env.algorithms.common.progress_logging import (
+    actor_entropy_mean,
+    format_evaluation_log,
+    format_training_log,
+)
+from uav_env.algorithms.mappo.config import load_mappo_config
+from uav_env.algorithms.mappo.metrics import combat_outcome_rates
+from uav_env.algorithms.mappo.runner import MAPPORunner
 
 
-def test_training_log_contains_reward_and_combat_metrics() -> None:
-    line = format_training_log(
-        "MAPPO",
-        {
-            "update_index": 2,
-            "environment_steps": 4096,
-            "episodes": 3,
-            "rollout_team_episode_return_mean": -1.25,
-            "rollout_mean_per_agent_episode_return": -0.42,
-            "team_reward_mean": -0.01,
-            "rollout_red_hits_mean": 1.0,
-            "rollout_blue_hits_mean": 0.5,
-            "rollout_red_effective_damage_mean": 80.0,
-            "rollout_blue_effective_damage_mean": 40.0,
-            "timeout_rate": 0.25,
-            "rollout_action_entropy": 1.7,
-            "samples_per_second": 512.0,
-        },
+def test_evaluation_log_uses_real_combat_outcome_rate_keys() -> None:
+    rates = combat_outcome_rates(
+        [
+            SimpleNamespace(winner="red", termination_reason="blue_eliminated"),
+            SimpleNamespace(winner="red", termination_reason="timeout"),
+            SimpleNamespace(winner="draw", termination_reason="timeout"),
+            SimpleNamespace(winner="blue", termination_reason="red_eliminated"),
+        ]
     )
-    assert "[MAPPO update 0002]" in line
-    assert "team_return=-1.250" in line
-    assert "red_hits=1.00" in line
-    assert "blue_damage=40.0" in line
-
-
-def test_evaluation_log_contains_outcome_metrics() -> None:
     line = format_evaluation_log(
-        "HAPPO",
+        "MAPPO",
         {
             "environment_steps": 50000,
             "evaluation_split": "validation",
-            "red_win_rate": 0.4,
-            "elimination_red_win_rate": 0.3,
-            "timeout_survival_red_win_rate": 0.1,
+            **rates,
             "mean_team_episode_return": -2.0,
             "mean_red_hits": 2.0,
             "mean_blue_hits": 1.0,
             "mean_red_effective_damage": 150.0,
             "mean_blue_effective_damage": 60.0,
+            "mean_red_survivors": 2.0,
+            "mean_blue_survivors": 1.0,
         },
     )
-    assert "[HAPPO eval:validation]" in line
-    assert "red_win=0.400" in line
-    assert "timeout_win=0.100" in line
-    assert "red_damage=150.0" in line
+    assert "red_win=0.500" in line
+    assert "elim_win=0.250" in line
+    assert "timeout_win=0.250" in line
+    assert "draw=0.250" in line
+    assert "timeout=0.500" in line
+
+
+def test_mappo_short_collect_produces_real_step_reward_means(tmp_path: Path) -> None:
+    config = load_mappo_config("configs/mappo_smoke_3v3_v2.yaml")
+    config.update(
+        {
+            "num_envs": 1,
+            "vector_env": "sync",
+            "rollout_length": 1,
+            "run_id": "collect_metrics",
+            "device": "cpu",
+            "log_interval": 0,
+        }
+    )
+    runner = MAPPORunner(config, "pytest", output_root=tmp_path)
+    try:
+        _, diagnostics = runner.collect()
+    finally:
+        runner.close()
+    assert "team_reward_mean" in diagnostics
+    assert "agent_reward_sum_mean" in diagnostics
+    assert np.isfinite(diagnostics["team_reward_mean"])
+    assert np.isfinite(diagnostics["agent_reward_sum_mean"])
+    line = format_training_log(
+        "MAPPO",
+        {
+            "update_index": 1,
+            "environment_steps": 1,
+            "episodes": 0,
+            "samples_per_second": 1.0,
+            **diagnostics,
+        },
+    )
+    assert "team_reward=0.0000" not in line or np.isclose(diagnostics["team_reward_mean"], 0.0)
+    assert f"team_reward={diagnostics['team_reward_mean']:.4f}" in line
+
+
+def test_happo_actor_entropy_uses_average_of_all_available_actors() -> None:
+    row = {
+        "actor_0_policy_entropy_collect": 1.0,
+        "actor_1_policy_entropy_collect": 2.0,
+        "actor_2_policy_entropy_collect": 3.0,
+    }
+    assert actor_entropy_mean(row) == 2.0
+    line = format_training_log(
+        "HAPPO",
+        {
+            "update_index": 1,
+            "environment_steps": 128,
+            "episodes": 0,
+            "rollout_team_episode_return_mean": 0.0,
+            "rollout_mean_per_agent_episode_return": 0.0,
+            "team_reward_mean": 0.0,
+            "samples_per_second": 100.0,
+            **row,
+        },
+    )
+    assert "entropy=2.000" in line

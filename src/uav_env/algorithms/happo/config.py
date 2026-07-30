@@ -35,6 +35,8 @@ def validate_happo_config(config: dict[str, Any]) -> None:
     for key in ("ppo_epochs", "actor_num_mini_batches", "critic_epochs", "critic_num_mini_batches", "num_envs", "rollout_length"):
         if not isinstance(config.get(key), int) or int(config[key]) <= 0:
             raise ValueError(f"{key} must be a positive integer")
+    if not isinstance(config.get("log_interval", 1), int) or int(config.get("log_interval", 1)) < 0:
+        raise ValueError("log_interval must be a nonnegative integer")
     for key in ("validation_seed_start", "validation_episodes", "test_seed_start", "test_episodes"):
         if not isinstance(config.get(key), int) or int(config[key]) < 0 or (key.endswith("episodes") and int(config[key]) == 0):
             raise ValueError(f"{key} must be a valid nonnegative integer and episode counts must be positive")

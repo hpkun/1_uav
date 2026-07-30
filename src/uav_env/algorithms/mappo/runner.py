@@ -10,6 +10,8 @@ import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
+from uav_env.algorithms.common.output_safety import prepare_output_dir
+from uav_env.algorithms.common.progress_logging import format_evaluation_log, format_training_log
 from uav_env.algorithms.mappo.adapter import CombatEnvDescription,MAPPOEnvAdapter,ParallelCombatVectorEnv,SyncCombatVectorEnv,make_adapter_from_description
 from uav_env.algorithms.mappo.checkpoint import load_checkpoint,save_checkpoint,schema_metadata
 from uav_env.algorithms.mappo.metrics import append_csv,combat_outcome_rates,evaluation_key
@@ -37,54 +39,12 @@ REWARD_COMPONENT_NAMES = (
 def resolve_device(name: str) -> torch.device:
     return torch.device("cuda" if name=="auto" and torch.cuda.is_available() else "cpu" if name=="auto" else name)
 
-
-def _metric(row: dict[str, Any], key: str, default: float = 0.0) -> float:
-    value = row.get(key, default)
-    return float(value) if isinstance(value, (int, float)) else default
-
-
-def format_training_log(algorithm: str, row: dict[str, Any]) -> str:
-    """Build a compact stdout line for long server runs."""
-
-    return (
-        f"[{algorithm} update {int(row['update_index']):04d}] "
-        f"steps={int(row['environment_steps'])} "
-        f"episodes={int(row['episodes'])} "
-        f"team_return={_metric(row, 'rollout_team_episode_return_mean'):.3f} "
-        f"per_agent_return={_metric(row, 'rollout_mean_per_agent_episode_return'):.3f} "
-        f"team_reward={_metric(row, 'team_reward_mean'):.4f} "
-        f"red_hits={_metric(row, 'rollout_red_hits_mean'):.2f} "
-        f"blue_hits={_metric(row, 'rollout_blue_hits_mean'):.2f} "
-        f"red_damage={_metric(row, 'rollout_red_effective_damage_mean'):.1f} "
-        f"blue_damage={_metric(row, 'rollout_blue_effective_damage_mean'):.1f} "
-        f"timeout={_metric(row, 'timeout_rate'):.2f} "
-        f"entropy={_metric(row, 'rollout_action_entropy', _metric(row, 'actor_0_policy_entropy_collect')):.3f} "
-        f"sps={_metric(row, 'samples_per_second'):.1f}"
-    )
-
-
-def format_evaluation_log(algorithm: str, evaluation: dict[str, Any]) -> str:
-    """Build a compact stdout line for validation/test visibility."""
-
-    return (
-        f"[{algorithm} eval:{evaluation.get('evaluation_split', 'validation')}] "
-        f"steps={int(evaluation['environment_steps'])} "
-        f"red_win={_metric(evaluation, 'red_win_rate'):.3f} "
-        f"elim_win={_metric(evaluation, 'elimination_red_win_rate'):.3f} "
-        f"timeout_win={_metric(evaluation, 'timeout_survival_red_win_rate'):.3f} "
-        f"return={_metric(evaluation, 'mean_team_episode_return'):.3f} "
-        f"red_hits={_metric(evaluation, 'mean_red_hits', _metric(evaluation, 'mean_hits')):.2f} "
-        f"blue_hits={_metric(evaluation, 'mean_blue_hits'):.2f} "
-        f"red_damage={_metric(evaluation, 'mean_red_effective_damage', _metric(evaluation, 'mean_effective_damage')):.1f} "
-        f"blue_damage={_metric(evaluation, 'mean_blue_effective_damage'):.1f}"
-    )
-
-
 class MAPPORunner:
     def __init__(self, config: dict[str,Any], run_name: str, output_root: str|Path="outputs/mappo") -> None:
         self.config=config; self.seed=int(config["seed"]); random.seed(self.seed); np.random.seed(self.seed); torch.manual_seed(self.seed)
         if torch.cuda.is_available(): torch.cuda.manual_seed_all(self.seed)
         torch.use_deterministic_algorithms(True,warn_only=True); self.device=resolve_device(str(config["device"])); print(f"MAPPO device: {self.device}")
+        run_id=str(config["run_id"]) if "run_id" in config and config["run_id"] is not None else datetime.now().strftime("%Y%m%d_%H%M%S"); self.output_dir=prepare_output_dir(output_root,run_name,run_id)
         env_cfg=config["environment"]
         description=CombatEnvDescription(str(env_cfg["kind"]),str(env_cfg["scenario"]),str(env_cfg["opponent"]),env_cfg.get("multi_terminal_reward_profile"))
         probe=make_adapter_from_description(description); self.num_agents,self.obs_dim,self.state_dim=probe.num_agents,probe.obs_dim,probe.state_dim; probe.env.close()
@@ -102,7 +62,6 @@ class MAPPORunner:
         self.actor=SharedActor(self.obs_dim,hidden_sizes=config["actor_hidden_sizes"],activation=config["activation"]).to(self.device)
         self.critic=CentralizedCritic(self.state_dim,self.num_agents,config["critic_hidden_sizes"],config["activation"]).to(self.device)
         self.normalizer=ValueNormalizer(); self.trainer=MAPPOTrainer(self.actor,self.critic,config,self.normalizer,self.device)
-        run_id=str(config.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S")); self.output_dir=Path(output_root)/run_name/run_id; self.output_dir.mkdir(parents=True,exist_ok=True)
         (self.output_dir/"config.yaml").write_text(yaml.safe_dump(config,sort_keys=False),encoding="utf-8"); self.writer=SummaryWriter(self.output_dir/"tensorboard")
         self.environment_steps=0; self.update_index=0; self.best_evaluation: dict[str,Any]|None=None; self.current=self.vector.reset(); self.episodes=0
         self.episode_return_accumulators=np.zeros(int(config["num_envs"]),dtype=np.float64)
@@ -166,6 +125,7 @@ class MAPPORunner:
         buffer.set_initial(self.current["local_obs"],self.current["global_state"],self.current["available_actions"])
         saturation=[]; rollout_returns=[]; rollout_agent_sum_returns=[]; entropies=[]; action_counts=np.zeros(15)
         raw_dense=[]; assigned_dense=[]; event_rewards=[]; terminal_rewards=[]; absolute_rewards=[]
+        team_step_rewards=[]; agent_sum_step_rewards=[]
         episode_timeouts=[]; episode_crashes=[]; episode_damages=[]; episode_hits=[]; attack_occupancies=[]
         component_values={name: [] for name in REWARD_COMPONENT_NAMES}
         component_totals={name: 0.0 for name in REWARD_COMPONENT_NAMES}
@@ -184,6 +144,8 @@ class MAPPORunner:
             with torch.no_grad():
                 dist=torch.distributions.Categorical(logits=self.actor(obs,available)); actions=dist.sample(); log_probs=dist.log_prob(actions); values=self.critic(states); active=np.asarray(self.current["alive_masks"],dtype=bool); entropies.extend(dist.entropy().cpu().numpy()[active].tolist())
             result=self.vector.step(actions.cpu().numpy()); terminal_values=np.zeros_like(values.cpu().numpy()); truncation_bootstrap_mask=np.zeros(e,dtype=np.float32)
+            team_step_rewards.extend(np.asarray(result["team_rewards"],dtype=np.float64).tolist())
+            agent_sum_step_rewards.extend(np.asarray(result["agent_reward_sums"],dtype=np.float64).tolist())
             for value in actions.cpu().numpy()[active]: action_counts[int(value)]+=1
             rollout_decision_steps += e
             rollout_alive_agent_steps += float(np.sum(np.asarray(self.current["alive_masks"],dtype=np.float64)))
@@ -268,7 +230,7 @@ class MAPPORunner:
             buffer.insert(actions.cpu().numpy(),log_probs.cpu().numpy(),values.cpu().numpy(),result["rewards"],result["terminated"],result["truncated"],self.current["alive_masks"],critic_masks,result["next_local_obs"],result["next_global_state"],result["next_available_actions"],terminal_values,truncation_bootstrap_mask)
             self.current={"local_obs":result["next_local_obs"],"global_state":result["next_global_state"],"alive_masks":result["next_alive_masks"],"available_actions":result["next_available_actions"]}
         buffer.finish(self._values(self.current["global_state"]),float(self.config["gamma"]),float(self.config["gae_lambda"]))
-        diagnostics={"rollout_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_team_episode_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_agent_sum_episode_return_mean":float(np.mean(rollout_agent_sum_returns)) if rollout_agent_sum_returns else 0.0,"rollout_mean_per_agent_episode_return":float(np.mean(rollout_agent_sum_returns))/self.num_agents if rollout_agent_sum_returns else 0.0,"rollout_episode_count":float(len(rollout_returns)),"observation_saturation_mean":float(np.mean(saturation)) if saturation else 0.0,"observation_saturation_max":float(np.max(saturation)) if saturation else 0.0,"rollout_action_entropy":float(np.mean(entropies)) if entropies else 0.0,"terminal_reward_absolute_proportion":float(np.sum(np.abs(terminal_rewards))/max(np.sum(absolute_rewards),1e-12)),"attack_area_occupancy":float(np.mean(attack_occupancies)) if attack_occupancies else 0.0,"attack_area_occupancy_available":float(bool(attack_occupancies)),"effective_damage":float(np.mean(episode_damages)) if episode_damages else 0.0,"hit_count":float(np.mean(episode_hits)) if episode_hits else 0.0,"timeout_rate":float(np.mean(episode_timeouts)) if episode_timeouts else 0.0,"ground_crash_rate":float(np.mean(episode_crashes)) if episode_crashes else 0.0,"truncated_episode_count":float(truncated_episode_count),"truncation_bootstrap_count":float(truncation_bootstrap_count),"truncation_no_bootstrap_count":float(truncation_no_bootstrap_count),"timeaware_timeout_no_bootstrap_count":float(timeaware_timeout_no_bootstrap_count)}
+        diagnostics={"rollout_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_team_episode_return_mean":float(np.mean(rollout_returns)) if rollout_returns else 0.0,"rollout_agent_sum_episode_return_mean":float(np.mean(rollout_agent_sum_returns)) if rollout_agent_sum_returns else 0.0,"rollout_mean_per_agent_episode_return":float(np.mean(rollout_agent_sum_returns))/self.num_agents if rollout_agent_sum_returns else 0.0,"team_reward_mean":float(np.mean(team_step_rewards)) if team_step_rewards else 0.0,"agent_reward_sum_mean":float(np.mean(agent_sum_step_rewards)) if agent_sum_step_rewards else 0.0,"rollout_episode_count":float(len(rollout_returns)),"observation_saturation_mean":float(np.mean(saturation)) if saturation else 0.0,"observation_saturation_max":float(np.max(saturation)) if saturation else 0.0,"rollout_action_entropy":float(np.mean(entropies)) if entropies else 0.0,"terminal_reward_absolute_proportion":float(np.sum(np.abs(terminal_rewards))/max(np.sum(absolute_rewards),1e-12)),"attack_area_occupancy":float(np.mean(attack_occupancies)) if attack_occupancies else 0.0,"attack_area_occupancy_available":float(bool(attack_occupancies)),"effective_damage":float(np.mean(episode_damages)) if episode_damages else 0.0,"hit_count":float(np.mean(episode_hits)) if episode_hits else 0.0,"timeout_rate":float(np.mean(episode_timeouts)) if episode_timeouts else 0.0,"ground_crash_rate":float(np.mean(episode_crashes)) if episode_crashes else 0.0,"truncated_episode_count":float(truncated_episode_count),"truncation_bootstrap_count":float(truncation_bootstrap_count),"truncation_no_bootstrap_count":float(truncation_no_bootstrap_count),"timeaware_timeout_no_bootstrap_count":float(timeaware_timeout_no_bootstrap_count)}
         for name,values_ in (("raw_dense_reward",raw_dense),("assigned_dense_reward",assigned_dense),("event_reward",event_rewards),("terminal_reward",terminal_rewards)):
             diagnostics[f"{name}_mean"]=float(np.mean(values_)) if values_ else 0.0; diagnostics[f"{name}_std"]=float(np.std(values_)) if values_ else 0.0
         for name,values_ in component_values.items():
@@ -326,6 +288,7 @@ class MAPPORunner:
 
     def _run_impl(self) -> Path:
         started=time.time(); start_steps=self.environment_steps; total=int(self.config["total_env_steps"])
+        log_interval = int(self.config.get("log_interval", 1))
         if self.environment_steps == 0:
             self._save("initial.pt")
         while self.environment_steps<total:
@@ -335,26 +298,29 @@ class MAPPORunner:
                 for group in self.trainer.critic_optimizer.param_groups: group["lr"]=float(self.config["critic_lr"])*fraction
             buffer,rollout=self.collect(); metrics=self.trainer.update(buffer); self.environment_steps+=int(self.config["rollout_length"])*int(self.config["num_envs"]); self.update_index+=1
             elapsed=time.time()-started; row={"environment_steps":self.environment_steps,"decisions":self.environment_steps*self.num_agents,"episodes":self.episodes,"update_index":self.update_index,"wall_time":elapsed,"samples_per_second":(self.environment_steps-start_steps)/max(elapsed,1e-9),**metrics,**rollout}; append_csv(self.output_dir/"metrics.csv",row)
-            log_interval = int(self.config.get("log_interval", 1))
             if log_interval > 0 and self.update_index % log_interval == 0:
                 print(format_training_log("MAPPO", row), flush=True)
             for key,value in row.items():
                 if isinstance(value,(int,float)): self.writer.add_scalar(key,value,self.environment_steps)
             if self.environment_steps%int(self.config["evaluation_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]):
                 evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))}; append_csv(self.output_dir/"evaluations.csv",evaluation)
-                print(format_evaluation_log("MAPPO", evaluation), flush=True)
+                if log_interval > 0:
+                    print(format_evaluation_log("MAPPO", evaluation), flush=True)
                 self.last_evaluation_step=self.environment_steps
                 if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])): self.best_evaluation=evaluation; self._save("best.pt")
             if self.environment_steps < total and self.environment_steps%int(self.config["checkpoint_interval"])<int(self.config["rollout_length"])*int(self.config["num_envs"]): self._save(f"step_{self.environment_steps}.pt")
         if self.last_evaluation_step != self.environment_steps:
             evaluation={"environment_steps":self.environment_steps,"evaluation_split":"validation",**self.evaluate(int(self.config["validation_episodes"]),int(self.config["validation_seed_start"]))};append_csv(self.output_dir/"evaluations.csv",evaluation);self.last_evaluation_step=self.environment_steps
-            print(format_evaluation_log("MAPPO", evaluation), flush=True)
+            if log_interval > 0:
+                print(format_evaluation_log("MAPPO", evaluation), flush=True)
             if self.best_evaluation is None or evaluation_key(evaluation,str(self.config["checkpoint_selection"]))>evaluation_key(self.best_evaluation,str(self.config["checkpoint_selection"])):self.best_evaluation=evaluation;self._save("best.pt")
         self._save("last.pt")
         test_evaluations={}
         for label in ("initial","last","best"):
             self.resume(str(self.output_dir/"checkpoints"/f"{label}.pt"),actor_only=True)
             test_evaluations[label]=self.evaluate(int(self.config["test_episodes"]),int(self.config["test_seed_start"]),deterministic=True)
+            if log_interval > 0:
+                print(format_evaluation_log("MAPPO", {"environment_steps":self.environment_steps,"evaluation_split":f"test_{label}",**test_evaluations[label]}), flush=True)
         symmetric_stress_test={}
         if self.schema_metadata.get("environment_schema_version") == "homogeneous_3v3_v2_timeaware" and bool(self.config.get("run_symmetric_stress_test", False)):
             for label in ("last","best"):

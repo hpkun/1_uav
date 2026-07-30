@@ -13,6 +13,8 @@ import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
+from uav_env.algorithms.common.output_safety import prepare_output_dir
+from uav_env.algorithms.common.progress_logging import format_evaluation_log, format_training_log
 from uav_env.algorithms.happo.checkpoint import load_happo_checkpoint, save_happo_checkpoint
 from uav_env.algorithms.happo.networks import IndependentActorSet, JointCentralizedCritic
 from uav_env.algorithms.happo.rollout_buffer import HAPPORolloutBuffer
@@ -21,7 +23,7 @@ from uav_env.algorithms.mappo.adapter import CombatEnvDescription, ParallelComba
 from uav_env.algorithms.mappo.checkpoint import schema_metadata
 from uav_env.algorithms.mappo.metrics import append_csv, combat_outcome_rates, evaluation_key
 from uav_env.algorithms.mappo.value_normalizer import ValueNormalizer
-from uav_env.algorithms.mappo.runner import format_evaluation_log, format_training_log, resolve_device
+from uav_env.algorithms.mappo.runner import resolve_device
 
 REWARD_COMPONENT_NAMES = (
     "situation_reward",
@@ -53,6 +55,8 @@ class HAPPORunner:
         torch.use_deterministic_algorithms(True, warn_only=True)
         self.device = resolve_device(str(config["device"]))
         print(f"HAPPO device: {self.device}")
+        run_id = str(config["run_id"]) if "run_id" in config and config["run_id"] is not None else datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_dir = prepare_output_dir(output_root, run_name, run_id)
         env_cfg = config["environment"]
         self.description = CombatEnvDescription(str(env_cfg["kind"]), str(env_cfg["scenario"]), str(env_cfg["opponent"]), env_cfg.get("multi_terminal_reward_profile"))
         probe = make_adapter_from_description(self.description)
@@ -82,9 +86,6 @@ class HAPPORunner:
         self.critic = JointCentralizedCritic(self.state_dim, config["critic_hidden_sizes"], config["activation"]).to(self.device)
         self.normalizer = ValueNormalizer()
         self.trainer = HAPPOTrainer(self.actors, self.critic, config, self.normalizer, self.device)
-        run_id = str(config.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S"))
-        self.output_dir = Path(output_root) / run_name / run_id
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         self.writer = SummaryWriter(self.output_dir / "tensorboard")
         self.environment_steps = 0
@@ -428,7 +429,9 @@ class HAPPORunner:
 
     def _run_impl(self) -> Path:
         started = time.time()
+        start_steps = self.environment_steps
         total = int(self.config["total_env_steps"])
+        log_interval = int(self.config.get("log_interval", 1))
         if self.environment_steps == 0:
             self._save("initial.pt")
         while self.environment_steps < total:
@@ -443,12 +446,11 @@ class HAPPORunner:
                 "episodes": self.episodes,
                 "update_index": self.update_index,
                 "wall_time": elapsed,
-                "samples_per_second": self.environment_steps / max(elapsed, 1e-9),
+                "samples_per_second": (self.environment_steps - start_steps) / max(elapsed, 1e-9),
                 **metrics,
                 **rollout,
             }
             append_csv(self.output_dir / "metrics.csv", row)
-            log_interval = int(self.config.get("log_interval", 1))
             if log_interval > 0 and self.update_index % log_interval == 0:
                 print(format_training_log("HAPPO", row), flush=True)
             for key, value in row.items():
@@ -457,7 +459,8 @@ class HAPPORunner:
             if self.environment_steps % int(self.config["evaluation_interval"]) < int(self.config["rollout_length"]) * int(self.config["num_envs"]):
                 evaluation = {"environment_steps": self.environment_steps, "evaluation_split": "validation", **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"]))}
                 append_csv(self.output_dir / "evaluations.csv", evaluation)
-                print(format_evaluation_log("HAPPO", evaluation), flush=True)
+                if log_interval > 0:
+                    print(format_evaluation_log("HAPPO", evaluation), flush=True)
                 self.last_evaluation_step = self.environment_steps
                 if self.best_evaluation is None or evaluation_key(evaluation, str(self.config["checkpoint_selection"])) > evaluation_key(self.best_evaluation, str(self.config["checkpoint_selection"])):
                     self.best_evaluation = evaluation
@@ -472,7 +475,8 @@ class HAPPORunner:
                 **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"])),
             }
             append_csv(self.output_dir / "evaluations.csv", evaluation)
-            print(format_evaluation_log("HAPPO", evaluation), flush=True)
+            if log_interval > 0:
+                print(format_evaluation_log("HAPPO", evaluation), flush=True)
             self.last_evaluation_step = self.environment_steps
             if self.best_evaluation is None or evaluation_key(evaluation, str(self.config["checkpoint_selection"])) > evaluation_key(self.best_evaluation, str(self.config["checkpoint_selection"])):
                 self.best_evaluation = evaluation
@@ -484,7 +488,8 @@ class HAPPORunner:
                 **self.evaluate(int(self.config["validation_episodes"]), int(self.config["validation_seed_start"])),
             }
             append_csv(self.output_dir / "evaluations.csv", self.best_evaluation)
-            print(format_evaluation_log("HAPPO", self.best_evaluation), flush=True)
+            if log_interval > 0:
+                print(format_evaluation_log("HAPPO", self.best_evaluation), flush=True)
             self.last_evaluation_step = self.environment_steps
             self._save("best.pt")
         if not (self.output_dir / "checkpoints" / "best.pt").is_file():
@@ -497,6 +502,8 @@ class HAPPORunner:
                 int(self.config["test_seed_start"]),
                 deterministic=True,
             )
+            if log_interval > 0:
+                print(format_evaluation_log("HAPPO", {"environment_steps": self.environment_steps, "evaluation_split": f"test_{label}", **test_evaluations[label]}), flush=True)
         wall_time = time.time() - started
         summary = {
             "environment_steps": self.environment_steps,
