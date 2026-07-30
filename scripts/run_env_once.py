@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -41,13 +42,22 @@ def load_algorithm_config(path: str, algorithm: str) -> dict[str, Any]:
 
 
 def sample_actions(rng: np.random.Generator, available: np.ndarray, policy: str) -> np.ndarray:
+    if policy not in {"hold", "random"}:
+        raise ValueError("policy must be 'hold' or 'random'")
+    mask_array = np.asarray(available, dtype=bool)
+    hold = int(DiscreteAction15.LEVEL_HOLD)
     if policy == "hold":
-        hold = int(DiscreteAction15.LEVEL_HOLD)
-        return np.full(available.shape[0], hold, dtype=np.int64)
-    actions = np.zeros(available.shape[0], dtype=np.int64)
-    for agent_id, mask in enumerate(available):
+        actions = np.full(mask_array.shape[0], hold, dtype=np.int64)
+        for agent_id, mask in enumerate(mask_array):
+            valid = np.flatnonzero(mask)
+            if valid.size and hold not in valid:
+                # Mask-consistency fallback: keep the probe valid without changing the environment mask.
+                actions[agent_id] = int(valid[0])
+        return actions
+    actions = np.zeros(mask_array.shape[0], dtype=np.int64)
+    for agent_id, mask in enumerate(mask_array):
         valid = np.flatnonzero(mask)
-        actions[agent_id] = int(rng.choice(valid)) if valid.size else int(DiscreteAction15.LEVEL_HOLD)
+        actions[agent_id] = int(rng.choice(valid)) if valid.size else hold
     return actions
 
 
@@ -70,6 +80,7 @@ def reward_component_sums(info: dict[str, Any]) -> dict[str, float]:
 
 
 def side_statistics(info: dict[str, Any], num_agents: int) -> dict[str, float]:
+    statistics = info.get("statistics", {})
     aircraft = info.get("statistics", {}).get("aircraft", {})
     result: dict[str, float] = {}
     for team in ("red", "blue"):
@@ -83,7 +94,7 @@ def side_statistics(info: dict[str, Any], num_agents: int) -> dict[str, float]:
             "collisions",
         ):
             result[f"{team}_{name}"] = float(sum(float(aircraft.get(agent_id, {}).get(name, 0.0)) for agent_id in ids))
-    result["collisions"] = float(result["red_collisions"] + result["blue_collisions"])
+    result["collisions"] = float(statistics.get("collisions", 0.0))
     return result
 
 
@@ -91,14 +102,47 @@ def assert_finite_numbers(value: Any, path: str = "summary") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             assert_finite_numbers(item, f"{path}.{key}")
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             assert_finite_numbers(item, f"{path}[{index}]")
-    elif isinstance(value, float) and not math.isfinite(value):
-        raise ValueError(f"{path} is not finite: {value}")
+    elif isinstance(value, Real) and not isinstance(value, bool):
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(f"{path} is not finite: {value}")
+
+
+def zero_reward_components() -> dict[str, float]:
+    return {key: 0.0 for key in ("situation", "geometry_event", "combat_event", "assigned_shape", "assigned_dense", "dense_reward", "terminal", "total")}
+
+
+def add_components(total: dict[str, float], step: dict[str, float]) -> None:
+    for key in total:
+        total[key] += float(step.get(key, 0.0))
+
+
+def _validate_run_once_inputs(algorithm: str, seed: int, policy: str, max_steps: int | None, step_log_interval: int) -> int:
+    if algorithm not in {"mappo", "happo"}:
+        raise ValueError("algorithm must be 'mappo' or 'happo'")
+    if policy not in {"hold", "random"}:
+        raise ValueError("policy must be 'hold' or 'random'")
+    if max_steps is not None:
+        if isinstance(max_steps, bool) or not isinstance(max_steps, Integral) or int(max_steps) <= 0:
+            raise ValueError("max_steps must be None or a positive integer")
+    if isinstance(step_log_interval, bool) or not isinstance(step_log_interval, Integral) or int(step_log_interval) < 0:
+        raise ValueError("step_log_interval must be a nonnegative integer")
+    if isinstance(seed, bool):
+        raise ValueError("seed must be an integer")
+    if isinstance(seed, Integral):
+        return int(seed)
+    if isinstance(seed, str):
+        text = seed.strip()
+        if text and (text.isdigit() or (text[0] in {"+", "-"} and text[1:].isdigit())):
+            return int(text)
+    raise ValueError("seed must be an integer")
 
 
 def run_once(config_path: str, algorithm: str, seed: int, policy: str, max_steps: int | None, step_log_interval: int) -> dict[str, Any]:
+    seed = _validate_run_once_inputs(algorithm, seed, policy, max_steps, step_log_interval)
     config = load_algorithm_config(config_path, algorithm)
     env_cfg = config["environment"]
     description = CombatEnvDescription(
@@ -115,6 +159,8 @@ def run_once(config_path: str, algorithm: str, seed: int, policy: str, max_steps
     agent_sum_return = 0.0
     step_count = 0
     last_info: dict[str, Any] = current.info
+    cumulative_components = zero_reward_components()
+    last_step_components = zero_reward_components()
     try:
         while step_count < limit:
             actions = sample_actions(rng, current.available_action_mask, policy)
@@ -124,6 +170,8 @@ def run_once(config_path: str, algorithm: str, seed: int, policy: str, max_steps
             agent_sum_return += float(current.agent_reward_sum)
             last_info = current.info
             components = reward_component_sums(current.info)
+            last_step_components = components
+            add_components(cumulative_components, components)
             if step_log_interval > 0 and step_count % step_log_interval == 0:
                 print(
                     f"[step {step_count:04d}] "
@@ -140,6 +188,9 @@ def run_once(config_path: str, algorithm: str, seed: int, policy: str, max_steps
     finally:
         adapter.env.close()
     outcome = last_info.get("outcome")
+    stopped_by_max_steps = bool(max_steps is not None and step_count >= int(max_steps) and not (current.terminated or current.truncated))
+    winner_value = getattr(outcome, "winner", None)
+    termination_reason = "ongoing" if not (current.terminated or current.truncated) else str(getattr(outcome, "termination_reason", "ongoing"))
     summary = {
         "config": str(Path(config_path)),
         "algorithm": algorithm,
@@ -148,15 +199,17 @@ def run_once(config_path: str, algorithm: str, seed: int, policy: str, max_steps
         "policy": policy,
         "seed": seed,
         "decision_steps": step_count,
+        "stopped_by_max_steps": stopped_by_max_steps,
         "terminated": bool(current.terminated),
         "truncated": bool(current.truncated),
-        "winner": str(getattr(outcome, "winner", None)),
-        "termination_reason": str(getattr(outcome, "termination_reason", "ongoing")),
+        "winner": None if winner_value is None else str(winner_value),
+        "termination_reason": termination_reason,
         "team_return": team_return,
         "agent_sum_return": agent_sum_return,
         "mean_per_agent_return": agent_sum_return / max(float(adapter.num_agents), 1.0),
         "last_step_agent_rewards": current.agent_rewards.astype(float).tolist(),
-        "reward_component_sums": reward_component_sums(last_info),
+        "reward_component_sums": cumulative_components,
+        "last_step_reward_component_sums": last_step_components,
         "side_statistics": side_statistics(last_info, adapter.num_agents),
         "final_survivors": {
             "red": float(getattr(outcome, "red_survivors", 0.0) or 0.0),
