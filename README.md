@@ -1,6 +1,6 @@
 # MADSAC paper reproduction
 
-Strict 4v4 reproduction target for Li et al. (2023), *Multi-UAV Cooperative Air Combat Decision-Making Based on Multi-Agent Double-Soft Actor-Critic*. The repository paper is the sole normative specification; unpublished choices are listed in [the evidence table](docs/reproduction_spec.md).
+Strict 4v4 reproduction target for Li et al. (2023), *Multi-UAV Cooperative Air Combat Decision-Making Based on Multi-Agent Double-Soft Actor-Critic*. The 2023 paper is normative; carefully bounded evidence from the same authors' 2022 predecessor and every unresolved value are listed in [the parameter provenance table](docs/parameter_provenance.md) and [the reproduction evidence table](docs/reproduction_spec.md).
 
 Implemented scope is only MADSAC Red versus the paper's fixed nearest-target Blue strategy. MAAC, MAPPO, MADDPG, MASAC, SAC, learned-vs-learned APIs, and formal 8M training are intentionally out of this refactor.
 

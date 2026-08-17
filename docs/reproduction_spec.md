@@ -1,6 +1,9 @@
 # Li et al. (2023) reproduction evidence table
 
-The paper PDF in the repository is the only normative source. Every statement below is classified only as **PAPER**, **DERIVED**, or **UNSPECIFIED**. `UNSPECIFIED` means a minimal executable choice, not a fact reported by the paper.
+The 2023 repository PDF remains the normative source. The author-team 2022
+predecessor is used only for missing simulator conventions. Fine-grained source
+decisions are recorded in `docs/parameter_provenance.md`; `UNSPECIFIED` below
+still means an executable placeholder, never a paper value.
 
 ## Module-by-module evidence
 
@@ -16,7 +19,7 @@ The paper PDF in the repository is the only normative source. Every statement be
 | MADSAC objectives | Section 3.2.2-3.2.3, p.11 | Target actor and target double critics; min-Q target; entropy term; independent critic losses; min-Q actor objective | Eq.(18)-(21) | `madsac/trainer.py` | PAPER |
 | Scenario | Section 3.3.1, pp.12-13 | 4 Red vs 4 Blue in a 10 km diameter area, initialized at opposite ends of a randomly selected diameter; leaving the area means death | Fig.7, Table 1 | `environment/scenario.py`, `env.py` | Counts/diameter/opposite ends/boundary death PAPER; formation details UNSPECIFIED |
 | Action | Section 3.3.2, p.13 | Actor produces `[delta_psi,delta_theta,delta_v]`, added to current state to obtain desired state | Table 2, Eq.(23) | `controller.py`, `configs/paper_environment.yaml` | PAPER |
-| Observation | Section 3.3.3, p.14 | Own `(pe,vo,phi,psi,theta)`, three teammates `(pe,vo,psi,theta)`, four enemies `(dr,vo,AA,ATA,HA)`; transformed under observer body coordinates | Eq.(24) | `environment/observation.py` | Fields PAPER; 45-D count DERIVED; scalar/body/dead encoding UNSPECIFIED |
+| Observation | Section 3.3.3, p.14 | Own `(pe,vo,phi,psi,theta)`, three teammates `(pe,vo,psi,theta)`, four enemies `(dr,vo,AA,ATA,HA)`; transformed under observer body coordinates | Eq.(24) | `environment/observation.py` | Fields PAPER; 45-D count DERIVED; full teammate position transform supported by 2022 Eq.(17); scalar/dead encoding UNSPECIFIED |
 | Reward | Section 3.3.4, pp.14-15 | `R=R1+R2+R3+R4`; `R4` is one piecewise choice between R41 and R42 | Eq.(25) | `environment/reward.py`, `env.py` | Coefficients/thresholds PAPER; multi-enemy target and overlap handling UNSPECIFIED |
 | Training | Algorithm 1, p.12; Section 4.1, p.15 | M parallel environments, `T+=M`, threshold triggers n critic updates, delayed n actor updates, target update, then `T=0`; 24 distinct parallel seeds; >8M samples | Algorithm 1 | `training/runner.py`, `vector_env.py` | Structure/M=24/>8M PAPER; threshold/n/d UNSPECIFIED |
 | Evaluation | Section 3.3.1, p.13; Section 4.1, p.15 | 20 test seeds completely different from training; average 20 results; test once every two training cycles; five runs and 95% CI | Fig.8-9 | `training/evaluator.py`, `scripts/aggregate_training_runs.py` | Counts/runs/CI PAPER; cycle-to-step mapping and CI estimator UNSPECIFIED |
@@ -81,9 +84,9 @@ Current UNSPECIFIED values are `steps_per_update=24`, `update_steps_n=1`, and `p
 - Sensor: `c1=10`, `c2=0.01`, `c3=1`, `b1=b2=b3=3`; shared epsilon is used exactly as printed.
 - Weapon: `D_firemin=0`, `D_hit=2000`, `c4=c5=0.05`. These can make near, well-aligned shots nearly deterministic and require sensitivity analysis before claims about Figure 8/9.
 - Controller: `nx[-3,3]`, `nz[-6,6]`, yaw rate 1 rad/s, pitch rate 0.7 rad/s, acceleration 50 m/s², proportional gains all 1.
-- Observation: own absolute NED position; body-horizontal relative teammate positions; global teammate yaw/pitch; enemy distance and signed AA/ATA/HA; position divided by 5000 and speed by 300; fixed ID slots; dead slots zeroed. The sentence about body coordinates does not uniquely specify all scalar transformations.
+- Observation: own absolute NED position; full yaw-pitch-roll `F_g -> F_b` relative teammate positions; global teammate yaw/pitch remain an unresolved scalar convention; enemy distance and signed AA/ATA/HA; position divided by 5000 and speed by 300; fixed ID slots; dead slots zeroed.
 - Actor uses Eq.(24) observation only. Figure 6(a) depicts a previous action input while Algorithm 1 and policy equations write policy as a function of observation; the paper does not resolve this inconsistency.
-- Actor ReLU, critic LeakyReLU, actor log-std clamp `[-5,2]`, exact embeddings/head split/final MLP.
+- Actor and critic ReLU are supported by the 2022 author work but not stated by 2023; actor log-std clamp `[-5,2]`, exact embeddings/head split/final MLP remain UNSPECIFIED.
 - Reward target/aggregation and same-step timing described above.
 - Training cycle mapping: one configured cycle is 50,000 sampled transitions, so evaluation every two cycles is every 100,000 samples. The paper does not define this mapping.
 - Five-run CI uses a two-sided Student-t interval with 4 degrees of freedom.

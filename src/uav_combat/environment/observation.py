@@ -8,10 +8,27 @@ from .sensor import ObservedState
 OBSERVATION_DIM = 45
 
 
-def _body_relative(observer: ObservedState, other: ObservedState) -> np.ndarray:
+def earth_to_body_relative(observer: ObservedState, other: ObservedState) -> np.ndarray:
+    """Transform an Earth-fixed NED displacement into observer body axes.
+
+    The 3-2-1 direction-cosine matrix is the full ``F_g -> F_b`` transform
+    implied by Fig. 1 and explicitly named for ``p_b`` after Eq. (17) of the
+    2022 predecessor.  In particular this is not a yaw-only horizontal turn.
+    """
     delta = np.array([other.x - observer.x, other.y - observer.y, other.z - observer.z], dtype=float)
-    c, s = np.cos(observer.psi), np.sin(observer.psi)
-    return np.array([c * delta[0] + s * delta[1], -s * delta[0] + c * delta[1], delta[2]], dtype=float)
+    c_phi, s_phi = np.cos(observer.phi), np.sin(observer.phi)
+    c_theta, s_theta = np.cos(observer.theta), np.sin(observer.theta)
+    c_psi, s_psi = np.cos(observer.psi), np.sin(observer.psi)
+    earth_to_body = np.array([
+        [c_theta * c_psi, c_theta * s_psi, -s_theta],
+        [s_phi * s_theta * c_psi - c_phi * s_psi,
+         s_phi * s_theta * s_psi + c_phi * c_psi,
+         s_phi * c_theta],
+        [c_phi * s_theta * c_psi + s_phi * s_psi,
+         c_phi * s_theta * s_psi - s_phi * c_psi,
+         c_phi * c_theta],
+    ])
+    return earth_to_body @ delta
 
 
 def build_observation(
@@ -38,7 +55,7 @@ def build_observation(
         if i == observer_index:
             continue
         if red_alive[i] and red_alive[observer_index]:
-            rel = _body_relative(own, friendly) / position_scale
+            rel = earth_to_body_relative(own, friendly) / position_scale
             values.extend([*rel, friendly.v / speed_scale, friendly.psi, friendly.theta])
         else:
             values.extend([0.0] * 6)

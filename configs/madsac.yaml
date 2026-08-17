@@ -24,13 +24,13 @@ training:
   output_dir: outputs/madsac
   evaluation_every_training_cycles: 2
 reproduction_assumptions:
-  actor_activation: relu
+  actor_activation: relu       # SUPPORTED-BY-AUTHOR-WORK: 2022 MATAC used ReLU
   log_std_min: -5.0
   log_std_max: 2.0
-  critic_activation: leaky_relu
-  steps_per_update: 24
-  update_steps_n: 1
-  policy_delay_d: 2
+  critic_activation: relu      # SUPPORTED-BY-AUTHOR-WORK, not stated by 2023
+  steps_per_update: 24          # STILL-UNSPECIFIED / HIGH IMPACT
+  update_steps_n: 1             # STILL-UNSPECIFIED / HIGH IMPACT
+  policy_delay_d: 2             # STILL-UNSPECIFIED / HIGH IMPACT
   sampled_steps_per_training_cycle: 50000
   evaluation_seed_base: 10000000
   checkpoint_interval_sampled_steps: 500000

@@ -6,7 +6,7 @@ from uav_combat.dynamics import PointMassDynamics
 from uav_combat.environment.env import PaperUAVCombatEnv
 from uav_combat.environment.fixed_policy import NearestTargetPursuitPolicy
 from uav_combat.environment.geometry import PaperAirCombatGeometry, compute_paper_geometry
-from uav_combat.environment.observation import build_observation
+from uav_combat.environment.observation import build_observation, earth_to_body_relative
 from uav_combat.environment.reward import equation25_reward
 from uav_combat.environment.scenario import random_diameter_states
 from uav_combat.environment.sensor import ObservedState, SensorModel
@@ -109,6 +109,37 @@ def test_equation24_natural_45_dimensions_and_enemy_geometry():
     assert observation.shape == (45,)
     assert observation[27] == pytest.approx(0.0)  # first enemy AA: same-heading target ahead
     assert observation[28] == pytest.approx(0.0)  # first enemy ATA
+
+
+def test_author_body_frame_transform_uses_yaw_pitch_and_roll():
+    other = ObservedState(100, 40, -20, 200, 0, 0, 0)
+    level = ObservedState(0, 0, 0, 200, 0, 0, 0)
+    pitched = ObservedState(0, 0, 0, 200, 0, 0, np.deg2rad(30))
+    rolled = ObservedState(0, 0, 0, 200, np.deg2rad(30), 0, 0)
+    assert np.allclose(earth_to_body_relative(level, other), [100, 40, -20])
+    assert not np.allclose(earth_to_body_relative(pitched, other), earth_to_body_relative(level, other))
+    assert not np.allclose(earth_to_body_relative(rolled, other), earth_to_body_relative(level, other))
+    # A direction-cosine rotation must preserve physical range.
+    assert np.linalg.norm(earth_to_body_relative(pitched, other)) == pytest.approx(np.linalg.norm([100, 40, -20]))
+
+
+def test_equation24_fixed_source_indices():
+    red = [ObservedState(i * 100, 0, 0, 180 + i, 0.1 * i, 0.2 * i, 0.05 * i) for i in range(4)]
+    blue = [ObservedState(1000 + i * 100, 0, 0, 220 + i, 0, 0, 0) for i in range(4)]
+    observation = build_observation(0, red, blue, [True] * 4, [True] * 4)
+    assert observation[0:7].shape == (7,)       # own p_e, v, phi, psi, theta
+    assert observation[7:25].shape == (18,)     # three friendly 6-scalar slots
+    assert observation[25:45].shape == (20,)    # four enemy 5-scalar slots
+    assert observation[7] == pytest.approx(100 / 5000)  # friendly-1 body x
+    assert observation[25] == pytest.approx(1000 / 5000)  # enemy-0 range
+
+
+def test_source_supported_network_activation_config():
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs/madsac.yaml").read_text(encoding="utf-8"))
+    assert cfg["reproduction_assumptions"]["actor_activation"] == "relu"
+    assert cfg["reproduction_assumptions"]["critic_activation"] == "relu"
 
 
 @pytest.mark.parametrize("angle,reward", [(30, .01), (15, .02), (5, .10)])

@@ -1,0 +1,18 @@
+# Candidate-only settings for bounded follow-up sensitivity checks.
+# None of these values is claimed by the 2023 paper or an author source.
+weapon:
+  low_noise:    {d_hit: 2000.0, c4: 0.01, c5: 0.01}
+  current:      {d_hit: 2000.0, c4: 0.05, c5: 0.05}
+  high_noise:   {d_hit: 2000.0, c4: 0.10, c5: 0.10}
+sensor:
+  low:          {c1: 5.0,  c2: 0.005, c3: 0.5, b1: 3.0, b2: 3.0, b3: 3.0}
+  current:      {c1: 10.0, c2: 0.010, c3: 1.0, b1: 3.0, b2: 3.0, b3: 3.0}
+  high:         {c1: 20.0, c2: 0.020, c3: 2.0, b1: 3.0, b2: 3.0, b3: 3.0}
+controller:
+  slow:         {k_yaw: 0.5, k_pitch: 0.5, k_speed: 0.5}
+  current:      {k_yaw: 1.0, k_pitch: 1.0, k_speed: 1.0}
+  fast:         {k_yaw: 2.0, k_pitch: 2.0, k_speed: 2.0}
+scheduler:
+  sparse:       {steps_per_update: 48, update_steps_n: 1, policy_delay_d: 2}
+  current:      {steps_per_update: 24, update_steps_n: 1, policy_delay_d: 2}
+  dense:        {steps_per_update: 24, update_steps_n: 2, policy_delay_d: 1}
