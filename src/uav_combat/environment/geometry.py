@@ -18,12 +18,13 @@ class PaperAirCombatGeometry:
 
 
 def compute_paper_geometry(own: AircraftState, target: AircraftState, eps: float = 1e-8) -> PaperAirCombatGeometry:
-    """Return signed ATA/AA/HA/HCA, with ATA and AA in the xy projection.
+    """Evaluate Figure 2 / Equation (6) from ``own`` (o1) to ``target`` (o2).
 
-    ATA is own-heading to horizontal LOS. AA is target-heading to the LOS from
-    target back to own. HA is the elevation LOS in NED (positive target above).
-    HCA is target heading minus own heading. Absolute values are used by the
-    paper's launch and reward inequalities.
+    ``ATA`` is the signed own-heading-to-LOS angle. ``AA`` is the signed angle
+    from that same o1->o3 horizontal LOS to the target velocity.  In
+    particular, AA does *not* use the reverse LOS: an attacker directly behind
+    a same-heading target has ATA=AA=0, as required by Figure 2's pursuit
+    geometry.  ``HA`` is positive when the target is above in NED coordinates.
     """
     rel = target.as_array()[:3] - own.as_array()[:3]
     distance = float(np.linalg.norm(rel))
@@ -34,7 +35,7 @@ def compute_paper_geometry(own: AircraftState, target: AircraftState, eps: float
     return PaperAirCombatGeometry(
         distance=distance,
         ata=wrap_angle(los - own.psi),
-        aa=wrap_angle((los + np.pi) - target.psi),
+        aa=wrap_angle(target.psi - los),
         ha=float(np.arctan2(-rel[2], max(horizontal, eps))),
         hca=wrap_angle(target.psi - own.psi),
     )

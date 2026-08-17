@@ -1,29 +1,35 @@
-# MADSAC Multi-UAV Cooperative Air Combat Paper Reproduction
+# MADSAC paper reproduction
 
-Strict 4v4 reproduction of Li et al. (2023), *Multi-UAV Cooperative Air Combat Decision-Making Based on Multi-Agent Double-Soft Actor-Critic*. It is a paper-specification reproduction with documented assumptions for unpublished details, not a claim of recovering the authors' source.
+Strict 4v4 reproduction target for Li et al. (2023), *Multi-UAV Cooperative Air Combat Decision-Making Based on Multi-Agent Double-Soft Actor-Critic*. The repository paper is the sole normative specification; unpublished choices are listed in [the evidence table](docs/reproduction_spec.md).
 
-## Implemented
+Implemented scope is only MADSAC Red versus the paper's fixed nearest-target Blue strategy. MAAC, MAPPO, MADDPG, MASAC, SAC, learned-vs-learned APIs, and formal 8M training are intentionally out of this refactor.
 
-- Equations (1)-(8), (23)-(25), `dt=0.1 s`, 4v4 random-diameter scenario, noisy formal sensors, probabilistic weapon model, and nearest-target fixed blue policy.
-- Auditable per-aircraft `NONE/ATTACK/BOUNDARY` death ledger. A team wins when every opponent is dead and it retains a survivor; mutual elimination is a draw and timeout is not a red win. Attack kills never include boundary deaths.
-- Pre-attack frozen geometry for R3/R41/R42 and simultaneous fire proposals; post-event R1/R2 is then added.
-- Symmetric red/blue 45D observations and `env.step(red_actions, blue_actions=None)`. `None` retains the paper fixed-blue training protocol; supplied actions support future learned-vs-learned evaluation and Figure 17-style self-play.
-- Shared squashed-Gaussian actor, independent double attention critics, target networks, mask-correct replay/loss/entropy/bootstrap, delayed updates, CTDE, checkpoint/resume, and isolated deterministic evaluation.
-- The formal runner actually creates 24 environments. `sampled_env_steps` counts individual transitions; `vector_steps` counts synchronous batches. Update credit is defined per new transition, so update/data ratio is invariant to environment count.
+Core protocol:
 
-See [the three-level specification](docs/reproduction_spec.md), [environment configuration](configs/paper_environment.yaml), and [MADSAC configuration](configs/madsac.yaml).
+- Eq.(1)-(8), Table 1, Fig.4, Eq.(23)-(25)
+- shared 2x256 actor, two independent two-head attention critics, target networks, min double-Q and entropy
+- Algorithm 1 `T += M` scheduler with 24 synchronous training environments
+- binary paper success: all Blue UAVs destroyed
+- 20 disjoint evaluation seeds, five run seeds, and Figure 8/9 CSV aggregation with 95% CI
 
-## Verification and smoke runs
+Run all commands in the requested WSL environment:
 
-```powershell
+```bash
+wsl -d Ubuntu
+source /home/hpk/anaconda3/etc/profile.d/conda.sh
+conda activate uav
+cd /mnt/c/Users/HPK/Desktop/1_uav
+
 pytest -q
-python scripts/audit_paper_environment.py
-python scripts/audit_environment_statistics.py --smoke
-python scripts/train_madsac.py --smoke --num-envs 1 --total-env-steps 2048
-python scripts/train_madsac.py --smoke --num-envs 24 --total-env-steps 24000 --run-id 0
-python scripts/evaluate_madsac.py --checkpoint outputs/madsac/run_0_seed_0/latest_evaluation.pt
+python scripts/audit_paper_environment.py --weapon-samples 10000
+python scripts/train_madsac.py --smoke --num-envs 24 --total-sampled-steps 24000 --seed 0
+python scripts/evaluate_madsac.py --checkpoint outputs/madsac/run_seed_0/latest.pt
 ```
 
-Formal defaults remain 24 training environments, more than 8 million transitions, 20 disjoint evaluation seeds, five independent runs, and 95% confidence intervals. No formal long training starts automatically.
+For five completed runs:
 
-Smoke mode explicitly reduces batch/learning-starts and uses `0.05` updates per transition to bound validation time; these are printed runtime overrides and do not change the formal YAML defaults.
+```bash
+python scripts/aggregate_training_runs.py RUN0 RUN1 RUN2 RUN3 RUN4 --output-dir outputs/aggregate
+```
+
+Checkpoints contain actor, critics, target networks, optimizers, and counters. Replay is deliberately not saved, so resumed training does not preserve replay continuity. Formal defaults remain >8M sampled steps, but no formal training starts automatically.

@@ -1,56 +1,91 @@
-# Li et al. (2023) strict reproduction specification
+# Li et al. (2023) reproduction evidence table
 
-This is a paper-specification reproduction with explicit assumptions for unpublished implementation details. Configuration, audit output, and runtime construction use `configs/paper_environment.yaml` and `configs/madsac.yaml` as the sources of truth.
+The paper PDF in the repository is the only normative source. Every statement below is classified only as **PAPER**, **DERIVED**, or **UNSPECIFIED**. `UNSPECIFIED` means a minimal executable choice, not a fact reported by the paper.
 
-## PAPER-SPECIFIED
+## Module-by-module evidence
 
-- Equations (1)-(2) point-mass dynamics use NED coordinates. All models use the paper's `0.1 s` solution interval.
-- Table 1 limits: `psi in [-pi,pi]`, `theta in [-pi/3,pi/3]`, `phi in [-pi/2,pi/2]`, and `v in [150,300] m/s`.
-- Four homogeneous red UAVs and four homogeneous blue UAVs operate in a 10 km diameter area and initialize on opposite sides of a random diameter.
-- Equations (3)-(5) add Gaussian noise to formal sensor observations. Noise being enabled is a paper model feature; only its coefficients are unpublished. `sensor_noise=False` is restricted to deterministic tests.
-- Figure 2 / Equation (6) defines horizontal ATA/AA, vertical HA, and HCA. Equations (7)-(8) define automatic launch and probabilistic hit; maximum range is 4 km and ATA/HA limits are `pi/6`.
-- Section 2.5 blue control reselects the nearest alive red UAV every solution step.
-- Table 2 / Equation (23) actions are `[delta_psi,delta_theta,delta_v]` with ranges `[-pi,pi]`, `[-pi/3,pi/3]`, and `[-50,50]`.
-- Equation (24) contains own position/speed/attitude, three friendly states, and four enemy geometry states. Equation (25) is the only reward.
-- Aircraft leaving the engagement area are judged dead. Attack deaths and boundary deaths remain distinct. Red wins when every blue UAV is dead and at least one red UAV remains; blue wins symmetrically. Same-step mutual elimination is a draw. Timeout is not a red win. This interpretation is required by Section 4.2 and Table 4's success-rate semantics.
-- MADSAC uses a shared stochastic actor, two independent centralized attention critics, target actor and critics, replay, minimum double-Q, maximum entropy, delayed policy update, soft targets, CTDE, and decentralized execution.
-- Published hyperparameters: actor `2x256`, critic two heads and two 256-unit layers, Adam `1e-4`, replay `1e6`, batch `1024`, `tau=.001`, `gamma=.99`, `alpha=.1`.
-- Formal protocol: 24 distinct parallel training seeds, more than 8M sampled transitions, 20 disjoint testing seeds, five independent runs, and 95% confidence intervals.
+| Paper module | Paper location | Original meaning | Equation / table / figure | Code location | Status |
+|---|---|---|---|---|---|
+| Dynamics | Section 2.1, pp.4-5 | Six-state NED point-mass kinematics and dynamics; all models solve at 0.1 s | Eq.(1)-(2), Fig.1 | `src/uav_combat/dynamics.py`, `integrator.py` | PAPER; RK4 is UNSPECIFIED |
+| Controller | Section 2.1, p.5; Section 3.3.2, p.13 | Controller maps desired `[psi_d,theta_d,v_d]` to `[phi,nz,nx]`, but its law is not published | Eq.(2), Eq.(23) | `src/uav_combat/controller.py` | Mapping PAPER; controller law/limits/gains UNSPECIFIED |
+| Sensor | Section 2.2, p.5 | Position and attitude each use one printed clipped Gaussian epsilon shared by their three components; speed uses one clipped Gaussian sample | Eq.(3)-(5) | `environment/sensor.py` | Formula PAPER; coefficients UNSPECIFIED |
+| Geometry | Section 2.3, p.6 | ATA/AA/HA/HCA describe the red-blue 3-D relation | Fig.2, Eq.(6) | `environment/geometry.py` | AA/HA/HCA PAPER; ATA resolution DERIVED due to paper inconsistency |
+| Weapon | Section 2.4, pp.6-7 | Automatic launch requires ATA, HA and range gates; hit requires both noisy angular inequalities | Eq.(7)-(8), Table 1 | `environment/weapon.py` | Formula and maxima PAPER; `D_firemin,D_hit,c4,c5` UNSPECIFIED |
+| Blue fixed strategy | Section 2.5, p.7 | At every simulation step select the nearest surviving Red UAV, pure-pursue it, switch immediately when nearest changes, and use the weapon model | Fig.4 | `environment/fixed_policy.py`, `env.py` | PAPER; low-level pursuit speed UNSPECIFIED |
+| MADSAC architecture | Section 3.2, pp.10-11; Section 4.1, p.15 | Shared stochastic actor; two independent centralized attention critics; two attention heads; actor and critic use two 256-unit hidden layers | Fig.6, Eq.(16)-(17) | `madsac/actor.py`, `attention_critic.py` | PAPER; activation, log-std bounds and exact layer wiring UNSPECIFIED |
+| MADSAC objectives | Section 3.2.2-3.2.3, p.11 | Target actor and target double critics; min-Q target; entropy term; independent critic losses; min-Q actor objective | Eq.(18)-(21) | `madsac/trainer.py` | PAPER |
+| Scenario | Section 3.3.1, pp.12-13 | 4 Red vs 4 Blue in a 10 km diameter area, initialized at opposite ends of a randomly selected diameter; leaving the area means death | Fig.7, Table 1 | `environment/scenario.py`, `env.py` | Counts/diameter/opposite ends/boundary death PAPER; formation details UNSPECIFIED |
+| Action | Section 3.3.2, p.13 | Actor produces `[delta_psi,delta_theta,delta_v]`, added to current state to obtain desired state | Table 2, Eq.(23) | `controller.py`, `configs/paper_environment.yaml` | PAPER |
+| Observation | Section 3.3.3, p.14 | Own `(pe,vo,phi,psi,theta)`, three teammates `(pe,vo,psi,theta)`, four enemies `(dr,vo,AA,ATA,HA)`; transformed under observer body coordinates | Eq.(24) | `environment/observation.py` | Fields PAPER; 45-D count DERIVED; scalar/body/dead encoding UNSPECIFIED |
+| Reward | Section 3.3.4, pp.14-15 | `R=R1+R2+R3+R4`; `R4` is one piecewise choice between R41 and R42 | Eq.(25) | `environment/reward.py`, `env.py` | Coefficients/thresholds PAPER; multi-enemy target and overlap handling UNSPECIFIED |
+| Training | Algorithm 1, p.12; Section 4.1, p.15 | M parallel environments, `T+=M`, threshold triggers n critic updates, delayed n actor updates, target update, then `T=0`; 24 distinct parallel seeds; >8M samples | Algorithm 1 | `training/runner.py`, `vector_env.py` | Structure/M=24/>8M PAPER; threshold/n/d UNSPECIFIED |
+| Evaluation | Section 3.3.1, p.13; Section 4.1, p.15 | 20 test seeds completely different from training; average 20 results; test once every two training cycles; five runs and 95% CI | Fig.8-9 | `training/evaluator.py`, `scripts/aggregate_training_runs.py` | Counts/runs/CI PAPER; cycle-to-step mapping and CI estimator UNSPECIFIED |
 
-## PAPER-DERIVED
+## Equation (6) resolution and physical truth table
 
-- Equation (24) naturally expands to `7 + 3*6 + 4*5 = 45` scalars per UAV.
-- A 10 km diameter gives a 5 km horizontal boundary radius.
-- Homogeneous parameter sharing means one actor object is applied to all four agents.
-- Equation (8) uses the same printed `epsilon_fire` in its ATA and HA inequalities.
+Figure 2 places `o1` at Red, `o2` at Blue and `o3` at Blue's horizontal projection. The printed first line of Eq.(6) uses `-V²_xy` for ATA, which would make ATA algebraically identical to the printed AA line and conflicts with the ATA arc drawn at Red. The implementation therefore uses the Figure 2/air-combat meaning:
 
-## PAPER-UNSPECIFIED reproduction assumptions
+- `LOS = atan2(y_target-y_own, x_target-x_own)`
+- `ATA = wrap(LOS - psi_own)`
+- `AA = wrap(psi_target - LOS)`; no reverse LOS
+- `HA = atan2(-(z_target-z_own), horizontal_distance)` in NED
+- `HCA = wrap(psi_target-psi_own)`
 
-### Environment and controller
+The sign convention is UNSPECIFIED; the paper reward and weapon equations use absolute ATA/AA/HA. The following expectations are physical, not self-referential tests:
 
-- Episode horizon 2000 steps. Formation centers are 4000 m from the origin with 150 m tangential spacing, altitude 3000 m, and speed 225 m/s.
-- Sensor coefficients: `c1=10`, `c2=.01`, `c3=1`, `b1=b2=b3=3`.
-- Weapon coefficients: `D_firemin=0`, `D_hit=2000`, `c4=c5=.05`. There is no ammunition, cooldown, missile entity, or guidance simulation.
-- Controller gains, rates, acceleration, `nx`, and `nz` limits are under `reproduction_assumptions.controller`; `AircraftSpec` merges them with the paper flight-state limits at runtime. Action scaling is read from the PAPER-SPECIFIED `action` section.
-- Automatic fire and local geometric reward use nearest-alive-enemy. All successful hit proposals are determined from one pre-attack snapshot and apply simultaneously, including mutual hits. Multiple hits on one target create one death and one credited kill.
+| Case | Geometry | ATA_r | AA_r | ATA_b | AA_b | HA_r |
+|---|---|---:|---:|---:|---:|---:|
+| A | Red directly behind Blue, same heading | 0 | 0 | pi | pi | 0 |
+| B | Head-on | 0 | pi | 0 | pi | 0 |
+| C | Red directly at Blue's side, same heading | pi/2 | -pi/2 | -pi/2 | pi/2 | 0 |
+| D | Blue directly behind Red, same heading | pi | pi | 0 | 0 | 0 |
+| E | Case A with Blue 100 m above and 100 m ahead | 0 | 0 | pi | pi | pi/4 |
 
-### Observation scalar encoding
+## Equation (25) exact operational form
 
-The paper specifies the physical quantities but not their exact scalar encoding. The implementation retains own absolute NED position, uses body-horizontal relative friendly positions, retains friendly global signed `psi/theta`, represents enemy distance plus signed AA/ATA/HA, divides position/distance by 5000 and speed by 300, fixes slots by aircraft ID, and encodes dead slots as zero. These choices are assumptions, not PAPER-SPECIFIED claims.
+- `R1`: +10 per Blue UAV destroyed by this Red UAV; -10 if this Red UAV is destroyed by attack.
+- `R2`: -10 if this Red UAV leaves the engagement area.
+- `R3`: +0.001 when `|ATA_r|<=30°`, `|HA_r|<=30°`, and `d_r>=4000 m`; otherwise 0.
+- `R4`: one piecewise term. If `|AA_r|<=30°` and `d_r<=4000 m`, use R41. Otherwise, if `|AA_b|<=30°` and `d_b<=4000 m`, use R42. It is never `R41+R42`.
+- R41/R42 check the strongest `5°` tier first, then `15°`, then `30°`. This is DERIVED from the three intended nested strength levels; the printed cases overlap and do not state precedence.
+- If both outer R4 cases hold, the first printed R41 case takes precedence. This is deterministic formula-order handling of an UNSPECIFIED edge case.
+- At exactly 4000 m, R3 and R4 can both contribute because they are separate terms and both printed inequalities are inclusive.
 
-### Fixed-slot death handling
+For multiple Blue UAVs, the paper does not identify the enemy used by each local R3/R4. This reproduction uses the nearest surviving Blue UAV and its reciprocal Blue-centered geometry. Four local rewards are summed and broadcast as the cooperative team reward. Target selection, broadcasting, pre-attack geometry timing, and simultaneous application of same-step hits are UNSPECIFIED.
 
-Each aircraft has an irreversible `NONE -> ATTACK|BOUNDARY` death ledger. Fixed tensor slots carry `alive_masks` and `next_alive_masks`. Dead executed actions and replay actions are zero; dead entities are excluded from attention key/value sets; actor loss, critic loss, entropy, and Q metrics use masked means; next-state entropy/Q bootstrap is multiplied by `next_alive_masks`. A query with no other live entity receives zero attention context without NaN. This is an engineering assumption required because the paper does not publish dead-slot handling.
+## Formal success metric
 
-### Reward timing and aggregation
+The paper states: Red wins if it destroys all Blue UAVs; otherwise the mission fails and Blue wins. Formal evaluation therefore uses:
 
-After integration and boundary resolution, the environment freezes a pre-attack snapshot. R3/R41/R42 target selection and geometry plus all weapon proposals use that snapshot. Simultaneous deaths are then applied; R1 attack events and R2 boundary events are added. Thus a target killed this step remains the current-step reward target, and target switching occurs next step. Four local Eq.(25) rewards are summed and broadcast as the cooperative reward. The nearest target and broadcast-sum rules are unpublished assumptions.
+`red_success = (number of surviving Blue UAVs == 0)`
 
-### Network details and scheduling
+`win_rate = successful Red episodes / all episodes`
 
-- Actor activation ReLU, `log_std in [-5,2]`; critic activation LeakyReLU, two-layer embeddings, equal head dimension split, and final MLP layout are unpublished assumptions configured in `madsac.yaml`.
-- `policy_delay=2`, `learning_starts=1024`, and `updates_per_transition=1.0` are assumptions. One 24-env vector step creates 24 sampled environment transitions and therefore earns 24 gradient-update credits at ratio 1.0; changing `num_envs` does not change the update/data ratio.
-- `sampled_env_steps` counts individual environment transitions. `vector_steps` counts synchronous batches, so under uninterrupted 24-env training `sampled_env_steps=24*vector_steps`.
-- Training seeds follow `base_seed + env_id + episode_index*seed_stride`. Twenty fixed evaluation seeds are disjoint and evaluation does not touch training RNG, environments, or replay.
-- Independent runs use separate `run_id/seed` directories and initialization/training seeds; the evaluation seed set remains fixed for fair comparison.
-- Full resume checkpoints persist networks, optimizers, replay, counters, evaluation history, configuration signature, and NumPy/Torch CPU/CUDA RNG. Physical vector environments are deterministically reset on resume rather than bitwise-restored; this is an explicit engineering assumption.
+Timeout with any surviving Blue is failure. `termination_reason` is diagnostic only. For same-step mutual elimination, the literal all-Blue-destroyed condition is applied, so it is Red success; this rare edge case is UNSPECIFIED because the paper does not state it explicitly.
+
+## Algorithm 1 scheduler
+
+Each synchronous vector step samples M transitions and performs `T += M`. When `T >= steps_per_update` and replay has a minibatch:
+
+1. run `update_steps_n` critic updates;
+2. if global vector step `t mod policy_delay_d == 0`, run `update_steps_n` actor updates;
+3. soft-update actor and both critic targets once;
+4. set `T=0`.
+
+Current UNSPECIFIED values are `steps_per_update=24`, `update_steps_n=1`, and `policy_delay_d=2`. Treating global vector steps as Algorithm 1's `t` is also UNSPECIFIED.
+
+## Current high-impact UNSPECIFIED values
+
+- Horizon: 2000 steps.
+- Formation: center distance 4000 m from origin, 150 m same-team spacing, altitude 3000 m, speed 225 m/s.
+- Sensor: `c1=10`, `c2=0.01`, `c3=1`, `b1=b2=b3=3`; shared epsilon is used exactly as printed.
+- Weapon: `D_firemin=0`, `D_hit=2000`, `c4=c5=0.05`. These can make near, well-aligned shots nearly deterministic and require sensitivity analysis before claims about Figure 8/9.
+- Controller: `nx[-3,3]`, `nz[-6,6]`, yaw rate 1 rad/s, pitch rate 0.7 rad/s, acceleration 50 m/s², proportional gains all 1.
+- Observation: own absolute NED position; body-horizontal relative teammate positions; global teammate yaw/pitch; enemy distance and signed AA/ATA/HA; position divided by 5000 and speed by 300; fixed ID slots; dead slots zeroed. The sentence about body coordinates does not uniquely specify all scalar transformations.
+- Actor uses Eq.(24) observation only. Figure 6(a) depicts a previous action input while Algorithm 1 and policy equations write policy as a function of observation; the paper does not resolve this inconsistency.
+- Actor ReLU, critic LeakyReLU, actor log-std clamp `[-5,2]`, exact embeddings/head split/final MLP.
+- Reward target/aggregation and same-step timing described above.
+- Training cycle mapping: one configured cycle is 50,000 sampled transitions, so evaluation every two cycles is every 100,000 samples. The paper does not define this mapping.
+- Five-run CI uses a two-sided Student-t interval with 4 degrees of freedom.
+- Checkpoint every 500,000 sampled steps. Replay is not saved; resumed training does not preserve replay continuity.
+- Seed rule: training seed is `base_seed + episode_index*M + env_id`; evaluation uses `10,000,000..10,000,019`, with assertions against overlap/reuse.

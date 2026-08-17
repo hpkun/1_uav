@@ -1,4 +1,4 @@
-"""Chunked fixed-slot CTDE replay with masks, batch push, and persistence."""
+"""Chunked fixed-slot CTDE replay buffer."""
 from __future__ import annotations
 import numpy as np
 import torch
@@ -52,15 +52,3 @@ class ReplayBuffer:
         if batch_size<=0 or self.size<batch_size: raise ValueError("not enough transitions")
         indices=(rng or np.random.default_rng()).choice(self.size,size=batch_size,replace=False)
         return {key:torch.as_tensor(value,device=device) for key,value in self._rows(indices).items()}
-
-    def state_dict(self)->dict:
-        data=self._rows(np.arange(self.size)) if self.size else {key:np.empty((0,),np.float32) for key in self.KEYS}
-        return {"capacity":self.capacity,"num_agents":self.num_agents,"observation_dim":self.observation_dim,"action_dim":self.action_dim,"chunk_size":self.chunk_size,"position":self.position,"size":self.size,"data":data}
-
-    def load_state_dict(self,state:dict)->None:
-        for key in ("capacity","num_agents","observation_dim","action_dim"):
-            if int(state[key])!=int(getattr(self,key)): raise ValueError(f"replay {key} mismatch")
-        self._chunks={}; self.position=self.size=0; data=state["data"]
-        if state["size"]:
-            self.push_batch(data["observations"],data["actions"],data["rewards"],data["next_observations"],data["dones"],data["alive_masks"],data["next_alive_masks"])
-            self.position=int(state["position"]); self.size=int(state["size"])

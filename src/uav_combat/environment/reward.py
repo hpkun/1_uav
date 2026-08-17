@@ -17,14 +17,19 @@ def _tier(ata: float, ha: float, rewards: tuple[float, float, float]) -> float:
 
 
 def equation25_geometric_reward(red_geometry: PaperAirCombatGeometry | None, blue_geometry: PaperAirCombatGeometry | None) -> float:
-    """Compute R3+R4 from the immutable pre-attack snapshot."""
+    """Compute R3+R4 from Equation (25).
+
+    R4 is one piecewise term.  The printed R41 case is checked first and R42
+    is used only otherwise.  This formula-order precedence is the minimal
+    deterministic handling of the paper's unspecified overlap edge case.
+    """
     reward = 0.0
     if red_geometry is not None:
         if abs(red_geometry.ata) <= DEG30 and abs(red_geometry.ha) <= DEG30 and red_geometry.distance >= DISTANCE_THRESHOLD:
             reward += 0.001
-        if abs(red_geometry.aa) <= DEG30 and red_geometry.distance <= DISTANCE_THRESHOLD:
-            reward += _tier(red_geometry.ata, red_geometry.ha, (0.01, 0.02, 0.10))
-    if blue_geometry is not None and abs(blue_geometry.aa) <= DEG30 and blue_geometry.distance <= DISTANCE_THRESHOLD:
+    if red_geometry is not None and abs(red_geometry.aa) <= DEG30 and red_geometry.distance <= DISTANCE_THRESHOLD:
+        reward += _tier(red_geometry.ata, red_geometry.ha, (0.01, 0.02, 0.10))
+    elif blue_geometry is not None and abs(blue_geometry.aa) <= DEG30 and blue_geometry.distance <= DISTANCE_THRESHOLD:
         reward += _tier(blue_geometry.ata, blue_geometry.ha, (-0.015, -0.025, -0.150))
     return float(reward)
 

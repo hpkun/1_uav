@@ -61,12 +61,3 @@ class ControlCommand:
     nx: float
     nz: float
     phi: float
-
-
-@dataclass
-class Aircraft:
-    """A homogeneous flight entity used by the paper environment."""
-    aircraft_id: str
-    team: str
-    spec: AircraftSpec
-    state: AircraftState

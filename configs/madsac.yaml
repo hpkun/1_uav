@@ -15,24 +15,22 @@ training:
   gamma: 0.99
   alpha: 0.1
   num_train_envs: 24
-  total_env_steps: 8000001
+  total_sampled_steps: 8000001
   evaluation_episodes: 20
   independent_training_runs: 5
   confidence_interval: 0.95
   device: cpu
   seed: 0
   output_dir: outputs/madsac
-  evaluation_interval_env_steps: 100000
+  evaluation_every_training_cycles: 2
 reproduction_assumptions:
   actor_activation: relu
   log_std_min: -5.0
   log_std_max: 2.0
   critic_activation: leaky_relu
-  critic_embedding_layers: 2
-  critic_head_dimension_split: equal
-  policy_delay: 2
-  learning_starts: 1024
-  updates_per_transition: 1.0
-  seed_stride: 100000
+  steps_per_update: 24
+  update_steps_n: 1
+  policy_delay_d: 2
+  sampled_steps_per_training_cycle: 50000
   evaluation_seed_base: 10000000
-  resume_vector_env_behavior: reset_all_envs_deterministically
+  checkpoint_interval_sampled_steps: 500000
