@@ -1,4 +1,4 @@
-"""Low-level controller from normalized actions to point-mass controls."""
+"""Equation (23) action mapping and an explicitly assumed low-level controller."""
 from __future__ import annotations
 
 import numpy as np
@@ -8,7 +8,7 @@ from .models import AircraftSpec, AircraftState, ControlCommand, TargetCommand
 
 
 class TargetStateController:
-    """Project controller, not a strict reproduction of a paper controller."""
+    """Map paper actions to targets, then use assumed inverse-dynamics feedback."""
 
     def __init__(
         self,
@@ -16,20 +16,12 @@ class TargetStateController:
         delta_pitch_max: float = np.pi / 3,
         delta_speed_max: float = 50.0,
         gravity: float = 9.81,
-        yaw_endpoint_epsilon: float = 1e-6,
-        mapping_mode: str = "legacy_delta",
         epsilon: float = 1e-8,
     ) -> None:
-        if not 0.0 < yaw_endpoint_epsilon < np.pi:
-            raise ValueError("yaw_endpoint_epsilon must be in (0, pi)")
-        if mapping_mode not in ("legacy_delta", "rate_aligned_v1"):
-            raise ValueError(f"unknown action mapping_mode: {mapping_mode}")
         self.delta_yaw_max = delta_yaw_max
         self.delta_pitch_max = delta_pitch_max
         self.delta_speed_max = delta_speed_max
         self.gravity = gravity
-        self.yaw_endpoint_epsilon = yaw_endpoint_epsilon
-        self.mapping_mode = mapping_mode
         self.epsilon = epsilon
 
     def _mapped_deltas(self, action: np.ndarray, spec: AircraftSpec) -> tuple[np.ndarray, tuple[float, float, float]]:
@@ -37,19 +29,11 @@ class TargetStateController:
         if action.shape != (3,) or not np.all(np.isfinite(action)):
             raise ValueError("action must be a finite array with shape (3,)")
         clipped = np.clip(action, -1.0, 1.0)
-        if self.mapping_mode == "legacy_delta":
-            yaw_scale = min(abs(self.delta_yaw_max), np.pi - self.yaw_endpoint_epsilon)
-            deltas = (
-                clipped[0] * yaw_scale,
-                clipped[1] * self.delta_pitch_max,
-                clipped[2] * self.delta_speed_max,
-            )
-        else:
-            deltas = (
-                clipped[0] * spec.yaw_rate_max / max(abs(spec.k_yaw), self.epsilon),
-                clipped[1] * spec.pitch_rate_max / max(abs(spec.k_pitch), self.epsilon),
-                clipped[2] * spec.acceleration_max / max(abs(spec.k_speed), self.epsilon),
-            )
+        deltas = (
+            clipped[0] * self.delta_yaw_max,
+            clipped[1] * self.delta_pitch_max,
+            clipped[2] * self.delta_speed_max,
+        )
         return clipped, tuple(float(v) for v in deltas)
 
     def action_to_target(self, state: AircraftState, action: np.ndarray, spec: AircraftSpec) -> TargetCommand:
@@ -111,7 +95,7 @@ class TargetStateController:
             effective_yaw_delta, effective_pitch_delta, effective_speed_delta = deltas
         tolerance = 1e-8
         return {
-            "action_mapping_mode": self.mapping_mode,
+            "action_mapping_mode": "paper_eq23",
             "normalized_action_yaw": float(clipped_action[0]),
             "normalized_action_pitch": float(clipped_action[1]),
             "normalized_action_speed": float(clipped_action[2]),

@@ -1,4 +1,4 @@
-"""环境使用的基础数据模型。"""
+"""Paper-reproduction data models (NED coordinates)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,7 +37,7 @@ class AircraftState:
 
 @dataclass(frozen=True)
 class AircraftSpec:
-    """可配置的飞机性能和控制参数。"""
+    """Homogeneous UAV limits plus unpublished controller assumptions."""
     v_min: float; v_max: float
     theta_min: float; theta_max: float
     nx_min: float; nx_max: float
@@ -65,15 +65,8 @@ class ControlCommand:
 
 @dataclass
 class Aircraft:
-    """具有标识、阵营、统一规格和状态的飞行实体。"""
+    """A homogeneous flight entity used by the paper environment."""
     aircraft_id: str
     team: str
     spec: AircraftSpec
     state: AircraftState
-    role: str = "combat"
-    sensor_range: float = float("inf")
-    can_attack: bool = True
-
-    def __post_init__(self) -> None:
-        if self.role not in ("support", "combat"):
-            raise ValueError(f"unknown aircraft role: {self.role!r}")

@@ -1,15 +1,8 @@
-"""MADSAC baseline for homogeneous 3v3 fixed-blue experiments."""
+"""Multi-Agent Double-Soft Actor-Critic paper reproduction."""
 
-from .networks import AttentionCritic, SharedSquashedGaussianActor, TwinAttentionCritic
-from .metrics import MADSACMetricAccumulator
-from .replay_buffer import MADSACReplayBuffer
-from .trainer_3v3 import MADSAC3v3Trainer
+from .actor import SharedSquashedGaussianActor
+from .attention_critic import AttentionCritic
+from .replay_buffer import ReplayBuffer
+from .trainer import MADSACTrainer
 
-__all__ = [
-    "SharedSquashedGaussianActor",
-    "AttentionCritic",
-    "TwinAttentionCritic",
-    "MADSACMetricAccumulator",
-    "MADSACReplayBuffer",
-    "MADSAC3v3Trainer",
-]
+__all__ = ["SharedSquashedGaussianActor", "AttentionCritic", "ReplayBuffer", "MADSACTrainer"]
