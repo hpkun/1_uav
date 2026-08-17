@@ -226,7 +226,10 @@ class PaperUAVCombatEnv:
                 red_attack_death=any(target == i for _, target in blue_hits),
                 red_boundary_death=i in red_boundary,
             )
-        rewards = np.full(4, float(local_rewards.sum()), dtype=np.float32)
+        # Eq. (18) bootstraps each Q_i from its own Eq. (25) reward r_i.
+        # Fully cooperative means a shared reward function, not a broadcast of
+        # the realized sum of four different agent-local events/geometries.
+        rewards = local_rewards.copy()
         self.steps += 1
         terminated = not any(s.alive for s in self.red) or not any(s.alive for s in self.blue)
         truncated = self.steps >= self.max_steps and not terminated

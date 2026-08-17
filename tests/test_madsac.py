@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from uav_combat.madsac import AttentionCritic, MADSACTrainer, ReplayBuffer, SharedSquashedGaussianActor
+from uav_combat.madsac.trainer import joint_actions_with_own_gradient
 
 
 def transition(value=0.0, done=False):
@@ -81,6 +82,45 @@ def test_equations19_to21_critic_and_actor_updates_are_finite_and_separate():
     assert all(np.isfinite(value) for value in actor_metrics.values())
 
 
+def test_equation21_agent_term_detaches_every_other_action_path():
+    actions = torch.randn(2, 4, 3, requires_grad=True)
+    agent_index, other_index = 1, 3
+    joint = joint_actions_with_own_gradient(actions, agent_index)
+    controlled_q_i = joint[:, agent_index].sum() + 17.0 * joint[:, other_index].sum()
+    gradient = torch.autograd.grad(controlled_q_i, actions)[0]
+    assert torch.count_nonzero(gradient[:, agent_index]) > 0
+    assert torch.count_nonzero(gradient[:, other_index]) == 0
+    assert torch.count_nonzero(gradient[:, 0]) == 0
+    assert torch.count_nonzero(gradient[:, 2]) == 0
+
+
+def test_shared_actor_gradient_sums_all_and_only_alive_own_action_terms():
+    actions = torch.randn(1, 4, 3, requires_grad=True)
+    alive = torch.tensor([1.0, 0.0, 1.0, 1.0])
+    terms = []
+    for agent_index in range(4):
+        joint = joint_actions_with_own_gradient(actions, agent_index)
+        terms.append(alive[agent_index] * joint[:, agent_index].sum())
+    gradient = torch.autograd.grad(torch.stack(terms).sum(), actions)[0]
+    assert torch.count_nonzero(gradient[:, 0]) == 3
+    assert torch.count_nonzero(gradient[:, 1]) == 0
+    assert torch.count_nonzero(gradient[:, 2]) == 3
+    assert torch.count_nonzero(gradient[:, 3]) == 3
+
+
+def test_actor_update_with_one_live_agent_is_finite():
+    trainer = MADSACTrainer(hidden_dim=32, attention_heads=2, batch_size=2, replay_capacity=8)
+    one_alive = np.array([1, 0, 0, 0], dtype=np.float32)
+    for value in (0.0, 0.1):
+        observation, action, reward, next_observation, done, _, _ = transition(value)
+        trainer.replay.push(
+            observation, action, reward, next_observation, done,
+            alive_masks=one_alive, next_alive_masks=one_alive,
+        )
+    metrics = trainer.update_actor()
+    assert all(np.isfinite(value) for value in metrics.values())
+
+
 def test_replay_stores_done_and_dead_masks_for_equation18():
     replay = ReplayBuffer(capacity=4, chunk_size=2)
     data = transition(done=True)
@@ -88,6 +128,17 @@ def test_replay_stores_done_and_dead_masks_for_equation18():
     batch = replay.sample(1, np.random.default_rng(1))
     assert batch["dones"].item() == 1
     assert batch["next_alive_masks"].sum().item() == 0
+
+
+def test_replay_and_equation18_preserve_distinct_local_rewards():
+    trainer = MADSACTrainer(hidden_dim=32, attention_heads=2, batch_size=1, replay_capacity=4)
+    observation, action, _, next_observation, done, mask, _ = transition()
+    local_rewards = np.array([10.0, 0.5, -10.0, -0.25], dtype=np.float32)
+    trainer.replay.push(observation, action, local_rewards, next_observation, done, mask, np.zeros(4, dtype=np.float32))
+    batch = trainer.replay.sample(1, np.random.default_rng(0))
+    assert torch.allclose(batch["rewards"][0], torch.tensor(local_rewards))
+    # No surviving next agent means Eq. (18) is exactly the per-agent r_i vector.
+    assert torch.allclose(trainer.compute_target(batch)[0], torch.tensor(local_rewards))
 
 
 def test_checkpoint_is_small_and_does_not_copy_replay(tmp_path):

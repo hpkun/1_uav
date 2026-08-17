@@ -31,6 +31,7 @@ reproduction_assumptions:
   steps_per_update: 24          # STILL-UNSPECIFIED / HIGH IMPACT
   update_steps_n: 1             # STILL-UNSPECIFIED / HIGH IMPACT
   policy_delay_d: 2             # STILL-UNSPECIFIED / HIGH IMPACT
+  algorithm1_t_counter: global_vector_step  # STILL-UNSPECIFIED implementation assumption
   sampled_steps_per_training_cycle: 50000
   evaluation_seed_base: 10000000
   checkpoint_interval_sampled_steps: 500000

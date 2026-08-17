@@ -23,6 +23,16 @@ def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (values * mask).sum() / mask.sum().clamp_min(1.0)
 
 
+def joint_actions_with_own_gradient(actions: torch.Tensor, agent_index: int) -> torch.Tensor:
+    """Keep only agent ``i``'s action path differentiable for Eq. (21)."""
+    if actions.ndim != 3 or not 0 <= agent_index < actions.shape[1]:
+        raise ValueError("actions must be [batch, agents, action_dim] with a valid agent index")
+    detached = actions.detach()
+    own_mask = torch.zeros_like(actions)
+    own_mask[:, agent_index, :] = 1.0
+    return detached + own_mask * (actions - detached)
+
+
 class MADSACTrainer:
     """Shared actor, double centralized attention critics, and target networks."""
 
@@ -124,23 +134,28 @@ class MADSACTrainer:
         return metrics
 
     def update_actor(self, batch_size: int | None = None) -> dict[str, float]:
-        """Equations (20)-(21): shared actor update using the minimum double-Q."""
+        """Eq. (20)-(21): sum shared-policy gradients through each own action."""
         batch = self.replay.sample(batch_size or self.batch_size, self.rng, self.device)
         alive = batch["alive_masks"]
         for critic in (self.critic1, self.critic2):
             critic.requires_grad_(False)
-        actions, log_prob = self.actor.sample(batch["observations"])
-        actions = actions * alive.unsqueeze(-1)
-        min_q = torch.minimum(
-            self.critic1(batch["observations"], actions, alive),
-            self.critic2(batch["observations"], actions, alive),
-        )
-        actor_loss = masked_mean(self.alpha * log_prob - min_q, alive)
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        self.actor_optimizer.step()
-        for critic in (self.critic1, self.critic2):
-            critic.requires_grad_(True)
+        try:
+            actions, log_prob = self.actor.sample(batch["observations"])
+            actions = actions * alive.unsqueeze(-1)
+            q_by_agent = []
+            for agent_index in range(actions.shape[1]):
+                joint_actions = joint_actions_with_own_gradient(actions, agent_index)
+                q1_i = self.critic1(batch["observations"], joint_actions, alive)[:, agent_index]
+                q2_i = self.critic2(batch["observations"], joint_actions, alive)[:, agent_index]
+                q_by_agent.append(torch.minimum(q1_i, q2_i))
+            min_q = torch.stack(q_by_agent, dim=1)
+            actor_loss = masked_mean(self.alpha * log_prob - min_q, alive)
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor_optimizer.step()
+        finally:
+            for critic in (self.critic1, self.critic2):
+                critic.requires_grad_(True)
         self.actor_update_count += 1
         metrics = {
             "actor_loss": float(actor_loss.detach()),
@@ -150,7 +165,7 @@ class MADSACTrainer:
         return metrics
 
     def update_targets(self) -> None:
-        """Algorithm 1 target update, called once per scheduler trigger."""
+        """Algorithm 1 target update, called only in the delayed actor branch."""
         soft_update(self.target_actor, self.actor, self.tau)
         soft_update(self.target_critic1, self.critic1, self.tau)
         soft_update(self.target_critic2, self.critic2, self.tau)
@@ -207,4 +222,4 @@ class MADSACTrainer:
         return dict(state.get("extra", {}))
 
 
-__all__ = ["MADSACTrainer", "masked_mean", "soft_update"]
+__all__ = ["MADSACTrainer", "joint_actions_with_own_gradient", "masked_mean", "soft_update"]

@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from ..madsac.trainer import MADSACTrainer
-from .evaluator import evaluate
+from .evaluator import episode_return_metrics, evaluate
 from .vector_env import SyncVectorEnv
 
 
@@ -34,6 +34,9 @@ class PaperTrainingRunner:
         self.steps_per_update = int(assumptions["steps_per_update"])
         self.update_steps_n = int(assumptions["update_steps_n"])
         self.policy_delay_d = int(assumptions["policy_delay_d"])
+        self.algorithm1_t_counter = str(assumptions["algorithm1_t_counter"])
+        if self.algorithm1_t_counter != "global_vector_step":
+            raise ValueError("only the documented global_vector_step assumption is implemented")
         if min(self.steps_per_update, self.update_steps_n, self.policy_delay_d) <= 0:
             raise ValueError("Algorithm 1 scheduler values must be positive")
 
@@ -69,7 +72,7 @@ class PaperTrainingRunner:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.scheduler_T = 0
         self.training_cycles = 0
-        self.episode_returns = np.zeros(self.num_envs, dtype=float)
+        self.agent_episode_returns = np.zeros((self.num_envs, 4), dtype=float)
         self.completed_records: list[dict[str, Any]] = []
         self.last_metrics: dict[str, float] = {}
         self.evaluation_history: list[dict[str, float]] = []
@@ -90,6 +93,7 @@ class PaperTrainingRunner:
             "steps_per_update": self.steps_per_update,
             "update_steps_n": self.update_steps_n,
             "policy_delay_d": self.policy_delay_d,
+            "algorithm1_t_counter": self.algorithm1_t_counter,
         }
 
     def _algorithm1_updates(self) -> tuple[int, int]:
@@ -100,10 +104,11 @@ class PaperTrainingRunner:
         actor_metrics: list[dict[str, float]] = []
         for _ in range(self.update_steps_n):
             critic_metrics.append(self.trainer.update_critics())
-        if self.trainer.vector_steps % self.policy_delay_d == 0:
+        actor_branch = self.trainer.vector_steps % self.policy_delay_d == 0
+        if actor_branch:
             for _ in range(self.update_steps_n):
                 actor_metrics.append(self.trainer.update_actor())
-        self.trainer.update_targets()
+            self.trainer.update_targets()
         self.scheduler_T = 0
         self.training_cycles += 1
         keys = set().union(*(row.keys() for row in critic_metrics + actor_metrics))
@@ -122,14 +127,22 @@ class PaperTrainingRunner:
             self.observations, executed, result.rewards, result.transition_next_observations,
             dones, result.alive_masks, result.next_alive_masks,
         )
-        self.episode_returns += result.rewards[:, 0]
+        self.agent_episode_returns += result.rewards
         completed_now = []
         for i, done in enumerate(dones):
             if done:
-                record = {"episode_return": float(self.episode_returns[i]), **result.infos[i]}
+                per_agent = self.agent_episode_returns[i].copy()
+                team_return, mean_agent_return = episode_return_metrics(per_agent)
+                record = {
+                    "episode_return": team_return,
+                    "team_episode_return": team_return,
+                    "mean_agent_episode_return": mean_agent_return,
+                    "per_agent_episode_returns": per_agent,
+                    **result.infos[i],
+                }
                 self.completed_records.append(record)
                 completed_now.append(record)
-                self.episode_returns[i] = 0.0
+                self.agent_episode_returns[i].fill(0.0)
         self.observations = result.observations
         self.alive_masks = self.vector.current_alive_masks.copy()
         self.trainer.sampled_steps += self.num_envs
@@ -142,7 +155,8 @@ class PaperTrainingRunner:
         )
         metric_record = {
             "sampled_steps": self.trainer.sampled_steps,
-            "episode_return": completed_mean("episode_return"),
+            "team_episode_return": completed_mean("team_episode_return"),
+            "mean_agent_episode_return": completed_mean("mean_agent_episode_return"),
             "win_rate": completed_mean("red_success"),
             "red_uav_losses": completed_mean("red_losses"),
             "critic_loss": (
@@ -224,6 +238,7 @@ class PaperTrainingRunner:
             "replay_size": self.trainer.replay.size,
             "completed_episodes": len(self.completed_records),
             "average_return": mean("episode_return"),
+            "average_agent_return": mean("mean_agent_episode_return"),
             "win_rate": mean("red_success"),
             "average_red_loss": mean("red_losses"),
             "last_update_metrics": self.last_metrics,

@@ -202,3 +202,29 @@ def test_environment_step_contract():
     assert observation.shape == next_observation.shape == (4, 45)
     assert reward.shape == (4,) and np.isfinite(reward).all()
     assert not (terminated and truncated) and "red_success" in info
+
+
+def test_environment_returns_agent_local_kill_and_death_rewards(monkeypatch):
+    env = PaperUAVCombatEnv(sensor_noise=False)
+    env.reset(4)
+    monkeypatch.setattr(env, "_advance", lambda *args: None)
+    monkeypatch.setattr(env, "_resolve_boundaries", lambda: ([], []))
+    monkeypatch.setattr(env, "_geometric_rewards", lambda red, blue: (np.zeros(4, dtype=np.float32), [0] * 4))
+    monkeypatch.setattr(env, "_hit_proposals", lambda red, blue: ([], []))
+    monkeypatch.setattr(env, "_apply_simultaneous_hits", lambda red, blue: ([(0, 0)], [(1, 2)]))
+    _, rewards, _, _, info = env.step(np.zeros((4, 3), dtype=np.float32))
+    assert rewards.shape == (4,)
+    assert np.array_equal(rewards, np.array([10.0, 0.0, -10.0, 0.0], dtype=np.float32))
+    assert np.array_equal(rewards, info["local_rewards"])
+
+
+def test_boundary_penalty_is_not_broadcast(monkeypatch):
+    env = PaperUAVCombatEnv(sensor_noise=False)
+    env.reset(5)
+    monkeypatch.setattr(env, "_advance", lambda *args: None)
+    monkeypatch.setattr(env, "_resolve_boundaries", lambda: ([1], []))
+    monkeypatch.setattr(env, "_geometric_rewards", lambda red, blue: (np.zeros(4, dtype=np.float32), [0] * 4))
+    monkeypatch.setattr(env, "_hit_proposals", lambda red, blue: ([], []))
+    monkeypatch.setattr(env, "_apply_simultaneous_hits", lambda red, blue: ([], []))
+    _, rewards, _, _, _ = env.step(np.zeros((4, 3), dtype=np.float32))
+    assert np.array_equal(rewards, np.array([0.0, -10.0, 0.0, 0.0], dtype=np.float32))

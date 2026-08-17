@@ -80,7 +80,11 @@ silently treating OCR guesses as author values.
 | Episode horizon | Not published | Not published | No source found | STILL-UNSPECIFIED | High impact / low |
 | Reward formula | Eq. (25) | Different reward, explicitly superseded | None | 2023-PAPER | High |
 | Reward target selection | Not stated for multiple enemies | Different reward does not resolve it | No source found | STILL-UNSPECIFIED | High impact / low |
-| Reward team aggregation | Fully cooperative/shared objective, but local-to-team implementation not stated | Different reward does not resolve it | No source found | STILL-UNSPECIFIED | High impact / low |
+| Critic reward semantics | Eq. (18) targets `Q_i` with `r_i`; Eq. (25) is evaluated for a specific Red UAV | Different reward does not resolve it | Markov-game vector-return definition | 2023-DERIVED | Medium-high |
+| Figure-8 team return | Paper plots one return curve but does not state the multi-agent reduction | Different experiment | Current value is sum of four per-agent episode returns; mean is logged separately | 2023-DERIVED | Medium |
+| Eq. (21) action gradient | Printed gradient is `nabla_{a_i} Q_i` times the agent-i policy derivative | Different discrete policy | Other joint actions are constants in each agent-i loss term | 2023-PAPER | High |
+| Shared-actor gradient aggregation | Parameter sharing is explicit; exact implementation is not | Shared actor also used | Sum/masked mean of four own-action terms into one parameter set | 2023-DERIVED | High |
+| Target update timing | Algorithm 1 places target actor/critic updates inside the delayed actor branch | Different MATAC schedule | Critic-only trigger no longer updates targets | 2023-PAPER | High |
 | Actor hidden layers | Two 256-unit layers, Section 4.1 | Actor hidden size 256 in predecessor | None | 2023-PAPER | High |
 | Critic hidden layers | Two 256-unit layers, Section 4.1 | Different Transformer critic | None | 2023-PAPER | High |
 | Attention heads | Two, Section 4.1 | Two-head Transformer encoder | None | 2023-PAPER | High |
@@ -91,11 +95,15 @@ silently treating OCR guesses as author values.
 | `steps_per_update` | Algorithm 1 names threshold `T`, no value | Different MATAC schedule | No source/code found | STILL-UNSPECIFIED | High impact / low |
 | `update_steps_n` | Algorithm 1 names `n`, no value | Different MATAC schedule | No source/code found | STILL-UNSPECIFIED | High impact / low |
 | `policy_delay_d` | Algorithm 1 names `d`, no value | Different MATAC schedule | No source/code found | STILL-UNSPECIFIED | High impact / low |
+| Algorithm-1 variable `t` mapping | Pseudocode places `t` inside episode; parallel early-terminal behavior is absent | Does not resolve 24-env behavior | Current implementation uses global synchronous vector-step counter | STILL-UNSPECIFIED | High impact / low |
 | Parallel environments | 24, Section 4.1 | Not a substitute for scheduler values | None | 2023-PAPER | High |
+| Evaluation action mode | Deterministic versus sampled policy is not stated | Different discrete evaluation | Current evaluator uses deterministic mean/tanh action | STILL-UNSPECIFIED | Medium / low |
 
 The current numeric values for every `STILL-UNSPECIFIED` row remain executable
 placeholders, not recovered paper parameters. Candidate-only alternatives are
-in `configs/sensitivity_candidates.yaml`.
+in `configs/sensitivity_candidates.yaml`. They are one-factor profiles, are
+never combined automatically, and are explicitly labelled `CANDIDATE ONLY -
+NOT PAPER VALUE`.
 
 ## 2022 versus 2023 model evolution
 
@@ -167,7 +175,8 @@ and `speed_scale` are still-unpublished normalization assumptions.
 
 The environment should not be frozen for a 0.5M pilot until at least bounded
 sensitivity checks have been run for: weapon hit scale/noise, sensor scale,
-controller response, scheduler frequency, episode horizon, initialization,
-observation normalization, and reward target/team aggregation. The candidate
+controller response, scheduler frequency and `t` mapping, episode horizon,
+initialization, observation normalization, reward target selection, and
+evaluation action mode. The candidate
 file intentionally contains only three settings per requested subsystem and is
 not a claim about ground truth.

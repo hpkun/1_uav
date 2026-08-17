@@ -1,8 +1,12 @@
 from pathlib import Path
+import copy
 import numpy as np
+import pytest
 import yaml
 
 from scripts.aggregate_training_runs import mean_ci, read_history, write_rows
+from scripts.run_reconstruction_sensitivity import apply_profile, validate_sampled_steps
+from uav_combat.training.evaluator import episode_return_metrics, evaluate
 from uav_combat.training.runner import PaperTrainingRunner
 from uav_combat.training.vector_env import SyncVectorEnv
 
@@ -53,6 +57,7 @@ def test_algorithm1_T_n_d_and_target_schedule(tmp_path):
     environment, algorithm = configs()
     runner = PaperTrainingRunner(environment, algorithm, num_envs=24, total_sampled_steps=96, output_dir=tmp_path, smoke=True)
     runner.trainer.act = lambda observations, masks: np.zeros((24, 4, 3), dtype=np.float32)
+    runner.trainer.batch_size = 1  # remove replay warmup from scheduler semantics
     calls = {"critic": 0, "actor": 0, "target": 0}
 
     def critic():
@@ -67,15 +72,32 @@ def test_algorithm1_T_n_d_and_target_schedule(tmp_path):
     runner.trainer.update_critics = critic
     runner.trainer.update_actor = actor
     runner.trainer.update_targets = targets
+    expected = [
+        {"critic": 1, "actor": 0, "target": 0},
+        {"critic": 2, "actor": 1, "target": 1},
+        {"critic": 3, "actor": 1, "target": 1},
+        {"critic": 4, "actor": 2, "target": 2},
+    ]
+    for counts in expected:
+        result = runner.vector_step()
+        assert calls == counts
+        assert result["scheduler_T"] == 0
+    assert calls["target"] == calls["actor"]
+
+
+def test_algorithm1_runs_n_updates_but_one_target_update_per_actor_branch(tmp_path):
+    environment, algorithm = configs()
+    algorithm["reproduction_assumptions"]["update_steps_n"] = 3
+    algorithm["reproduction_assumptions"]["policy_delay_d"] = 1
+    runner = PaperTrainingRunner(environment, algorithm, num_envs=24, total_sampled_steps=24, output_dir=tmp_path, smoke=True)
+    runner.trainer.batch_size = 1
+    runner.trainer.act = lambda observations, masks: np.zeros((24, 4, 3), dtype=np.float32)
+    calls = {"critic": 0, "actor": 0, "target": 0}
+    runner.trainer.update_critics = lambda: calls.__setitem__("critic", calls["critic"] + 1) or {"critic1_loss": 1.0}
+    runner.trainer.update_actor = lambda: calls.__setitem__("actor", calls["actor"] + 1) or {"actor_loss": 1.0}
+    runner.trainer.update_targets = lambda: calls.__setitem__("target", calls["target"] + 1)
     runner.vector_step()
-    runner.vector_step()
-    assert calls == {"critic": 0, "actor": 0, "target": 0}  # replay < smoke batch 64
-    assert runner.scheduler_T == 48
-    runner.vector_step()
-    assert calls == {"critic": 1, "actor": 0, "target": 1}
-    assert runner.scheduler_T == 0
-    runner.vector_step()
-    assert calls == {"critic": 2, "actor": 1, "target": 2}  # vector t=4 satisfies t mod d
+    assert calls == {"critic": 3, "actor": 3, "target": 1}
 
 
 def test_evaluation_seed_set_is_twenty_and_disjoint(tmp_path):
@@ -99,9 +121,61 @@ def test_figure8_9_aggregation_io_for_five_runs(tmp_path):
         write_rows(run_dir / "evaluation_history.csv", [{
             "sampled_steps": 100000,
             "average_return": float(run),
+            "average_agent_return": float(run) / 4,
             "win_rate": run / 10,
             "average_red_loss": 4 - run / 2,
         }])
         histories.append(read_history(run_dir))
     assert set.intersection(*(set(history) for history in histories)) == {100000}
     assert mean_ci([history[100000]["average_return"] for history in histories])[0] == 2
+    assert histories[4][100000]["average_agent_return"] == 1
+
+
+def test_team_and_agent_episode_return_are_not_reward_slot_zero():
+    team_return, average_agent_return = episode_return_metrics(np.array([1.0, 2.0, 3.0, 4.0]))
+    assert team_return == 10.0
+    assert average_agent_return == 2.5
+
+
+def test_evaluator_sums_local_agent_rewards(monkeypatch):
+    import uav_combat.training.evaluator as evaluator_module
+
+    class OneStepEnvironment:
+        red_alive_mask = np.ones(4, dtype=np.float32)
+        def __init__(self, config): pass
+        def reset(self, seed): return np.zeros((4, 45), dtype=np.float32), {}
+        def step(self, actions):
+            return np.zeros((4, 45), dtype=np.float32), np.array([1, 2, 3, 4], dtype=np.float32), True, False, {
+                "red_success": True, "red_losses": 1, "episode_length": 1,
+            }
+
+    class ZeroActor:
+        def act(self, observation, alive_mask, deterministic=False):
+            assert deterministic
+            return np.zeros((4, 3), dtype=np.float32)
+
+    monkeypatch.setattr(evaluator_module, "PaperUAVCombatEnv", OneStepEnvironment)
+    result = evaluate(ZeroActor(), {}, seeds=[1, 2])
+    assert result["average_return"] == 10.0
+    assert result["average_agent_return"] == 2.5
+
+
+def test_sensitivity_overlay_is_one_group_and_canonical_is_unchanged():
+    environment, algorithm = configs()
+    original_environment, original_algorithm = copy.deepcopy(environment), copy.deepcopy(algorithm)
+    candidates = yaml.safe_load((ROOT / "configs/sensitivity_candidates.yaml").read_text(encoding="utf-8"))
+    modified_environment, modified_algorithm = apply_profile(
+        environment, algorithm, candidates, "weapon", "weapon_weak"
+    )
+    assert environment == original_environment and algorithm == original_algorithm
+    assert modified_algorithm == algorithm
+    assert modified_environment["weapon"]["distance_min"] == 1000.0
+    assert modified_environment["reproduction_assumptions"]["weapon"]["d_hit"] == 1000.0
+    assert modified_environment["reproduction_assumptions"]["sensor"] == environment["reproduction_assumptions"]["sensor"]
+    assert candidates["status"] == "CANDIDATE ONLY - NOT PAPER VALUE"
+
+
+def test_sensitivity_rejects_more_than_200k_steps():
+    assert validate_sampled_steps(200_000) == 200_000
+    with pytest.raises(ValueError, match="must be executed manually"):
+        validate_sampled_steps(200_001)

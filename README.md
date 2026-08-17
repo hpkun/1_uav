@@ -26,6 +26,18 @@ python scripts/train_madsac.py --smoke --num-envs 24 --total-sampled-steps 24000
 python scripts/evaluate_madsac.py --checkpoint outputs/madsac/run_seed_0/latest.pt
 ```
 
+Run one candidate-only sensitivity profile at a time (the helper rejects more
+than 200,000 sampled steps):
+
+```bash
+python scripts/run_reconstruction_sensitivity.py \
+  --group weapon --profile weapon_weak --sampled-steps 24000 --seed 0
+```
+
+Available groups are `weapon`, `sensor`, `controller`, and `scheduler`. Profiles
+are overlays from `configs/sensitivity_candidates.yaml`; they never modify the
+canonical YAML files and are not paper values.
+
 For five completed runs:
 
 ```bash
