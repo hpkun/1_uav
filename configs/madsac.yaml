@@ -19,8 +19,20 @@ training:
   evaluation_episodes: 20
   independent_training_runs: 5
   confidence_interval: 0.95
+  device: cpu
+  seed: 0
+  output_dir: outputs/madsac
+  evaluation_interval_env_steps: 100000
 reproduction_assumptions:
+  actor_activation: relu
+  log_std_min: -5.0
+  log_std_max: 2.0
+  critic_activation: leaky_relu
+  critic_embedding_layers: 2
+  critic_head_dimension_split: equal
   policy_delay: 2
   learning_starts: 1024
-  updates_per_environment_step: 1
-  evaluation_interval_training_cycles: 2
+  updates_per_transition: 1.0
+  seed_stride: 100000
+  evaluation_seed_base: 10000000
+  resume_vector_env_behavior: reset_all_envs_deterministically

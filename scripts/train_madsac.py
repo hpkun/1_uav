@@ -1,31 +1,19 @@
-"""Formal runner with an intentionally short smoke mode."""
+"""Configuration-driven formal and smoke MADSAC runner."""
 from __future__ import annotations
-import argparse, json
+import argparse,json
 from pathlib import Path
-import numpy as np
-import torch
 import yaml
-from uav_combat.environment import PaperUAVCombatEnv
-from uav_combat.madsac import MADSACTrainer
+from uav_combat.training.runner import PaperTrainingRunner
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(); parser.add_argument("--smoke", action="store_true"); parser.add_argument("--steps", type=int); parser.add_argument("--output", default="outputs/madsac_smoke.pt")
-    args = parser.parse_args(); root = Path(__file__).resolve().parents[1]
-    cfg = yaml.safe_load((root / "configs/madsac.yaml").read_text(encoding="utf-8")); t = cfg["training"]; assumptions = cfg["reproduction_assumptions"]
-    steps = args.steps or (2048 if args.smoke else t["total_env_steps"]); batch = 16 if args.smoke else t["batch_size"]; capacity = 4096 if args.smoke else t["replay_buffer_size"]
-    trainer = MADSACTrainer(learning_rate=t["learning_rate"], gamma=t["gamma"], tau=t["tau"], alpha=t["alpha"], policy_delay=assumptions["policy_delay"], replay_capacity=capacity, batch_size=batch)
-    initial = {"actor": next(trainer.actor.parameters()).detach().clone(), "critic1": next(trainer.critic1.parameters()).detach().clone(), "critic2": next(trainer.critic2.parameters()).detach().clone(), "target_actor": next(trainer.target_actor.parameters()).detach().clone()}
-    env = PaperUAVCombatEnv(root / "configs/paper_environment.yaml"); obs, _ = env.reset(0); metrics = {}; episode_return = 0.0; completed = []
-    for step in range(steps):
-        action = trainer.act(obs); next_obs, reward, terminated, truncated, info = env.step(action)
-        trainer.replay.push(obs, action, reward, next_obs, terminated or truncated); episode_return += float(reward[0]); obs = next_obs
-        if trainer.replay.size >= batch: metrics = trainer.update(batch)
-        if terminated or truncated:
-            completed.append({"episode_return": episode_return, **info}); obs, _ = env.reset(step + 1); episode_return = 0.0
-    trainer.save(root / args.output)
-    summary = {"sampled_steps": steps, "episodes": len(completed), "last_metrics": metrics, "critic_updates": trainer.update_count, "actor_updates": trainer.actor_update_count, "target_updates": trainer.target_update_count, "actor_param_changed": not torch.equal(initial["actor"], next(trainer.actor.parameters())), "critic1_param_changed": not torch.equal(initial["critic1"], next(trainer.critic1.parameters())), "critic2_param_changed": not torch.equal(initial["critic2"], next(trainer.critic2.parameters())), "target_param_changed": not torch.equal(initial["target_actor"], next(trainer.target_actor.parameters())), "replay_size": trainer.replay.size, "all_finite": bool(all(np.isfinite(v) for v in metrics.values() if isinstance(v, float)))}
-    (root / "outputs").mkdir(exist_ok=True); (root / "outputs/madsac_smoke_metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8"); print(json.dumps(summary, indent=2))
+def main()->None:
+    p=argparse.ArgumentParser(); p.add_argument("--device",choices=["cpu","cuda"]); p.add_argument("--seed",type=int); p.add_argument("--run-id",type=int,default=0); p.add_argument("--total-env-steps",type=int); p.add_argument("--num-envs",type=int); p.add_argument("--output-dir"); p.add_argument("--resume"); p.add_argument("--smoke",action="store_true")
+    args=p.parse_args(); root=Path(__file__).resolve().parents[1]
+    env_cfg=yaml.safe_load((root/"configs/paper_environment.yaml").read_text(encoding="utf-8")); alg_cfg=yaml.safe_load((root/"configs/madsac.yaml").read_text(encoding="utf-8"))
+    total=args.total_env_steps or (24000 if args.smoke else None); runner=PaperTrainingRunner(env_cfg,alg_cfg,args.num_envs,total,args.device,args.seed,args.run_id,args.output_dir,args.smoke)
+    print(json.dumps({"startup":runner.startup_summary(),"cuda_available":__import__("torch").cuda.is_available()},indent=2))
+    if args.resume: runner.resume(args.resume)
+    summary=runner.run(); (runner.output_dir/"run_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8"); print(json.dumps(summary,indent=2))
 
 
-if __name__ == "__main__": main()
+if __name__=="__main__": main()

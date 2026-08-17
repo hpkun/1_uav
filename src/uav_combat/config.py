@@ -17,4 +17,4 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 def aircraft_spec(config: dict[str, Any]) -> AircraftSpec:
     """从配置构造不可变飞机规格。"""
-    return AircraftSpec(**config["aircraft"])
+    return AircraftSpec(**(config["aircraft"] | config["reproduction_assumptions"]["controller"]))

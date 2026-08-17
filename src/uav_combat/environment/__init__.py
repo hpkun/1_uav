@@ -4,5 +4,6 @@ from .env import PaperUAVCombatEnv
 from .geometry import PaperAirCombatGeometry, compute_paper_geometry
 from .sensor import SensorModel
 from .weapon import WeaponModel
+from .death import DeathCause
 
-__all__ = ["PaperUAVCombatEnv", "PaperAirCombatGeometry", "SensorModel", "WeaponModel", "compute_paper_geometry"]
+__all__ = ["PaperUAVCombatEnv", "PaperAirCombatGeometry", "SensorModel", "WeaponModel", "DeathCause", "compute_paper_geometry"]

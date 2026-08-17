@@ -53,3 +53,18 @@ def build_observation(
     if result.shape != (OBSERVATION_DIM,) or not np.all(np.isfinite(result)):
         raise RuntimeError(f"invalid Equation (24) observation: {result.shape}")
     return result
+
+
+def build_team_observations(
+    own_team: list[ObservedState],
+    opponent_team: list[ObservedState],
+    own_alive: list[bool],
+    opponent_alive: list[bool],
+    position_scale: float = 5000.0,
+    speed_scale: float = 300.0,
+) -> np.ndarray:
+    """Shared mirror-safe encoder for either red or blue perspective."""
+    return np.stack([
+        build_observation(i, own_team, opponent_team, own_alive, opponent_alive, position_scale, speed_scale)
+        for i in range(4)
+    ])

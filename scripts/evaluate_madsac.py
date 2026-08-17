@@ -7,8 +7,9 @@ from uav_combat.training.evaluator import evaluate
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(); p.add_argument("--checkpoint", required=True); args = p.parse_args(); root = Path(__file__).resolve().parents[1]
-    trainer = MADSACTrainer(); trainer.load(root / args.checkpoint); print(json.dumps(evaluate(trainer, root / "configs/paper_environment.yaml"), indent=2))
+    p = argparse.ArgumentParser(); p.add_argument("--checkpoint", required=True); p.add_argument("--output",default="outputs/evaluation_smoke.json"); args = p.parse_args(); root = Path(__file__).resolve().parents[1]
+    trainer = MADSACTrainer(); trainer.load(root / args.checkpoint); result=evaluate(trainer, root / "configs/paper_environment.yaml")
+    output=root/args.output; output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(result,indent=2),encoding="utf-8"); print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__": main()

@@ -6,11 +6,13 @@ from torch.distributions import Normal
 
 
 class SharedSquashedGaussianActor(nn.Module):
-    def __init__(self, observation_dim: int = 45, action_dim: int = 3, hidden_dim: int = 256, log_std_min: float = -5.0, log_std_max: float = 2.0) -> None:
+    def __init__(self, observation_dim: int = 45, action_dim: int = 3, hidden_dim: int = 256, log_std_min: float = -5.0, log_std_max: float = 2.0, activation: str = "relu") -> None:
         super().__init__()
         self.observation_dim, self.action_dim = observation_dim, action_dim
         self.log_std_min, self.log_std_max = log_std_min, log_std_max
-        self.backbone = nn.Sequential(nn.Linear(observation_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
+        activation_cls = {"relu": nn.ReLU, "leaky_relu": nn.LeakyReLU}.get(activation)
+        if activation_cls is None: raise ValueError(f"unsupported actor activation: {activation}")
+        self.backbone = nn.Sequential(nn.Linear(observation_dim, hidden_dim), activation_cls(), nn.Linear(hidden_dim, hidden_dim), activation_cls())
         self.mean, self.log_std = nn.Linear(hidden_dim, action_dim), nn.Linear(hidden_dim, action_dim)
 
     def distribution(self, observations: torch.Tensor) -> Normal:
