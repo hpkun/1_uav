@@ -29,6 +29,108 @@ def test_paper_protocol_configures_24_train_20_test_5_runs_95ci():
     assert training["confidence_interval"] == .95
     assert "updates_per_transition" not in algorithm["reproduction_assumptions"]
     assert algorithm["reproduction_assumptions"]["assumed_sampled_steps_per_training_cycle"] == 50_000
+    assert algorithm["runtime_logging"] == {
+        "console_interval_sampled_steps": 20_000,
+        "recent_episode_window": 100,
+    }
+
+
+def test_console_threshold_crossing_and_recent_episode_window(tmp_path):
+    environment, algorithm = configs()
+    runner = PaperTrainingRunner(
+        environment, algorithm, num_envs=24, total_sampled_steps=24_000,
+        output_dir=tmp_path, smoke=True,
+    )
+    runner.trainer.sampled_steps = 19_992
+    assert not runner._console_log_due()
+    runner.trainer.sampled_steps = 20_016
+    assert runner._console_log_due()
+    assert runner.next_console_log == 40_000
+    assert not runner._console_log_due()
+
+    runner.completed_records = [
+        {"team_episode_return": float(i), "red_success": i % 2, "red_losses": float(i + 1)}
+        for i in range(105)
+    ]
+    recent = runner.recent_episode_metrics()
+    assert recent["return"] == pytest.approx(np.mean(range(5, 105)))
+    assert recent["win"] == pytest.approx(np.mean([i % 2 for i in range(5, 105)]))
+    assert recent["red_loss"] == pytest.approx(np.mean(range(6, 106)))
+
+
+def test_recent_episode_window_handles_short_and_empty_history(tmp_path):
+    environment, algorithm = configs()
+    runner = PaperTrainingRunner(environment, algorithm, num_envs=4, total_sampled_steps=4, output_dir=tmp_path, smoke=True)
+    assert runner.recent_episode_metrics() == {"return": None, "win": None, "red_loss": None}
+    assert "return=NA | win=NA | red_loss=NA" in runner.train_log_line()
+    runner.completed_records = [
+        {"team_episode_return": 2.0, "red_success": 1, "red_losses": 3.0},
+        {"team_episode_return": 4.0, "red_success": 0, "red_losses": 1.0},
+    ]
+    assert runner.recent_episode_metrics() == {"return": 3.0, "win": 0.5, "red_loss": 2.0}
+
+
+def test_console_log_formats_and_checkpoint_basename(tmp_path, monkeypatch):
+    environment, algorithm = configs()
+    runner = PaperTrainingRunner(environment, algorithm, num_envs=24, total_sampled_steps=24_000, output_dir=tmp_path, smoke=True)
+    evaluation = {
+        "sampled_steps": 200_016,
+        "average_return": 8.73,
+        "average_agent_return": 2.18,
+        "win_rate": 0.70,
+        "average_red_loss": 2.65,
+        "average_episode_length": 112.4,
+    }
+    assert runner.evaluation_log_line(evaluation) == (
+        "[EVAL] steps=200016 | return=8.73 | agent_return=2.18 | win=0.70 "
+        "| red_loss=2.65 | ep_len=112.4"
+    )
+    assert runner.checkpoint_log_line(500_016, tmp_path / "nested" / "checkpoint_500016.pt") == (
+        "[CKPT] steps=500016 | saved=checkpoint_500016.pt"
+    )
+    assert runner.start_log_line() == (
+        "[START] device=cpu | envs=24 | seed=0 | total=24000 | batch=64 "
+        "| replay=50000 | T=24 | n=1 | d=2"
+    )
+    done = {
+        "sampled_steps": 1_000_008, "completed_episodes": 9458,
+        "average_return": 3.25, "win_rate": 0.60, "average_red_loss": 2.50,
+    }
+    assert runner.done_log_line(done) == (
+        "[DONE] steps=1000008 | episodes=9458 | return=3.25 | win=0.60 | red_loss=2.50"
+    )
+
+    def unexpected_optimizer_step(*args, **kwargs):
+        pytest.fail("console logging must not step an optimizer")
+
+    for optimizer in (
+        runner.trainer.actor_optimizer,
+        runner.trainer.critic1_optimizer,
+        runner.trainer.critic2_optimizer,
+    ):
+        monkeypatch.setattr(optimizer, "step", unexpected_optimizer_step)
+    training_state = (
+        runner.trainer.sampled_steps,
+        runner.trainer.vector_steps,
+        runner.scheduler_T,
+        runner.scheduler_update_blocks,
+        runner.trainer.critic_update_count,
+        runner.trainer.actor_update_count,
+        runner.trainer.target_update_count,
+    )
+    runner.train_log_line()
+    runner.evaluation_log_line(evaluation)
+    runner.checkpoint_log_line(500_016, "checkpoint_500016.pt")
+    runner.done_log_line(done)
+    assert training_state == (
+        runner.trainer.sampled_steps,
+        runner.trainer.vector_steps,
+        runner.scheduler_T,
+        runner.scheduler_update_blocks,
+        runner.trainer.critic_update_count,
+        runner.trainer.actor_update_count,
+        runner.trainer.target_update_count,
+    )
 
 
 def test_simple_training_seed_formula_and_no_reuse():
@@ -84,6 +186,31 @@ def test_algorithm1_T_n_d_and_target_schedule(tmp_path):
         assert calls == counts
         assert result["scheduler_T"] == 0
     assert calls["target"] == calls["actor"]
+    assert runner.last_actor_metrics == {"actor_loss": 1.0, "entropy": 1.0}
+
+
+def test_critic_only_block_preserves_last_actor_metrics_and_scheduler_semantics(tmp_path):
+    environment, algorithm = configs()
+    runner = PaperTrainingRunner(environment, algorithm, num_envs=24, total_sampled_steps=48, output_dir=tmp_path, smoke=True)
+    runner.trainer.batch_size = 1
+    runner.trainer.act = lambda observations, masks: np.zeros((24, 4, 3), dtype=np.float32)
+    calls = {"critic": 0, "actor": 0, "target": 0}
+    runner.trainer.update_critics = lambda: calls.__setitem__("critic", calls["critic"] + 1) or {
+        "critic1_loss": 2.0, "critic2_loss": 4.0, "q_value": 0.5,
+    }
+    runner.trainer.update_actor = lambda: calls.__setitem__("actor", calls["actor"] + 1) or {
+        "actor_loss": -1.25, "entropy": 2.0,
+    }
+    runner.trainer.update_targets = lambda: calls.__setitem__("target", calls["target"] + 1)
+    runner.trainer.vector_steps = 1
+    runner.vector_step()  # vector step 2: actor branch
+    actor_metrics = runner.last_actor_metrics.copy()
+    sampled_steps = runner.trainer.sampled_steps
+    runner.vector_step()  # vector step 3: critic-only branch
+    assert runner.last_actor_metrics == actor_metrics
+    assert calls == {"critic": 2, "actor": 1, "target": 1}
+    assert runner.trainer.sampled_steps == sampled_steps + 24
+    assert runner.scheduler_update_blocks == 2
 
 
 def test_algorithm1_runs_n_updates_but_one_target_update_per_actor_branch(tmp_path):

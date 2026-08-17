@@ -74,8 +74,16 @@ class PaperTrainingRunner:
         self.scheduler_update_blocks = 0
         self.agent_episode_returns = np.zeros((self.num_envs, 4), dtype=float)
         self.completed_records: list[dict[str, Any]] = []
+        self.last_critic_metrics: dict[str, float] = {}
+        self.last_actor_metrics: dict[str, float] = {}
         self.last_metrics: dict[str, float] = {}
         self.evaluation_history: list[dict[str, float]] = []
+        runtime_logging = algorithm_config["runtime_logging"]
+        self.console_interval = int(runtime_logging["console_interval_sampled_steps"])
+        self.recent_episode_window = int(runtime_logging["recent_episode_window"])
+        if min(self.console_interval, self.recent_episode_window) <= 0:
+            raise ValueError("runtime logging interval and window must be positive")
+        self.next_console_log = self.console_interval
         cycle_steps = int(assumptions["assumed_sampled_steps_per_training_cycle"])
         self.evaluation_interval = int(training["evaluation_every_training_cycles"]) * cycle_steps
         self.next_evaluation = self.evaluation_interval
@@ -96,6 +104,77 @@ class PaperTrainingRunner:
             "algorithm1_t_counter": self.algorithm1_t_counter,
         }
 
+    def start_log_line(self) -> str:
+        summary = self.startup_summary()
+        return (
+            f"[START] device={summary['device']} | envs={summary['num_envs_M']} | seed={summary['seed']} "
+            f"| total={summary['total_sampled_steps']} | batch={summary['batch_size']} "
+            f"| replay={summary['replay_capacity']} | T={summary['steps_per_update']} "
+            f"| n={summary['update_steps_n']} | d={summary['policy_delay_d']}"
+        )
+
+    def recent_episode_metrics(self) -> dict[str, float | None]:
+        records = self.completed_records[-self.recent_episode_window:]
+        if not records:
+            return {"return": None, "win": None, "red_loss": None}
+        return {
+            "return": float(np.mean([row["team_episode_return"] for row in records])),
+            "win": float(np.mean([row["red_success"] for row in records])),
+            "red_loss": float(np.mean([row["red_losses"] for row in records])),
+        }
+
+    @staticmethod
+    def _display(value: float | None, digits: int) -> str:
+        return "NA" if value is None else f"{value:.{digits}f}"
+
+    def _last_critic_loss(self) -> float | None:
+        critic1 = self.last_critic_metrics.get("critic1_loss")
+        critic2 = self.last_critic_metrics.get("critic2_loss")
+        if critic1 is None or critic2 is None:
+            return None
+        return (critic1 + critic2) / 2.0
+
+    def train_log_line(self) -> str:
+        recent = self.recent_episode_metrics()
+        critic = self._last_critic_loss()
+        percent = 100.0 * self.trainer.sampled_steps / self.total_sampled_steps
+        return (
+            f"[TRAIN] steps={self.trainer.sampled_steps}/{self.total_sampled_steps} ({percent:.1f}%) "
+            f"| eps={len(self.completed_records)} | return={self._display(recent['return'], 2)} "
+            f"| win={self._display(recent['win'], 2)} | red_loss={self._display(recent['red_loss'], 2)} "
+            f"| critic={self._display(critic, 4)} "
+            f"| actor={self._display(self.last_actor_metrics.get('actor_loss'), 3)} "
+            f"| Q={self._display(self.last_critic_metrics.get('q_value'), 3)} "
+            f"| H={self._display(self.last_actor_metrics.get('entropy'), 2)}"
+        )
+
+    @staticmethod
+    def evaluation_log_line(record: dict[str, float]) -> str:
+        return (
+            f"[EVAL] steps={int(record['sampled_steps'])} | return={record['average_return']:.2f} "
+            f"| agent_return={record['average_agent_return']:.2f} | win={record['win_rate']:.2f} "
+            f"| red_loss={record['average_red_loss']:.2f} "
+            f"| ep_len={record['average_episode_length']:.1f}"
+        )
+
+    @staticmethod
+    def checkpoint_log_line(sampled_steps: int, path: str | Path) -> str:
+        return f"[CKPT] steps={sampled_steps} | saved={Path(path).name}"
+
+    @staticmethod
+    def done_log_line(summary: dict[str, Any]) -> str:
+        return (
+            f"[DONE] steps={summary['sampled_steps']} | episodes={summary['completed_episodes']} "
+            f"| return={summary['average_return']:.2f} | win={summary['win_rate']:.2f} "
+            f"| red_loss={summary['average_red_loss']:.2f}"
+        )
+
+    def _console_log_due(self) -> bool:
+        if self.trainer.sampled_steps < self.next_console_log:
+            return False
+        self.next_console_log += self.console_interval
+        return True
+
     def _algorithm1_updates(self) -> tuple[int, int]:
         """Execute the update block printed in Algorithm 1."""
         if self.scheduler_T < self.steps_per_update or self.trainer.replay.size < self.trainer.batch_size:
@@ -111,11 +190,18 @@ class PaperTrainingRunner:
             self.trainer.update_targets()
         self.scheduler_T = 0
         self.scheduler_update_blocks += 1
-        keys = set().union(*(row.keys() for row in critic_metrics + actor_metrics))
-        self.last_metrics = {
-            key: float(np.mean([row[key] for row in critic_metrics + actor_metrics if key in row]))
-            for key in keys
+        critic_keys = set().union(*(row.keys() for row in critic_metrics))
+        self.last_critic_metrics = {
+            key: float(np.mean([row[key] for row in critic_metrics if key in row]))
+            for key in critic_keys
         }
+        if actor_metrics:
+            actor_keys = set().union(*(row.keys() for row in actor_metrics))
+            self.last_actor_metrics = {
+                key: float(np.mean([row[key] for row in actor_metrics if key in row]))
+                for key in actor_keys
+            }
+        self.last_metrics = {**self.last_critic_metrics, **self.last_actor_metrics}
         return len(critic_metrics), len(actor_metrics)
 
     def vector_step(self) -> dict[str, Any]:
@@ -159,13 +245,10 @@ class PaperTrainingRunner:
             "mean_agent_episode_return": completed_mean("mean_agent_episode_return"),
             "win_rate": completed_mean("red_success"),
             "red_uav_losses": completed_mean("red_losses"),
-            "critic_loss": (
-                (self.last_metrics.get("critic1_loss", 0.0) + self.last_metrics.get("critic2_loss", 0.0)) / 2.0
-                if self.last_metrics else None
-            ),
-            "actor_loss": self.last_metrics.get("actor_loss"),
-            "q_value": self.last_metrics.get("q_value"),
-            "entropy": self.last_metrics.get("entropy"),
+            "critic_loss": self._last_critic_loss(),
+            "actor_loss": self.last_actor_metrics.get("actor_loss"),
+            "q_value": self.last_critic_metrics.get("q_value"),
+            "entropy": self.last_actor_metrics.get("entropy"),
         }
         with (self.output_dir / "training_metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(metric_record) + "\n")
@@ -181,6 +264,8 @@ class PaperTrainingRunner:
     def run(self) -> dict[str, Any]:
         while self.trainer.sampled_steps < self.total_sampled_steps:
             self.vector_step()
+            if self._console_log_due():
+                print(self.train_log_line(), flush=True)
             if self.trainer.sampled_steps >= self.next_evaluation:
                 record = {
                     "sampled_steps": self.trainer.sampled_steps,
@@ -188,9 +273,15 @@ class PaperTrainingRunner:
                 }
                 self.evaluation_history.append(record)
                 self._write_evaluation()
+                print(self.evaluation_log_line(record), flush=True)
                 self.next_evaluation += self.evaluation_interval
             if self.trainer.sampled_steps >= self.next_checkpoint:
-                self.save_checkpoint(self.output_dir / f"checkpoint_{self.trainer.sampled_steps}.pt")
+                checkpoint_path = self.output_dir / f"checkpoint_{self.trainer.sampled_steps}.pt"
+                self.save_checkpoint(checkpoint_path)
+                print(
+                    self.checkpoint_log_line(self.trainer.sampled_steps, checkpoint_path),
+                    flush=True,
+                )
                 self.next_checkpoint += self.checkpoint_interval
         self.save_checkpoint(self.output_dir / "latest.pt")
         return self.summary()
@@ -225,6 +316,9 @@ class PaperTrainingRunner:
         self.vector.episode_indices = previous + 1
         self.observations = self.vector.reset()
         self.alive_masks = self.vector.current_alive_masks.copy()
+        self.next_console_log = (
+            self.trainer.sampled_steps // self.console_interval + 1
+        ) * self.console_interval
 
     def summary(self) -> dict[str, Any]:
         mean = lambda key: (
