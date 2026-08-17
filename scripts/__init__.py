@@ -1,1 +1,1 @@
-"""Executable experiment and validation entry points."""
+"""Project command-line scripts exposed for tests."""

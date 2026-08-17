@@ -1,7 +1,0 @@
-numpy
-gymnasium
-pyyaml
-matplotlib
-pytest
-torch
-tensorboard

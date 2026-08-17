@@ -1,15 +1,29 @@
-"""Evaluate a MAPPO checkpoint with deterministic or sampled actions."""
-from __future__ import annotations
-import argparse,yaml,torch
-from uav_env.algorithms.mappo.networks import SharedActor,CentralizedCritic
-from uav_env.algorithms.mappo.checkpoint import load_checkpoint
-from uav_env.algorithms.mappo.runner import MAPPORunner
-from uav_env.algorithms.mappo.value_normalizer import ValueNormalizer
+"""Evaluate a v6 policy checkpoint with paired color swaps."""
+import argparse,json,time
+from pathlib import Path
+import torch
+from uav_combat.mappo.networks import GaussianActor
+from uav_combat.mappo.trainer import CHECKPOINT_VERSION,evaluate_matchup,resolve_device
 
-def main() -> None:
-    p=argparse.ArgumentParser(); p.add_argument("--checkpoint",required=True); p.add_argument("--episodes",type=int,default=100); p.add_argument("--seed-start",type=int,default=100000); p.add_argument("--deterministic",action=argparse.BooleanOptionalAction,default=True); p.add_argument("--scenario"); p.add_argument("--opponent"); a=p.parse_args()
-    data=torch.load(a.checkpoint,map_location="cpu",weights_only=False); c=data["config"]
-    if a.scenario: c["environment"]["scenario"]=a.scenario
-    if a.opponent: c["environment"]["opponent"]=a.opponent
-    runner=MAPPORunner(c,"evaluation"); runner.resume(a.checkpoint,actor_only=True); print(yaml.safe_dump(runner.evaluate(a.episodes,a.seed_start,a.deterministic),sort_keys=False))
-if __name__=="__main__": main()
+def load_actors(path,device):
+    checkpoint=torch.load(path,map_location=device,weights_only=False)
+    if checkpoint.get("checkpoint_version")!=CHECKPOINT_VERSION:raise RuntimeError("evaluate_mappo.py requires a v6 checkpoint; v5 and earlier are incompatible")
+    n=checkpoint["config"]["network"]
+    a=GaussianActor(14,3,n["hidden_dim"],n["log_std_init"]).to(device);b=GaussianActor(14,3,n["hidden_dim"],n["log_std_init"]).to(device)
+    a.load_state_dict(checkpoint["policy_a_actor"]);b.load_state_dict(checkpoint["policy_b_actor"])
+    return a,b,checkpoint
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument("--checkpoint",required=True);p.add_argument("--env-config",default="configs/homogeneous_1v1.yaml")
+    p.add_argument("--matchup",required=True,choices=("a_vs_b","a_vs_zero","a_vs_pursuit","b_vs_zero","b_vs_pursuit"))
+    p.add_argument("--episodes",type=int,default=300);p.add_argument("--scenario",choices=("all","tail_chase","offset_head_on","crossing"),default="all")
+    p.add_argument("--device",default="auto");p.add_argument("--env-workers",type=int,default=None);p.add_argument("--seedset",default="seedset0");args=p.parse_args()
+    device=resolve_device(args.device);a,b,checkpoint=load_actors(args.checkpoint,device)
+    t0=time.perf_counter()
+    result=evaluate_matchup(a,b,args.env_config,args.episodes,device,args.matchup,args.scenario,checkpoint["config"]["experiment"]["seed"]+200000)
+    elapsed=time.perf_counter()-t0
+    nw=args.env_workers or 1
+    result["timing"]={"total_seconds":elapsed,"env_workers":nw,"episodes_per_second":args.episodes/elapsed if elapsed>0 else 0}
+    output=Path(checkpoint["config"]["experiment"]["output_dir"])/f"evaluation_{Path(args.checkpoint).stem}_{args.matchup}_{args.scenario}_{args.seedset}.json"
+    output.write_text(json.dumps(result,indent=2,default=lambda x:x.tolist()),encoding="utf-8");print(json.dumps(result,indent=2,default=lambda x:x.tolist()));print(f"saved: {output}")
+if __name__=="__main__":main()

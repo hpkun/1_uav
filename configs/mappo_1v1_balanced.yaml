@@ -1,6 +1,0 @@
-inherits: mappo_base.yaml
-checkpoint_selection: combat
-environment:
-  kind: 1v1
-  scenario: balanced_random
-  opponent: pursuit

@@ -1,26 +1,15 @@
 import numpy as np
-import pytest
-
-from uav_env.actions.discrete_15 import DiscreteAction15, get_control
-from uav_env.dynamics.point_mass_3d import point_mass_3d_derivative
-from uav_env.dynamics.rk4 import rk4_step
+from uav_combat.dynamics import PointMassDynamics
+from uav_combat.models import AircraftState, ControlCommand
 
 
-def test_level_hold_preserves_altitude_and_speed_briefly() -> None:
-    control = get_control(DiscreteAction15.LEVEL_HOLD)
-    initial = np.asarray([0.0, 0.0, 1_000.0, 100.0, 0.0, 0.0])
-
-    def derivative(time: float, state: np.ndarray, command: object) -> np.ndarray:
-        del time, command
-        return point_mass_3d_derivative(state, control)
-
-    final = rk4_step(derivative, 0.0, initial, 0.1, control)
-    assert final[2] == pytest.approx(initial[2], abs=1.0e-10)
-    assert final[3] == pytest.approx(initial[3], abs=1.0e-10)
+def test_level_trim_derivatives():
+    derivative = PointMassDynamics().derivatives(AircraftState(0, 0, -3000, 150, 0, 0), ControlCommand(0, 1, 0))
+    assert np.allclose(derivative[[2, 3, 4, 5]], 0.0)
+    assert np.all(np.isfinite(derivative))
 
 
-@pytest.mark.parametrize("speed,theta", [(100.0, 0.0), (0.0, 0.0), (100.0, np.pi / 2.0)])
-def test_derivative_is_finite_with_protected_denominators(speed: float, theta: float) -> None:
-    state = np.asarray([0.0, 0.0, 0.0, speed, theta, 0.0])
-    result = point_mass_3d_derivative(state, get_control(DiscreteAction15.LEFT_HOLD))
-    assert np.all(np.isfinite(result))
+def test_denominator_protection_is_finite():
+    derivative = PointMassDynamics().derivatives(AircraftState(0, 0, 0, 0, np.pi / 2, 0), ControlCommand(0, 1, 1))
+    assert np.all(np.isfinite(derivative))
+

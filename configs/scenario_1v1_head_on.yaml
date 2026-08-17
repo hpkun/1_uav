@@ -1,6 +1,0 @@
-scenario_name: head_on
-red_count: 1
-blue_count: 1
-initial_altitude: 1500.0
-initial_speed: 100.0
-initial_distance: 1400.0
