@@ -1,10 +1,13 @@
 import copy
 import numpy as np
+import pytest
 import torch
 from torch import nn
 
 from uav_combat.madsac import AttentionCritic, MADSACTrainer, ReplayBuffer, SharedSquashedGaussianActor
-from uav_combat.madsac.trainer import joint_actions_with_own_gradient
+from uav_combat.madsac.trainer import (
+    batch_mean_agent_sum, joint_actions_with_own_gradient, masked_slot_mean,
+)
 
 
 def transition(value=0.0, done=False):
@@ -23,6 +26,67 @@ def test_section4_actor_has_two_256_hidden_layers_and_is_shared():
     actions, log_probability = actor.sample(observations)
     assert actions.shape == (3, 4, 3) and log_probability.shape == (3, 4)
     assert torch.isfinite(actions).all() and torch.isfinite(log_probability).all()
+
+
+def test_equation19_20_batch_mean_agent_sum_reduction():
+    values = torch.ones(2, 4)
+    mixed = torch.tensor([[1, 1, 1, 1], [1, 0, 0, 0]], dtype=torch.float32)
+    assert batch_mean_agent_sum(values, mixed).item() == 2.5
+    assert batch_mean_agent_sum(values, torch.ones(2, 4)).item() == 4.0
+    assert batch_mean_agent_sum(values, torch.tensor([[1, 0, 0, 0]] * 2, dtype=torch.float32)).item() == 1.0
+    assert batch_mean_agent_sum(values, torch.zeros(2, 4)).item() == 0.0
+    assert masked_slot_mean(values, torch.ones(2, 4)).item() == 1.0
+
+
+class ScalarCritic(nn.Module):
+    def __init__(self, value=1.0):
+        super().__init__()
+        self.value = nn.Parameter(torch.tensor(float(value)))
+
+    def forward(self, observations, actions, alive_mask=None):
+        return self.value.expand(observations.shape[:2])
+
+
+@pytest.mark.parametrize("alive_count,expected_loss", [(4, 4.0), (2, 2.0)])
+def test_actual_equation19_critic_loss_sums_agents(alive_count, expected_loss):
+    trainer = MADSACTrainer(hidden_dim=32, attention_heads=2, batch_size=1, replay_capacity=4)
+    trainer.critic1, trainer.critic2 = ScalarCritic(), ScalarCritic()
+    trainer.critic1_optimizer = torch.optim.SGD(trainer.critic1.parameters(), lr=0.01)
+    trainer.critic2_optimizer = torch.optim.SGD(trainer.critic2.parameters(), lr=0.01)
+    trainer.compute_target = lambda batch: torch.zeros_like(batch["rewards"])
+    observation, action, reward, next_observation, done, _, _ = transition()
+    alive = np.array([1] * alive_count + [0] * (4 - alive_count), dtype=np.float32)
+    trainer.replay.push(observation, action, reward, next_observation, done, alive, alive)
+    metrics = trainer.update_critics()
+    assert metrics["critic1_loss"] == expected_loss
+    assert metrics["critic2_loss"] == expected_loss
+
+
+class ControlledActor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.value = nn.Parameter(torch.tensor(1.0))
+
+    def sample(self, observations):
+        actions = self.value * torch.ones((*observations.shape[:-1], 3), device=observations.device)
+        log_prob = self.value * torch.ones(observations.shape[:-1], device=observations.device)
+        return actions, log_prob
+
+
+class ZeroActionCritic(nn.Module):
+    def forward(self, observations, actions, alive_mask=None):
+        return actions[..., 0] * 0.0
+
+
+def test_actual_equation20_actor_objective_sums_four_agent_terms():
+    trainer = MADSACTrainer(hidden_dim=32, attention_heads=2, batch_size=1, replay_capacity=4, alpha=1.0)
+    trainer.actor = ControlledActor()
+    trainer.actor_optimizer = torch.optim.SGD(trainer.actor.parameters(), lr=0.01)
+    trainer.critic1 = ZeroActionCritic()
+    trainer.critic2 = ZeroActionCritic()
+    trainer.replay.push(*transition())
+    metrics = trainer.update_actor()
+    assert metrics["actor_loss"] == 4.0
 
 
 def test_equations16_17_two_head_attention_and_independent_critics():

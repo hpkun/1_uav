@@ -68,9 +68,14 @@ an explicit implementation detail by the paper.
 - For the agent-i Eq. (21) term, only action `a_i` remains attached to the
   shared actor graph. Every `a_j`, `j != i`, is held constant before evaluating
   `Q_i(s, a_1,...,a_4)`.
-- The four alive own-action terms are masked and averaged. Because all actors
-  share parameters, their own-action gradients naturally accumulate into the
-  one shared actor optimizer step. Dead agents contribute no actor term.
+- Eq. (19) and Eq. (20) use `mean_batch(sum_alive_agents(value))`. The replay
+  batch is the expectation dimension; the agent dimension is the printed sum.
+  A sample with no alive agent contributes zero without changing the batch
+  denominator.
+- Because all actors share parameters, the summed alive own-action gradients
+  accumulate into one shared actor optimizer step. Dead agents contribute no
+  actor term. Mean Q and entropy remain alive-slot means because they are
+  diagnostics rather than backward objectives.
 
 ## Formal success metric
 
@@ -104,9 +109,11 @@ Current UNSPECIFIED values are `steps_per_update=24`, `update_steps_n=1`, and `p
 - Actor uses Eq.(24) observation only. Figure 6(a) depicts a previous action input while Algorithm 1 and policy equations write policy as a function of observation; the paper does not resolve this inconsistency.
 - Actor and critic ReLU are supported by the 2022 author work but not stated by 2023; actor log-std clamp `[-5,2]`, exact embeddings/head split/final MLP remain UNSPECIFIED.
 - Reward target selection and same-step timing described above; critic rewards are now per-agent Eq. (25), while the logged Figure-8 team sum is DERIVED.
-- Training cycle mapping: one configured cycle is 50,000 sampled transitions, so evaluation every two cycles is every 100,000 samples. The paper does not define this mapping.
+- Evaluation-cycle mapping: `assumed_sampled_steps_per_training_cycle=50,000`, so the paper's “every two training cycles” is operationally every 100,000 sampled steps. The 50,000 mapping is STILL-UNSPECIFIED and is not a paper parameter.
 - Five-run CI uses a two-sided Student-t interval with 4 degrees of freedom.
 - Checkpoint every 500,000 sampled steps. Replay is not saved; resumed training does not preserve replay continuity.
+- Runtime `scheduler_update_blocks` counts Algorithm-1 update-block triggers. It is deliberately not named `training_cycles` and is saved/restored in checkpoint metadata. Resume restores networks, optimizers and counters, but starts with empty replay and freshly reset episodes, so it is not bitwise-exact continuation.
 - Seed rule: training seed is `base_seed + episode_index*M + env_id`; evaluation uses `10,000,000..10,000,019`, with assertions against overlap/reuse.
 - Evaluation currently uses deterministic mean/tanh actor actions. The paper does not state deterministic versus stochastic test execution, so this remains UNSPECIFIED.
 - Every value in `configs/sensitivity_candidates.yaml` is candidate-only and must be applied one group/profile at a time; none is a paper parameter.
+- The canonical code semantics may be frozen for a pilot while these explicit parameter uncertainties remain; a pilot does not promote placeholders to paper values.

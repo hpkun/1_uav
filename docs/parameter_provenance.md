@@ -83,7 +83,8 @@ silently treating OCR guesses as author values.
 | Critic reward semantics | Eq. (18) targets `Q_i` with `r_i`; Eq. (25) is evaluated for a specific Red UAV | Different reward does not resolve it | Markov-game vector-return definition | 2023-DERIVED | Medium-high |
 | Figure-8 team return | Paper plots one return curve but does not state the multi-agent reduction | Different experiment | Current value is sum of four per-agent episode returns; mean is logged separately | 2023-DERIVED | Medium |
 | Eq. (21) action gradient | Printed gradient is `nabla_{a_i} Q_i` times the agent-i policy derivative | Different discrete policy | Other joint actions are constants in each agent-i loss term | 2023-PAPER | High |
-| Shared-actor gradient aggregation | Parameter sharing is explicit; exact implementation is not | Shared actor also used | Sum/masked mean of four own-action terms into one parameter set | 2023-DERIVED | High |
+| Eq. (19)/(20) agent reduction | Both objectives print `sum_i` outside the replay expectation | Different objective | Mean over batch of the alive-agent sum | 2023-PAPER | High |
+| Shared-actor gradient aggregation | Parameter sharing is explicit; exact implementation is not | Shared actor also used | Batch-mean of summed alive own-action terms into one parameter set | 2023-DERIVED | High |
 | Target update timing | Algorithm 1 places target actor/critic updates inside the delayed actor branch | Different MATAC schedule | Critic-only trigger no longer updates targets | 2023-PAPER | High |
 | Actor hidden layers | Two 256-unit layers, Section 4.1 | Actor hidden size 256 in predecessor | None | 2023-PAPER | High |
 | Critic hidden layers | Two 256-unit layers, Section 4.1 | Different Transformer critic | None | 2023-PAPER | High |
@@ -98,6 +99,7 @@ silently treating OCR guesses as author values.
 | Algorithm-1 variable `t` mapping | Pseudocode places `t` inside episode; parallel early-terminal behavior is absent | Does not resolve 24-env behavior | Current implementation uses global synchronous vector-step counter | STILL-UNSPECIFIED | High impact / low |
 | Parallel environments | 24, Section 4.1 | Not a substitute for scheduler values | None | 2023-PAPER | High |
 | Evaluation action mode | Deterministic versus sampled policy is not stated | Different discrete evaluation | Current evaluator uses deterministic mean/tanh action | STILL-UNSPECIFIED | Medium / low |
+| Training-cycle sampled-step mapping | Tests occur every two training cycles; cycle size is absent | Does not resolve MADSAC cycle size | Current assumption is 50,000 sampled steps per cycle, hence evaluation every 100,000 | STILL-UNSPECIFIED | Medium / low |
 
 The current numeric values for every `STILL-UNSPECIFIED` row remain executable
 placeholders, not recovered paper parameters. Candidate-only alternatives are

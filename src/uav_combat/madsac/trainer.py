@@ -19,8 +19,18 @@ def soft_update(target: nn.Module, source: nn.Module, tau: float) -> None:
             target_parameter.mul_(1.0 - tau).add_(source_parameter, alpha=tau)
 
 
-def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def masked_slot_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Mean over alive slots for diagnostics, not an Eq. (19)/(20) loss."""
     return (values * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def batch_mean_agent_sum(values: torch.Tensor, alive_mask: torch.Tensor) -> torch.Tensor:
+    """Eq. (19)/(20): mean over replay batch after summing alive agents."""
+    if values.ndim != 2 or values.shape != alive_mask.shape:
+        raise ValueError("values and alive_mask must have the same [batch, agents] shape")
+    if values.shape[0] == 0:
+        raise ValueError("objective batch must not be empty")
+    return (values * alive_mask).sum(dim=1).mean()
 
 
 def joint_actions_with_own_gradient(actions: torch.Tensor, agent_index: int) -> torch.Tensor:
@@ -116,8 +126,8 @@ class MADSACTrainer:
         target = self.compute_target(batch)
         q1 = self.critic1(batch["observations"], batch["actions"], alive)
         q2 = self.critic2(batch["observations"], batch["actions"], alive)
-        q1_loss = masked_mean((q1 - target).square(), alive)
-        q2_loss = masked_mean((q2 - target).square(), alive)
+        q1_loss = batch_mean_agent_sum((q1 - target).square(), alive)
+        q2_loss = batch_mean_agent_sum((q2 - target).square(), alive)
         self.critic1_optimizer.zero_grad()
         q1_loss.backward()
         self.critic1_optimizer.step()
@@ -128,7 +138,7 @@ class MADSACTrainer:
         metrics = {
             "critic1_loss": float(q1_loss.detach()),
             "critic2_loss": float(q2_loss.detach()),
-            "q_value": float(masked_mean(torch.minimum(q1, q2), alive).detach()),
+            "q_value": float(masked_slot_mean(torch.minimum(q1, q2), alive).detach()),
         }
         self._require_finite(metrics)
         return metrics
@@ -149,7 +159,7 @@ class MADSACTrainer:
                 q2_i = self.critic2(batch["observations"], joint_actions, alive)[:, agent_index]
                 q_by_agent.append(torch.minimum(q1_i, q2_i))
             min_q = torch.stack(q_by_agent, dim=1)
-            actor_loss = masked_mean(self.alpha * log_prob - min_q, alive)
+            actor_loss = batch_mean_agent_sum(self.alpha * log_prob - min_q, alive)
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
@@ -159,7 +169,7 @@ class MADSACTrainer:
         self.actor_update_count += 1
         metrics = {
             "actor_loss": float(actor_loss.detach()),
-            "entropy": float(masked_mean(-log_prob.detach(), alive)),
+            "entropy": float(masked_slot_mean(-log_prob.detach(), alive)),
         }
         self._require_finite(metrics)
         return metrics
@@ -222,4 +232,7 @@ class MADSACTrainer:
         return dict(state.get("extra", {}))
 
 
-__all__ = ["MADSACTrainer", "joint_actions_with_own_gradient", "masked_mean", "soft_update"]
+__all__ = [
+    "MADSACTrainer", "batch_mean_agent_sum", "joint_actions_with_own_gradient",
+    "masked_slot_mean", "soft_update",
+]

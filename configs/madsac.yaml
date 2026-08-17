@@ -22,7 +22,7 @@ training:
   device: cpu
   seed: 0
   output_dir: outputs/madsac
-  evaluation_every_training_cycles: 2
+  evaluation_every_training_cycles: 2  # PAPER count; cycle-to-sampled-step mapping is unspecified
 reproduction_assumptions:
   actor_activation: relu       # SUPPORTED-BY-AUTHOR-WORK: 2022 MATAC used ReLU
   log_std_min: -5.0
@@ -32,6 +32,6 @@ reproduction_assumptions:
   update_steps_n: 1             # STILL-UNSPECIFIED / HIGH IMPACT
   policy_delay_d: 2             # STILL-UNSPECIFIED / HIGH IMPACT
   algorithm1_t_counter: global_vector_step  # STILL-UNSPECIFIED implementation assumption
-  sampled_steps_per_training_cycle: 50000
+  assumed_sampled_steps_per_training_cycle: 50000  # STILL-UNSPECIFIED evaluation mapping assumption
   evaluation_seed_base: 10000000
   checkpoint_interval_sampled_steps: 500000

@@ -28,6 +28,7 @@ def test_paper_protocol_configures_24_train_20_test_5_runs_95ci():
     assert training["independent_training_runs"] == 5
     assert training["confidence_interval"] == .95
     assert "updates_per_transition" not in algorithm["reproduction_assumptions"]
+    assert algorithm["reproduction_assumptions"]["assumed_sampled_steps_per_training_cycle"] == 50_000
 
 
 def test_simple_training_seed_formula_and_no_reuse():
@@ -98,6 +99,35 @@ def test_algorithm1_runs_n_updates_but_one_target_update_per_actor_branch(tmp_pa
     runner.trainer.update_targets = lambda: calls.__setitem__("target", calls["target"] + 1)
     runner.vector_step()
     assert calls == {"critic": 3, "actor": 3, "target": 1}
+
+
+def test_scheduler_counter_and_one_million_output_schedule(tmp_path):
+    environment, algorithm = configs()
+    runner = PaperTrainingRunner(
+        environment, algorithm, num_envs=24, total_sampled_steps=1_000_000,
+        output_dir=tmp_path, smoke=True,
+    )
+    assert runner.evaluation_interval == 100_000
+    assert runner.checkpoint_interval == 500_000
+    assert runner.next_evaluation == 100_000
+    assert runner.next_checkpoint == 500_000
+    assert runner.scheduler_update_blocks == 0
+    runner.scheduler_update_blocks = 7
+    checkpoint = tmp_path / "counter.pt"
+    runner.save_checkpoint(checkpoint)
+    import torch
+    extra = torch.load(checkpoint, map_location="cpu", weights_only=False)["extra"]
+    assert extra["scheduler_update_blocks"] == 7
+    assert "training_cycles" not in extra
+    assert runner.summary()["scheduler_update_blocks"] == 7
+
+
+def test_cuda_request_never_silently_falls_back(monkeypatch):
+    import torch
+    from uav_combat.madsac import MADSACTrainer
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(RuntimeError, match="CUDA requested but unavailable"):
+        MADSACTrainer(hidden_dim=32, attention_heads=2, device="cuda")
 
 
 def test_evaluation_seed_set_is_twenty_and_disjoint(tmp_path):

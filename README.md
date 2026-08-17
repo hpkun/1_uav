@@ -44,4 +44,4 @@ For five completed runs:
 python scripts/aggregate_training_runs.py RUN0 RUN1 RUN2 RUN3 RUN4 --output-dir outputs/aggregate
 ```
 
-Checkpoints contain actor, critics, target networks, optimizers, and counters. Replay is deliberately not saved, so resumed training does not preserve replay continuity. Formal defaults remain >8M sampled steps, but no formal training starts automatically.
+Checkpoints contain actor, critics, target networks, optimizers, and counters. Replay is deliberately not saved and environments restart fresh episodes, so resume is not bitwise-exact continuation. Formal defaults remain >8M sampled steps, but no formal training starts automatically.

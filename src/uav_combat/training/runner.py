@@ -71,12 +71,12 @@ class PaperTrainingRunner:
         self.output_dir = base_output / f"run_seed_{self.seed}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.scheduler_T = 0
-        self.training_cycles = 0
+        self.scheduler_update_blocks = 0
         self.agent_episode_returns = np.zeros((self.num_envs, 4), dtype=float)
         self.completed_records: list[dict[str, Any]] = []
         self.last_metrics: dict[str, float] = {}
         self.evaluation_history: list[dict[str, float]] = []
-        cycle_steps = int(assumptions["sampled_steps_per_training_cycle"])
+        cycle_steps = int(assumptions["assumed_sampled_steps_per_training_cycle"])
         self.evaluation_interval = int(training["evaluation_every_training_cycles"]) * cycle_steps
         self.next_evaluation = self.evaluation_interval
         self.checkpoint_interval = int(assumptions["checkpoint_interval_sampled_steps"])
@@ -110,7 +110,7 @@ class PaperTrainingRunner:
                 actor_metrics.append(self.trainer.update_actor())
             self.trainer.update_targets()
         self.scheduler_T = 0
-        self.training_cycles += 1
+        self.scheduler_update_blocks += 1
         keys = set().union(*(row.keys() for row in critic_metrics + actor_metrics))
         self.last_metrics = {
             key: float(np.mean([row[key] for row in critic_metrics + actor_metrics if key in row]))
@@ -206,7 +206,7 @@ class PaperTrainingRunner:
     def save_checkpoint(self, path: str | Path) -> None:
         self.trainer.save(path, {
             "scheduler_T": self.scheduler_T,
-            "training_cycles": self.training_cycles,
+            "scheduler_update_blocks": self.scheduler_update_blocks,
             "episode_indices": self.vector.episode_indices.tolist(),
         })
 
@@ -214,7 +214,11 @@ class PaperTrainingRunner:
         """Resume networks/counters with an empty replay and fresh episodes."""
         extra = self.trainer.load(path)
         self.scheduler_T = int(extra.get("scheduler_T", 0))
-        self.training_cycles = int(extra.get("training_cycles", 0))
+        # The fallback reads checkpoints made before the counter was renamed;
+        # both values count scheduler update blocks, never paper training cycles.
+        self.scheduler_update_blocks = int(
+            extra.get("scheduler_update_blocks", extra.get("training_cycles", 0))
+        )
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64)
         if previous.shape != (self.num_envs,):
             raise RuntimeError("checkpoint environment count mismatch")
@@ -231,7 +235,7 @@ class PaperTrainingRunner:
             **self.startup_summary(),
             "sampled_steps": self.trainer.sampled_steps,
             "vector_steps": self.trainer.vector_steps,
-            "training_cycles": self.training_cycles,
+            "scheduler_update_blocks": self.scheduler_update_blocks,
             "critic_updates": self.trainer.critic_update_count,
             "actor_updates": self.trainer.actor_update_count,
             "target_updates": self.trainer.target_update_count,
