@@ -11,7 +11,7 @@ from uav_combat.madsac.trainer import (
 
 
 def transition(value=0.0, done=False):
-    observation = np.full((4, 45), value, dtype=np.float32)
+    observation = np.full((4, 54), value, dtype=np.float32)
     action = np.zeros((4, 3), dtype=np.float32)
     reward = np.ones(4, dtype=np.float32)
     mask = np.ones(4, dtype=np.float32)
@@ -21,8 +21,8 @@ def transition(value=0.0, done=False):
 def test_section4_actor_has_two_256_hidden_layers_and_is_shared():
     actor = SharedSquashedGaussianActor()
     linear_layers = [layer for layer in actor.backbone if isinstance(layer, nn.Linear)]
-    assert [(layer.in_features, layer.out_features) for layer in linear_layers] == [(45, 256), (256, 256)]
-    observations = torch.randn(3, 4, 45)
+    assert [(layer.in_features, layer.out_features) for layer in linear_layers] == [(54, 256), (256, 256)]
+    observations = torch.randn(3, 4, 54)
     actions, log_probability = actor.sample(observations)
     assert actions.shape == (3, 4, 3) and log_probability.shape == (3, 4)
     assert torch.isfinite(actions).all() and torch.isfinite(log_probability).all()
@@ -93,7 +93,7 @@ def test_equations16_17_two_head_attention_and_independent_critics():
     critic1, critic2 = AttentionCritic(), AttentionCritic()
     assert critic1.attention_heads == critic2.attention_heads == 2
     assert all(a.data_ptr() != b.data_ptr() for a, b in zip(critic1.parameters(), critic2.parameters()))
-    observations = torch.randn(2, 4, 45, requires_grad=True)
+    observations = torch.randn(2, 4, 54, requires_grad=True)
     actions = torch.randn(2, 4, 3, requires_grad=True)
     q_values, attention = critic1(observations, actions, return_attention=True)
     assert q_values.shape == (2, 4) and attention.shape == (2, 2, 4, 4)
@@ -120,7 +120,7 @@ def test_equation18_uses_target_actor_min_double_q_and_entropy():
     trainer.target_critic1 = ConstantCritic(2.0)
     trainer.target_critic2 = ConstantCritic(5.0)
     batch = {
-        "next_observations": torch.zeros(1, 4, 45),
+        "next_observations": torch.zeros(1, 4, 54),
         "next_alive_masks": torch.ones(1, 4),
         "rewards": torch.ones(1, 4),
         "dones": torch.zeros(1, 1),

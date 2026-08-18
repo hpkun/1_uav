@@ -1,6 +1,9 @@
-"""Li et al. (2023) MADSAC multi-UAV paper reproduction."""
+"""MADSAC with an independent public low-fidelity combat environment."""
 
-from .environment import PaperUAVCombatEnv, PaperAirCombatGeometry, compute_paper_geometry
-from .models import AircraftSpec, AircraftState, ControlCommand, TargetCommand
+from .environment import EngagementGeometry, MultiUAVCombatEnv, engagement_geometry
+from .models import AircraftSpec, AircraftState, ControlCommand
 
-__all__ = ["AircraftSpec", "AircraftState", "ControlCommand", "TargetCommand", "PaperAirCombatGeometry", "compute_paper_geometry", "PaperUAVCombatEnv"]
+__all__ = [
+    "AircraftSpec", "AircraftState", "ControlCommand", "EngagementGeometry",
+    "MultiUAVCombatEnv", "engagement_geometry",
+]

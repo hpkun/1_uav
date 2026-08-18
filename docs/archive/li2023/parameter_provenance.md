@@ -1,4 +1,4 @@
-# Parameter provenance for the Li et al. MADSAC reproduction
+# Archived parameter provenance for the discontinued Li et al. reconstruction
 
 ## Source hierarchy and retrieval record
 

@@ -1,8 +1,10 @@
-"""Li et al. (2023) 4v4 paper-environment components."""
+"""Public low-fidelity 4v4 combat-environment components."""
 
-from .env import PaperUAVCombatEnv
-from .geometry import PaperAirCombatGeometry, compute_paper_geometry
-from .sensor import SensorModel
-from .weapon import WeaponModel
+from .env import MultiUAVCombatEnv
+from .geometry import EngagementGeometry, engagement_geometry
+from .weapon import LockState, WeaponEnvelope
 
-__all__ = ["PaperUAVCombatEnv", "PaperAirCombatGeometry", "SensorModel", "WeaponModel", "compute_paper_geometry"]
+__all__ = [
+    "EngagementGeometry", "LockState", "MultiUAVCombatEnv", "WeaponEnvelope",
+    "engagement_geometry",
+]

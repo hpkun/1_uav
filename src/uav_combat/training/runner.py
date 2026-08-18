@@ -1,4 +1,4 @@
-"""Paper Algorithm 1 runner with 24 synchronous environments."""
+"""MADSAC Algorithm-1 runner with synchronous environments."""
 from __future__ import annotations
 
 import csv
@@ -12,7 +12,7 @@ from .evaluator import episode_return_metrics, evaluate
 from .vector_env import SyncVectorEnv
 
 
-class PaperTrainingRunner:
+class MADSACTrainingRunner:
     def __init__(
         self,
         env_config: dict,
@@ -26,7 +26,7 @@ class PaperTrainingRunner:
     ) -> None:
         self.env_config, self.algorithm_config = env_config, algorithm_config
         training = algorithm_config["training"]
-        assumptions = algorithm_config["reproduction_assumptions"]
+        assumptions = algorithm_config["implementation"]
         self.num_envs = int(num_envs or training["num_train_envs"])
         self.total_sampled_steps = int(total_sampled_steps or training["total_sampled_steps"])
         self.device = str(device or training["device"])
@@ -44,6 +44,9 @@ class PaperTrainingRunner:
         replay_capacity = 50_000 if smoke else int(training["replay_buffer_size"])
         hidden_dim = 64 if smoke else int(algorithm_config["network"]["actor_hidden_layers"][0])
         self.trainer = MADSACTrainer(
+            observation_dim=int(algorithm_config["network"]["observation_dim"]),
+            action_dim=int(algorithm_config["network"]["action_dim"]),
+            num_agents=int(algorithm_config["network"]["num_agents"]),
             hidden_dim=hidden_dim,
             attention_heads=int(algorithm_config["network"]["attention_heads"]),
             learning_rate=float(training["learning_rate"]),
@@ -244,7 +247,10 @@ class PaperTrainingRunner:
             "team_episode_return": completed_mean("team_episode_return"),
             "mean_agent_episode_return": completed_mean("mean_agent_episode_return"),
             "win_rate": completed_mean("red_success"),
+            "loss_rate": completed_mean("blue_win"),
+            "draw_rate": completed_mean("draw"),
             "red_uav_losses": completed_mean("red_losses"),
+            "blue_uav_losses": completed_mean("blue_losses"),
             "critic_loss": self._last_critic_loss(),
             "actor_loss": self.last_actor_metrics.get("actor_loss"),
             "q_value": self.last_critic_metrics.get("q_value"),
@@ -338,7 +344,10 @@ class PaperTrainingRunner:
             "average_return": mean("episode_return"),
             "average_agent_return": mean("mean_agent_episode_return"),
             "win_rate": mean("red_success"),
+            "loss_rate": mean("blue_win"),
+            "draw_rate": mean("draw"),
             "average_red_loss": mean("red_losses"),
+            "average_blue_loss": mean("blue_losses"),
             "last_update_metrics": self.last_metrics,
             "evaluation_history": self.evaluation_history,
         }

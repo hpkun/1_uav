@@ -1,41 +1,43 @@
-"""Air-combat geometry from Figure 2 and Equation (6)."""
+"""Public full-3D engagement geometry."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import numpy as np
 
-from ..math_utils import wrap_angle
 from ..models import AircraftState
 
 
 @dataclass(frozen=True)
-class PaperAirCombatGeometry:
+class EngagementGeometry:
     distance: float
-    ata: float
-    aa: float
-    ha: float
-    hca: float
+    attack_angle: float
+    escape_angle: float
 
 
-def compute_paper_geometry(own: AircraftState, target: AircraftState, eps: float = 1e-8) -> PaperAirCombatGeometry:
-    """Evaluate Figure 2 / Equation (6) from ``own`` (o1) to ``target`` (o2).
+def _angle(a: np.ndarray, b: np.ndarray) -> float:
+    denominator = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if denominator <= 1e-12:
+        return 0.0
+    cosine = float(np.clip(np.dot(a, b) / denominator, -1.0, 1.0))
+    return float(np.arccos(cosine))
 
-    ``ATA`` is the signed own-heading-to-LOS angle. ``AA`` is the signed angle
-    from that same o1->o3 horizontal LOS to the target velocity.  In
-    particular, AA does *not* use the reverse LOS: an attacker directly behind
-    a same-heading target has ATA=AA=0, as required by Figure 2's pursuit
-    geometry.  ``HA`` is positive when the target is above in NED coordinates.
-    """
-    rel = target.as_array()[:3] - own.as_array()[:3]
-    distance = float(np.linalg.norm(rel))
-    horizontal = float(np.hypot(rel[0], rel[1]))
-    if distance < eps:
-        return PaperAirCombatGeometry(0.0, 0.0, 0.0, 0.0, wrap_angle(target.psi - own.psi))
-    los = float(np.arctan2(rel[1], rel[0])) if horizontal >= eps else own.psi
-    return PaperAirCombatGeometry(
-        distance=distance,
-        ata=wrap_angle(los - own.psi),
-        aa=wrap_angle(target.psi - los),
-        ha=float(np.arctan2(-rel[2], max(horizontal, eps))),
-        hca=wrap_angle(target.psi - own.psi),
+
+def engagement_geometry(attacker: AircraftState, target: AircraftState) -> EngagementGeometry:
+    displacement = np.array(
+        [target.x - attacker.x, target.y - attacker.y, target.z - attacker.z], dtype=float
     )
+    return EngagementGeometry(
+        distance=float(np.linalg.norm(displacement)),
+        attack_angle=_angle(attacker.velocity_vector(), displacement),
+        escape_angle=_angle(target.velocity_vector(), displacement),
+    )
+
+
+def engagement_score(geometry: EngagementGeometry, battlefield_radius: float) -> float:
+    range_score = float(np.clip(1.0 - geometry.distance / (2.0 * battlefield_radius), 0.0, 1.0))
+    attack_score = (1.0 + np.cos(geometry.attack_angle)) / 2.0
+    escape_score = (1.0 + np.cos(geometry.escape_angle)) / 2.0
+    return float(range_score * attack_score * escape_score)
+
+
+__all__ = ["EngagementGeometry", "engagement_geometry", "engagement_score"]

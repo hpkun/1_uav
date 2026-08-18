@@ -1,4 +1,4 @@
-"""Multi-Agent Double-Soft Actor-Critic paper reproduction."""
+"""Multi-Agent Double-Soft Actor-Critic implementation."""
 
 from .actor import SharedSquashedGaussianActor
 from .attention_critic import AttentionCritic

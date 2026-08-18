@@ -1,4 +1,4 @@
-# Environment diagnosis for the Li et al. (2023) MADSAC reproduction
+# Archived environment diagnosis for the discontinued Li et al. (2023) reconstruction
 
 ## Scope and evidence rules
 

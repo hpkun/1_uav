@@ -1,34 +1,46 @@
-"""Paper 4v4 random-diameter initialization."""
+"""Seeded 4v4 line-abreast initial-condition generator."""
 from __future__ import annotations
 
 import numpy as np
+
 from ..math_utils import wrap_angle
 from ..models import AircraftState
 
 
-def random_diameter_states(
+def random_line_abreast_states(
     rng: np.random.Generator,
+    center_radius: float,
+    formation_offsets: list[float],
+    altitude: float,
+    speed: float,
+    heading_perturbation_max: float,
+    speed_perturbation_max: float,
+    altitude_perturbation_max: float,
     team_size: int = 4,
-    center_distance: float = 4000.0,
-    formation_spacing: float = 150.0,
-    altitude: float = 3000.0,
-    speed: float = 225.0,
 ) -> tuple[list[AircraftState], list[AircraftState], float]:
-    """Place symmetric formations at opposite points of a random diameter.
+    if team_size != 4 or len(formation_offsets) != team_size:
+        raise ValueError("this benchmark requires four aircraft and four formation offsets")
+    radial_angle = float(rng.uniform(-np.pi, np.pi))
+    radial = np.array([np.cos(radial_angle), np.sin(radial_angle)])
+    lateral = np.array([-radial[1], radial[0]])
 
-    Center distance and formation spacing are reproduction assumptions because
-    the paper does not publish within-formation geometry.
-    """
-    if team_size != 4:
-        raise ValueError("the paper scenario has exactly four UAVs per side")
-    angle = float(rng.uniform(-np.pi, np.pi))
-    radial = np.array([np.cos(angle), np.sin(angle)])
-    tangent = np.array([-radial[1], radial[0]])
-    offsets = (np.arange(team_size, dtype=float) - 1.5) * formation_spacing
-    red_center, blue_center = -center_distance * radial, center_distance * radial
-    red, blue = [], []
-    for offset in offsets:
-        rp, bp = red_center + offset * tangent, blue_center + offset * tangent
-        red.append(AircraftState(rp[0], rp[1], -altitude, speed, 0.0, wrap_angle(angle), True))
-        blue.append(AircraftState(bp[0], bp[1], -altitude, speed, 0.0, wrap_angle(angle + np.pi), True))
-    return red, blue, angle
+    def team(side: float) -> list[AircraftState]:
+        center = side * center_radius * radial
+        nominal_heading = radial_angle if side < 0.0 else wrap_angle(radial_angle + np.pi)
+        states = []
+        for offset in formation_offsets:
+            position = center + float(offset) * lateral
+            states.append(AircraftState(
+                x=float(position[0]),
+                y=float(position[1]),
+                z=-float(altitude + rng.uniform(-altitude_perturbation_max, altitude_perturbation_max)),
+                v=float(speed + rng.uniform(-speed_perturbation_max, speed_perturbation_max)),
+                theta=0.0,
+                psi=float(wrap_angle(nominal_heading + rng.uniform(-heading_perturbation_max, heading_perturbation_max))),
+            ))
+        return states
+
+    return team(-1.0), team(1.0), radial_angle
+
+
+__all__ = ["random_line_abreast_states"]

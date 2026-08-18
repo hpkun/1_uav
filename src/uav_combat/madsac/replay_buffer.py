@@ -7,7 +7,7 @@ import torch
 class ReplayBuffer:
     KEYS = ("observations","actions","rewards","next_observations","alive_masks","next_alive_masks","dones")
 
-    def __init__(self, capacity: int = 1_000_000, num_agents: int = 4, observation_dim: int = 45, action_dim: int = 3, chunk_size: int = 4096) -> None:
+    def __init__(self, capacity: int = 1_000_000, num_agents: int = 4, observation_dim: int = 54, action_dim: int = 3, chunk_size: int = 4096) -> None:
         if capacity <= 0: raise ValueError("capacity must be positive")
         self.capacity,self.num_agents=int(capacity),int(num_agents); self.observation_dim,self.action_dim,self.chunk_size=observation_dim,action_dim,chunk_size
         self._chunks: dict[int,dict[str,np.ndarray]]={}; self.position=self.size=0

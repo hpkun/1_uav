@@ -1,0 +1,50 @@
+simulation:
+  dt: 0.1
+  max_steps: 1000
+action:
+  nx_scale: 2.0
+  nz_trim: 1.0
+  nz_scale: 4.0
+  phi_max: 1.0471975511965976
+aircraft:
+  v_min: 150.0
+  v_max: 300.0
+  theta_min: -1.0471975511965976
+  theta_max: 1.0471975511965976
+battlefield:
+  horizontal_radius: 10000.0
+  altitude_min: 500.0
+  altitude_max: 8000.0
+scenario:
+  team_size: 4
+  center_radius: 3000.0
+  formation_offsets: [-450.0, -150.0, 150.0, 450.0]
+  altitude: 3000.0
+  speed: 225.0
+  heading_perturbation_max: 0.08726646259971647
+  speed_perturbation_max: 10.0
+  altitude_perturbation_max: 100.0
+weapon:
+  attack_distance_max: 1500.0
+  attack_angle_max: 0.5235987755982988
+  escape_angle_max: 1.0471975511965976
+  lock_steps_required: 3
+reward:
+  kill_reward: 10.0
+  death_penalty: -10.0
+  shaping_lambda: 1.0
+observation:
+  speed_center: 225.0
+  speed_scale: 75.0
+  altitude_min: 500.0
+  altitude_max: 8000.0
+  center_scale: 10000.0
+  horizontal_position_scale: 20000.0
+  vertical_position_scale: 7500.0
+  relative_velocity_scale: 600.0
+blue_policy:
+  desired_speed: 225.0
+  speed_error_scale: 50.0
+  heading_gain: 1.5
+  elevation_gain: 4.0
+  elevation_action_scale: 4.0

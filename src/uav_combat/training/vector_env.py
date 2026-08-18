@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 
-from ..environment.env import PaperUAVCombatEnv
+from ..environment.env import MultiUAVCombatEnv
 
 
 @dataclass
@@ -22,16 +22,16 @@ class VectorStep:
 class SyncVectorEnv:
     """Simple non-overlapping seed allocation: base + episode*M + env_id."""
 
-    def __init__(self, num_envs: int, config="configs/paper_environment.yaml", base_seed: int = 0, forbidden_seeds=()) -> None:
+    def __init__(self, num_envs: int, config="configs/combat_environment.yaml", base_seed: int = 0, forbidden_seeds=()) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
-        self.envs = [PaperUAVCombatEnv(config) for _ in range(num_envs)]
+        self.envs = [MultiUAVCombatEnv(config) for _ in range(num_envs)]
         self.num_envs = int(num_envs)
         self.base_seed = int(base_seed)
         self.forbidden_seeds = set(map(int, forbidden_seeds))
         self.used_training_seeds: set[int] = set()
         self.episode_indices = np.zeros(num_envs, dtype=np.int64)
-        self.current_observations = np.zeros((num_envs, 4, 45), dtype=np.float32)
+        self.current_observations = np.zeros((num_envs, 4, 54), dtype=np.float32)
         self.current_alive_masks = np.ones((num_envs, 4), dtype=np.float32)
         self.last_reset_seeds = np.zeros(num_envs, dtype=np.int64)
 

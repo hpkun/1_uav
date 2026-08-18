@@ -6,7 +6,7 @@ from torch.distributions import Normal
 
 
 class SharedSquashedGaussianActor(nn.Module):
-    def __init__(self, observation_dim: int = 45, action_dim: int = 3, hidden_dim: int = 256, log_std_min: float = -5.0, log_std_max: float = 2.0, activation: str = "relu") -> None:
+    def __init__(self, observation_dim: int = 54, action_dim: int = 3, hidden_dim: int = 256, log_std_min: float = -5.0, log_std_max: float = 2.0, activation: str = "relu") -> None:
         super().__init__()
         self.observation_dim, self.action_dim = observation_dim, action_dim
         self.log_std_min, self.log_std_max = log_std_min, log_std_max

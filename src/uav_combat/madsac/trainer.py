@@ -48,7 +48,7 @@ class MADSACTrainer:
 
     def __init__(
         self,
-        observation_dim: int = 45,
+        observation_dim: int = 54,
         action_dim: int = 3,
         num_agents: int = 4,
         hidden_dim: int = 256,

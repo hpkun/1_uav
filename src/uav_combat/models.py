@@ -1,4 +1,4 @@
-"""Paper-reproduction data models (NED coordinates)."""
+"""Core data models for the public low-fidelity combat environment."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,22 +37,9 @@ class AircraftState:
 
 @dataclass(frozen=True)
 class AircraftSpec:
-    """Homogeneous UAV limits plus unpublished controller assumptions."""
+    """Homogeneous point-mass aircraft state limits."""
     v_min: float; v_max: float
     theta_min: float; theta_max: float
-    nx_min: float; nx_max: float
-    nz_min: float; nz_max: float
-    phi_min: float; phi_max: float
-    yaw_rate_max: float; pitch_rate_max: float; acceleration_max: float
-    k_yaw: float; k_pitch: float; k_speed: float
-
-
-@dataclass(frozen=True)
-class TargetCommand:
-    """期望航向、俯仰和速度。"""
-    desired_psi: float
-    desired_theta: float
-    desired_v: float
 
 
 @dataclass(frozen=True)

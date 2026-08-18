@@ -1,4 +1,4 @@
-# Li et al. (2023) reproduction evidence table
+# Archived Li et al. (2023) reproduction evidence table
 
 The 2023 repository PDF remains the normative source. The author-team 2022
 predecessor is used only for missing simulator conventions. Fine-grained source
