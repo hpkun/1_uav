@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import numpy as np
 
 from ..config import aircraft_spec, load_config
@@ -24,7 +24,12 @@ class PaperUAVCombatEnv:
 
     team_size, observation_dim, action_dim = 4, OBSERVATION_DIM, 3
 
-    def __init__(self, config: str | Path | dict[str, Any] = "configs/paper_environment.yaml", sensor_noise: bool | None = None) -> None:
+    def __init__(
+        self,
+        config: str | Path | dict[str, Any] = "configs/paper_environment.yaml",
+        sensor_noise: bool | None = None,
+        diagnostic_observer: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> None:
         self.config = load_config(config) if not isinstance(config, dict) else config
         self.spec = aircraft_spec(self.config)
         self.dt = float(self.config["simulation"]["dt"])
@@ -61,6 +66,12 @@ class PaperUAVCombatEnv:
         self.steps = 0
         self.red_attack_kills = 0
         self.blue_attack_kills = 0
+        self.diagnostic_observer = diagnostic_observer
+
+    def _emit_diagnostic(self, event: str, payload: dict[str, Any]) -> None:
+        """Expose already-realized events without adding state or RNG calls."""
+        if self.diagnostic_observer is not None:
+            self.diagnostic_observer(event, payload)
 
     @property
     def red_alive_mask(self) -> np.ndarray:
@@ -153,7 +164,21 @@ class PaperUAVCombatEnv:
                 if target_index is None:
                     continue
                 geometry = compute_paper_geometry(attacker, targets[target_index])
-                if self.weapon.can_fire(geometry) and self.weapon.sample_hit(geometry, self.rng):
+                can_fire = self.weapon.can_fire(geometry)
+                hit = self.weapon.sample_hit(geometry, self.rng) if can_fire else False
+                if can_fire:
+                    self._emit_diagnostic("weapon_attempt", {
+                        "step": self.steps + 1,
+                        "team": "red" if team_index == 0 else "blue",
+                        "attacker_index": attacker_index,
+                        "target_index": target_index,
+                        "distance": geometry.distance,
+                        "ata": geometry.ata,
+                        "aa": geometry.aa,
+                        "ha": geometry.ha,
+                        "hit": hit,
+                    })
+                if hit:
                     proposals[team_index].append((attacker_index, target_index))
         return proposals
 
@@ -172,6 +197,14 @@ class PaperUAVCombatEnv:
                     credited[team_index].append((min(attackers), target))
         self.red_attack_kills += len(credited[0])
         self.blue_attack_kills += len(credited[1])
+        if red_hit_proposals or blue_hit_proposals:
+            self._emit_diagnostic("hit_resolution", {
+                "step": self.steps + 1,
+                "red_successful_proposals": len(red_hit_proposals),
+                "blue_successful_proposals": len(blue_hit_proposals),
+                "red_actual_kills": len(credited[0]),
+                "blue_actual_kills": len(credited[1]),
+            })
         return credited
 
     def _termination_reason(self, truncated: bool) -> str:
