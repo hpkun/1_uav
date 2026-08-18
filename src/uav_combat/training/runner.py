@@ -348,6 +348,26 @@ class MADSACTrainingRunner:
             "draw_rate": mean("draw"),
             "average_red_loss": mean("red_losses"),
             "average_blue_loss": mean("blue_losses"),
+            "total_red_attack_kills": int(sum(
+                record["red_attack_kills"] for record in self.completed_records
+            )),
+            "total_blue_attack_kills": int(sum(
+                record["blue_attack_kills"] for record in self.completed_records
+            )),
+            "average_red_boundary_loss": mean("red_boundary_losses"),
+            "average_blue_boundary_loss": mean("blue_boundary_losses"),
+            "average_red_horizontal_boundary_loss": mean("red_horizontal_boundary_losses"),
+            "average_blue_horizontal_boundary_loss": mean("blue_horizontal_boundary_losses"),
+            "average_red_low_altitude_loss": mean("red_low_altitude_losses"),
+            "average_blue_low_altitude_loss": mean("blue_low_altitude_losses"),
+            "average_red_high_altitude_loss": mean("red_high_altitude_losses"),
+            "average_blue_high_altitude_loss": mean("blue_high_altitude_losses"),
+            "first_attackable_episode_rate": float(np.mean([
+                record["first_attackable_step"] is not None for record in self.completed_records
+            ])) if self.completed_records else 0.0,
+            "first_kill_episode_rate": float(np.mean([
+                record["first_kill_step"] is not None for record in self.completed_records
+            ])) if self.completed_records else 0.0,
             "last_update_metrics": self.last_metrics,
             "evaluation_history": self.evaluation_history,
         }

@@ -7,7 +7,7 @@ from uav_combat.config import load_config
 from uav_combat.dynamics import PointMassDynamics
 from uav_combat.environment.control import action_to_control
 from uav_combat.environment.env import MultiUAVCombatEnv
-from uav_combat.environment.geometry import engagement_geometry
+from uav_combat.environment.geometry import EngagementGeometry, engagement_geometry, engagement_score
 from uav_combat.environment.observation import build_team_observations
 from uav_combat.integrator import RK4Integrator
 from uav_combat.models import AircraftState, AircraftSpec
@@ -39,6 +39,10 @@ def test_zero_action_is_trim_for_100_steps():
     assert aircraft.psi == pytest.approx(0.0, abs=1e-10)
 
 
+def test_v11_battlefield_radius_is_15km():
+    assert load_config(CONFIG_PATH)["battlefield"]["horizontal_radius"] == 15_000.0
+
+
 def test_head_on_at_1km_has_attack_zero_escape_pi_and_is_not_attackable():
     env = MultiUAVCombatEnv(CONFIG_PATH)
     geometry = engagement_geometry(state(), state(x=1000.0, psi=np.pi))
@@ -55,11 +59,39 @@ def test_tail_chase_at_1km_has_both_angles_zero_and_is_attackable():
     assert env.weapon.attackable(geometry)
 
 
-def test_ninety_degree_crossing_is_not_a_rear_shot():
+def test_ninety_degree_escape_is_attackable_at_the_inclusive_boundary():
     env = MultiUAVCombatEnv(CONFIG_PATH)
     geometry = engagement_geometry(state(), state(x=1000.0, psi=np.pi / 2))
     assert geometry.escape_angle == pytest.approx(np.pi / 2)
+    assert env.weapon.attackable(geometry)
+
+
+def test_forty_five_degree_attack_is_attackable_at_the_inclusive_boundary():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    geometry = engagement_geometry(state(psi=np.pi / 4), state(x=1000.0))
+    assert geometry.attack_angle == pytest.approx(np.pi / 4)
+    assert env.weapon.attackable(geometry)
+
+
+def test_escape_angle_above_ninety_degrees_is_not_attackable():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    geometry = engagement_geometry(state(), state(x=1000.0, psi=np.deg2rad(91.0)))
+    assert geometry.escape_angle > np.pi / 2
     assert not env.weapon.attackable(geometry)
+
+
+def test_engagement_score_uses_fixed_8km_scale_not_arena_radius():
+    config = load_config(CONFIG_PATH)
+    geometry = EngagementGeometry(distance=2000.0, attack_angle=0.3, escape_angle=0.5)
+    scale = config["reward"]["engagement_distance_scale"]
+    score_at_15km_arena = engagement_score(geometry, scale)
+    modified = copy.deepcopy(config)
+    modified["battlefield"]["horizontal_radius"] = 99_000.0
+    score_at_other_arena = engagement_score(
+        geometry, modified["reward"]["engagement_distance_scale"]
+    )
+    assert scale == 8000.0
+    assert score_at_other_arena == pytest.approx(score_at_15km_arena)
 
 
 def test_lock_dwell_proposes_kill_on_third_consecutive_step():
@@ -133,6 +165,60 @@ def test_boundary_death_penalty_occurs_once():
     assert first_reward[0] == pytest.approx(-10.0)
     assert second_reward[0] == pytest.approx(0.0)
     assert env.red_boundary_losses == 1
+
+
+def test_boundary_causes_are_classified_once_per_aircraft():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    env.reset(51)
+    env.red = [
+        state(x=env.radius + 1.0),
+        state(altitude=env.altitude_min - 1.0),
+        state(altitude=env.altitude_max + 1.0),
+        state(),
+    ]
+    red_losses, blue_losses = env._resolve_boundaries()
+    assert red_losses == [0, 1, 2]
+    assert blue_losses == []
+    assert env.red_boundary_losses == 3
+    assert env._boundary_cause_count(env.red_boundary_causes, "horizontal") == 1
+    assert env._boundary_cause_count(env.red_boundary_causes, "altitude_low") == 1
+    assert env._boundary_cause_count(env.red_boundary_causes, "altitude_high") == 1
+
+
+def test_boundary_aware_pursuit_matches_target_direction_at_center():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    own, target = state(), state(x=1000.0, y=2000.0)
+    direction = env.fixed_policy.desired_horizontal_direction(own, target)
+    expected = np.array([1.0, 2.0]) / np.sqrt(5.0)
+    assert np.allclose(direction, expected)
+
+
+def test_boundary_aware_pursuit_biases_toward_center_near_boundary():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    own, target = state(x=13_000.0), state(x=13_000.0, y=1000.0)
+    direction = env.fixed_policy.desired_horizontal_direction(own, target)
+    assert direction[0] < 0.0
+    assert direction[1] > 0.0
+
+
+def test_center_direction_dominates_near_exact_horizontal_boundary():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    own, target = state(x=14_999.0), state(x=20_000.0)
+    direction = env.fixed_policy.desired_horizontal_direction(own, target)
+    assert direction[0] < -0.99
+    assert abs(direction[1]) < 1e-8
+
+
+def test_vertical_lower_safety_prevents_downward_command():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    own, target = state(altitude=900.0), state(x=1000.0, altitude=100.0)
+    assert env.fixed_policy.action(own, [target])[1] >= 0.0
+
+
+def test_vertical_upper_safety_prevents_upward_command():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    own, target = state(altitude=7600.0), state(x=1000.0, altitude=9000.0)
+    assert env.fixed_policy.action(own, [target])[1] <= 0.0
 
 
 def test_observation_shape_dead_masks_finiteness_and_dead_self():

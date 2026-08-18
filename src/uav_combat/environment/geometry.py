@@ -33,8 +33,10 @@ def engagement_geometry(attacker: AircraftState, target: AircraftState) -> Engag
     )
 
 
-def engagement_score(geometry: EngagementGeometry, battlefield_radius: float) -> float:
-    range_score = float(np.clip(1.0 - geometry.distance / (2.0 * battlefield_radius), 0.0, 1.0))
+def engagement_score(geometry: EngagementGeometry, engagement_distance_scale: float) -> float:
+    if engagement_distance_scale <= 0.0:
+        raise ValueError("engagement_distance_scale must be positive")
+    range_score = float(np.clip(1.0 - geometry.distance / engagement_distance_scale, 0.0, 1.0))
     attack_score = (1.0 + np.cos(geometry.attack_angle)) / 2.0
     escape_score = (1.0 + np.cos(geometry.escape_angle)) / 2.0
     return float(range_score * attack_score * escape_score)

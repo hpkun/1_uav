@@ -8,18 +8,18 @@ from .geometry import engagement_geometry, engagement_score
 
 
 def team_potentials(
-    team: list[AircraftState], opponents: list[AircraftState], battlefield_radius: float
+    team: list[AircraftState], opponents: list[AircraftState], engagement_distance_scale: float
 ) -> np.ndarray:
     values = np.zeros(len(team), dtype=np.float32)
     for index, own in enumerate(team):
         if not own.alive:
             continue
         attack = [
-            engagement_score(engagement_geometry(own, target), battlefield_radius)
+            engagement_score(engagement_geometry(own, target), engagement_distance_scale)
             for target in opponents if target.alive
         ]
         threat = [
-            engagement_score(engagement_geometry(target, own), battlefield_radius)
+            engagement_score(engagement_geometry(target, own), engagement_distance_scale)
             for target in opponents if target.alive
         ]
         values[index] = (max(attack, default=0.0) - max(threat, default=0.0))
