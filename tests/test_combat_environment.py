@@ -78,24 +78,27 @@ def test_constant_bank_neutral_vertical_preserves_theta_and_altitude_for_100_ste
     assert abs(aircraft.psi) > 0.1
 
 
-def test_v13_config_uses_arena_owned_safety_and_derived_observation_scales():
+def test_v14_config_has_only_altitude_envelope_and_single_relative_position_scale():
     config = load_config(CONFIG_PATH)
     assert set(config["action"]) == {"nx_scale", "nz_delta_scale", "phi_max"}
     assert "elevation_gain" not in config["blue_policy"]
     assert "elevation_action_scale" not in config["blue_policy"]
     assert config["blue_policy"]["pitch_load_gain"] == 4.0
-    assert "boundary_recovery_start_fraction" not in config["blue_policy"]
-    assert "vertical_safety_margin" not in config["blue_policy"]
-    assert config["blue_policy"]["recovery_speed"] == 225.0
-    assert config["battlefield"]["horizontal_soft_fraction"] == 0.65
-    assert config["battlefield"]["vertical_soft_margin"] == 1000.0
-    assert set(config["observation"]) == {
-        "speed_center", "speed_scale", "relative_velocity_scale"
+    assert set(config["flight_envelope"]) == {"altitude_min", "altitude_max"}
+    assert set(config) == {
+        "simulation", "action", "aircraft", "flight_envelope", "scenario",
+        "weapon", "reward", "observation", "blue_policy",
     }
-
-
-def test_v11_battlefield_radius_is_15km():
-    assert load_config(CONFIG_PATH)["battlefield"]["horizontal_radius"] == 15_000.0
+    assert set(config["blue_policy"]) == {
+        "desired_speed", "speed_error_scale", "heading_gain", "pitch_load_gain",
+    }
+    assert set(config["reward"]) == {
+        "kill_reward", "death_penalty", "shaping_lambda", "engagement_distance_scale",
+    }
+    assert set(config["observation"]) == {
+        "speed_center", "speed_scale", "relative_position_scale",
+        "relative_velocity_scale",
+    }
 
 
 def test_head_on_at_1km_has_attack_zero_escape_pi_and_is_not_attackable():
@@ -141,7 +144,7 @@ def test_engagement_score_uses_fixed_8km_scale_not_arena_radius():
     scale = config["reward"]["engagement_distance_scale"]
     score_at_15km_arena = engagement_score(geometry, scale)
     modified = copy.deepcopy(config)
-    modified["battlefield"]["horizontal_radius"] = 99_000.0
+    modified["flight_envelope"]["altitude_max"] = 99_000.0
     score_at_other_arena = engagement_score(
         geometry, modified["reward"]["engagement_distance_scale"]
     )
@@ -210,70 +213,41 @@ def test_two_attackers_split_one_kill_reward_equally():
     assert rewards.tolist() == [5.0, 5.0, 0.0, 0.0]
 
 
-def test_boundary_death_penalty_occurs_once():
+def test_altitude_death_penalty_occurs_once():
     env = MultiUAVCombatEnv(CONFIG_PATH)
     env.reset(5)
-    env.red = one_alive(state(x=env.radius - 1.0))
+    env.red = one_alive(state(altitude=env.altitude_min + 1.0, theta=-np.pi / 3.0))
     env.blue = [state(alive=False) for _ in range(4)]
     _, _, _, _, first_info = env.step(np.zeros((4, 3)), np.zeros((4, 3)))
     _, _, _, _, second_info = env.step(np.zeros((4, 3)), np.zeros((4, 3)))
     assert first_info["event_rewards"][0] == pytest.approx(-10.0)
     assert second_info["event_rewards"][0] == pytest.approx(0.0)
-    assert env.red_boundary_losses == 1
+    assert env.red_altitude_losses == 1
 
 
-def test_boundary_causes_are_classified_once_per_aircraft():
+def test_altitude_causes_are_classified_once_per_aircraft():
     env = MultiUAVCombatEnv(CONFIG_PATH)
     env.reset(51)
     env.red = [
-        state(x=env.radius + 1.0),
+        state(x=100_000.0),
         state(altitude=env.altitude_min - 1.0),
         state(altitude=env.altitude_max + 1.0),
         state(),
     ]
-    red_losses, blue_losses = env._resolve_boundaries()
-    assert red_losses == [0, 1, 2]
+    red_losses, blue_losses = env._resolve_altitude_limits()
+    assert red_losses == [1, 2]
     assert blue_losses == []
-    assert env.red_boundary_losses == 3
-    assert env._boundary_cause_count(env.red_boundary_causes, "horizontal") == 1
-    assert env._boundary_cause_count(env.red_boundary_causes, "altitude_low") == 1
-    assert env._boundary_cause_count(env.red_boundary_causes, "altitude_high") == 1
+    assert env.red_altitude_losses == 2
+    assert env._cause_count(env.red_altitude_causes, "altitude_low") == 1
+    assert env._cause_count(env.red_altitude_causes, "altitude_high") == 1
 
 
-def test_boundary_aware_pursuit_matches_target_direction_at_center():
+def test_pure_pursuit_matches_target_direction():
     env = MultiUAVCombatEnv(CONFIG_PATH)
     own, target = state(), state(x=1000.0, y=2000.0)
     direction = env.fixed_policy.desired_horizontal_direction(own, target)
     expected = np.array([1.0, 2.0]) / np.sqrt(5.0)
     assert np.allclose(direction, expected)
-
-
-def test_boundary_aware_pursuit_biases_toward_center_near_boundary():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    own, target = state(x=13_000.0), state(x=13_000.0, y=1000.0)
-    direction = env.fixed_policy.desired_horizontal_direction(own, target)
-    assert direction[0] < 0.0
-    assert direction[1] > 0.0
-
-
-def test_center_direction_dominates_near_exact_horizontal_boundary():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    own, target = state(x=14_999.0), state(x=20_000.0)
-    direction = env.fixed_policy.desired_horizontal_direction(own, target)
-    assert direction[0] < -0.99
-    assert abs(direction[1]) < 1e-8
-
-
-def test_vertical_lower_safety_prevents_downward_command():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    own, target = state(altitude=900.0), state(x=1000.0, altitude=100.0)
-    assert env.fixed_policy.action(own, [target])[1] >= 0.0
-
-
-def test_vertical_upper_safety_prevents_upward_command():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    own, target = state(altitude=7600.0), state(x=1000.0, altitude=9000.0)
-    assert env.fixed_policy.action(own, [target])[1] <= 0.0
 
 
 def test_blue_action_uses_public_helper_and_common_physical_mapping(monkeypatch):
@@ -297,15 +271,15 @@ def test_blue_action_uses_public_helper_and_common_physical_mapping(monkeypatch)
 def test_observation_shape_dead_masks_finiteness_and_dead_self():
     env = MultiUAVCombatEnv(CONFIG_PATH)
     observation, _ = env.reset(6)
-    assert observation.shape == (4, 54)
+    assert observation.shape == (4, 52)
     env.red[1].alive = False
     env.blue[2].alive = False
     observation = env._observations()
     assert np.all(np.isfinite(observation))
     assert np.all(observation[1] == 0.0)
-    assert observation[0, 11] == 0.0  # first ally slot's alive mask
-    assert observation[0, 32] == 1.0
-    assert observation[0, 46] == 0.0  # third enemy slot's alive mask
+    assert observation[0, 9] == 0.0  # first ally slot's alive mask
+    assert observation[0, 30] == 1.0
+    assert observation[0, 44] == 0.0  # third enemy slot's alive mask
 
 
 def test_observations_are_invariant_to_common_horizontal_rotation():
@@ -322,6 +296,44 @@ def test_observations_are_invariant_to_common_horizontal_rotation():
         )
         aircraft.psi = (aircraft.psi + angle + np.pi) % (2 * np.pi) - np.pi
     assert np.allclose(rotated._observations(), baseline, atol=2e-6)
+
+
+def test_observations_and_blue_actions_are_invariant_to_horizontal_translation():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    env.reset(71)
+    baseline_observation = env._observations()
+    baseline_actions = env.fixed_policy.team_actions(env.blue, env.red)
+    for aircraft in env.red + env.blue:
+        aircraft.x += 50_000.0
+        aircraft.y -= 30_000.0
+    assert np.allclose(env._observations(), baseline_observation, atol=2e-6)
+    assert np.allclose(env.fixed_policy.team_actions(env.blue, env.red), baseline_actions)
+
+
+def test_multistep_environment_is_horizontally_translation_invariant():
+    first, shifted = MultiUAVCombatEnv(CONFIG_PATH), MultiUAVCombatEnv(CONFIG_PATH)
+    first.reset(72); shifted.reset(72)
+    translation = np.array([50_000.0, -30_000.0])
+    for aircraft in shifted.red + shifted.blue:
+        aircraft.x += translation[0]; aircraft.y += translation[1]
+    for _ in range(25):
+        red_actions = first.fixed_policy.team_actions(first.red, first.blue)
+        shifted_actions = shifted.fixed_policy.team_actions(shifted.red, shifted.blue)
+        assert np.allclose(shifted_actions, red_actions, atol=1e-7)
+        blue_actions = first.fixed_policy.team_actions(first.blue, first.red)
+        shifted_blue = shifted.fixed_policy.team_actions(shifted.blue, shifted.red)
+        first_result = first.step(red_actions, blue_actions)
+        shifted_result = shifted.step(shifted_actions, shifted_blue)
+        assert np.allclose(first_result[0], shifted_result[0], atol=2e-6)
+        assert np.allclose(first_result[1], shifted_result[1], atol=2e-6)
+        assert first_result[2:4] == shifted_result[2:4]
+        for original, translated in zip(first.red + first.blue, shifted.red + shifted.blue):
+            assert translated.x == pytest.approx(original.x + translation[0], abs=1e-8)
+            assert translated.y == pytest.approx(original.y + translation[1], abs=1e-8)
+            assert translated.altitude == pytest.approx(original.altitude, abs=1e-8)
+            assert translated.v == pytest.approx(original.v, abs=1e-10)
+            assert translated.theta == pytest.approx(original.theta, abs=1e-10)
+            assert translated.psi == pytest.approx(original.psi, abs=1e-10)
 
 
 def test_seeded_initialization_has_only_documented_perturbations():

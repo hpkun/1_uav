@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 from uav_combat.madsac import MADSACTrainer
 from uav_combat.training.evaluator import evaluate
+from uav_combat.environment.observation import OBSERVATION_DIM
 
 
 def main() -> None:
@@ -12,7 +13,7 @@ def main() -> None:
     checkpoint=root/args.checkpoint
     state=torch.load(checkpoint,map_location="cpu",weights_only=False)
     hidden=int(state["actor"]["backbone.0.weight"].shape[0])
-    trainer = MADSACTrainer(observation_dim=54, hidden_dim=hidden); trainer.load(checkpoint); result=evaluate(trainer, root / "configs/combat_environment.yaml")
+    trainer = MADSACTrainer(observation_dim=OBSERVATION_DIM, hidden_dim=hidden); trainer.load(checkpoint); result=evaluate(trainer, root / "configs/combat_environment.yaml")
     output=root/args.output; output.parent.mkdir(parents=True,exist_ok=True); output.write_text(json.dumps(result,indent=2),encoding="utf-8"); print(json.dumps(result, indent=2))
 
 

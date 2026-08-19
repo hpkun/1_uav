@@ -21,7 +21,7 @@ def configs():
 def test_protocol_and_interface_dimensions():
     _, algorithm = configs()
     assert algorithm["network"] == {
-        "observation_dim": 54,
+        "observation_dim": 52,
         "action_dim": 3,
         "num_agents": 4,
         "actor_hidden_layers": [256, 256],
@@ -32,11 +32,11 @@ def test_protocol_and_interface_dimensions():
     assert algorithm["training"]["evaluation_episodes"] == 20
 
 
-def test_vector_seed_formula_no_reuse_and_54d_observations():
+def test_vector_seed_formula_no_reuse_and_52d_observations():
     environment, _ = configs()
     vector = SyncVectorEnv(3, environment, base_seed=10, forbidden_seeds=range(10_000_000, 10_000_020))
     observations = vector.reset()
-    assert observations.shape == (3, 4, 54)
+    assert observations.shape == (3, 4, 52)
     assert vector.last_reset_seeds.tolist() == [10, 11, 12]
     for env in vector.envs:
         env.max_steps = 1
@@ -51,7 +51,7 @@ def test_24_environment_step_adds_exactly_24_transitions(tmp_path):
         environment, algorithm, num_envs=24, total_sampled_steps=24,
         output_dir=tmp_path, smoke=True,
     )
-    assert runner.observations.shape == (24, 4, 54)
+    assert runner.observations.shape == (24, 4, 52)
     result = runner.vector_step()
     assert result["new_transitions"] == 24
     assert runner.trainer.sampled_steps == 24

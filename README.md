@@ -10,7 +10,7 @@ The active runtime path contains one environment:
 
 - `MultiUAVCombatEnv`, configured by `configs/combat_environment.yaml`
 - six-state 3DOF point-mass dynamics with direct `[nx,nz,phi]` actions
-- full-state 54-dimensional rotation-invariant local observations
+- full-state 52-dimensional translation- and rotation-invariant local observations
 - deterministic 45°/90° attack envelope, three-step locks, and simultaneous kills
 - boundary-aware nearest-target pursuit Blue policy
 - shared MADSAC actor, double attention critics, replay, targets, entropy, and

@@ -52,7 +52,7 @@ def test_fresh_actor_does_not_load_checkpoint_or_step_optimizer(monkeypatch):
     monkeypatch.setattr(torch, "load", lambda *args, **kwargs: pytest.fail("checkpoint load forbidden"))
     monkeypatch.setattr(torch.optim.Optimizer, "step", lambda *args, **kwargs: pytest.fail("optimizer step forbidden"))
     actor = fresh_actor(101)
-    output = actor.deterministic(torch.zeros(4, 54))
+    output = actor.deterministic(torch.zeros(4, 52))
     assert output.shape == (4, 3)
 
 

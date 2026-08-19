@@ -7,6 +7,7 @@ import torch
 from ..madsac.actor import SharedSquashedGaussianActor
 from ..models import AircraftState, ControlCommand
 from ..environment.control import trim_normal_load
+from ..environment.observation import OBSERVATION_DIM
 
 
 def trim_a1(theta: float | np.ndarray, phi: float | np.ndarray) -> np.ndarray:
@@ -49,7 +50,7 @@ def fresh_actor(seed: int, hidden_dim: int = 256) -> SharedSquashedGaussianActor
     """Construct a never-trained actor; this function does not load state or create optimizers."""
     torch.manual_seed(int(seed))
     actor = SharedSquashedGaussianActor(
-        observation_dim=54, action_dim=3, hidden_dim=hidden_dim,
+        observation_dim=OBSERVATION_DIM, action_dim=3, hidden_dim=hidden_dim,
         log_std_min=-5.0, log_std_max=2.0, activation="relu",
     )
     actor.eval()

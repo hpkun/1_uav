@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..environment.env import MultiUAVCombatEnv
+from ..environment.observation import OBSERVATION_DIM
 
 
 @dataclass
@@ -31,7 +32,7 @@ class SyncVectorEnv:
         self.forbidden_seeds = set(map(int, forbidden_seeds))
         self.used_training_seeds: set[int] = set()
         self.episode_indices = np.zeros(num_envs, dtype=np.int64)
-        self.current_observations = np.zeros((num_envs, 4, 54), dtype=np.float32)
+        self.current_observations = np.zeros((num_envs, 4, OBSERVATION_DIM), dtype=np.float32)
         self.current_alive_masks = np.ones((num_envs, 4), dtype=np.float32)
         self.last_reset_seeds = np.zeros(num_envs, dtype=np.int64)
 

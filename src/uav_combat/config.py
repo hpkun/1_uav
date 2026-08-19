@@ -10,7 +10,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     required = {
-        "simulation", "action", "aircraft", "battlefield", "scenario",
+        "simulation", "action", "aircraft", "flight_envelope", "scenario",
         "weapon", "reward", "observation", "blue_policy",
     }
     if not isinstance(config, dict) or not required.issubset(config):

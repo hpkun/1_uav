@@ -1,6 +1,6 @@
 algorithm: MADSAC
 network:
-  observation_dim: 54
+  observation_dim: 52
   action_dim: 3
   num_agents: 4
   actor_hidden_layers: [256, 256]

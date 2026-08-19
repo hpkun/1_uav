@@ -33,7 +33,6 @@ METRIC_RANGES = {
     "theta_dot": (-0.25, 0.25),
 }
 BOUNDARY_KEYS = [
-    "red_horizontal_boundary_losses", "blue_horizontal_boundary_losses",
     "red_low_altitude_losses", "blue_low_altitude_losses",
     "red_high_altitude_losses", "blue_high_altitude_losses",
 ]
@@ -240,8 +239,8 @@ def rollout_worker(task: tuple[str, str, int | None, int, int, bool]) -> dict:
             observation, _, terminated, truncated, info = env.step(red_actions, blue_actions)
             if collect_windows and len(result["death_windows"]) < 80:
                 for team_name, before, after, causes, rings in (
-                    ("red", before_red, env.red_alive_mask, env.red_boundary_causes, red_rings),
-                    ("blue", before_blue, env.blue_alive_mask, env.blue_boundary_causes, blue_rings),
+                    ("red", before_red, env.red_alive_mask, env.red_altitude_causes, red_rings),
+                    ("blue", before_blue, env.blue_alive_mask, env.blue_altitude_causes, blue_rings),
                 ):
                     for index in range(4):
                         if before[index] and not after[index] and causes[index] == "altitude_low":
@@ -592,7 +591,6 @@ def comparison_table(modes: dict) -> list[dict]:
             "mode": name,
             "red_low_altitude_loss_per_episode": mode["red_low_altitude_losses_per_episode"],
             "red_high_altitude_loss_per_episode": mode["red_high_altitude_losses_per_episode"],
-            "red_horizontal_loss_per_episode": mode["red_horizontal_boundary_losses_per_episode"],
             "red_attack_kill_per_episode": mode["red_attack_kills_per_episode"],
             "episode_length_mean": mode["episode_length_mean"],
             "mean_abs_phi": control["abs_phi"]["mean"], "mean_nz": control["nz"]["mean"],

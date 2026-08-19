@@ -7,7 +7,7 @@ from torch import nn
 
 class AttentionCritic(nn.Module):
     """Compute one Q value per agent using explicit Wq/Wk/Wv multi-head attention."""
-    def __init__(self, observation_dim: int = 54, action_dim: int = 3, hidden_dim: int = 256, attention_heads: int = 2, activation: str = "leaky_relu") -> None:
+    def __init__(self, observation_dim: int = 52, action_dim: int = 3, hidden_dim: int = 256, attention_heads: int = 2, activation: str = "leaky_relu") -> None:
         super().__init__()
         if hidden_dim % attention_heads:
             raise ValueError("hidden_dim must be divisible by attention_heads")
