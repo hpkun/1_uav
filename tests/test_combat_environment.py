@@ -5,7 +5,7 @@ import pytest
 
 from uav_combat.config import load_config
 from uav_combat.dynamics import PointMassDynamics
-from uav_combat.environment.control import action_to_control
+from uav_combat.environment.control import action_to_control, trim_normal_load
 from uav_combat.environment.env import MultiUAVCombatEnv
 from uav_combat.environment.geometry import EngagementGeometry, engagement_geometry, engagement_score
 from uav_combat.environment.observation import build_team_observations
@@ -31,12 +31,60 @@ def test_zero_action_is_trim_for_100_steps():
     integrator = RK4Integrator(config["simulation"]["dt"])
     spec = AircraftSpec(**config["aircraft"])
     aircraft = state()
-    control = action_to_control(np.zeros(3), config["action"])
     for _ in range(100):
+        control = action_to_control(aircraft, np.zeros(3), config["action"])
         aircraft = integrator.step(aircraft, control, dynamics, spec)
     assert aircraft.v == pytest.approx(225.0, abs=1e-10)
     assert aircraft.theta == pytest.approx(0.0, abs=1e-10)
     assert aircraft.psi == pytest.approx(0.0, abs=1e-10)
+
+
+@pytest.mark.parametrize("theta_deg,phi_deg", [
+    (0, 0), (0, 30), (0, 45), (0, 60), (30, 45), (-30, 45),
+])
+def test_trim_relative_mapping_is_vertical_neutral(theta_deg, phi_deg):
+    config = load_config(CONFIG_PATH)
+    own = state(theta=np.deg2rad(theta_deg))
+    action = np.array([0.0, 0.0, phi_deg / 60.0])
+    control = action_to_control(own, action, config["action"])
+    assert control.nz == pytest.approx(
+        trim_normal_load(own.theta, np.deg2rad(phi_deg)), abs=1e-12
+    )
+    assert control.nz * np.cos(control.phi) - np.cos(own.theta) == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("theta_deg,phi_deg", [(0, 0), (0, 60), (30, 45), (-30, 45)])
+def test_vertical_action_sign_always_controls_pitch_rate_direction(theta_deg, phi_deg):
+    config = load_config(CONFIG_PATH)
+    own = state(theta=np.deg2rad(theta_deg))
+    positive = action_to_control(own, [0, 0.5, phi_deg / 60], config["action"])
+    negative = action_to_control(own, [0, -0.5, phi_deg / 60], config["action"])
+    assert positive.nz * np.cos(positive.phi) - np.cos(own.theta) > 0
+    assert negative.nz * np.cos(negative.phi) - np.cos(own.theta) < 0
+
+
+def test_constant_bank_neutral_vertical_preserves_theta_and_altitude_for_100_steps():
+    config = load_config(CONFIG_PATH)
+    dynamics = PointMassDynamics()
+    integrator = RK4Integrator(config["simulation"]["dt"])
+    spec = AircraftSpec(**config["aircraft"])
+    aircraft = state()
+    initial_altitude = aircraft.altitude
+    for _ in range(100):
+        control = action_to_control(aircraft, [0.0, 0.0, 0.5], config["action"])
+        aircraft = integrator.step(aircraft, control, dynamics, spec)
+    assert aircraft.theta == pytest.approx(0.0, abs=1e-10)
+    assert aircraft.altitude == pytest.approx(initial_altitude, abs=1e-8)
+    assert abs(aircraft.psi) > 0.1
+
+
+def test_v12_config_contains_only_new_action_and_vertical_policy_names():
+    config = load_config(CONFIG_PATH)
+    assert set(config["action"]) == {"nx_scale", "nz_delta_scale", "phi_max"}
+    assert "elevation_gain" not in config["blue_policy"]
+    assert "elevation_action_scale" not in config["blue_policy"]
+    assert config["blue_policy"]["pitch_load_gain"] == 4.0
+    assert config["blue_policy"]["boundary_recovery_start_fraction"] == 0.65
 
 
 def test_v11_battlefield_radius_is_15km():
@@ -219,6 +267,24 @@ def test_vertical_upper_safety_prevents_upward_command():
     env = MultiUAVCombatEnv(CONFIG_PATH)
     own, target = state(altitude=7600.0), state(x=1000.0, altitude=9000.0)
     assert env.fixed_policy.action(own, [target])[1] <= 0.0
+
+
+def test_blue_action_uses_public_helper_and_common_physical_mapping(monkeypatch):
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    own, target = state(), state(x=1000.0)
+    calls = []
+    original = env.fixed_policy.action_toward
+    def recording_helper(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(env.fixed_policy, "action_toward", recording_helper)
+    action = env.fixed_policy.action(own, [target])
+    assert len(calls) == 1
+    common_control = action_to_control(own, action, env.config["action"])
+    states = [own.copy()]
+    env._advance(states, np.asarray([action]))
+    direct = env.integrator.step(own, common_control, env.dynamics, env.spec)
+    assert np.allclose(states[0].as_array(), direct.as_array())
 
 
 def test_observation_shape_dead_masks_finiteness_and_dead_self():

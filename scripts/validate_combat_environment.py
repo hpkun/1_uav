@@ -1,4 +1,4 @@
-"""Reproducible V1.1 environment validation without learning."""
+"""Reproducible V1.2 environment validation without learning."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,10 @@ import numpy as np
 
 from uav_combat.environment.env import MultiUAVCombatEnv
 from uav_combat.math_utils import wrap_angle
+from diagnose_action_stability import (
+    ACTOR_SEEDS, finalize_rollout, finalize_short, merge_rollouts,
+    rollout_worker, short_worker,
+)
 
 
 def distribution(values: list[float]) -> dict:
@@ -78,8 +82,7 @@ def reset_statistics(config: Path, count: int) -> dict:
 
 
 def flank_actions(env: MultiUAVCombatEnv, nominal_heading: float) -> np.ndarray:
-    """Simple 5-second symmetric lateral break used only by validation."""
-    cfg = env.config["blue_policy"]
+    """Simple 5-second symmetric lateral break through the public maneuver helper."""
     actions = []
     for index, own in enumerate(env.red):
         if not own.alive:
@@ -87,11 +90,24 @@ def flank_actions(env: MultiUAVCombatEnv, nominal_heading: float) -> np.ndarray:
             continue
         offset = np.deg2rad(30.0) if index < 2 else -np.deg2rad(30.0)
         desired_heading = wrap_angle(nominal_heading + offset)
-        actions.append(np.clip(np.array([
-            (260.0 - own.v) / cfg["speed_error_scale"],
-            cfg["elevation_gain"] * (0.0 - own.theta) / cfg["elevation_action_scale"],
-            cfg["heading_gain"] * wrap_angle(desired_heading - own.psi) / (np.pi / 3.0),
-        ], dtype=np.float32), -1.0, 1.0))
+        actions.append(env.fixed_policy.action_toward(own, desired_heading, 0.0, 260.0))
+    return np.stack(actions)
+
+
+def tail_blue_actions(env: MultiUAVCombatEnv, nominal_heading: float) -> np.ndarray:
+    """Diagnostic-only straight merge followed by a deterministic level turn."""
+    if env.steps < 120:
+        return np.zeros((4, 3), dtype=np.float32)
+    actions = []
+    for own in env.blue:
+        if not own.alive:
+            actions.append(np.zeros(3, dtype=np.float32))
+            continue
+        if np.hypot(own.x, own.y) > 0.65 * env.radius:
+            desired_heading = float(np.arctan2(-own.y, -own.x))
+        else:
+            desired_heading = wrap_angle(nominal_heading + np.deg2rad(60.0))
+        actions.append(env.fixed_policy.action_toward(own, desired_heading, 0.0, 260.0))
     return np.stack(actions)
 
 
@@ -115,6 +131,11 @@ def run_episode(task: tuple[str, str, int]) -> dict:
                 else env.fixed_policy.team_actions(env.red, env.blue)
             )
             blue_actions = None
+        elif scenario == "tail":
+            red_actions = env.fixed_policy.team_actions(env.red, env.blue)
+            blue_actions = tail_blue_actions(
+                env, wrap_angle(reset_info["radial_angle"] + np.pi)
+            )
         else:
             raise ValueError(f"unknown scenario: {scenario}")
         _, _, terminated, truncated, info = env.step(red_actions, blue_actions)
@@ -164,6 +185,7 @@ def summarize(records: list[dict], scenario: str) -> dict:
         "red_attack_kills_total": red_attack_kills,
         "blue_attack_kills_total": blue_attack_kills,
         "combat_kills_total": red_attack_kills + blue_attack_kills,
+        "combat_deaths_total": red_attack_kills + blue_attack_kills,
         "total_deaths": total_deaths,
         "red_attack_kills_mean": mean("red_attack_kills"),
         "blue_attack_kills_mean": mean("blue_attack_kills"),
@@ -172,11 +194,15 @@ def summarize(records: list[dict], scenario: str) -> dict:
         **{f"{key}_total": sum(r[key] for r in records) for key in boundary_keys},
         **{f"{key}_mean": mean(key) for key in boundary_keys},
         "combat_kill_fraction": (red_attack_kills + blue_attack_kills) / max(total_deaths, 1),
+        "boundary_deaths_total": sum(
+            sum(r[key] for r in records) for key in boundary_keys
+        ),
         "win_rate": mean("red_win"), "loss_rate": mean("blue_win"),
         "draw_rate": mean("draw"), "termination_counts": termination_counts,
         "shaping_reward_statistics": reward_statistics(shaping_values),
         "event_reward_statistics": reward_statistics(event_values),
     }
+    result["boundary_death_fraction"] = result["boundary_deaths_total"] / max(total_deaths, 1)
     diagnoses = []
     if scenario == "flank" and not first_attackable:
         diagnoses.append("degenerate: flank baseline never entered the attack envelope")
@@ -204,31 +230,111 @@ def run_scenario(
     return summarize(records, scenario)
 
 
+def run_action_stability(config: Path, workers: int) -> tuple[dict, dict]:
+    """Run five-seed 200-full and 500-short stochastic/uniform regressions."""
+    stochastic_tasks = [
+        (str(config), "fresh_stochastic", seed, 40_000_000 + i * 40, 40, False)
+        for i, seed in enumerate(ACTOR_SEEDS)
+    ]
+    uniform_tasks = [
+        (str(config), "uniform_random", None, 41_000_000 + i * 40, 40, False)
+        for i in range(5)
+    ]
+    stochastic_short_tasks = [
+        (str(config), "fresh_stochastic", seed, 42_000_000 + i * 100, 100)
+        for i, seed in enumerate(ACTOR_SEEDS)
+    ]
+    uniform_short_tasks = [
+        (str(config), "uniform", None, 43_000_000 + i * 100, 100)
+        for i in range(5)
+    ]
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        stochastic_full = finalize_rollout(merge_rollouts(
+            list(executor.map(rollout_worker, stochastic_tasks))
+        ))
+        uniform_full = finalize_rollout(merge_rollouts(
+            list(executor.map(rollout_worker, uniform_tasks))
+        ))
+        stochastic_short = finalize_short(
+            list(executor.map(short_worker, stochastic_short_tasks))
+        )
+        uniform_short = finalize_short(
+            list(executor.map(short_worker, uniform_short_tasks))
+        )
+    return (
+        {"full_episodes": stochastic_full, "short_100_step_rollouts": stochastic_short},
+        {"full_episodes": uniform_full, "short_100_step_rollouts": uniform_short},
+    )
+
+
+def all_finite(value) -> bool:
+    if isinstance(value, dict):
+        return all(all_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return all(all_finite(item) for item in value)
+    return not isinstance(value, (float, np.floating)) or np.isfinite(value)
+
+
+def acceptance(result: dict) -> dict:
+    short = result["fresh_stochastic_actor_stability"]["short_100_step_rollouts"]
+    rule = result["rule_vs_rule"]
+    flank = result["flank_then_pursuit_vs_fixed_blue"]
+    checks = {
+        "A_fresh_stochastic_no_systematic_downward_drift": (
+            short["altitude_change"]["mean"] > -25.0
+            and short["theta_change"]["mean"] > -0.025
+        ),
+        "B_rule_no_mass_low_altitude_self_destruction": (
+            rule["red_low_altitude_losses_mean"]
+            + rule["blue_low_altitude_losses_mean"] <= 0.1
+        ),
+        "C_rule_and_flank_not_boundary_dominated": (
+            rule["boundary_death_fraction"] < 0.5
+            and flank["boundary_death_fraction"] < 0.5
+        ),
+        "D_maneuver_attackable_lock_kill_reachable": any(
+            result[key]["attackable_episodes"] > 0
+            and result[key]["completed_lock_episodes"] > 0
+            and result[key]["kill_episodes"] > 0
+            for key in (
+                "rule_vs_rule", "flank_then_pursuit_vs_fixed_blue",
+                "tail_acquisition_diagnostic",
+            )
+        ),
+        "E_all_values_finite": all_finite(result),
+    }
+    return {"checks": checks, "passed": all(checks.values())}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reset-count", type=int, default=1000)
-    parser.add_argument("--straight-episodes", type=int, default=100)
     parser.add_argument("--rule-episodes", type=int, default=200)
     parser.add_argument("--flank-episodes", type=int, default=200)
+    parser.add_argument("--tail-episodes", type=int, default=200)
     parser.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1))
-    parser.add_argument("--output", default="outputs/combat_environment_validation_v1_1.json")
+    parser.add_argument("--output", default="outputs/combat_environment_validation_v1_2.json")
     args = parser.parse_args()
-    if min(args.reset_count, args.straight_episodes, args.rule_episodes, args.flank_episodes, args.workers) <= 0:
+    if min(args.reset_count, args.rule_episodes, args.flank_episodes, args.tail_episodes, args.workers) <= 0:
         raise ValueError("all validation counts and workers must be positive")
     root = Path(__file__).resolve().parents[1]
     config = root / "configs/combat_environment.yaml"
+    stochastic, uniform = run_action_stability(config, args.workers)
     result = {
         "reset_statistics": reset_statistics(config, args.reset_count),
-        "straight_vs_straight": run_scenario(
-            config, "straight", args.straight_episodes, 1_000_000, args.workers
-        ),
+        "fresh_stochastic_actor_stability": stochastic,
+        "uniform_random_stability": uniform,
         "rule_vs_rule": run_scenario(
             config, "rule", args.rule_episodes, 2_000_000, args.workers
         ),
         "flank_then_pursuit_vs_fixed_blue": run_scenario(
             config, "flank", args.flank_episodes, 3_000_000, args.workers
         ),
+        "tail_acquisition_diagnostic": run_scenario(
+            config, "tail", args.tail_episodes, 4_000_000, args.workers
+        ),
     }
+    result["acceptance"] = acceptance(result)
     output = root / args.output
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2), encoding="utf-8")

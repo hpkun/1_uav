@@ -3,8 +3,7 @@ simulation:
   max_steps: 1000
 action:
   nx_scale: 2.0
-  nz_trim: 1.0
-  nz_scale: 4.0
+  nz_delta_scale: 2.0
   phi_max: 1.0471975511965976
 aircraft:
   v_min: 150.0
@@ -47,7 +46,6 @@ blue_policy:
   desired_speed: 260.0
   speed_error_scale: 50.0
   heading_gain: 1.5
-  elevation_gain: 4.0
-  elevation_action_scale: 4.0
-  boundary_recovery_start_fraction: 0.8
+  pitch_load_gain: 4.0
+  boundary_recovery_start_fraction: 0.65
   vertical_safety_margin: 500.0

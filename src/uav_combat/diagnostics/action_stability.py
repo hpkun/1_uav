@@ -6,28 +6,25 @@ import torch
 
 from ..madsac.actor import SharedSquashedGaussianActor
 from ..models import AircraftState, ControlCommand
-
-
-def trim_normal_load(theta: float | np.ndarray, phi: float | np.ndarray, eps: float = 1e-8):
-    cosine_phi = np.cos(phi)
-    safe = np.where(np.abs(cosine_phi) < eps, np.copysign(eps, cosine_phi), cosine_phi)
-    return np.cos(theta) / safe
+from ..environment.control import trim_normal_load
 
 
 def trim_a1(theta: float | np.ndarray, phi: float | np.ndarray) -> np.ndarray:
+    """Historical V1.1 raw-action coordinate of the bank-trim load."""
     return (trim_normal_load(theta, phi) - 1.0) / 4.0
 
 
 def vertical_balance(theta: float | np.ndarray, a1: float | np.ndarray, a2: float | np.ndarray):
-    nz = 1.0 + 4.0 * np.asarray(a1)
+    """Vertical balance under the active V1.2 trim-relative semantics."""
     phi = (np.pi / 3.0) * np.asarray(a2)
+    nz = trim_normal_load(theta, phi) + 2.0 * np.asarray(a1)
     return nz * np.cos(phi) - np.cos(theta)
 
 
 def bank_compensated_actions(
     states: list[AircraftState], base_actions: np.ndarray
 ) -> np.ndarray:
-    """Diagnostic pursuit control: add the original elevation correction around bank trim."""
+    """Diagnostic-only historical V1.1 bank-compensation reproducer."""
     result = np.asarray(base_actions, dtype=np.float32).copy()
     for index, state in enumerate(states):
         if not state.alive:
@@ -41,7 +38,7 @@ def bank_compensated_actions(
 
 
 def trim_relative_control(state: AircraftState, action: np.ndarray, k: float = 2.0) -> ControlCommand:
-    """Offline alternative mapping used only after a Category-B indication."""
+    """Diagnostic-only explicit control equivalent of the adopted V1.2 mapping."""
     a0, a1, a2 = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
     phi = (np.pi / 3.0) * a2
     nz = float(trim_normal_load(state.theta, phi) + k * a1)

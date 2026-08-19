@@ -29,8 +29,8 @@ def test_level_unbanked_trim_balance_is_zero():
     assert vertical_balance(0.0, 0.0, 0.0) == pytest.approx(0.0)
 
 
-def test_level_sixty_degree_bank_without_load_compensation_is_minus_half():
-    assert vertical_balance(0.0, 0.0, 1.0) == pytest.approx(-0.5)
+def test_level_sixty_degree_bank_is_neutral_under_v12_mapping():
+    assert vertical_balance(0.0, 0.0, 1.0) == pytest.approx(0.0)
 
 
 def test_sixty_degree_bank_trim_load_and_action_are_two_and_quarter():
@@ -38,13 +38,14 @@ def test_sixty_degree_bank_trim_load_and_action_are_two_and_quarter():
     assert trim_a1(0.0, np.pi / 3.0) == pytest.approx(0.25)
 
 
-def test_bank_compensated_probe_balances_level_sixty_degree_bank():
+def test_bank_compensated_probe_retains_historical_v11_action_coordinate():
     states = [level_state()] + [AircraftState(0, 0, -3000, 225, 0, 0, False) for _ in range(3)]
     actions = np.zeros((4, 3), dtype=np.float32)
     actions[0, 2] = 1.0
     compensated = bank_compensated_actions(states, actions)
     assert compensated[0, 1] == pytest.approx(0.25)
-    assert vertical_balance(0.0, compensated[0, 1], compensated[0, 2]) == pytest.approx(0.0, abs=1e-7)
+    historical_nz = 1.0 + 4.0 * compensated[0, 1]
+    assert historical_nz * np.cos(np.pi / 3.0) - 1.0 == pytest.approx(0.0, abs=1e-7)
 
 
 def test_fresh_actor_does_not_load_checkpoint_or_step_optimizer(monkeypatch):
@@ -62,11 +63,12 @@ def test_diagnostic_probe_parameters_do_not_enter_active_config():
     assert "trim_relative" not in text
 
 
-def test_canonical_action_mapping_remains_exactly_unchanged():
+def test_canonical_action_mapping_is_v12_trim_relative():
     config = yaml.safe_load((ROOT / "configs/combat_environment.yaml").read_text(encoding="utf-8"))
-    control = action_to_control(np.array([0.2, -0.3, 0.4]), config["action"])
+    own = level_state()
+    control = action_to_control(own, np.array([0.2, -0.3, 0.4]), config["action"])
     assert control.nx == pytest.approx(0.4)
-    assert control.nz == pytest.approx(-0.2)
+    assert control.nz == pytest.approx(1.0 / np.cos(np.pi / 3.0 * 0.4) - 0.6)
     assert control.phi == pytest.approx(np.pi / 3.0 * 0.4)
 
 

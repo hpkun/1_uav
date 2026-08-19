@@ -34,7 +34,7 @@ class MultiUAVCombatEnv:
         self.dynamics = PointMassDynamics()
         self.integrator = RK4Integrator(self.dt)
         self.fixed_policy = NearestTargetPursuitPolicy(
-            self.config["blue_policy"], self.config["battlefield"]
+            self.config["blue_policy"], self.config["battlefield"], self.config["action"]
         )
         self.weapon = WeaponEnvelope(**self.config["weapon"])
         self.rng = np.random.default_rng()
@@ -101,7 +101,7 @@ class MultiUAVCombatEnv:
     def _advance(self, states: list[AircraftState], actions: np.ndarray) -> None:
         for index, state in enumerate(states):
             if state.alive:
-                control = action_to_control(actions[index], self.config["action"])
+                control = action_to_control(state, actions[index], self.config["action"])
                 states[index] = self.integrator.step(state, control, self.dynamics, self.spec)
 
     def _outside(self, state: AircraftState) -> bool:

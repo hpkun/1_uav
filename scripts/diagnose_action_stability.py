@@ -21,6 +21,7 @@ from uav_combat.diagnostics.action_stability import (
     vertical_balance,
 )
 from uav_combat.environment.env import MultiUAVCombatEnv
+from uav_combat.environment.control import action_to_control
 
 
 ACTOR_SEEDS = [101, 202, 303, 404, 505]
@@ -98,14 +99,20 @@ def empty_control_summary() -> dict:
     }
 
 
-def add_controls(summary: dict, states: list, actions: np.ndarray, rings=None, next_step=0) -> None:
+def add_controls(
+    summary: dict, states: list, actions: np.ndarray, rings=None, next_step=0,
+    action_config: dict | None = None,
+) -> None:
     rows = []
     for index, state in enumerate(states):
         if not state.alive:
             continue
         a0, a1, a2 = map(float, actions[index])
-        phi = (np.pi / 3.0) * np.clip(a2, -1.0, 1.0)
-        nz = 1.0 + 4.0 * np.clip(a1, -1.0, 1.0)
+        cfg = action_config or {
+            "nx_scale": 2.0, "nz_delta_scale": 2.0, "phi_max": np.pi / 3.0
+        }
+        control = action_to_control(state, actions[index], cfg)
+        phi, nz = control.phi, control.nz
         balance = float(nz * np.cos(phi) - np.cos(state.theta))
         theta_dot = float(9.81 / state.v * balance)
         row = {
@@ -222,8 +229,14 @@ def rollout_worker(task: tuple[str, str, int | None, int, int, bool]) -> dict:
                 raise ValueError(mode)
             before_red = env.red_alive_mask.copy()
             before_blue = env.blue_alive_mask.copy()
-            add_controls(result["red"], env.red, red_actions, red_rings, env.steps + 1)
-            add_controls(result["blue"], env.blue, blue_actions, blue_rings, env.steps + 1)
+            add_controls(
+                result["red"], env.red, red_actions, red_rings, env.steps + 1,
+                env.config["action"],
+            )
+            add_controls(
+                result["blue"], env.blue, blue_actions, blue_rings, env.steps + 1,
+                env.config["action"],
+            )
             observation, _, terminated, truncated, info = env.step(red_actions, blue_actions)
             if collect_windows and len(result["death_windows"]) < 80:
                 for team_name, before, after, causes, rings in (

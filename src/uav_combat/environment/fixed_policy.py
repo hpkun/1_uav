@@ -10,8 +10,9 @@ from ..models import AircraftState
 class NearestTargetPursuitPolicy:
     """Minimal pursuit heuristic with horizontal and vertical arena safety."""
 
-    def __init__(self, config: dict, battlefield: dict) -> None:
+    def __init__(self, config: dict, battlefield: dict, action_config: dict) -> None:
         self.config = config
+        self.action_config = action_config
         self.radius = float(battlefield["horizontal_radius"])
         self.altitude_min = float(battlefield["altitude_min"])
         self.altitude_max = float(battlefield["altitude_max"])
@@ -48,6 +49,23 @@ class NearestTargetPursuitPolicy:
             direction = center_direction if weight >= 0.5 else target_direction
         return direction
 
+    def action_toward(
+        self,
+        own: AircraftState,
+        desired_heading: float,
+        desired_elevation: float,
+        desired_speed: float,
+    ) -> np.ndarray:
+        """Produce a normalized maneuver action; physical mapping remains in control.py."""
+        cfg = self.config
+        desired_delta_nz = cfg["pitch_load_gain"] * (desired_elevation - own.theta)
+        return np.clip(np.array([
+            (desired_speed - own.v) / cfg["speed_error_scale"],
+            desired_delta_nz / self.action_config["nz_delta_scale"],
+            cfg["heading_gain"] * wrap_angle(desired_heading - own.psi)
+            / self.action_config["phi_max"],
+        ], dtype=np.float32), -1.0, 1.0)
+
     def action(self, own: AircraftState, targets: list[AircraftState]) -> np.ndarray:
         target_index = self.nearest_target_index(own, targets) if own.alive else None
         if target_index is None:
@@ -62,12 +80,9 @@ class NearestTargetPursuitPolicy:
             desired_elevation = max(desired_elevation, 0.0)
         if own.altitude >= self.altitude_max - margin:
             desired_elevation = min(desired_elevation, 0.0)
-        cfg = self.config
-        return np.clip(np.array([
-            (cfg["desired_speed"] - own.v) / cfg["speed_error_scale"],
-            cfg["elevation_gain"] * (desired_elevation - own.theta) / cfg["elevation_action_scale"],
-            cfg["heading_gain"] * wrap_angle(desired_heading - own.psi) / (np.pi / 3.0),
-        ], dtype=np.float32), -1.0, 1.0)
+        return self.action_toward(
+            own, desired_heading, desired_elevation, float(self.config["desired_speed"])
+        )
 
     def team_actions(self, team: list[AircraftState], targets: list[AircraftState]) -> np.ndarray:
         return np.stack([self.action(state, targets) for state in team])

@@ -21,14 +21,37 @@ psi_dot   = g nz sin(phi) / (v cos(theta))
 ```
 
 They are integrated by fixed-step RK4 with `dt=0.1 s`. Speed is clipped to
-`[150,300] m/s`; pitch is clipped to `[-60,+60] deg`. The normalized action is
-clipped to `[-1,1]^3` and maps directly to
-`nx=2 a0`, `nz=1+4 a1`, `phi=60 deg a2`. Thus zero action is level-flight trim
-at zero pitch.
+`[150,300] m/s`; pitch is clipped to `[-60,+60] deg`. The V1.2 normalized
+action is clipped to `[-1,1]^3` and represents tangential acceleration, a
+trim-relative vertical maneuver command, and bank:
+
+```text
+phi     = phi_max a2                  phi_max = pi/3
+nx      = nx_scale a0                 nx_scale = 2
+nz_trim = cos(theta)/cos(phi)
+nz      = nz_trim + k_n a1            k_n = 2
+```
+
+The cosine division has a small numerical epsilon, although the active
+`|phi| <= 60 deg` range ensures `cos(phi) >= 0.5`. Substitution gives
+
+```text
+theta_dot = g/v ([cos(theta)/cos(phi) + 2 a1] cos(phi) - cos(theta))
+          = 2g/v a1 cos(phi).
+```
+
+Thus `a1=0` is instantaneous flight-path trim at every legal pitch and bank;
+positive `a1` creates a climb tendency and negative `a1` a dive tendency. This
+is a transparent state-dependent action reparameterization, not pitch,
+heading, or altitude tracking. It contains no PID, integral/derivative term,
+hidden autopilot, or automatic Red safety controller. The actor still supplies
+a continuous 3D normalized action whose resulting `nx,nz,phi` enter the
+unchanged dynamics. The design avoids artificial downward exploration bias
+from independently perturbing bank and absolute normal load.
 
 ## Arena and initialization
 
-The V1.1 arena is a vertical cylinder of horizontal radius `15,000 m`, altitude
+The V1.2 arena is a vertical cylinder of horizontal radius `15,000 m`, altitude
 `500..8,000 m`, and horizon `1,000` steps. Leaving either spatial bound destroys
 the UAV. Timeout with survivors is a draw.
 
@@ -86,8 +109,10 @@ The tactical distance scale is a fixed `8,000 m` and is deliberately independent
 of the arena radius. Shaping weight remains `1.0`.
 
 Blue uses boundary-aware nearest-alive-target pursuit with desired speed
-`260 m/s`, heading gain `1.5`, and elevation gain `4.0`, through the same public
-action mapping. Inside `0.8` of the horizontal arena radius it is pure pursuit.
+`260 m/s`, heading gain `1.5`, and physical pitch-load gain `4.0`, through the
+same public action mapping as Red. Desired extra load is
+`4(desired_elevation-theta)` and is normalized by `k_n=2`. Inside `0.65` of the
+horizontal arena radius it is pure pursuit.
 Outside that threshold it blends normalized target and center directions, with
 the center direction dominating at the boundary. Within `500 m` of the lower or
 upper altitude bound, desired elevation is prevented from pointing farther out
@@ -99,8 +124,10 @@ automatic safety correction. Outcomes are `red_win`, `blue_win`,
 ## Validation
 
 Run `pytest -q` for deterministic unit tests and
-`python scripts/validate_combat_environment.py` for 1,000 reset seeds plus
-straight-vs-straight, boundary-aware rule-vs-rule, and a validation-only
-50-step symmetric flank-then-pursuit baseline. The validator reports separate
-horizontal/low-altitude/high-altitude losses, attackable/lock/kill timing,
-combat-kill fraction, and Red shaping/event reward statistics.
+`python scripts/validate_combat_environment.py` for 1,000 reset seeds, five-seed
+fresh-actor and uniform-random stability regressions, boundary-aware
+rule-vs-rule, a validation-only 50-step symmetric flank-then-pursuit baseline,
+and a deterministic merge-then-turn tail-acquisition diagnostic. The validator
+reports separate horizontal/low-altitude/high-altitude losses,
+attackable/lock/kill timing, combat and boundary death fractions, and Red
+shaping/event reward statistics.
