@@ -6,7 +6,8 @@ import yaml
 
 from uav_combat.training.evaluator import episode_return_metrics, evaluate
 from uav_combat.training.runner import MADSACTrainingRunner
-from uav_combat.training.vector_env import SyncVectorEnv
+from uav_combat.training.vector_env import ParallelVectorEnv
+from uav_combat.environment.env import MultiUAVCombatEnv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,15 +35,47 @@ def test_protocol_and_interface_dimensions():
 
 def test_vector_seed_formula_no_reuse_and_52d_observations():
     environment, _ = configs()
-    vector = SyncVectorEnv(3, environment, base_seed=10, forbidden_seeds=range(10_000_000, 10_000_020))
+    environment = copy.deepcopy(environment)
+    environment["simulation"]["max_steps"] = 1
+    vector = ParallelVectorEnv(
+        3, environment, base_seed=10,
+        forbidden_seeds=range(10_000_000, 10_000_020),
+    )
     observations = vector.reset()
     assert observations.shape == (3, 4, 52)
     assert vector.last_reset_seeds.tolist() == [10, 11, 12]
-    for env in vector.envs:
-        env.max_steps = 1
     vector.step_batch(np.zeros((3, 4, 3), dtype=np.float32))
     assert vector.last_reset_seeds.tolist() == [13, 14, 15]
     assert len(vector.used_training_seeds) == 6
+    assert vector.num_workers == 3
+    assert len(set(vector.worker_pids)) == 3
+    assert all(pid != 0 for pid in vector.worker_pids)
+    vector.close()
+    assert not any(process.is_alive() for process in vector._processes)
+
+
+def test_parallel_workers_match_direct_environment_step_semantics():
+    environment, _ = configs()
+    seeds = [701, 702, 703]
+    direct = [MultiUAVCombatEnv(environment) for _ in seeds]
+    expected_observations = np.stack([
+        env.reset(seed)[0] for env, seed in zip(direct, seeds)
+    ])
+    vector = ParallelVectorEnv(3, environment, base_seed=seeds[0])
+    actual_observations = vector.reset()
+    assert np.array_equal(actual_observations, expected_observations)
+    rng = np.random.default_rng(44)
+    for _ in range(5):
+        actions = rng.uniform(-1.0, 1.0, size=(3, 4, 3)).astype(np.float32)
+        expected = [env.step(actions[index]) for index, env in enumerate(direct)]
+        actual = vector.step_batch(actions, auto_reset=False)
+        assert np.array_equal(actual.transition_next_observations, np.stack([
+            row[0] for row in expected
+        ]))
+        assert np.array_equal(actual.rewards, np.stack([row[1] for row in expected]))
+        assert np.array_equal(actual.terminated, [row[2] for row in expected])
+        assert np.array_equal(actual.truncated, [row[3] for row in expected])
+    vector.close()
 
 
 def test_24_environment_step_adds_exactly_24_transitions(tmp_path):
@@ -135,6 +168,8 @@ def test_formal_startup_summary_reports_effective_network_and_replay(tmp_path):
     assert summary["effective_hidden_dim"] == 256
     assert summary["batch_size"] == 1024
     assert summary["replay_capacity"] == 1_000_000
+    assert summary["environment_backend"] == "multiprocess_spawn"
+    assert summary["environment_workers"] == 24
 
 
 @pytest.mark.parametrize("field,value", [

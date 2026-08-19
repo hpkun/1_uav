@@ -10,7 +10,7 @@ import numpy as np
 from ..madsac.trainer import MADSACTrainer
 from ..environment.env import MultiUAVCombatEnv
 from .evaluator import episode_return_metrics, evaluate
-from .vector_env import SyncVectorEnv
+from .vector_env import ParallelVectorEnv
 
 
 class MADSACTrainingRunner:
@@ -85,7 +85,9 @@ class MADSACTrainingRunner:
         self.evaluation_seeds = list(range(evaluation_base, evaluation_base + int(training["evaluation_episodes"])))
         if self.seed + self.total_sampled_steps + self.num_envs >= evaluation_base:
             raise ValueError("configured training seed range can overlap evaluation seeds")
-        self.vector = SyncVectorEnv(self.num_envs, env_config, self.seed, self.evaluation_seeds)
+        self.vector = ParallelVectorEnv(
+            self.num_envs, env_config, self.seed, self.evaluation_seeds
+        )
         self.observations = self.vector.reset()
         self.alive_masks = self.vector.current_alive_masks.copy()
 
@@ -121,6 +123,8 @@ class MADSACTrainingRunner:
             "num_agents": self.num_agents,
             "effective_hidden_dim": self.effective_hidden_dim,
             "num_envs_M": self.num_envs,
+            "environment_backend": self.vector.backend,
+            "environment_workers": self.vector.num_workers,
             "seed": self.seed,
             "total_sampled_steps": self.total_sampled_steps,
             "batch_size": self.trainer.batch_size,
@@ -137,7 +141,8 @@ class MADSACTrainingRunner:
             f"[START] mode={summary['mode']} | device={summary['device']} "
             f"| obs={summary['observation_dim']} | act={summary['action_dim']} "
             f"| agents={summary['num_agents']} | hidden={summary['effective_hidden_dim']} "
-            f"| envs={summary['num_envs_M']} | seed={summary['seed']} "
+            f"| envs={summary['num_envs_M']} | workers={summary['environment_workers']} "
+            f"| backend={summary['environment_backend']} | seed={summary['seed']} "
             f"| total={summary['total_sampled_steps']} | batch={summary['batch_size']} "
             f"| replay={summary['replay_capacity']} | T={summary['steps_per_update']} "
             f"| n={summary['update_steps_n']} | d={summary['policy_delay_d']}"
@@ -334,29 +339,32 @@ class MADSACTrainingRunner:
         }
 
     def run(self) -> dict[str, Any]:
-        while self.trainer.sampled_steps < self.total_sampled_steps:
-            self.vector_step()
-            if self._console_log_due():
-                print(self.train_log_line(), flush=True)
-            if self.trainer.sampled_steps >= self.next_evaluation:
-                record = {
-                    "sampled_steps": self.trainer.sampled_steps,
-                    **evaluate(self.trainer, self.env_config, self.evaluation_seeds),
-                }
-                self.evaluation_history.append(record)
-                self._write_evaluation()
-                print(self.evaluation_log_line(record), flush=True)
-                self.next_evaluation += self.evaluation_interval
-            if self.trainer.sampled_steps >= self.next_checkpoint:
-                checkpoint_path = self.output_dir / f"checkpoint_{self.trainer.sampled_steps}.pt"
-                self.save_checkpoint(checkpoint_path)
-                print(
-                    self.checkpoint_log_line(self.trainer.sampled_steps, checkpoint_path),
-                    flush=True,
-                )
-                self.next_checkpoint += self.checkpoint_interval
-        self.save_checkpoint(self.output_dir / "latest.pt")
-        return self.summary()
+        try:
+            while self.trainer.sampled_steps < self.total_sampled_steps:
+                self.vector_step()
+                if self._console_log_due():
+                    print(self.train_log_line(), flush=True)
+                if self.trainer.sampled_steps >= self.next_evaluation:
+                    record = {
+                        "sampled_steps": self.trainer.sampled_steps,
+                        **evaluate(self.trainer, self.env_config, self.evaluation_seeds),
+                    }
+                    self.evaluation_history.append(record)
+                    self._write_evaluation()
+                    print(self.evaluation_log_line(record), flush=True)
+                    self.next_evaluation += self.evaluation_interval
+                if self.trainer.sampled_steps >= self.next_checkpoint:
+                    checkpoint_path = self.output_dir / f"checkpoint_{self.trainer.sampled_steps}.pt"
+                    self.save_checkpoint(checkpoint_path)
+                    print(
+                        self.checkpoint_log_line(self.trainer.sampled_steps, checkpoint_path),
+                        flush=True,
+                    )
+                    self.next_checkpoint += self.checkpoint_interval
+            self.save_checkpoint(self.output_dir / "latest.pt")
+            return self.summary()
+        finally:
+            self.vector.close()
 
     def _write_evaluation(self) -> None:
         if not self.evaluation_history:

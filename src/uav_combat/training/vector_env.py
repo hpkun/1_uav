@@ -1,11 +1,14 @@
-"""Synchronous M-environment sampler matching Algorithm 1."""
+"""Synchronous batch API backed by persistent parallel environment workers."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+import multiprocessing as mp
+from multiprocessing.connection import Connection
+from typing import Any
 import numpy as np
 
-from ..environment.env import MultiUAVCombatEnv
 from ..environment.observation import OBSERVATION_DIM
+from ..environment.process_worker import combat_environment_worker
 
 
 @dataclass
@@ -20,13 +23,20 @@ class VectorStep:
     next_alive_masks: np.ndarray
 
 
-class SyncVectorEnv:
-    """Simple non-overlapping seed allocation: base + episode*M + env_id."""
+class ParallelVectorEnv:
+    """One persistent spawn subprocess per environment with synchronous batches."""
 
-    def __init__(self, num_envs: int, config="configs/combat_environment.yaml", base_seed: int = 0, forbidden_seeds=()) -> None:
+    backend = "multiprocess_spawn"
+
+    def __init__(
+        self,
+        num_envs: int,
+        config: Any = "configs/combat_environment.yaml",
+        base_seed: int = 0,
+        forbidden_seeds=(),
+    ) -> None:
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
-        self.envs = [MultiUAVCombatEnv(config) for _ in range(num_envs)]
         self.num_envs = int(num_envs)
         self.base_seed = int(base_seed)
         self.forbidden_seeds = set(map(int, forbidden_seeds))
@@ -35,11 +45,53 @@ class SyncVectorEnv:
         self.current_observations = np.zeros((num_envs, 4, OBSERVATION_DIM), dtype=np.float32)
         self.current_alive_masks = np.ones((num_envs, 4), dtype=np.float32)
         self.last_reset_seeds = np.zeros(num_envs, dtype=np.int64)
+        self._closed = False
+        context = mp.get_context("spawn")
+        self._connections: list[Connection] = []
+        self._processes: list[mp.Process] = []
+        try:
+            for env_id in range(self.num_envs):
+                parent, child = context.Pipe()
+                process = context.Process(
+                    target=combat_environment_worker,
+                    args=(child, config),
+                    name=f"uav-env-{env_id}",
+                    daemon=True,
+                )
+                process.start()
+                child.close()
+                self._connections.append(parent)
+                self._processes.append(process)
+            self.worker_pids = [
+                int(self._receive(connection, "startup"))
+                for connection in self._connections
+            ]
+        except BaseException:
+            self.close()
+            raise
+
+    @property
+    def num_workers(self) -> int:
+        return len(self._processes)
+
+    @staticmethod
+    def _receive(connection: Connection, operation: str) -> Any:
+        try:
+            status, payload = connection.recv()
+        except (EOFError, OSError) as error:
+            raise RuntimeError(f"environment worker exited during {operation}") from error
+        if status == "error":
+            raise RuntimeError(f"environment worker failed during {operation}:\n{payload}")
+        if operation == "startup" and status != "ready":
+            raise RuntimeError(f"invalid environment-worker startup response: {status}")
+        if operation != "startup" and status != "ok":
+            raise RuntimeError(f"invalid environment-worker response: {status}")
+        return payload
 
     def seed_for(self, env_id: int, episode_index: int) -> int:
         return self.base_seed + episode_index * self.num_envs + env_id
 
-    def _reset_one(self, env_id: int) -> np.ndarray:
+    def _reset_seed(self, env_id: int) -> int:
         seed = self.seed_for(env_id, int(self.episode_indices[env_id]))
         if seed in self.forbidden_seeds:
             raise RuntimeError(f"training seed overlaps evaluation set: {seed}")
@@ -47,19 +99,33 @@ class SyncVectorEnv:
             raise RuntimeError(f"training seed reused: {seed}")
         self.used_training_seeds.add(seed)
         self.last_reset_seeds[env_id] = seed
-        return self.envs[env_id].reset(seed)[0]
+        return seed
+
+    def _reset_many(self, env_ids: list[int]) -> list[tuple[np.ndarray, np.ndarray]]:
+        for env_id in env_ids:
+            self._connections[env_id].send(("reset", self._reset_seed(env_id)))
+        return [
+            self._receive(self._connections[env_id], "reset") for env_id in env_ids
+        ]
 
     def reset(self) -> np.ndarray:
-        self.current_observations = np.stack([self._reset_one(i) for i in range(self.num_envs)])
-        self.current_alive_masks = np.stack([env.red_alive_mask for env in self.envs])
+        self._ensure_open()
+        results = self._reset_many(list(range(self.num_envs)))
+        self.current_observations = np.stack([result[0] for result in results])
+        self.current_alive_masks = np.stack([result[1] for result in results])
         return self.current_observations.copy()
 
     def step_batch(self, actions: np.ndarray, auto_reset: bool = True) -> VectorStep:
+        self._ensure_open()
         actions = np.asarray(actions, dtype=np.float32)
         if actions.shape != (self.num_envs, 4, 3):
             raise ValueError("vector actions must be [env, 4, 3]")
         alive_before = self.current_alive_masks.copy()
-        results = [env.step(actions[i]) for i, env in enumerate(self.envs)]
+        for env_id, connection in enumerate(self._connections):
+            connection.send(("step", actions[env_id]))
+        results = [
+            self._receive(connection, "step") for connection in self._connections
+        ]
         transition_next = np.stack([result[0] for result in results])
         rewards = np.stack([result[1] for result in results])
         terminated = np.asarray([result[2] for result in results])
@@ -68,11 +134,11 @@ class SyncVectorEnv:
         next_alive = np.stack([info["red_alive_mask"] for info in infos])
         current, current_alive = transition_next.copy(), next_alive.copy()
         if auto_reset:
-            for i, done in enumerate(terminated | truncated):
-                if done:
-                    self.episode_indices[i] += 1
-                    current[i] = self._reset_one(i)
-                    current_alive[i] = self.envs[i].red_alive_mask
+            done_ids = np.flatnonzero(terminated | truncated).tolist()
+            for env_id in done_ids:
+                self.episode_indices[env_id] += 1
+            for env_id, reset_result in zip(done_ids, self._reset_many(done_ids)):
+                current[env_id], current_alive[env_id] = reset_result
         self.current_observations = current
         self.current_alive_masks = current_alive
         return VectorStep(
@@ -83,3 +149,47 @@ class SyncVectorEnv:
     def step(self, actions: np.ndarray):
         result = self.step_batch(actions)
         return result.observations, result.rewards, result.terminated, result.truncated, result.infos
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("parallel vector environment is closed")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for connection, process in zip(self._connections, self._processes):
+            if process.is_alive():
+                try:
+                    connection.send(("close", None))
+                except (BrokenPipeError, EOFError, OSError):
+                    pass
+        for connection, process in zip(self._connections, self._processes):
+            if process.is_alive():
+                try:
+                    self._receive(connection, "close")
+                except RuntimeError:
+                    pass
+            connection.close()
+            process.join(timeout=2.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2.0)
+
+    def __enter__(self) -> "ParallelVectorEnv":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
+
+# Compatibility import for external callers; the implementation is parallel.
+SyncVectorEnv = ParallelVectorEnv
+
+__all__ = ["ParallelVectorEnv", "SyncVectorEnv", "VectorStep"]

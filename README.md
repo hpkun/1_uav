@@ -15,6 +15,8 @@ The active runtime path contains one environment:
 - boundary-aware nearest-target pursuit Blue policy
 - shared MADSAC actor, double attention critics, replay, targets, entropy, and
   the existing Algorithm-1 update scheduler
+- one persistent spawn subprocess per training environment; policy inference,
+  replay, and optimization remain in the CUDA-capable main process
 
 Run in the requested environment:
 
@@ -26,6 +28,7 @@ cd /mnt/c/Users/HPK/Desktop/1_uav
 
 pytest -q
 python scripts/validate_combat_environment.py
+python scripts/check_parallel_env.py --num-envs 24 --steps 100
 python scripts/train_madsac.py --smoke --num-envs 24 \
   --total-sampled-steps 24000 --seed 0
 python scripts/evaluate_madsac.py \
