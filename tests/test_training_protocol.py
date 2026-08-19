@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import yaml
 
-from uav_combat.training.evaluator import episode_return_metrics
+from uav_combat.training.evaluator import episode_return_metrics, evaluate
 from uav_combat.training.runner import MADSACTrainingRunner
 from uav_combat.training.vector_env import SyncVectorEnv
 
@@ -111,14 +111,71 @@ def test_console_logging_is_read_only_and_compact(tmp_path, monkeypatch):
         environment, algorithm, num_envs=24, total_sampled_steps=24_000,
         output_dir=tmp_path, smoke=True,
     )
-    assert runner.start_log_line().startswith("[START] device=cpu | envs=24")
-    assert "return=NA | win=NA | red_loss=NA" in runner.train_log_line()
+    assert runner.start_log_line().startswith(
+        "[START] mode=smoke | device=cpu | obs=52 | act=3 | agents=4 | hidden=64"
+    )
+    assert "return=NA | red_loss=NA | atk=NA | lock=NA | kill=NA" in runner.train_log_line()
     for optimizer in (
         runner.trainer.actor_optimizer, runner.trainer.critic1_optimizer,
         runner.trainer.critic2_optimizer,
     ):
         monkeypatch.setattr(optimizer, "step", lambda: pytest.fail("logging must not optimize"))
     runner.train_log_line()
+
+
+def test_formal_startup_summary_reports_effective_network_and_replay(tmp_path):
+    environment, algorithm = configs()
+    runner = MADSACTrainingRunner(
+        environment, algorithm, num_envs=24, total_sampled_steps=24,
+        output_dir=tmp_path,
+    )
+    summary = runner.startup_summary()
+    assert summary["mode"] == "formal"
+    assert (summary["observation_dim"], summary["action_dim"], summary["num_agents"]) == (52, 3, 4)
+    assert summary["effective_hidden_dim"] == 256
+    assert summary["batch_size"] == 1024
+    assert summary["replay_capacity"] == 1_000_000
+
+
+@pytest.mark.parametrize("field,value", [
+    ("observation_dim", 54), ("action_dim", 4), ("num_agents", 3),
+])
+def test_runner_fails_fast_on_network_environment_dimension_mismatch(
+    tmp_path, field, value
+):
+    environment, algorithm = configs()
+    algorithm = copy.deepcopy(algorithm)
+    algorithm["network"][field] = value
+    with pytest.raises(ValueError, match="network/environment dimension mismatch"):
+        MADSACTrainingRunner(
+            environment, algorithm, total_sampled_steps=24, output_dir=tmp_path
+        )
+
+
+def test_evaluator_exposes_split_combat_and_required_episode_metrics():
+    environment, _ = configs()
+    environment = copy.deepcopy(environment)
+    environment["simulation"]["max_steps"] = 1
+
+    class ZeroActor:
+        @staticmethod
+        def act(observation, alive_mask, deterministic=True):
+            assert deterministic
+            return np.zeros((4, 3), dtype=np.float32)
+
+    result = evaluate(ZeroActor(), environment, seeds=[10_000_000])
+    expected = {
+        "average_return", "average_agent_return", "win_rate", "loss_rate",
+        "draw_rate", "timeout_rate", "average_red_loss", "average_blue_loss",
+        "average_red_attack_kills", "average_blue_attack_kills",
+        "average_red_low_altitude_loss", "average_blue_low_altitude_loss",
+        "average_red_high_altitude_loss", "average_blue_high_altitude_loss",
+        "average_episode_length", "average_max_horizontal_pair_separation",
+    } | {
+        f"{side}_{event}_episode_rate"
+        for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+    }
+    assert expected <= result.keys()
 
 
 def test_episode_return_metric_is_team_sum_and_agent_mean():

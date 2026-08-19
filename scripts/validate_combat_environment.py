@@ -100,14 +100,23 @@ def run_episode(task: tuple[str, str, int]) -> dict:
 
 def summarize(records: list[dict]) -> dict:
     episodes = len(records); mean = lambda key: float(np.mean([r[key] for r in records]))
-    first_a = [r["first_attackable_step"] for r in records if r["first_attackable_step"] is not None]
-    first_l = [r["first_lock_step"] for r in records if r["first_lock_step"] is not None]
-    first_k = [r["first_kill_step"] for r in records if r["first_kill_step"] is not None]
     reasons = ("red_win", "blue_win", "draw_mutual_destruction", "draw_timeout")
     altitude_total = lambda r: sum(r[k] for k in ("red_low_altitude_losses", "blue_low_altitude_losses", "red_high_altitude_losses", "blue_high_altitude_losses"))
     return {
-        "episodes": episodes, "attackable_episodes": len(first_a), "completed_lock_episodes": len(first_l), "kill_episodes": len(first_k),
-        "first_attackable_step": distribution(first_a), "first_lock_step": distribution(first_l), "first_kill_step": distribution(first_k),
+        "episodes": episodes,
+        **{
+            f"{side}_{event}_episodes": sum(
+                r[f"{side}_first_{event}_step"] is not None for r in records
+            )
+            for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        },
+        **{
+            f"{side}_first_{event}_step": distribution([
+                r[f"{side}_first_{event}_step"] for r in records
+                if r[f"{side}_first_{event}_step"] is not None
+            ])
+            for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        },
         "red_attack_kills_total": int(sum(r["red_attack_kills"] for r in records)), "blue_attack_kills_total": int(sum(r["blue_attack_kills"] for r in records)),
         **{f"{key}_total": int(sum(r[key] for r in records)) for key in ("red_low_altitude_losses", "blue_low_altitude_losses", "red_high_altitude_losses", "blue_high_altitude_losses")},
         "altitude_losses_per_episode": float(np.mean([altitude_total(r) for r in records])),
@@ -183,9 +192,17 @@ def acceptance(result: dict) -> dict:
     checks = {
         "B_trim_relative_action": inv["trim_passed"],
         "C_fresh_stochastic_vertical_stability": abs(short["altitude_change"]["mean"]) < 25 and abs(short["theta_change"]["mean"]) < 0.025,
-        "D_straight_baseline": straight["attackable_episodes"] == straight["completed_lock_episodes"] == straight["kill_episodes"] == 0 and straight["altitude_losses_per_episode"] == 0 and straight["termination_counts"]["draw_timeout"] == straight["episodes"],
+        "D_straight_baseline": all(
+            straight[f"{side}_{event}_episodes"] == 0
+            for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        ) and straight["altitude_losses_per_episode"] == 0 and straight["termination_counts"]["draw_timeout"] == straight["episodes"],
         "E_rule_flank_finite": all_finite(rule) and all_finite(flank),
-        "F_combat_chain_reachable": any(x["attackable_episodes"] > 0 and x["completed_lock_episodes"] > 0 and x["kill_episodes"] > 0 for x in (rule, flank)),
+        "F_combat_chain_reachable": any(
+            x[f"{side}_attackable_episodes"] > 0
+            and x[f"{side}_lock_episodes"] > 0
+            and x[f"{side}_kill_episodes"] > 0
+            for x in (rule, flank) for side in ("red", "blue")
+        ),
         "G_no_mass_vertical_self_destruction": rule["altitude_losses_per_episode"] <= 0.5 and flank["altitude_losses_per_episode"] <= 0.5,
         "H_observation_52d": inv["observation_shape"] == [4,52] and inv["observation_finite"],
         "I_rotation_invariance": inv["rotation_invariant"], "J_translation_invariance": result["translation_invariance"]["passed"],

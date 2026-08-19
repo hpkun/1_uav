@@ -48,9 +48,12 @@ class MultiUAVCombatEnv:
         self.steps = 0
         self.red_attack_kills = 0
         self.blue_attack_kills = 0
-        self.first_attackable_step: int | None = None
-        self.first_lock_step: int | None = None
-        self.first_kill_step: int | None = None
+        self.red_first_attackable_step: int | None = None
+        self.blue_first_attackable_step: int | None = None
+        self.red_first_lock_step: int | None = None
+        self.blue_first_lock_step: int | None = None
+        self.red_first_kill_step: int | None = None
+        self.blue_first_kill_step: int | None = None
         self.max_horizontal_pair_separation = 0.0
         self.horizontal_pair_separation_sum = 0.0
         self.horizontal_pair_separation_count = 0
@@ -86,7 +89,9 @@ class MultiUAVCombatEnv:
         self.red_altitude_causes.fill(None)
         self.blue_altitude_causes.fill(None)
         self.steps = self.red_attack_kills = self.blue_attack_kills = 0
-        self.first_attackable_step = self.first_lock_step = self.first_kill_step = None
+        self.red_first_attackable_step = self.blue_first_attackable_step = None
+        self.red_first_lock_step = self.blue_first_lock_step = None
+        self.red_first_kill_step = self.blue_first_kill_step = None
         self.max_horizontal_pair_separation = 0.0
         self.horizontal_pair_separation_sum = 0.0
         self.horizontal_pair_separation_count = 0
@@ -158,7 +163,12 @@ class MultiUAVCombatEnv:
         attackers: list[AircraftState],
         targets: list[AircraftState],
         locks: list[LockState],
+        side: str,
     ) -> list[tuple[int, int]]:
+        if side not in {"red", "blue"}:
+            raise ValueError("side must be 'red' or 'blue'")
+        attackable_field = f"{side}_first_attackable_step"
+        lock_field = f"{side}_first_lock_step"
         proposals = []
         for attacker_index, attacker in enumerate(attackers):
             lock = locks[attacker_index]
@@ -177,12 +187,12 @@ class MultiUAVCombatEnv:
                 if target_index is not None:
                     lock.current_lock_target = target_index
                     lock.lock_steps = 1
-                    if self.first_attackable_step is None:
-                        self.first_attackable_step = self.steps
+                    if getattr(self, attackable_field) is None:
+                        setattr(self, attackable_field, self.steps)
             if lock.current_lock_target >= 0 and lock.lock_steps >= self.weapon.lock_steps_required:
                 proposals.append((attacker_index, lock.current_lock_target))
-                if self.first_lock_step is None:
-                    self.first_lock_step = self.steps
+                if getattr(self, lock_field) is None:
+                    setattr(self, lock_field, self.steps)
         return proposals
 
     def _resolve_combat(
@@ -203,8 +213,10 @@ class MultiUAVCombatEnv:
                     credited[team_index][target_index] = sorted(set(attacker_indices))
         self.red_attack_kills += len(credited[0])
         self.blue_attack_kills += len(credited[1])
-        if (credited[0] or credited[1]) and self.first_kill_step is None:
-            self.first_kill_step = self.steps
+        if credited[0] and self.red_first_kill_step is None:
+            self.red_first_kill_step = self.steps
+        if credited[1] and self.blue_first_kill_step is None:
+            self.blue_first_kill_step = self.steps
         return credited
 
     def _event_rewards(
@@ -286,9 +298,12 @@ class MultiUAVCombatEnv:
             "red_survivors": red_survivors,
             "blue_survivors": blue_survivors,
             "episode_length": self.steps,
-            "first_attackable_step": self.first_attackable_step,
-            "first_lock_step": self.first_lock_step,
-            "first_kill_step": self.first_kill_step,
+            "red_first_attackable_step": self.red_first_attackable_step,
+            "blue_first_attackable_step": self.blue_first_attackable_step,
+            "red_first_lock_step": self.red_first_lock_step,
+            "blue_first_lock_step": self.blue_first_lock_step,
+            "red_first_kill_step": self.red_first_kill_step,
+            "blue_first_kill_step": self.blue_first_kill_step,
             "local_rewards": rewards.copy(),
             "shaping_rewards": shaping_rewards.copy(),
             "shaping_reward": shaping_rewards.copy(),
@@ -330,8 +345,12 @@ class MultiUAVCombatEnv:
         self._update_horizontal_spread()
 
         red_snapshot, blue_snapshot = self._snapshot(self.red), self._snapshot(self.blue)
-        red_proposals = self._lock_proposals(red_snapshot, blue_snapshot, self.red_locks)
-        blue_proposals = self._lock_proposals(blue_snapshot, red_snapshot, self.blue_locks)
+        red_proposals = self._lock_proposals(
+            red_snapshot, blue_snapshot, self.red_locks, "red"
+        )
+        blue_proposals = self._lock_proposals(
+            blue_snapshot, red_snapshot, self.blue_locks, "blue"
+        )
         red_credited, blue_credited = self._resolve_combat(red_proposals, blue_proposals)
 
         event_rewards = self._event_rewards(red_altitude, blue_credited, red_credited)

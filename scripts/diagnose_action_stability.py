@@ -180,9 +180,15 @@ def empty_rollout() -> dict:
         "episodes": 0, "episode_lengths": [], "red": empty_control_summary(),
         "blue": empty_control_summary(), "sums": {key: 0 for key in BOUNDARY_KEYS},
         "red_attack_kills": 0, "blue_attack_kills": 0, "red_win": 0,
-        "blue_win": 0, "draw": 0, "attackable_episodes": 0,
-        "lock_episodes": 0, "kill_episodes": 0, "first_attackable": [],
-        "first_lock": [], "first_kill": [], "death_windows": [], "seed_records": [],
+        "blue_win": 0, "draw": 0, "death_windows": [], "seed_records": [],
+        **{
+            f"{side}_{event}_episodes": 0
+            for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        },
+        **{
+            f"{side}_first_{event}": []
+            for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        },
     }
 
 
@@ -260,14 +266,14 @@ def rollout_worker(task: tuple[str, str, int | None, int, int, bool]) -> dict:
                     result["sums"][key] += info[key]
                 for key in ("red_attack_kills", "blue_attack_kills", "red_win", "blue_win", "draw"):
                     result[key] += int(info[key])
-                for first_key, list_key, count_key in (
-                    ("first_attackable_step", "first_attackable", "attackable_episodes"),
-                    ("first_lock_step", "first_lock", "lock_episodes"),
-                    ("first_kill_step", "first_kill", "kill_episodes"),
-                ):
-                    if info[first_key] is not None:
-                        result[list_key].append(info[first_key])
-                        result[count_key] += 1
+                for side in ("red", "blue"):
+                    for event in ("attackable", "lock", "kill"):
+                        first_key = f"{side}_first_{event}_step"
+                        list_key = f"{side}_first_{event}"
+                        count_key = f"{side}_{event}_episodes"
+                        if info[first_key] is not None:
+                            result[list_key].append(info[first_key])
+                            result[count_key] += 1
                 result["seed_records"].append({
                     "actor_seed": actor_seed, "environment_seed": env_seed,
                     "termination_reason": info["termination_reason"],
@@ -282,10 +288,14 @@ def merge_rollouts(results: list[dict]) -> dict:
         merged["episodes"] += source["episodes"]
         merge_controls(merged["red"], source["red"])
         merge_controls(merged["blue"], source["blue"])
-        for key in ("episode_lengths", "first_attackable", "first_lock", "first_kill", "death_windows", "seed_records"):
+        for key in ("episode_lengths", "death_windows", "seed_records"):
             merged[key].extend(source[key])
-        for key in ("red_attack_kills", "blue_attack_kills", "red_win", "blue_win", "draw", "attackable_episodes", "lock_episodes", "kill_episodes"):
+        for key in ("red_attack_kills", "blue_attack_kills", "red_win", "blue_win", "draw"):
             merged[key] += source[key]
+        for side in ("red", "blue"):
+            for event in ("attackable", "lock", "kill"):
+                merged[f"{side}_first_{event}"].extend(source[f"{side}_first_{event}"])
+                merged[f"{side}_{event}_episodes"] += source[f"{side}_{event}_episodes"]
         for key in BOUNDARY_KEYS:
             merged["sums"][key] += source["sums"][key]
     return merged
@@ -313,12 +323,14 @@ def finalize_rollout(result: dict) -> dict:
         "red_attack_kills_per_episode": result["red_attack_kills"] / episodes,
         "blue_attack_kills_per_episode": result["blue_attack_kills"] / episodes,
         **{f"{key}_per_episode": result["sums"][key] / episodes for key in BOUNDARY_KEYS},
-        "attackable_episode_rate": result["attackable_episodes"] / episodes,
-        "completed_lock_episode_rate": result["lock_episodes"] / episodes,
-        "kill_episode_rate": result["kill_episodes"] / episodes,
-        "first_attackable_step": quantiles(result["first_attackable"]),
-        "first_lock_step": quantiles(result["first_lock"]),
-        "first_kill_step": quantiles(result["first_kill"]),
+        **{
+            f"{side}_{event}_episode_rate": result[f"{side}_{event}_episodes"] / episodes
+            for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        },
+        **{
+            f"{side}_first_{event}_step": quantiles(result[f"{side}_first_{event}"])
+            for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        },
         "red_control": finalize_controls(result["red"]),
         "blue_control": finalize_controls(result["blue"]),
         "actor_environment_seeds": result["seed_records"],

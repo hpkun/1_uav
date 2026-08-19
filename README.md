@@ -32,6 +32,10 @@ python scripts/evaluate_madsac.py \
   --checkpoint outputs/madsac/run_seed_0/latest.pt
 ```
 
+Combat diagnostics report Red and Blue attackable, completed-lock, and kill
+episode rates separately. `--smoke` intentionally uses reduced hidden, batch,
+and replay sizes; omit it for the formal 256-hidden/1024-batch/1M-replay setup.
+
 Historical Li et al. reconstruction notes are isolated under
 `docs/archive/li2023/` and are not part of the active environment contract.
 Training checkpoints intentionally omit replay contents, so resumed runs restart

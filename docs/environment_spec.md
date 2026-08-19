@@ -111,7 +111,7 @@ It has no target assignment optimizer, formation logic, map management,
 vertical safety clamp, or tactical FSM.
 
 Termination is Red all dead, Blue all dead, mutual destruction, or the
-1,000-step timeout. Validation reports attackable/lock/kill reachability,
+1,000-step timeout. Validation reports Red/Blue-separated attackable/lock/kill reachability,
 altitude loss causes, outcomes, episode length, nearest-enemy distance, and
 horizontal pair spread. Large horizontal separation is diagnostic information,
 not a failure against an implicit map radius.

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from ..madsac.trainer import MADSACTrainer
+from ..environment.env import MultiUAVCombatEnv
 from .evaluator import episode_return_metrics, evaluate
 from .vector_env import SyncVectorEnv
 
@@ -25,8 +26,25 @@ class MADSACTrainingRunner:
         smoke: bool = False,
     ) -> None:
         self.env_config, self.algorithm_config = env_config, algorithm_config
+        self.smoke = bool(smoke)
         training = algorithm_config["training"]
         assumptions = algorithm_config["implementation"]
+        network = algorithm_config["network"]
+        configured_dimensions = (
+            int(network["observation_dim"]), int(network["action_dim"]),
+            int(network["num_agents"]),
+        )
+        environment_dimensions = (
+            MultiUAVCombatEnv.observation_dim, MultiUAVCombatEnv.action_dim,
+            MultiUAVCombatEnv.team_size,
+        )
+        if configured_dimensions != environment_dimensions:
+            raise ValueError(
+                "network/environment dimension mismatch: "
+                f"configured obs/action/agents={configured_dimensions}, "
+                f"environment={environment_dimensions}"
+            )
+        self.observation_dim, self.action_dim, self.num_agents = configured_dimensions
         self.num_envs = int(num_envs or training["num_train_envs"])
         self.total_sampled_steps = int(total_sampled_steps or training["total_sampled_steps"])
         self.device = str(device or training["device"])
@@ -40,13 +58,14 @@ class MADSACTrainingRunner:
         if min(self.steps_per_update, self.update_steps_n, self.policy_delay_d) <= 0:
             raise ValueError("Algorithm 1 scheduler values must be positive")
 
-        batch_size = 64 if smoke else int(training["batch_size"])
-        replay_capacity = 50_000 if smoke else int(training["replay_buffer_size"])
-        hidden_dim = 64 if smoke else int(algorithm_config["network"]["actor_hidden_layers"][0])
+        batch_size = 64 if self.smoke else int(training["batch_size"])
+        replay_capacity = 50_000 if self.smoke else int(training["replay_buffer_size"])
+        hidden_dim = 64 if self.smoke else int(network["actor_hidden_layers"][0])
+        self.effective_hidden_dim = hidden_dim
         self.trainer = MADSACTrainer(
-            observation_dim=int(algorithm_config["network"]["observation_dim"]),
-            action_dim=int(algorithm_config["network"]["action_dim"]),
-            num_agents=int(algorithm_config["network"]["num_agents"]),
+            observation_dim=configured_dimensions[0],
+            action_dim=configured_dimensions[1],
+            num_agents=configured_dimensions[2],
             hidden_dim=hidden_dim,
             attention_heads=int(algorithm_config["network"]["attention_heads"]),
             learning_rate=float(training["learning_rate"]),
@@ -95,7 +114,12 @@ class MADSACTrainingRunner:
 
     def startup_summary(self) -> dict[str, Any]:
         return {
+            "mode": "smoke" if self.smoke else "formal",
             "device": self.device,
+            "observation_dim": self.observation_dim,
+            "action_dim": self.action_dim,
+            "num_agents": self.num_agents,
+            "effective_hidden_dim": self.effective_hidden_dim,
             "num_envs_M": self.num_envs,
             "seed": self.seed,
             "total_sampled_steps": self.total_sampled_steps,
@@ -110,7 +134,10 @@ class MADSACTrainingRunner:
     def start_log_line(self) -> str:
         summary = self.startup_summary()
         return (
-            f"[START] device={summary['device']} | envs={summary['num_envs_M']} | seed={summary['seed']} "
+            f"[START] mode={summary['mode']} | device={summary['device']} "
+            f"| obs={summary['observation_dim']} | act={summary['action_dim']} "
+            f"| agents={summary['num_agents']} | hidden={summary['effective_hidden_dim']} "
+            f"| envs={summary['num_envs_M']} | seed={summary['seed']} "
             f"| total={summary['total_sampled_steps']} | batch={summary['batch_size']} "
             f"| replay={summary['replay_capacity']} | T={summary['steps_per_update']} "
             f"| n={summary['update_steps_n']} | d={summary['policy_delay_d']}"
@@ -119,11 +146,23 @@ class MADSACTrainingRunner:
     def recent_episode_metrics(self) -> dict[str, float | None]:
         records = self.completed_records[-self.recent_episode_window:]
         if not records:
-            return {"return": None, "win": None, "red_loss": None}
+            return {
+                "return": None, "win": None, "red_loss": None,
+                "red_attackable": None, "red_lock": None, "red_kill": None,
+            }
         return {
             "return": float(np.mean([row["team_episode_return"] for row in records])),
             "win": float(np.mean([row["red_success"] for row in records])),
             "red_loss": float(np.mean([row["red_losses"] for row in records])),
+            "red_attackable": float(np.mean([
+                row["red_first_attackable_step"] is not None for row in records
+            ])),
+            "red_lock": float(np.mean([
+                row["red_first_lock_step"] is not None for row in records
+            ])),
+            "red_kill": float(np.mean([
+                row["red_first_kill_step"] is not None for row in records
+            ])),
         }
 
     @staticmethod
@@ -144,7 +183,10 @@ class MADSACTrainingRunner:
         return (
             f"[TRAIN] steps={self.trainer.sampled_steps}/{self.total_sampled_steps} ({percent:.1f}%) "
             f"| eps={len(self.completed_records)} | return={self._display(recent['return'], 2)} "
-            f"| win={self._display(recent['win'], 2)} | red_loss={self._display(recent['red_loss'], 2)} "
+            f"| red_loss={self._display(recent['red_loss'], 2)} "
+            f"| atk={self._display(recent['red_attackable'], 2)} "
+            f"| lock={self._display(recent['red_lock'], 2)} "
+            f"| kill={self._display(recent['red_kill'], 2)} "
             f"| critic={self._display(critic, 4)} "
             f"| actor={self._display(self.last_actor_metrics.get('actor_loss'), 3)} "
             f"| Q={self._display(self.last_critic_metrics.get('q_value'), 3)} "
@@ -256,15 +298,13 @@ class MADSACTrainingRunner:
             "timeout_rate": completed_rate(
                 lambda row: row["termination_reason"] == "draw_timeout"
             ),
-            "attackable_episode_rate": completed_rate(
-                lambda row: row["first_attackable_step"] is not None
-            ),
-            "lock_episode_rate": completed_rate(
-                lambda row: row["first_lock_step"] is not None
-            ),
-            "kill_episode_rate": completed_rate(
-                lambda row: row["first_kill_step"] is not None
-            ),
+            **{
+                f"{side}_{event}_episode_rate": completed_rate(
+                    lambda row, field=f"{side}_first_{event}_step": row[field] is not None
+                )
+                for side in ("red", "blue")
+                for event in ("attackable", "lock", "kill")
+            },
             "red_uav_losses": completed_mean("red_losses"),
             "blue_uav_losses": completed_mean("blue_losses"),
             "red_attack_kills": completed_mean("red_attack_kills"),
@@ -374,6 +414,8 @@ class MADSACTrainingRunner:
             "draw_rate": mean("draw"),
             "average_red_loss": mean("red_losses"),
             "average_blue_loss": mean("blue_losses"),
+            "average_red_attack_kills": mean("red_attack_kills"),
+            "average_blue_attack_kills": mean("blue_attack_kills"),
             "total_red_attack_kills": int(sum(
                 record["red_attack_kills"] for record in self.completed_records
             )),
@@ -392,18 +434,14 @@ class MADSACTrainingRunner:
             "average_max_horizontal_pair_separation": mean(
                 "max_horizontal_pair_separation"
             ),
-            "average_mean_horizontal_pair_separation": mean(
-                "mean_horizontal_pair_separation"
-            ),
-            "first_attackable_episode_rate": float(np.mean([
-                record["first_attackable_step"] is not None for record in self.completed_records
-            ])) if self.completed_records else 0.0,
-            "first_kill_episode_rate": float(np.mean([
-                record["first_kill_step"] is not None for record in self.completed_records
-            ])) if self.completed_records else 0.0,
-            "first_lock_episode_rate": float(np.mean([
-                record["first_lock_step"] is not None for record in self.completed_records
-            ])) if self.completed_records else 0.0,
+            **{
+                f"{side}_{event}_episode_rate": float(np.mean([
+                    record[f"{side}_first_{event}_step"] is not None
+                    for record in self.completed_records
+                ])) if self.completed_records else 0.0
+                for side in ("red", "blue")
+                for event in ("attackable", "lock", "kill")
+            },
             "last_update_metrics": self.last_metrics,
             "evaluation_history": self.evaluation_history,
         }

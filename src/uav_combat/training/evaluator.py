@@ -38,8 +38,27 @@ def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000
         "win_rate": mean("red_success"),
         "loss_rate": mean("blue_win"),
         "draw_rate": mean("draw"),
+        "timeout_rate": float(np.mean([
+            record["termination_reason"] == "draw_timeout" for record in records
+        ])),
         "average_red_loss": mean("red_losses"),
         "average_blue_loss": mean("blue_losses"),
+        **{
+            f"{side}_{event}_episode_rate": float(np.mean([
+                record[f"{side}_first_{event}_step"] is not None for record in records
+            ]))
+            for side in ("red", "blue")
+            for event in ("attackable", "lock", "kill")
+        },
+        "average_red_attack_kills": mean("red_attack_kills"),
+        "average_blue_attack_kills": mean("blue_attack_kills"),
+        "average_red_low_altitude_loss": mean("red_low_altitude_losses"),
+        "average_blue_low_altitude_loss": mean("blue_low_altitude_losses"),
+        "average_red_high_altitude_loss": mean("red_high_altitude_losses"),
+        "average_blue_high_altitude_loss": mean("blue_high_altitude_losses"),
         "average_episode_length": mean("episode_length"),
-        "evaluation_episodes": float(len(records)),
+        "average_max_horizontal_pair_separation": mean(
+            "max_horizontal_pair_separation"
+        ),
+        "evaluation_episodes": len(records),
     }

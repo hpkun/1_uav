@@ -157,10 +157,65 @@ def test_lock_dwell_proposes_kill_on_third_consecutive_step():
     env.reset(1)
     red = one_alive(state())
     blue = one_alive(state(x=1000.0))
-    assert env._lock_proposals(red, blue, env.red_locks) == []
-    assert env._lock_proposals(red, blue, env.red_locks) == []
-    assert env._lock_proposals(red, blue, env.red_locks) == [(0, 0)]
+    assert env._lock_proposals(red, blue, env.red_locks, "red") == []
+    assert env._lock_proposals(red, blue, env.red_locks, "red") == []
+    assert env._lock_proposals(red, blue, env.red_locks, "red") == [(0, 0)]
     assert env.red_locks[0].lock_steps == 3
+
+
+def test_red_only_attackable_does_not_pollute_blue_instrumentation():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    env.reset(101)
+    env.steps = 7
+    env._lock_proposals(
+        one_alive(state()), one_alive(state(x=1000.0)), env.red_locks, "red"
+    )
+    assert env.red_first_attackable_step == 7
+    assert env.blue_first_attackable_step is None
+
+
+def test_blue_only_attackable_does_not_pollute_red_instrumentation():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    env.reset(102)
+    env.steps = 8
+    env._lock_proposals(
+        one_alive(state()), one_alive(state(x=1000.0)), env.blue_locks, "blue"
+    )
+    assert env.blue_first_attackable_step == 8
+    assert env.red_first_attackable_step is None
+
+
+@pytest.mark.parametrize("side,other", [("red", "blue"), ("blue", "red")])
+def test_completed_lock_is_credited_only_to_requested_side(side, other):
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    env.reset(103)
+    env.steps = 9
+    attackers, targets = one_alive(state()), one_alive(state(x=1000.0))
+    locks = env.red_locks if side == "red" else env.blue_locks
+    for _ in range(3):
+        proposals = env._lock_proposals(attackers, targets, locks, side)
+    assert proposals == [(0, 0)]
+    assert getattr(env, f"{side}_first_lock_step") == 9
+    assert getattr(env, f"{other}_first_lock_step") is None
+
+
+@pytest.mark.parametrize("side,proposals", [
+    ("red", ([(0, 0)], [])),
+    ("blue", ([], [(0, 0)])),
+])
+def test_one_sided_kill_is_credited_only_to_attacking_side(side, proposals):
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    env.reset(104)
+    env.steps = 11
+    env.red = one_alive(state())
+    env.blue = one_alive(state(x=1000.0))
+    credited = env._resolve_combat(*proposals)
+    other = "blue" if side == "red" else "red"
+    assert len(credited[0 if side == "red" else 1]) == 1
+    assert getattr(env, f"{side}_first_kill_step") == 11
+    assert getattr(env, f"{other}_first_kill_step") is None
+    assert getattr(env, f"{side}_attack_kills") == 1
+    assert getattr(env, f"{other}_attack_kills") == 0
 
 
 def test_lock_break_resets_and_requires_three_new_steps():
@@ -168,16 +223,16 @@ def test_lock_break_resets_and_requires_three_new_steps():
     env.reset(2)
     red = one_alive(state())
     blue = one_alive(state(x=1000.0))
-    env._lock_proposals(red, blue, env.red_locks)
-    env._lock_proposals(red, blue, env.red_locks)
+    env._lock_proposals(red, blue, env.red_locks, "red")
+    env._lock_proposals(red, blue, env.red_locks, "red")
     blue[0].y = 3000.0
-    assert env._lock_proposals(red, blue, env.red_locks) == []
+    assert env._lock_proposals(red, blue, env.red_locks, "red") == []
     assert env.red_locks[0].current_lock_target == -1
     assert env.red_locks[0].lock_steps == 0
     blue[0].y = 0.0
-    assert env._lock_proposals(red, blue, env.red_locks) == []
-    assert env._lock_proposals(red, blue, env.red_locks) == []
-    assert env._lock_proposals(red, blue, env.red_locks) == [(0, 0)]
+    assert env._lock_proposals(red, blue, env.red_locks, "red") == []
+    assert env._lock_proposals(red, blue, env.red_locks, "red") == []
+    assert env._lock_proposals(red, blue, env.red_locks, "red") == [(0, 0)]
 
 
 def test_simultaneous_resolution_and_mutual_destruction_draw():
@@ -189,7 +244,28 @@ def test_simultaneous_resolution_and_mutual_destruction_draw():
     assert red_credited == {0: [0]}
     assert blue_credited == {0: [0]}
     assert not env.red[0].alive and not env.blue[0].alive
+    assert env.red_first_kill_step == env.blue_first_kill_step == env.steps
     assert env._outcome(False) == (False, False, True, "draw_mutual_destruction")
+
+
+def test_split_instrumentation_does_not_change_combat_reward_or_info_contract():
+    env = MultiUAVCombatEnv(CONFIG_PATH)
+    env.reset(105)
+    env.steps = 13
+    env.red = one_alive(state())
+    env.blue = one_alive(state(x=1000.0))
+    red_credited, blue_credited = env._resolve_combat([(0, 0)], [])
+    rewards = env._event_rewards([], blue_credited, red_credited)
+    assert rewards.tolist() == [10.0, 0.0, 0.0, 0.0]
+    info = env._info(
+        rewards, np.zeros(4), rewards, np.zeros(4), np.zeros((4, 3)), False
+    )
+    split_fields = {
+        f"{side}_first_{event}_step"
+        for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+    }
+    assert split_fields <= info.keys()
+    assert not {"first_attackable_step", "first_lock_step", "first_kill_step"} & info.keys()
 
 
 def test_win_loss_and_timeout_outcomes_are_mutually_exclusive():
