@@ -77,6 +77,10 @@ class MADSACTrainingRunner:
         self.scheduler_update_blocks = 0
         self.agent_episode_returns = np.zeros((self.num_envs, 4), dtype=float)
         self.completed_records: list[dict[str, Any]] = []
+        self.boundary_cost_sum = 0.0
+        self.boundary_cost_count = 0
+        self.boundary_shaping_sum = 0.0
+        self.boundary_shaping_count = 0
         self.last_critic_metrics: dict[str, float] = {}
         self.last_actor_metrics: dict[str, float] = {}
         self.last_metrics: dict[str, float] = {}
@@ -218,6 +222,16 @@ class MADSACTrainingRunner:
         )
         self.agent_episode_returns += result.rewards
         completed_now = []
+        step_boundary_cost = np.concatenate([
+            np.asarray(info["boundary_cost"], dtype=float) for info in result.infos
+        ])
+        step_boundary_shaping = np.concatenate([
+            np.asarray(info["boundary_shaping_rewards"], dtype=float) for info in result.infos
+        ])
+        self.boundary_cost_sum += float(step_boundary_cost.sum())
+        self.boundary_cost_count += int(step_boundary_cost.size)
+        self.boundary_shaping_sum += float(step_boundary_shaping.sum())
+        self.boundary_shaping_count += int(step_boundary_shaping.size)
         for i, done in enumerate(dones):
             if done:
                 per_agent = self.agent_episode_returns[i].copy()
@@ -255,6 +269,8 @@ class MADSACTrainingRunner:
             "actor_loss": self.last_actor_metrics.get("actor_loss"),
             "q_value": self.last_critic_metrics.get("q_value"),
             "entropy": self.last_actor_metrics.get("entropy"),
+            "boundary_cost_mean": float(np.mean(step_boundary_cost)),
+            "boundary_shaping_contribution_mean": float(np.mean(step_boundary_shaping)),
         }
         with (self.output_dir / "training_metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(metric_record) + "\n")
@@ -362,11 +378,22 @@ class MADSACTrainingRunner:
             "average_blue_low_altitude_loss": mean("blue_low_altitude_losses"),
             "average_red_high_altitude_loss": mean("red_high_altitude_losses"),
             "average_blue_high_altitude_loss": mean("blue_high_altitude_losses"),
+            "timeout_rate": float(np.mean([
+                record["termination_reason"] == "draw_timeout"
+                for record in self.completed_records
+            ])) if self.completed_records else 0.0,
+            "boundary_cost_mean": self.boundary_cost_sum / max(self.boundary_cost_count, 1),
+            "boundary_shaping_contribution_mean": (
+                self.boundary_shaping_sum / max(self.boundary_shaping_count, 1)
+            ),
             "first_attackable_episode_rate": float(np.mean([
                 record["first_attackable_step"] is not None for record in self.completed_records
             ])) if self.completed_records else 0.0,
             "first_kill_episode_rate": float(np.mean([
                 record["first_kill_step"] is not None for record in self.completed_records
+            ])) if self.completed_records else 0.0,
+            "first_lock_episode_rate": float(np.mean([
+                record["first_lock_step"] is not None for record in self.completed_records
             ])) if self.completed_records else 0.0,
             "last_update_metrics": self.last_metrics,
             "evaluation_history": self.evaluation_history,

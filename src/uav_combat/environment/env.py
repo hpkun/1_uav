@@ -10,10 +10,11 @@ from ..dynamics import PointMassDynamics
 from ..integrator import RK4Integrator
 from ..models import AircraftState
 from .control import action_to_control
+from .arena import boundary_cause
 from .fixed_policy import NearestTargetPursuitPolicy
 from .geometry import engagement_geometry, engagement_score
 from .observation import OBSERVATION_DIM, build_team_observations
-from .reward import team_potentials
+from .reward import combined_potentials
 from .scenario import random_line_abreast_states
 from .weapon import LockState, WeaponEnvelope
 
@@ -92,7 +93,9 @@ class MultiUAVCombatEnv:
         }
 
     def _observations(self) -> np.ndarray:
-        return build_team_observations(self.red, self.blue, self.config["observation"])
+        return build_team_observations(
+            self.red, self.blue, self.config["observation"], self.config["battlefield"]
+        )
 
     @staticmethod
     def _snapshot(states: list[AircraftState]) -> list[AircraftState]:
@@ -105,20 +108,10 @@ class MultiUAVCombatEnv:
                 states[index] = self.integrator.step(state, control, self.dynamics, self.spec)
 
     def _outside(self, state: AircraftState) -> bool:
-        return bool(
-            np.hypot(state.x, state.y) > self.radius
-            or state.altitude < self.altitude_min
-            or state.altitude > self.altitude_max
-        )
+        return boundary_cause(state, self.config["battlefield"]) is not None
 
     def _boundary_cause(self, state: AircraftState) -> str | None:
-        if np.hypot(state.x, state.y) > self.radius:
-            return "horizontal"
-        if state.altitude < self.altitude_min:
-            return "altitude_low"
-        if state.altitude > self.altitude_max:
-            return "altitude_high"
-        return None
+        return boundary_cause(state, self.config["battlefield"])
 
     def _resolve_boundaries(self) -> tuple[list[int], list[int]]:
         losses: tuple[list[int], list[int]] = ([], [])
@@ -242,6 +235,11 @@ class MultiUAVCombatEnv:
         rewards: np.ndarray,
         shaping_rewards: np.ndarray,
         event_rewards: np.ndarray,
+        tactical_potential: np.ndarray,
+        boundary_cost_values: np.ndarray,
+        combined_potential: np.ndarray,
+        tactical_shaping_rewards: np.ndarray,
+        boundary_shaping_rewards: np.ndarray,
         actions: np.ndarray,
         truncated: bool,
     ) -> dict[str, Any]:
@@ -286,7 +284,14 @@ class MultiUAVCombatEnv:
             "first_kill_step": self.first_kill_step,
             "local_rewards": rewards.copy(),
             "shaping_rewards": shaping_rewards.copy(),
+            "shaping_reward": shaping_rewards.copy(),
             "event_rewards": event_rewards.copy(),
+            "event_reward": event_rewards.copy(),
+            "tactical_potential": tactical_potential.copy(),
+            "boundary_cost": boundary_cost_values.copy(),
+            "combined_potential": combined_potential.copy(),
+            "tactical_shaping_rewards": tactical_shaping_rewards.copy(),
+            "boundary_shaping_rewards": boundary_shaping_rewards.copy(),
             "executed_red_actions": actions.copy(),
             "red_alive_mask": self.red_alive_mask,
             "blue_alive_mask": self.blue_alive_mask,
@@ -304,8 +309,12 @@ class MultiUAVCombatEnv:
         if blue_actions.shape != (4, 3) or not np.all(np.isfinite(blue_actions)):
             raise ValueError("blue_actions must be finite with shape (4, 3)")
 
-        distance_scale = float(self.config["reward"]["engagement_distance_scale"])
-        current_potential = team_potentials(self.red, self.blue, distance_scale)
+        reward_cfg = self.config["reward"]
+        distance_scale = float(reward_cfg["engagement_distance_scale"])
+        boundary_weight = float(reward_cfg["boundary_potential_weight"])
+        current_tactical, current_boundary, current_potential = combined_potentials(
+            self.red, self.blue, distance_scale, self.config["battlefield"], boundary_weight
+        )
         executed_red = np.clip(red_actions, -1.0, 1.0) * self.red_alive_mask[:, None]
         executed_blue = np.clip(blue_actions, -1.0, 1.0) * self.blue_alive_mask[:, None]
         self._advance(self.red, executed_red)
@@ -319,17 +328,23 @@ class MultiUAVCombatEnv:
         red_credited, blue_credited = self._resolve_combat(red_proposals, blue_proposals)
 
         event_rewards = self._event_rewards(red_boundary, blue_credited, red_credited)
-        next_potential = team_potentials(self.red, self.blue, distance_scale)
-        shaping_rewards = float(self.config["reward"]["shaping_lambda"]) * (
-            next_potential - current_potential
+        next_tactical, next_boundary, next_potential = combined_potentials(
+            self.red, self.blue, distance_scale, self.config["battlefield"], boundary_weight
         )
+        shaping_lambda = float(reward_cfg["shaping_lambda"])
+        tactical_shaping = shaping_lambda * (next_tactical - current_tactical)
+        boundary_shaping = shaping_lambda * -boundary_weight * (
+            next_boundary - current_boundary
+        )
+        shaping_rewards = tactical_shaping + boundary_shaping
         rewards = event_rewards + shaping_rewards
         red_survivors, blue_survivors = self.red_alive_mask.sum(), self.blue_alive_mask.sum()
         terminated = bool(red_survivors == 0 or blue_survivors == 0)
         truncated = bool(not terminated and self.steps >= self.max_steps)
         observations = self._observations()
         return observations, rewards.astype(np.float32), terminated, truncated, self._info(
-            rewards, shaping_rewards, event_rewards, executed_red, truncated
+            rewards, shaping_rewards, event_rewards, next_tactical, next_boundary,
+            next_potential, tactical_shaping, boundary_shaping, executed_red, truncated
         )
 
 

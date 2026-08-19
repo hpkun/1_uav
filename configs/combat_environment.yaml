@@ -14,6 +14,8 @@ battlefield:
   horizontal_radius: 15000.0
   altitude_min: 500.0
   altitude_max: 8000.0
+  horizontal_soft_fraction: 0.65
+  vertical_soft_margin: 1000.0
 scenario:
   team_size: 4
   center_radius: 3000.0
@@ -33,19 +35,14 @@ reward:
   death_penalty: -10.0
   shaping_lambda: 1.0
   engagement_distance_scale: 8000.0
+  boundary_potential_weight: 1.0
 observation:
   speed_center: 225.0
   speed_scale: 75.0
-  altitude_min: 500.0
-  altitude_max: 8000.0
-  center_scale: 10000.0
-  horizontal_position_scale: 20000.0
-  vertical_position_scale: 7500.0
   relative_velocity_scale: 600.0
 blue_policy:
   desired_speed: 260.0
+  recovery_speed: 225.0
   speed_error_scale: 50.0
   heading_gain: 1.5
   pitch_load_gain: 4.0
-  boundary_recovery_start_fraction: 0.65
-  vertical_safety_margin: 500.0

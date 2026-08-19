@@ -78,13 +78,20 @@ def test_constant_bank_neutral_vertical_preserves_theta_and_altitude_for_100_ste
     assert abs(aircraft.psi) > 0.1
 
 
-def test_v12_config_contains_only_new_action_and_vertical_policy_names():
+def test_v13_config_uses_arena_owned_safety_and_derived_observation_scales():
     config = load_config(CONFIG_PATH)
     assert set(config["action"]) == {"nx_scale", "nz_delta_scale", "phi_max"}
     assert "elevation_gain" not in config["blue_policy"]
     assert "elevation_action_scale" not in config["blue_policy"]
     assert config["blue_policy"]["pitch_load_gain"] == 4.0
-    assert config["blue_policy"]["boundary_recovery_start_fraction"] == 0.65
+    assert "boundary_recovery_start_fraction" not in config["blue_policy"]
+    assert "vertical_safety_margin" not in config["blue_policy"]
+    assert config["blue_policy"]["recovery_speed"] == 225.0
+    assert config["battlefield"]["horizontal_soft_fraction"] == 0.65
+    assert config["battlefield"]["vertical_soft_margin"] == 1000.0
+    assert set(config["observation"]) == {
+        "speed_center", "speed_scale", "relative_velocity_scale"
+    }
 
 
 def test_v11_battlefield_radius_is_15km():
@@ -208,10 +215,10 @@ def test_boundary_death_penalty_occurs_once():
     env.reset(5)
     env.red = one_alive(state(x=env.radius - 1.0))
     env.blue = [state(alive=False) for _ in range(4)]
-    _, first_reward, _, _, _ = env.step(np.zeros((4, 3)), np.zeros((4, 3)))
-    _, second_reward, _, _, _ = env.step(np.zeros((4, 3)), np.zeros((4, 3)))
-    assert first_reward[0] == pytest.approx(-10.0)
-    assert second_reward[0] == pytest.approx(0.0)
+    _, _, _, _, first_info = env.step(np.zeros((4, 3)), np.zeros((4, 3)))
+    _, _, _, _, second_info = env.step(np.zeros((4, 3)), np.zeros((4, 3)))
+    assert first_info["event_rewards"][0] == pytest.approx(-10.0)
+    assert second_info["event_rewards"][0] == pytest.approx(0.0)
     assert env.red_boundary_losses == 1
 
 

@@ -15,7 +15,7 @@ def trim_a1(theta: float | np.ndarray, phi: float | np.ndarray) -> np.ndarray:
 
 
 def vertical_balance(theta: float | np.ndarray, a1: float | np.ndarray, a2: float | np.ndarray):
-    """Vertical balance under the active V1.2 trim-relative semantics."""
+    """Vertical balance under the active V1.2+ trim-relative semantics."""
     phi = (np.pi / 3.0) * np.asarray(a2)
     nz = trim_normal_load(theta, phi) + 2.0 * np.asarray(a1)
     return nz * np.cos(phi) - np.cos(theta)
@@ -38,7 +38,7 @@ def bank_compensated_actions(
 
 
 def trim_relative_control(state: AircraftState, action: np.ndarray, k: float = 2.0) -> ControlCommand:
-    """Diagnostic-only explicit control equivalent of the adopted V1.2 mapping."""
+    """Diagnostic-only explicit control equivalent of the adopted V1.2+ mapping."""
     a0, a1, a2 = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
     phi = (np.pi / 3.0) * a2
     nz = float(trim_normal_load(state.theta, phi) + k * a1)

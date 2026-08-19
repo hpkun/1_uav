@@ -22,16 +22,19 @@ def _relative_slot(
     other: AircraftState,
     frame: tuple[np.ndarray, np.ndarray, np.ndarray],
     cfg: dict,
+    battlefield: dict,
 ) -> np.ndarray:
     if not other.alive:
         return np.zeros(7, dtype=np.float32)
     forward, right, up = frame
     displacement = np.array([other.x - own.x, other.y - own.y, other.z - own.z], dtype=float)
     relative_velocity = other.velocity_vector() - own.velocity_vector()
+    horizontal_scale = 2.0 * float(battlefield["horizontal_radius"])
+    vertical_scale = float(battlefield["altitude_max"] - battlefield["altitude_min"])
     position = np.array([
-        np.dot(displacement, forward) / cfg["horizontal_position_scale"],
-        np.dot(displacement, right) / cfg["horizontal_position_scale"],
-        np.dot(displacement, up) / cfg["vertical_position_scale"],
+        np.dot(displacement, forward) / horizontal_scale,
+        np.dot(displacement, right) / horizontal_scale,
+        np.dot(displacement, up) / vertical_scale,
     ])
     velocity = np.array([
         np.dot(relative_velocity, forward),
@@ -42,7 +45,8 @@ def _relative_slot(
 
 
 def build_team_observations(
-    team: list[AircraftState], opponents: list[AircraftState], cfg: dict
+    team: list[AircraftState], opponents: list[AircraftState], cfg: dict,
+    battlefield: dict,
 ) -> np.ndarray:
     observations = []
     for own_index, own in enumerate(team):
@@ -52,17 +56,23 @@ def build_team_observations(
         frame = flight_path_frame(own)
         horizontal_forward = np.array([np.cos(own.psi), np.sin(own.psi), 0.0])
         center_vector = np.array([-own.x, -own.y, 0.0])
+        altitude_min = float(battlefield["altitude_min"])
+        altitude_max = float(battlefield["altitude_max"])
+        center_scale = float(battlefield["horizontal_radius"])
         self_features = np.array([
             (own.v - cfg["speed_center"]) / cfg["speed_scale"],
             own.theta / (np.pi / 3.0),
-            2.0 * (own.altitude - cfg["altitude_min"]) / (
-                cfg["altitude_max"] - cfg["altitude_min"]
+            2.0 * (own.altitude - altitude_min) / (
+                altitude_max - altitude_min
             ) - 1.0,
-            np.dot(center_vector, horizontal_forward) / cfg["center_scale"],
-            np.dot(center_vector, frame[1]) / cfg["center_scale"],
+            np.dot(center_vector, horizontal_forward) / center_scale,
+            np.dot(center_vector, frame[1]) / center_scale,
         ], dtype=np.float32)
         allies = [state for index, state in enumerate(team) if index != own_index]
-        slots = [_relative_slot(own, state, frame, cfg) for state in allies + list(opponents)]
+        slots = [
+            _relative_slot(own, state, frame, cfg, battlefield)
+            for state in allies + list(opponents)
+        ]
         observations.append(np.concatenate([self_features, *slots]).astype(np.float32))
     result = np.stack(observations)
     if result.shape != (4, OBSERVATION_DIM) or not np.all(np.isfinite(result)):

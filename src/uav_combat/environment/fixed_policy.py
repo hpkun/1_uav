@@ -5,6 +5,10 @@ import numpy as np
 
 from ..math_utils import wrap_angle
 from ..models import AircraftState
+from .arena import (
+    arena_constrained_direction, horizontal_safety_severity,
+    vertical_safety_severities,
+)
 
 
 class NearestTargetPursuitPolicy:
@@ -12,6 +16,7 @@ class NearestTargetPursuitPolicy:
 
     def __init__(self, config: dict, battlefield: dict, action_config: dict) -> None:
         self.config = config
+        self.battlefield = battlefield
         self.action_config = action_config
         self.radius = float(battlefield["horizontal_radius"])
         self.altitude_min = float(battlefield["altitude_min"])
@@ -26,28 +31,16 @@ class NearestTargetPursuitPolicy:
                 candidates.append((distance, index))
         return min(candidates)[1] if candidates else None
 
-    @staticmethod
-    def _unit(vector: np.ndarray) -> np.ndarray:
-        norm = float(np.linalg.norm(vector))
-        return vector / norm if norm > 1e-12 else np.zeros_like(vector)
-
     def desired_horizontal_direction(
         self, own: AircraftState, target: AircraftState
     ) -> np.ndarray:
-        target_direction = self._unit(np.array([target.x - own.x, target.y - own.y], dtype=float))
-        horizontal_radius = float(np.hypot(own.x, own.y))
-        start = float(self.config["boundary_recovery_start_fraction"])
-        if horizontal_radius <= start * self.radius:
-            return target_direction
-        center_direction = self._unit(np.array([-own.x, -own.y], dtype=float))
-        weight = float(np.clip(
-            (horizontal_radius / self.radius - start) / (1.0 - start), 0.0, 1.0
-        ))
-        blended = (1.0 - weight) * target_direction + weight * center_direction
-        direction = self._unit(blended)
-        if np.linalg.norm(direction) <= 1e-12:
-            direction = center_direction if weight >= 0.5 else target_direction
-        return direction
+        target_direction = np.array([target.x - own.x, target.y - own.y], dtype=float)
+        return arena_constrained_direction(own, target_direction, self.battlefield)
+
+    def recovery_speed(self, own: AircraftState, nominal_speed: float) -> float:
+        severity = horizontal_safety_severity(own, self.battlefield)
+        recovery = float(self.config["recovery_speed"])
+        return float((1.0 - severity) * nominal_speed + severity * recovery)
 
     def action_toward(
         self,
@@ -66,21 +59,37 @@ class NearestTargetPursuitPolicy:
             / self.action_config["phi_max"],
         ], dtype=np.float32), -1.0, 1.0)
 
+    def safe_action_toward(
+        self,
+        own: AircraftState,
+        desired_heading: float,
+        desired_elevation: float,
+        desired_speed: float,
+    ) -> np.ndarray:
+        """Apply shared arena safety, then use the common normalized maneuver helper."""
+        requested = np.array([np.cos(desired_heading), np.sin(desired_heading)], dtype=float)
+        direction = arena_constrained_direction(own, requested, self.battlefield)
+        safe_heading = float(np.arctan2(direction[1], direction[0]))
+        lower, upper = vertical_safety_severities(own, self.battlefield)
+        if lower > 0.0:
+            desired_elevation = max(desired_elevation, 0.0)
+        if upper > 0.0:
+            desired_elevation = min(desired_elevation, 0.0)
+        safe_speed = self.recovery_speed(own, desired_speed)
+        return self.action_toward(
+            own, safe_heading, desired_elevation, safe_speed
+        )
+
     def action(self, own: AircraftState, targets: list[AircraftState]) -> np.ndarray:
         target_index = self.nearest_target_index(own, targets) if own.alive else None
         if target_index is None:
             return np.zeros(3, dtype=np.float32)
         target = targets[target_index]
-        direction = self.desired_horizontal_direction(own, target)
-        desired_heading = np.arctan2(direction[1], direction[0])
+        target_direction = np.array([target.x - own.x, target.y - own.y], dtype=float)
+        desired_heading = np.arctan2(target_direction[1], target_direction[0])
         horizontal_distance = np.hypot(target.x - own.x, target.y - own.y)
         desired_elevation = float(np.arctan2(own.z - target.z, horizontal_distance))
-        margin = float(self.config["vertical_safety_margin"])
-        if own.altitude <= self.altitude_min + margin:
-            desired_elevation = max(desired_elevation, 0.0)
-        if own.altitude >= self.altitude_max - margin:
-            desired_elevation = min(desired_elevation, 0.0)
-        return self.action_toward(
+        return self.safe_action_toward(
             own, desired_heading, desired_elevation, float(self.config["desired_speed"])
         )
 
