@@ -1,6 +1,6 @@
-# MADSAC 4v4 UAV Combat Benchmark
+# MADSAC and MAPPO 4v4 UAV Combat Benchmark
 
-This repository implements MADSAC against a public, lightweight 3D combat
+This repository implements MADSAC and MAPPO against a public, lightweight 3D combat
 environment. The active environment is **Paper-Constrained Direct 4v4 Combat
 Environment V2.1**. It uses the motion equations, action increments, combat
 geometry, attack equations, observation content and segmented reward structure
@@ -9,8 +9,9 @@ declared in `docs/environment_v2_spec.md`.
 
 The benchmark is a direct 4v4 engagement: four learned Red agents share an actor
 network and fight four Blue aircraft using a deterministic nearest-target pursuit
-policy. The observation and action dimensions remain 52 and 3. MADSAC network,
-optimizer and Algorithm-1 scheduler semantics are unchanged by V2.1.
+policy. The observation and action dimensions remain 52 and 3. MAPPO uses a
+shared two-layer local actor and a centralized two-head attention value critic,
+matching the MADSAC network width while retaining an on-policy PPO/GAE update.
 
 ## Install and test
 
@@ -39,6 +40,21 @@ python -u scripts/train_madsac.py \
 Training uses one persistent spawned worker per environment. Console output stays
 compact; `training_metrics.jsonl`, evaluation history, summaries and checkpoints
 retain the complete diagnostic record.
+
+MAPPO uses the same environment, evaluation seeds and output schema:
+
+```bash
+python -u scripts/train_mappo.py \
+  --device cuda \
+  --seed 2023 \
+  --total-sampled-steps 8000000 \
+  --num-envs 24 \
+  --output-dir outputs/mappo_v2_1_8m_seed2023
+```
+
+Its formal hyperparameters are declared in `configs/mappo.yaml`. MAPPO
+checkpoints contain the actor, centralized critic, both optimizers and training
+counters; no partial on-policy rollout is serialized.
 
 V2.0 checkpoints are intentionally incompatible. V2.1 checkpoints contain an
 `environment_version` field, and resume fails before loading model weights when
