@@ -1,4 +1,4 @@
-"""Translation- and rotation-invariant 52-dimensional local observations."""
+"""Bounded, invariant 52-dimensional local state observations."""
 from __future__ import annotations
 
 import numpy as np
@@ -39,7 +39,8 @@ def _relative_slot(
         np.dot(relative_velocity, right),
         np.dot(relative_velocity, up),
     ]) / cfg["relative_velocity_scale"]
-    return np.concatenate((position, velocity, [1.0])).astype(np.float32)
+    values = np.concatenate((position, velocity))
+    return np.concatenate((np.clip(values, -1.0, 1.0), [1.0])).astype(np.float32)
 
 
 def build_team_observations(
@@ -54,13 +55,13 @@ def build_team_observations(
         frame = flight_path_frame(own)
         altitude_min = float(flight_envelope["altitude_min"])
         altitude_max = float(flight_envelope["altitude_max"])
-        self_features = np.array([
+        self_features = np.clip(np.array([
             (own.v - cfg["speed_center"]) / cfg["speed_scale"],
             own.theta / (np.pi / 3.0),
             2.0 * (own.altitude - altitude_min) / (
                 altitude_max - altitude_min
             ) - 1.0,
-        ], dtype=np.float32)
+        ], dtype=np.float32), -1.0, 1.0)
         allies = [state for index, state in enumerate(team) if index != own_index]
         slots = [
             _relative_slot(own, state, frame, cfg)

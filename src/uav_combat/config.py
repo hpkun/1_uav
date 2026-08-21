@@ -1,4 +1,5 @@
 """Configuration loading for the public combat environment."""
+from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import yaml
@@ -6,7 +7,7 @@ from .models import AircraftSpec
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    """读取 YAML 配置并检查必要顶层字段。"""
+    """Load YAML configuration and validate required top-level sections."""
     with Path(path).open("r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     required = {
@@ -19,5 +20,5 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def aircraft_spec(config: dict[str, Any]) -> AircraftSpec:
-    """从配置构造不可变飞机规格。"""
+    """Build the immutable homogeneous aircraft specification."""
     return AircraftSpec(**config["aircraft"])

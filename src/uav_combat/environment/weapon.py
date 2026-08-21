@@ -1,4 +1,4 @@
-"""Deterministic attack envelope and continuous lock state."""
+"""Deterministic, dwell-based firing-window model."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,16 +18,25 @@ class LockState:
 
 @dataclass(frozen=True)
 class WeaponEnvelope:
-    attack_distance_max: float
+    range_min: float
+    range_max: float
     attack_angle_max: float
-    escape_angle_max: float
+    target_aspect_max: float
     lock_steps_required: int
 
-    def attackable(self, geometry: EngagementGeometry) -> bool:
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.range_min < self.range_max:
+            raise ValueError("weapon range must satisfy 0 <= range_min < range_max")
+        if min(self.attack_angle_max, self.target_aspect_max) <= 0.0:
+            raise ValueError("weapon angle limits must be positive")
+        if self.lock_steps_required <= 0:
+            raise ValueError("lock_steps_required must be positive")
+
+    def in_fire_window(self, geometry: EngagementGeometry) -> bool:
         return bool(
-            geometry.distance <= self.attack_distance_max
+            self.range_min <= geometry.distance <= self.range_max
             and geometry.attack_angle <= self.attack_angle_max
-            and geometry.escape_angle <= self.escape_angle_max
+            and geometry.target_aspect <= self.target_aspect_max
         )
 
 

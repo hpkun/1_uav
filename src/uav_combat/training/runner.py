@@ -295,6 +295,31 @@ class MADSACTrainingRunner:
         )
         metric_record = {
             "sampled_steps": self.trainer.sampled_steps,
+            "mean_step_reward": float(np.mean(result.rewards)),
+            "mean_progress_reward": float(np.mean(np.stack([
+                info["progress_rewards"] for info in result.infos
+            ]))),
+            "mean_tactical_reward": float(np.mean(np.stack([
+                info["tactical_rewards"] for info in result.infos
+            ]))),
+            "mean_fire_opportunity_reward": float(np.mean(np.stack([
+                info["fire_opportunity_rewards"] for info in result.infos
+            ]))),
+            "mean_event_reward": float(np.mean(np.stack([
+                info["event_rewards"] for info in result.infos
+            ]))),
+            "red_fire_window_pairs": float(np.mean([
+                info["red_fire_window_pairs"] for info in result.infos
+            ])),
+            "blue_fire_window_pairs": float(np.mean([
+                info["blue_fire_window_pairs"] for info in result.infos
+            ])),
+            "red_active_locks": float(np.mean([
+                info["red_active_locks"] for info in result.infos
+            ])),
+            "blue_active_locks": float(np.mean([
+                info["blue_active_locks"] for info in result.infos
+            ])),
             "team_episode_return": completed_mean("team_episode_return"),
             "mean_agent_episode_return": completed_mean("mean_agent_episode_return"),
             "win_rate": completed_mean("red_success"),

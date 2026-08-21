@@ -1,4 +1,4 @@
-"""Independent public-parameter 4v4 low-fidelity air-combat environment."""
+"""Paper-consistent enhanced 4v4 combat decision environment V2."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,19 +11,21 @@ from ..integrator import RK4Integrator
 from ..models import AircraftState
 from .control import action_to_control
 from .fixed_policy import NearestTargetPursuitPolicy
-from .geometry import engagement_geometry, engagement_score
+from .geometry import engagement_geometry
 from .observation import OBSERVATION_DIM, build_team_observations
-from .reward import tactical_potentials
-from .scenario import random_line_abreast_states
+from .reward import combat_reward_components
+from .scenario import random_combat_states
 from .weapon import LockState, WeaponEnvelope
 
 
 class MultiUAVCombatEnv:
-    """Four learned red UAVs versus a deterministic blue pursuit policy."""
+    """Four learned Red UAVs versus deterministic nearest-target Blue UAVs."""
 
     team_size, observation_dim, action_dim = 4, OBSERVATION_DIM, 3
 
-    def __init__(self, config: str | Path | dict[str, Any] = "configs/combat_environment.yaml") -> None:
+    def __init__(
+        self, config: str | Path | dict[str, Any] = "configs/combat_environment.yaml"
+    ) -> None:
         self.config = load_config(config) if not isinstance(config, dict) else config
         self.spec = aircraft_spec(self.config)
         self.dt = float(self.config["simulation"]["dt"])
@@ -39,13 +41,14 @@ class MultiUAVCombatEnv:
         self.rng = np.random.default_rng()
         self.red: list[AircraftState] = []
         self.blue: list[AircraftState] = []
-        self.red_locks = [LockState() for _ in range(4)]
-        self.blue_locks = [LockState() for _ in range(4)]
-        self.red_altitude_dead = np.zeros(4, dtype=bool)
-        self.blue_altitude_dead = np.zeros(4, dtype=bool)
-        self.red_altitude_causes = np.full(4, None, dtype=object)
-        self.blue_altitude_causes = np.full(4, None, dtype=object)
+        self.red_locks = [LockState() for _ in range(self.team_size)]
+        self.blue_locks = [LockState() for _ in range(self.team_size)]
+        self.red_altitude_dead = np.zeros(self.team_size, dtype=bool)
+        self.blue_altitude_dead = np.zeros(self.team_size, dtype=bool)
+        self.red_altitude_causes = np.full(self.team_size, None, dtype=object)
+        self.blue_altitude_causes = np.full(self.team_size, None, dtype=object)
         self.steps = 0
+        self.scenario_mode = ""
         self.red_attack_kills = 0
         self.blue_attack_kills = 0
         self.red_first_attackable_step: int | None = None
@@ -74,16 +77,17 @@ class MultiUAVCombatEnv:
     def blue_altitude_losses(self) -> int:
         return int(self.blue_altitude_dead.sum())
 
-    def _cause_count(self, causes: np.ndarray, cause: str) -> int:
+    @staticmethod
+    def _cause_count(causes: np.ndarray, cause: str) -> int:
         return int(np.count_nonzero(causes == cause))
 
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self.rng = np.random.default_rng(seed)
-        self.red, self.blue, radial_angle = random_line_abreast_states(
+        self.red, self.blue, radial_angle, self.scenario_mode = random_combat_states(
             self.rng, **self.config["scenario"]
         )
-        self.red_locks = [LockState() for _ in range(4)]
-        self.blue_locks = [LockState() for _ in range(4)]
+        self.red_locks = [LockState() for _ in range(self.team_size)]
+        self.blue_locks = [LockState() for _ in range(self.team_size)]
         self.red_altitude_dead.fill(False)
         self.blue_altitude_dead.fill(False)
         self.red_altitude_causes.fill(None)
@@ -97,13 +101,17 @@ class MultiUAVCombatEnv:
         self.horizontal_pair_separation_count = 0
         return self._observations(), {
             "radial_angle": radial_angle,
+            "scenario_mode": self.scenario_mode,
             "red_alive_mask": self.red_alive_mask,
             "blue_alive_mask": self.blue_alive_mask,
         }
 
     def _observations(self) -> np.ndarray:
         return build_team_observations(
-            self.red, self.blue, self.config["observation"], self.config["flight_envelope"]
+            self.red,
+            self.blue,
+            self.config["observation"],
+            self.config["flight_envelope"],
         )
 
     @staticmethod
@@ -114,7 +122,9 @@ class MultiUAVCombatEnv:
         for index, state in enumerate(states):
             if state.alive:
                 control = action_to_control(state, actions[index], self.config["action"])
-                states[index] = self.integrator.step(state, control, self.dynamics, self.spec)
+                states[index] = self.integrator.step(
+                    state, control, self.dynamics, self.spec
+                )
 
     def _altitude_violation(self, state: AircraftState) -> str | None:
         if state.altitude < self.altitude_min:
@@ -139,20 +149,23 @@ class MultiUAVCombatEnv:
                     losses[team_index].append(index)
         return losses
 
-    def _attackable(self, attacker: AircraftState, target: AircraftState) -> bool:
-        return attacker.alive and target.alive and self.weapon.attackable(
-            engagement_geometry(attacker, target)
+    def _in_fire_window(self, attacker: AircraftState, target: AircraftState) -> bool:
+        return bool(
+            attacker.alive
+            and target.alive
+            and self.weapon.in_fire_window(engagement_geometry(attacker, target))
         )
 
-    def _select_target(self, attacker: AircraftState, targets: list[AircraftState]) -> int | None:
+    def _select_target(
+        self, attacker: AircraftState, targets: list[AircraftState]
+    ) -> int | None:
         candidates = []
         for target_index, target in enumerate(targets):
-            if self._attackable(attacker, target):
+            if self._in_fire_window(attacker, target):
                 geometry = engagement_geometry(attacker, target)
                 candidates.append((
-                    -engagement_score(
-                        geometry, float(self.config["reward"]["engagement_distance_scale"])
-                    ),
+                    geometry.attack_angle / self.weapon.attack_angle_max
+                    + geometry.target_aspect / self.weapon.target_aspect_max,
                     geometry.distance,
                     target_index,
                 ))
@@ -176,8 +189,9 @@ class MultiUAVCombatEnv:
                 lock.reset()
                 continue
             target_index = lock.current_lock_target
-            valid_existing = 0 <= target_index < len(targets) and self._attackable(
-                attacker, targets[target_index]
+            valid_existing = (
+                0 <= target_index < len(targets)
+                and self._in_fire_window(attacker, targets[target_index])
             )
             if valid_existing:
                 lock.lock_steps += 1
@@ -189,7 +203,10 @@ class MultiUAVCombatEnv:
                     lock.lock_steps = 1
                     if getattr(self, attackable_field) is None:
                         setattr(self, attackable_field, self.steps)
-            if lock.current_lock_target >= 0 and lock.lock_steps >= self.weapon.lock_steps_required:
+            if (
+                lock.current_lock_target >= 0
+                and lock.lock_steps >= self.weapon.lock_steps_required
+            ):
                 proposals.append((attacker_index, lock.current_lock_target))
                 if getattr(self, lock_field) is None:
                     setattr(self, lock_field, self.steps)
@@ -202,7 +219,8 @@ class MultiUAVCombatEnv:
     ) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
         credited: tuple[dict[int, list[int]], dict[int, list[int]]] = ({}, {})
         for team_index, (targets, proposals) in enumerate((
-            (self.blue, red_proposals), (self.red, blue_proposals)
+            (self.blue, red_proposals),
+            (self.red, blue_proposals),
         )):
             by_target: dict[int, list[int]] = {}
             for attacker_index, target_index in proposals:
@@ -225,14 +243,27 @@ class MultiUAVCombatEnv:
         blue_credited: dict[int, list[int]],
         red_credited: dict[int, list[int]],
     ) -> np.ndarray:
-        reward_cfg = self.config["reward"]
-        rewards = np.zeros(4, dtype=np.float32)
-        for target_index, attackers in red_credited.items():
-            share = float(reward_cfg["kill_reward"]) / len(attackers)
+        config = self.config["reward"]
+        rewards = np.zeros(self.team_size, dtype=np.float32)
+        for attackers in red_credited.values():
+            share = float(config["kill_reward"]) / len(attackers)
             rewards[attackers] += share
         for red_index in set(red_altitude_losses) | set(blue_credited):
-            rewards[red_index] += float(reward_cfg["death_penalty"])
+            rewards[red_index] += float(config["death_penalty"])
         return rewards
+
+    @staticmethod
+    def _window_pair_count(
+        attackers: list[AircraftState],
+        targets: list[AircraftState],
+        weapon: WeaponEnvelope,
+    ) -> int:
+        return sum(
+            attacker.alive and target.alive and weapon.in_fire_window(
+                engagement_geometry(attacker, target)
+            )
+            for attacker in attackers for target in targets
+        )
 
     def _update_horizontal_spread(self) -> None:
         alive = [state for state in self.red + self.blue if state.alive]
@@ -264,16 +295,20 @@ class MultiUAVCombatEnv:
     def _info(
         self,
         rewards: np.ndarray,
-        shaping_rewards: np.ndarray,
+        components: dict[str, np.ndarray],
         event_rewards: np.ndarray,
-        tactical_potential: np.ndarray,
         actions: np.ndarray,
         truncated: bool,
+        red_fire_windows: int,
+        blue_fire_windows: int,
     ) -> dict[str, Any]:
         red_win, blue_win, draw, reason = self._outcome(truncated)
         red_survivors = int(self.red_alive_mask.sum())
         blue_survivors = int(self.blue_alive_mask.sum())
+        shaping = components["progress"] + components["tactical"] + components["fire"]
         return {
+            "environment_version": "2.0",
+            "scenario_mode": self.scenario_mode,
             "red_success": red_win,
             "red_win": red_win,
             "blue_win": blue_win,
@@ -293,8 +328,8 @@ class MultiUAVCombatEnv:
             "blue_high_altitude_losses": self._cause_count(
                 self.blue_altitude_causes, "altitude_high"
             ),
-            "red_losses": 4 - red_survivors,
-            "blue_losses": 4 - blue_survivors,
+            "red_losses": self.team_size - red_survivors,
+            "blue_losses": self.team_size - blue_survivors,
             "red_survivors": red_survivors,
             "blue_survivors": blue_survivors,
             "episode_length": self.steps,
@@ -304,13 +339,18 @@ class MultiUAVCombatEnv:
             "blue_first_lock_step": self.blue_first_lock_step,
             "red_first_kill_step": self.red_first_kill_step,
             "blue_first_kill_step": self.blue_first_kill_step,
+            "red_fire_window_pairs": red_fire_windows,
+            "blue_fire_window_pairs": blue_fire_windows,
+            "red_active_locks": sum(lock.lock_steps > 0 for lock in self.red_locks),
+            "blue_active_locks": sum(lock.lock_steps > 0 for lock in self.blue_locks),
             "local_rewards": rewards.copy(),
-            "shaping_rewards": shaping_rewards.copy(),
-            "shaping_reward": shaping_rewards.copy(),
+            "progress_rewards": components["progress"].copy(),
+            "tactical_rewards": components["tactical"].copy(),
+            "fire_opportunity_rewards": components["fire"].copy(),
+            "shaping_rewards": shaping.copy(),
+            "shaping_reward": shaping.copy(),
             "event_rewards": event_rewards.copy(),
             "event_reward": event_rewards.copy(),
-            "tactical_potential": tactical_potential.copy(),
-            "tactical_shaping_rewards": shaping_rewards.copy(),
             "max_horizontal_pair_separation": self.max_horizontal_pair_separation,
             "mean_horizontal_pair_separation": (
                 self.horizontal_pair_separation_sum
@@ -325,17 +365,20 @@ class MultiUAVCombatEnv:
         self, red_actions: np.ndarray, blue_actions: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray, bool, bool, dict[str, Any]]:
         red_actions = np.asarray(red_actions, dtype=np.float32)
-        if red_actions.shape != (4, 3) or not np.all(np.isfinite(red_actions)):
+        if red_actions.shape != (self.team_size, self.action_dim) or not np.all(
+            np.isfinite(red_actions)
+        ):
             raise ValueError("red_actions must be finite with shape (4, 3)")
         if blue_actions is None:
             blue_actions = self.fixed_policy.team_actions(self.blue, self.red)
         blue_actions = np.asarray(blue_actions, dtype=np.float32)
-        if blue_actions.shape != (4, 3) or not np.all(np.isfinite(blue_actions)):
+        if blue_actions.shape != (self.team_size, self.action_dim) or not np.all(
+            np.isfinite(blue_actions)
+        ):
             raise ValueError("blue_actions must be finite with shape (4, 3)")
 
-        reward_cfg = self.config["reward"]
-        distance_scale = float(reward_cfg["engagement_distance_scale"])
-        current_potential = tactical_potentials(self.red, self.blue, distance_scale)
+        current_red = self._snapshot(self.red)
+        current_blue = self._snapshot(self.blue)
         executed_red = np.clip(red_actions, -1.0, 1.0) * self.red_alive_mask[:, None]
         executed_blue = np.clip(blue_actions, -1.0, 1.0) * self.blue_alive_mask[:, None]
         self._advance(self.red, executed_red)
@@ -344,26 +387,52 @@ class MultiUAVCombatEnv:
         red_altitude, _ = self._resolve_altitude_limits()
         self._update_horizontal_spread()
 
-        red_snapshot, blue_snapshot = self._snapshot(self.red), self._snapshot(self.blue)
+        post_red = self._snapshot(self.red)
+        post_blue = self._snapshot(self.blue)
+        components = combat_reward_components(
+            current_red,
+            current_blue,
+            post_red,
+            post_blue,
+            self.weapon,
+            self.config["reward"],
+            self.dt,
+        )
+        red_fire_windows = self._window_pair_count(post_red, post_blue, self.weapon)
+        blue_fire_windows = self._window_pair_count(post_blue, post_red, self.weapon)
         red_proposals = self._lock_proposals(
-            red_snapshot, blue_snapshot, self.red_locks, "red"
+            post_red, post_blue, self.red_locks, "red"
         )
         blue_proposals = self._lock_proposals(
-            blue_snapshot, red_snapshot, self.blue_locks, "blue"
+            post_blue, post_red, self.blue_locks, "blue"
         )
-        red_credited, blue_credited = self._resolve_combat(red_proposals, blue_proposals)
+        red_credited, blue_credited = self._resolve_combat(
+            red_proposals, blue_proposals
+        )
 
-        event_rewards = self._event_rewards(red_altitude, blue_credited, red_credited)
-        next_potential = tactical_potentials(self.red, self.blue, distance_scale)
-        shaping_lambda = float(reward_cfg["shaping_lambda"])
-        shaping_rewards = shaping_lambda * (next_potential - current_potential)
-        rewards = event_rewards + shaping_rewards
-        red_survivors, blue_survivors = self.red_alive_mask.sum(), self.blue_alive_mask.sum()
+        event_rewards = self._event_rewards(
+            red_altitude, blue_credited, red_credited
+        )
+        shaping = components["progress"] + components["tactical"] + components["fire"]
+        rewards = event_rewards + shaping
+        red_survivors = self.red_alive_mask.sum()
+        blue_survivors = self.blue_alive_mask.sum()
         terminated = bool(red_survivors == 0 or blue_survivors == 0)
         truncated = bool(not terminated and self.steps >= self.max_steps)
-        observations = self._observations()
-        return observations, rewards.astype(np.float32), terminated, truncated, self._info(
-            rewards, shaping_rewards, event_rewards, next_potential, executed_red, truncated
+        return (
+            self._observations(),
+            rewards.astype(np.float32),
+            terminated,
+            truncated,
+            self._info(
+                rewards,
+                components,
+                event_rewards,
+                executed_red,
+                truncated,
+                red_fire_windows,
+                blue_fire_windows,
+            ),
         )
 
 

@@ -1,4 +1,4 @@
-"""Public full-3D engagement geometry."""
+"""Full-3D directed engagement geometry."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +11,7 @@ from ..models import AircraftState
 class EngagementGeometry:
     distance: float
     attack_angle: float
-    escape_angle: float
+    target_aspect: float
 
 
 def _angle(a: np.ndarray, b: np.ndarray) -> float:
@@ -24,22 +24,14 @@ def _angle(a: np.ndarray, b: np.ndarray) -> float:
 
 def engagement_geometry(attacker: AircraftState, target: AircraftState) -> EngagementGeometry:
     displacement = np.array(
-        [target.x - attacker.x, target.y - attacker.y, target.z - attacker.z], dtype=float
+        [target.x - attacker.x, target.y - attacker.y, target.z - attacker.z],
+        dtype=float,
     )
     return EngagementGeometry(
         distance=float(np.linalg.norm(displacement)),
         attack_angle=_angle(attacker.velocity_vector(), displacement),
-        escape_angle=_angle(target.velocity_vector(), displacement),
+        target_aspect=_angle(target.velocity_vector(), displacement),
     )
 
 
-def engagement_score(geometry: EngagementGeometry, engagement_distance_scale: float) -> float:
-    if engagement_distance_scale <= 0.0:
-        raise ValueError("engagement_distance_scale must be positive")
-    range_score = float(np.clip(1.0 - geometry.distance / engagement_distance_scale, 0.0, 1.0))
-    attack_score = (1.0 + np.cos(geometry.attack_angle)) / 2.0
-    escape_score = (1.0 + np.cos(geometry.escape_angle)) / 2.0
-    return float(range_score * attack_score * escape_score)
-
-
-__all__ = ["EngagementGeometry", "engagement_geometry", "engagement_score"]
+__all__ = ["EngagementGeometry", "engagement_geometry"]
