@@ -4,6 +4,7 @@ __pycache__/
 
 # Generated experiment outputs
 outputs/
+tmp/pdfs/
 
 # Model checkpoints
 *.pt

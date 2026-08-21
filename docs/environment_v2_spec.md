@@ -1,234 +1,179 @@
-# Enhanced Combat Environment V2 Specification
+# Paper-Constrained Direct 4v4 Combat Environment V2.1
 
-## 1. Scope
+This document is the normative active environment contract. V2.1 is a public
+reconstruction constrained by Li et al. (2023); it is not claimed to be the
+authors' unreleased simulator.
 
-V2 is a homogeneous 4v4 multi-UAV combat decision environment. Four Red agents are learned with the existing MADSAC implementation. Four Blue aircraft use one deterministic rule policy. The environment is an academic, low-fidelity combat model, not an engineering flight simulator.
+## Provenance table
 
-The design objective is a learnable combat chain under necessary aircraft constraints:
+| Component | Final value/design | Evidence class | Source/reason |
+|---|---|---|---|
+| 3DOF | NED point mass, paper Eq. (1)-(2) | PAPER | Section 2.1 |
+| `dt` / integrator | 0.1 s / RK4 | PAPER / PREDECESSOR | Paper model interval / frozen public integrator |
+| Speed, pitch, roll | `v=[150,300] m/s`, `theta=+/-pi/3`; no roll state, executed `phi` is a control | PAPER | Table 1 and Eq. (2) |
+| Team sizes | Red 4, Blue 4 | RECONSTRUCTION | Direct target experiment contract |
+| Action | relative `[Delta psi,Delta theta,Delta v]`, maxima `[pi,pi/3,50]` | PAPER | Table 2 and Eq. (23) |
+| Controller | 2 s first-order desired rates and Eq. (2) inverse | RECONSTRUCTION | Missing author controller replaced by disclosed prototype-selected design |
+| `nz` limit | 8g, proportional A/B projection | RECONSTRUCTION | Explicit frozen choice from controller prototype validation |
+| Geometry | signed horizontal ATA, AA, HA; optional HCA | PAPER / DERIVED | Eq. (6), with explicit signed `atan2` implementation |
+| Combat area | hard horizontal radius 5 km (10 km diameter) | RECONSTRUCTION | Fully disclosed finite benchmark arena |
+| Initialization | random diameter; centers at radius 4 km; disclosed offsets/noise | PAPER / RECONSTRUCTION | Paper random-diameter statement plus public numeric fill-in |
+| Altitude | initial `3000+/-100 m`; only ground `alt<=0` destroys | RECONSTRUCTION | Public initialization and minimal ground rule; no ceiling |
+| Observation | exact 52-scalar self/allies/enemies layout below | PAPER / DERIVED | Eq. (24) content plus explicit normalization/index derivation |
+| Fire gate | `d=[0,4000]`, `abs(ATA),abs(HA)<=30 deg` | PAPER | Eq. (7) and Table 1 |
+| Hit model | Eq. (8), `D_hit=4000/ln(6)`, `c4=c5=1`, independent draws | PAPER / DERIVED / RECONSTRUCTION | Equation form / calibrated distance / disclosed noise choice |
+| Cadence | one attempt on entry into the union of legal windows | RECONSTRUCTION | Prevents hidden 10 Hz repeated-fire assumption |
+| Reward | R1+R2+R3+R4 only | PAPER / DERIVED | Eq. (25), with documented nearest-target and precedence rules |
+| Blue | nearest Red, LOS heading/elevation, 250 m/s, same controller | PAPER / RECONSTRUCTION | Section 2.5 pursuit rule plus disclosed speed/controller |
+| Termination | elimination outcomes; 1000-step Red failure; mutual destruction draw | PAPER / RECONSTRUCTION | Paper Red success criterion plus explicit edge cases |
+| Sensor noise | disabled | RECONSTRUCTION | Deterministic public benchmark choice |
+| MADSAC implementation | unchanged | PREDECESSOR | Frozen project networks, optimizer and Algorithm-1 schedule |
 
-`approach -> maneuver -> fire opportunity -> stable solution -> kill`
+## Dynamics and action
 
-## 2. Simulation contract
+`AircraftState=[x,y,z,v,theta,psi]` uses NED, so altitude is `-z`. The existing
+3DOF derivatives and RK4 implementation are unchanged. Integrator limits are
+speed 150-300 m/s and pitch +/-60 degrees.
 
-- Coordinates: north-east-down (NED).
-- Aircraft state: `s=[x,y,z,v,theta,psi]` plus alive flag.
-- Integration interval: `dt=0.1 s`.
-- Dynamics and RK4 integration remain unchanged.
-- Team size: 4 Red and 4 Blue.
-- Actor action dimension: 3.
-- Per-agent observation dimension: 52.
-- Horizontal position does not create reward, recovery control, or termination.
-- An alive aircraft outside the altitude envelope is destroyed once.
-
-## 3. High-level action
-
-For normalized actor output `a=[a_h,a_p,a_v] in [-1,1]^3`, define:
-
-```
-psi_d   = wrap(psi + Delta_psi_max * a_h)
-theta_d = theta_cmd_max * a_p
-v_d     = v_cmd_min + (a_v + 1) / 2 * (v_cmd_max - v_cmd_min)
-```
-
-The three channels mean:
-
-- `a_h`: relative desired heading change. It is rotation invariant and can command either turn direction.
-- `a_p`: desired flight-path pitch. Zero explicitly means level flight.
-- `a_v`: desired speed. It expresses accelerate/decelerate intent without exposing tangential load.
-
-V2 defaults are `Delta_psi_max=180 deg`, `theta_cmd_max=30 deg`, and `v_d in [170,280] m/s`.
-
-## 4. Simple aircraft response layer
-
-The controller is memoryless proportional response with physical rate limits, not a PID autopilot.
+The actor output order is exactly `[a_psi,a_theta,a_v]`. After clipping each
+component to `[-1,1]`:
 
 ```
-psi_dot_c   = clip(k_psi * wrap(psi_d-psi), -psi_rate_max, psi_rate_max)
-theta_dot_c = clip(k_theta * (theta_d-theta), -theta_rate_max, theta_rate_max)
-v_dot_c     = clip(k_v * (v_d-v), -accel_max, accel_max)
+psi_d   = wrap(psi   + pi*a_psi)
+theta_d =      theta + (pi/3)*a_theta
+v_d     =      v     + 50*a_v
 ```
 
-Using the existing 3DOF equations, define:
+Thus zero action asks the controller to hold the current heading, pitch and
+speed. Desired rates use time constants `tau_psi=tau_theta=tau_v=2 s`.
+Inverting paper Eq. (2) gives:
 
 ```
-A   = cos(theta) + v/g * theta_dot_c
-B   = v*cos(theta)/g * psi_dot_c
-B   = clip(B, -|A|tan(phi_max), |A|tan(phi_max))
-phi = atan2(B,A)
-nz  = clip(sqrt(A^2+B^2), nz_min, nz_max)
-nx  = sin(theta) + v_dot_c/g
+A = max(cos(theta) + v*theta_dot/g, 0)
+B = v*cos(theta)*psi_dot/g
+nx = sin(theta) + v_dot/g
+nz_raw = hypot(A,B)
 ```
 
-This is an algebraic response layer. It has no integrator state, derivative state, gain scheduling, path planner, or hidden stabilization objective. It maps a tactical desired motion into the same paper-consistent point-mass inputs. The actor learns where to turn, climb, descend, accelerate, or slow; it does not learn the load-factor combination required to hold altitude during a bank.
+If `nz_raw>8`, A and B are multiplied by `8/nz_raw`. Then
+`nz=hypot(A,B)` and `phi=atan2(B,A)`. This preserves the requested pitch/yaw
+rate direction while enforcing `nz<=8` and `abs(phi)<=pi/2`. There is no `nx`
+cap.
 
-## 5. Observation
+## Canonical geometry
 
-The observation remains 52-dimensional and contains only state information required to infer combat geometry.
-
-### 5.1 Self features, 3
-
-1. Normalized speed: needed for closure, turn response and time-to-contact.
-2. Normalized flight-path pitch: needed to command vertical maneuvers and interpret the local frame.
-3. Normalized altitude: needed to respect the only physical battlefield envelope.
-
-### 5.2 Relative slots, 7 each
-
-There are three fixed teammate slots followed by four fixed opponent slots. Each slot contains:
-
-1. Relative position in own flight-path frame, 3 values.
-2. Relative velocity in own flight-path frame, 3 values.
-3. Alive flag, 1 value.
-
-Normalized continuous values are clipped to `[-1,1]`. A dead slot is zero. A dead observing agent receives an all-zero vector.
-
-Relative position and velocity are sufficient to infer range, line of sight, closure, off-boresight relation and target aspect. V2 deliberately does not expose precomputed distance, attack angle, target aspect, attackable state or lock state. This keeps the policy problem as combat decision-making from kinematic state rather than imitation of internal rule flags.
-
-## 6. Fire model
-
-For attacker `i` and target `j`:
-
-- `d_ij`: 3D Euclidean range.
-- `alpha_ij`: angle between attacker velocity and attacker-to-target LOS.
-- `beta_ij`: target aspect, angle between target velocity and attacker-to-target LOS. `beta=0` is rear/tail pursuit; `beta=pi` is head-on.
-
-The firing window is:
+For attacker `i`, target `j`, horizontal LOS
+`lambda=atan2(y_j-y_i,x_j-x_i)`, horizontal distance `rho`, and 3D range `d`:
 
 ```
-I_fire(i,j) = 1[
-    R_min <= d_ij <= R_max
-    and alpha_ij <= alpha_max
-    and beta_ij <= beta_max
-]
+ATA = wrap(lambda - psi_i)
+AA  = wrap(psi_j - lambda)
+HA  = atan2(alt_j-alt_i, rho) = atan2(-(z_j-z_i), rho)
+HCA = wrap(psi_j-psi_i)
 ```
 
-Defaults:
+All active gates use signed values through their absolute magnitude. HCA is
+available for diagnosis but is not an active fire or reward condition.
 
-- `R_min=300 m`
-- `R_max=2000 m`
-- `alpha_max=35 deg`
-- `beta_max=120 deg`
-- continuous dwell `N_lock=5` steps (`0.5 s`)
+## Scenario
 
-The environment automatically selects the best current firing-window target. A target is deterministically destroyed after the same attacker-target pair remains in the window for `N_lock` consecutive steps. Broken geometry or target change resets dwell. Same-step Red and Blue proposals are resolved simultaneously.
+A uniform horizontal angle selects a diameter. Red and Blue centers are the two
+endpoints at radius 4 km, hence their centers are exactly 8 km apart. Each team
+uses lateral offsets `[-450,-150,150,450] m`. Individual altitude is
+`3000+U(-100,100) m`, speed is `225+U(-10,10) m/s`, and heading is the direct
+opposing-center heading plus `U(-5,5) deg`. All aircraft begin inside the 5 km
+arena, every Red-Blue pair begins beyond 4 km, and no initial fire window exists.
+There are no scenario modes or curriculum.
 
-Why this is suitable for RL:
+## Weapon and firing state machine
 
-- It preserves range, pointing and target-aspect constraints central to air combat.
-- A 2 km envelope and 0.5 s dwell create a visible opportunity without simulating missile kinematics.
-- The target-aspect threshold excludes immediate head-on kills while allowing side/rear solutions.
-- Deterministic resolution removes unnecessary weapon-noise variance from policy learning.
-- Smooth reward features lead toward the hard window; the hard window itself remains an interpretable success event.
+The Eq. (7) window is inclusive: `0<=d<=4000 m`, `abs(ATA)<=30 deg`, and
+`abs(HA)<=30 deg`. AA and any lock/dwell state are not part of this gate.
 
-## 7. Stage-based combat reward
-
-For each alive Red agent `i`, V2 computes four combat-only components. Let `j*` be its nearest alive target at the pre-transition state for approach progress. Let `best()` select the highest relation score over alive opponents.
-
-### 7.1 Engagement progress
+For each attempt, Eq. (8) is evaluated with independent draws
+`epsilon_ATA,epsilon_HA ~ N(0,1)`:
 
 ```
-r_progress_i = w_p * 1[d_t > R_max]
-               * clip((d_t-d_t+1)/(v_close_ref*dt), -1, 1)
+threshold = pi*exp(-d/D_hit)
+abs(ATA + epsilon_ATA) <= threshold
+abs(HA  + epsilon_HA ) <= threshold
+D_hit = 4000/ln(6) = 2232.442506204989 m
 ```
 
-The same target `j*` is measured before and after the step. This rewards actual closure only before the firing region and stops rewarding collision-like pursuit inside it.
+Each attacker owns one `armed` flag. No legal target sets `armed=true`. The first
+step with one or more legal targets selects the nearest, makes exactly one attempt,
+and sets `armed=false`. Remaining continuously inside any legal window cannot fire
+again; leaving all windows rearms the attacker. Both sides use the same pre-hit
+snapshot and all successful hits resolve simultaneously. Multiple successful Red
+attackers against one target share its `+10` kill reward equally.
 
-### 7.2 Tactical advantage
+## Boundary, ground and step order
 
-For one directed relation:
+The only arena rule is `hypot(x,y)<=5000 m`. Exiting destroys either side. A Red
+exit receives R2=-10 and never an additional R1 death penalty; a Blue exit is not
+a Red kill. Ground contact is altitude `<=0`. Red ground loss receives R1=-10.
+There is no upper altitude ceiling.
 
-```
-G(d)     = clip((R_tactical-d)/(R_tactical-R_min), 0, 1)
-A(alpha) = (1+cos(alpha))/2
-B(beta)  = (1+cos(beta))/2
-T(i,j)   = G(d_ij) * (0.6*A(alpha_ij) + 0.4*B(beta_ij))
-```
+One step is ordered as follows:
 
-Then:
+1. Decode actions, compute controls, and integrate both sides.
+2. Resolve hard-boundary exits, then ground contact.
+3. Freeze the post-transition/pre-hit snapshot.
+4. Compute Red R3 and R4 and count fire windows.
+5. Apply entry-trigger logic and sample one Eq. (8) attempt when armed.
+6. Resolve Red and Blue successful hits simultaneously.
+7. Add R1 and R2; accumulate episode R1-R4 totals.
+8. Build the next observations and outcome metadata.
 
-```
-r_tactical_i = w_t * (best_j T(i,j) - best_j T(j,i))
-```
+## Reward
 
-This arithmetic angular combination avoids the V1.4 triple-product collapse. The signed attack-minus-threat term rewards a sustained positional advantage and penalizes being in an opponent's corresponding advantage.
+Only paper Eq. (25) is active:
 
-### 7.3 Fire opportunity
+- R1: shared `+10` for a Blue weapon kill; `-10` when that Red aircraft is
+  weapon-killed or reaches the ground.
+- R2: `-10` for a Red hard-boundary exit.
+- R3: for the nearest living Blue on the pre-hit snapshot, `+0.001` when
+  `abs(ATA),abs(HA)<=30 deg` and `d>=4000 m`.
+- R4: for the same pair and `d<=4000 m`, Red outer `abs(AA)<=30 deg` has
+  precedence and awards `+0.1,+0.02,+0.01` for nested 5, 15 and 30 degree
+  ATA/HA tiers. Otherwise the reverse Blue relation can apply
+  `-0.15,-0.025,-0.015` at the same tiers. Unmatched states receive zero.
 
-```
-r_fire_i = w_f * max_j I_fire(i,j) - w_threat * max_j I_fire(j,i)
-```
+No progress delta, closure, generic tactical score, fire bonus or extra shaping
+term is active.
 
-This term is deliberately small relative to combat events. It identifies the transition from maneuvering to an actionable weapon solution and makes holding the solution for the short dwell observable to the critic.
+## Observation indices
 
-### 7.4 Combat event
+The observation has exactly 52 floats and no sensor noise.
 
-```
-r_event_i = K / n_attackers,  if i shares a Blue kill
-            +D,               if i is destroyed
-            0,                otherwise
-```
+| Indices | Content |
+|---|---|
+| 0-6 | self: `x/5000,y/5000,alt/10000,(v-225)/75,last_phi/(pi/2),psi/pi,theta/(pi/3)` |
+| 7-27 | three ally slots, 7 each: relative NED displacement projected into own flight-path frame `/10000`, ally speed, relative heading, ally pitch, alive |
+| 28-51 | four enemy slots, 6 each: `d/10000`, enemy speed, `AA/pi`, `ATA/pi`, `HA/(pi/2)`, alive |
 
-Defaults are `K=+10` and `D=-10`. Altitude destruction uses the same death penalty because it removes the aircraft from combat; no separate boundary shaping is added.
+Dead ally/enemy slots are all zero. A dead observing aircraft receives an all-zero
+vector. The environment resets last executed bank angles to zero and stores the
+actual controller bank after each step for both teams.
 
-Total reward:
+## Blue policy, outcomes and instrumentation
 
-```
-r_i = r_progress_i + r_tactical_i + r_fire_i + r_event_i
-```
+Every step, each living Blue aircraft selects the nearest living Red aircraft,
+commands horizontal LOS heading, LOS elevation and 250 m/s, converts those desires
+to the same normalized increment action, and passes through the exact same
+controller and 8g projection.
 
-Default dense weights are `w_p=0.03`, `w_t=0.02`, `w_f=w_threat=0.05`, `R_tactical=5000 m`, and `v_close_ref=600 m/s`.
+Eliminating all Blue aircraft is a Red win. Eliminating all Red aircraft is a Blue
+win. Same-step full mutual destruction is a draw. Reaching 1000 steps with both
+teams alive is `red_failure_timeout`: `red_success=false`, `red_win=false`, and
+`draw=false`.
 
-No energy, formation, boundary, center-return, survival-time or artificial mission reward is permitted.
+Per-step and episode JSON metrics distinguish fire-window steps/pairs, attempts,
+successful weapon hits, credited kills, hard exits, ground losses, first-event
+steps, and R1-R4 totals for Red and Blue where applicable. Console training output
+contains only return, Red win/loss, Red fire-window/attempt/kill rates and MADSAC
+critic, actor, Q and entropy diagnostics.
 
-## 8. Initialization distribution
-
-Each reset samples one mode independently. This is a stationary mixture, not curriculum learning.
-
-- `head_on`: opposing headings approximately follow the center line.
-- `offset`: both teams enter with crossing/heading offsets, producing nonzero lateral geometry.
-- `flank`: one team is approximately crossing relative to the other; which team has the initial flank relation is randomized.
-
-Default probabilities are `0.4/0.4/0.2`. A common random horizontal rotation prevents absolute-map memorization. Team-center separation is sampled from `[6000,8000] m`, speed from `[200,250] m/s`, altitude from `[2500,4000] m`, with bounded within-team perturbations. Every initial pair is outside the maximum firing range.
-
-This distribution represents plausible pre-merge air-combat states without presenting kills at reset or progressively lowering difficulty.
-
-## 9. Blue baseline
-
-Blue selects its nearest alive Red target every step, commands pure pursuit heading and elevation, and commands a fixed cruise speed through the same V2 response layer. It has no look-ahead planner, missile evasion, team assignment, communication or learned behavior.
-
-The fixed policy provides a deterministic, stable baseline while preserving Red's research problem: multi-agent tactical maneuvering against a consistently engaging opponent.
-
-## 10. Episode and instrumentation
-
-- Episode terminates when either team has no survivors.
-- Episode truncates at `max_steps` otherwise.
-- A simultaneous full-team loss is a draw.
-- Required separated diagnostics remain: first attackable step, first completed-lock step, first kill step, kill counts, altitude losses and termination reason.
-- V2 adds per-step reward component vectors and current fire-window/lock counts for validation.
-- `executed_red_actions` remains the normalized high-level actor action stored in replay. MADSAC interfaces and update logic are unchanged.
-
-## 11. Verification gates
-
-### Unit tests
-
-- Dynamics: trim/command stability and bounded finite integration.
-- Action mapping: command endpoints, response direction and control bounds.
-- Attack model: head-on exclusion, valid rear/side window, range limits and dwell reset.
-- Reward: all components finite, approach sign, tactical sign and event accounting.
-- Observation: shape `(4,52)`, finite bounded values, dead masks, rotation/translation invariance.
-
-### Scripted baselines
-
-- Straight/head-on: initial state is not attackable and no immediate kill occurs.
-- Maneuver/combat: at least one deterministic trajectory records approach, nontrivial heading maneuver, fire opportunity, completed dwell and kill.
-
-### 24k smoke
-
-The smoke run is diagnostic, not a performance claim. Report:
-
-- reward and component distributions over time;
-- Red/Blue attackable episode rate;
-- Red/Blue completed-lock episode rate;
-- Red/Blue kill episode rate;
-- representative trajectory statistics and altitude losses.
-
-If attackable, lock and kill interaction remain identically zero, V2 fails the smoke gate and must not proceed to 500k.
+Checkpoints store `environment_version=2.1`. Resume rejects missing or different
+versions before loading weights because V2.0 and V2.1 use equal tensor dimensions
+with incompatible meanings.

@@ -1,9 +1,11 @@
-"""Bounded, invariant 52-dimensional local state observations."""
+"""Exact 52-dimensional paper-constrained local observation contract."""
 from __future__ import annotations
 
 import numpy as np
 
+from ..math_utils import wrap_angle
 from ..models import AircraftState
+from .geometry import engagement_geometry
 
 OBSERVATION_DIM = 52
 
@@ -17,57 +19,87 @@ def flight_path_frame(state: AircraftState) -> tuple[np.ndarray, np.ndarray, np.
     return forward, right, up
 
 
-def _relative_slot(
+def _relative_position(
     own: AircraftState,
     other: AircraftState,
     frame: tuple[np.ndarray, np.ndarray, np.ndarray],
+    scale: float,
+) -> np.ndarray:
+    displacement = np.array(
+        [other.x - own.x, other.y - own.y, other.z - own.z], dtype=float
+    )
+    return np.asarray([np.dot(displacement, axis) / scale for axis in frame])
+
+
+def _ally_slot(
+    own: AircraftState,
+    ally: AircraftState,
+    frame: tuple[np.ndarray, np.ndarray, np.ndarray],
     cfg: dict,
 ) -> np.ndarray:
-    if not other.alive:
+    if not ally.alive:
         return np.zeros(7, dtype=np.float32)
-    forward, right, up = frame
-    displacement = np.array([other.x - own.x, other.y - own.y, other.z - own.z], dtype=float)
-    relative_velocity = other.velocity_vector() - own.velocity_vector()
-    position_scale = float(cfg["relative_position_scale"])
-    position = np.array([
-        np.dot(displacement, forward) / position_scale,
-        np.dot(displacement, right) / position_scale,
-        np.dot(displacement, up) / position_scale,
-    ])
-    velocity = np.array([
-        np.dot(relative_velocity, forward),
-        np.dot(relative_velocity, right),
-        np.dot(relative_velocity, up),
-    ]) / cfg["relative_velocity_scale"]
-    values = np.concatenate((position, velocity))
-    return np.concatenate((np.clip(values, -1.0, 1.0), [1.0])).astype(np.float32)
+    values = np.concatenate((
+        _relative_position(
+            own, ally, frame, float(cfg["relative_position_scale"])
+        ),
+        [
+            (ally.v - float(cfg["speed_center"])) / float(cfg["speed_scale"]),
+            wrap_angle(ally.psi - own.psi) / np.pi,
+            ally.theta / (np.pi / 3.0),
+            1.0,
+        ],
+    ))
+    return values.astype(np.float32)
+
+
+def _enemy_slot(own: AircraftState, enemy: AircraftState, cfg: dict) -> np.ndarray:
+    if not enemy.alive:
+        return np.zeros(6, dtype=np.float32)
+    geometry = engagement_geometry(own, enemy)
+    return np.asarray([
+        geometry.distance / float(cfg["relative_position_scale"]),
+        (enemy.v - float(cfg["speed_center"])) / float(cfg["speed_scale"]),
+        geometry.aa / np.pi,
+        geometry.ata / np.pi,
+        geometry.ha / (np.pi / 2.0),
+        1.0,
+    ], dtype=np.float32)
 
 
 def build_team_observations(
-    team: list[AircraftState], opponents: list[AircraftState], cfg: dict,
-    flight_envelope: dict,
+    team: list[AircraftState],
+    opponents: list[AircraftState],
+    cfg: dict,
+    last_executed_phi: np.ndarray | None = None,
 ) -> np.ndarray:
+    phis = (
+        np.zeros(len(team), dtype=float)
+        if last_executed_phi is None else np.asarray(last_executed_phi, dtype=float)
+    )
+    if phis.shape != (len(team),):
+        raise ValueError("last_executed_phi must match team size")
     observations = []
     for own_index, own in enumerate(team):
         if not own.alive:
             observations.append(np.zeros(OBSERVATION_DIM, dtype=np.float32))
             continue
         frame = flight_path_frame(own)
-        altitude_min = float(flight_envelope["altitude_min"])
-        altitude_max = float(flight_envelope["altitude_max"])
-        self_features = np.clip(np.array([
-            (own.v - cfg["speed_center"]) / cfg["speed_scale"],
+        self_features = np.asarray([
+            own.x / float(cfg["horizontal_position_scale"]),
+            own.y / float(cfg["horizontal_position_scale"]),
+            own.altitude / float(cfg["altitude_scale"]),
+            (own.v - float(cfg["speed_center"])) / float(cfg["speed_scale"]),
+            phis[own_index] / (np.pi / 2.0),
+            own.psi / np.pi,
             own.theta / (np.pi / 3.0),
-            2.0 * (own.altitude - altitude_min) / (
-                altitude_max - altitude_min
-            ) - 1.0,
-        ], dtype=np.float32), -1.0, 1.0)
+        ], dtype=np.float32)
         allies = [state for index, state in enumerate(team) if index != own_index]
-        slots = [
-            _relative_slot(own, state, frame, cfg)
-            for state in allies + list(opponents)
-        ]
-        observations.append(np.concatenate([self_features, *slots]).astype(np.float32))
+        ally_slots = [_ally_slot(own, ally, frame, cfg) for ally in allies]
+        enemy_slots = [_enemy_slot(own, enemy, cfg) for enemy in opponents]
+        observations.append(np.concatenate(
+            [self_features, *ally_slots, *enemy_slots]
+        ).astype(np.float32))
     result = np.stack(observations)
     if result.shape != (4, OBSERVATION_DIM) or not np.all(np.isfinite(result)):
         raise FloatingPointError("invalid combat observation")

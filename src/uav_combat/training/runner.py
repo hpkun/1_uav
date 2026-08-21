@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 import numpy as np
+import torch
 
+from ..config import ENVIRONMENT_VERSION
 from ..madsac.trainer import MADSACTrainer
 from ..environment.env import MultiUAVCombatEnv
 from .evaluator import episode_return_metrics, evaluate
@@ -153,17 +155,17 @@ class MADSACTrainingRunner:
         if not records:
             return {
                 "return": None, "win": None, "red_loss": None,
-                "red_attackable": None, "red_lock": None, "red_kill": None,
+                "red_fire_window": None, "red_attempt": None, "red_kill": None,
             }
         return {
             "return": float(np.mean([row["team_episode_return"] for row in records])),
             "win": float(np.mean([row["red_success"] for row in records])),
             "red_loss": float(np.mean([row["red_losses"] for row in records])),
-            "red_attackable": float(np.mean([
-                row["red_first_attackable_step"] is not None for row in records
+            "red_fire_window": float(np.mean([
+                row["red_first_fire_window_step"] is not None for row in records
             ])),
-            "red_lock": float(np.mean([
-                row["red_first_lock_step"] is not None for row in records
+            "red_attempt": float(np.mean([
+                row["red_first_attempt_step"] is not None for row in records
             ])),
             "red_kill": float(np.mean([
                 row["red_first_kill_step"] is not None for row in records
@@ -189,8 +191,8 @@ class MADSACTrainingRunner:
             f"[TRAIN] steps={self.trainer.sampled_steps}/{self.total_sampled_steps} ({percent:.1f}%) "
             f"| eps={len(self.completed_records)} | return={self._display(recent['return'], 2)} "
             f"| red_loss={self._display(recent['red_loss'], 2)} "
-            f"| atk={self._display(recent['red_attackable'], 2)} "
-            f"| lock={self._display(recent['red_lock'], 2)} "
+            f"| fire={self._display(recent['red_fire_window'], 2)} "
+            f"| attempt={self._display(recent['red_attempt'], 2)} "
             f"| kill={self._display(recent['red_kill'], 2)} "
             f"| critic={self._display(critic, 4)} "
             f"| actor={self._display(self.last_actor_metrics.get('actor_loss'), 3)} "
@@ -296,17 +298,17 @@ class MADSACTrainingRunner:
         metric_record = {
             "sampled_steps": self.trainer.sampled_steps,
             "mean_step_reward": float(np.mean(result.rewards)),
-            "mean_progress_reward": float(np.mean(np.stack([
-                info["progress_rewards"] for info in result.infos
+            "mean_r1_reward": float(np.mean(np.stack([
+                info["r1_rewards"] for info in result.infos
             ]))),
-            "mean_tactical_reward": float(np.mean(np.stack([
-                info["tactical_rewards"] for info in result.infos
+            "mean_r2_reward": float(np.mean(np.stack([
+                info["r2_rewards"] for info in result.infos
             ]))),
-            "mean_fire_opportunity_reward": float(np.mean(np.stack([
-                info["fire_opportunity_rewards"] for info in result.infos
+            "mean_r3_reward": float(np.mean(np.stack([
+                info["r3_rewards"] for info in result.infos
             ]))),
-            "mean_event_reward": float(np.mean(np.stack([
-                info["event_rewards"] for info in result.infos
+            "mean_r4_reward": float(np.mean(np.stack([
+                info["r4_rewards"] for info in result.infos
             ]))),
             "red_fire_window_pairs": float(np.mean([
                 info["red_fire_window_pairs"] for info in result.infos
@@ -314,11 +316,17 @@ class MADSACTrainingRunner:
             "blue_fire_window_pairs": float(np.mean([
                 info["blue_fire_window_pairs"] for info in result.infos
             ])),
-            "red_active_locks": float(np.mean([
-                info["red_active_locks"] for info in result.infos
+            "red_step_fire_attempts": float(np.mean([
+                info["red_step_fire_attempts"] for info in result.infos
             ])),
-            "blue_active_locks": float(np.mean([
-                info["blue_active_locks"] for info in result.infos
+            "blue_step_fire_attempts": float(np.mean([
+                info["blue_step_fire_attempts"] for info in result.infos
+            ])),
+            "red_step_weapon_hits": float(np.mean([
+                info["red_step_weapon_hits"] for info in result.infos
+            ])),
+            "blue_step_weapon_hits": float(np.mean([
+                info["blue_step_weapon_hits"] for info in result.infos
             ])),
             "team_episode_return": completed_mean("team_episode_return"),
             "mean_agent_episode_return": completed_mean("mean_agent_episode_return"),
@@ -326,27 +334,28 @@ class MADSACTrainingRunner:
             "loss_rate": completed_mean("blue_win"),
             "draw_rate": completed_mean("draw"),
             "timeout_rate": completed_rate(
-                lambda row: row["termination_reason"] == "draw_timeout"
+                lambda row: row["termination_reason"] == "red_failure_timeout"
             ),
             **{
                 f"{side}_{event}_episode_rate": completed_rate(
                     lambda row, field=f"{side}_first_{event}_step": row[field] is not None
                 )
                 for side in ("red", "blue")
-                for event in ("attackable", "lock", "kill")
+                for event in ("fire_window", "attempt", "hit", "kill")
             },
             "red_uav_losses": completed_mean("red_losses"),
             "blue_uav_losses": completed_mean("blue_losses"),
             "red_attack_kills": completed_mean("red_attack_kills"),
             "blue_attack_kills": completed_mean("blue_attack_kills"),
-            "red_low_altitude_losses": completed_mean("red_low_altitude_losses"),
-            "blue_low_altitude_losses": completed_mean("blue_low_altitude_losses"),
-            "red_high_altitude_losses": completed_mean("red_high_altitude_losses"),
-            "blue_high_altitude_losses": completed_mean("blue_high_altitude_losses"),
+            "red_boundary_exits": completed_mean("red_boundary_exits"),
+            "blue_boundary_exits": completed_mean("blue_boundary_exits"),
+            "red_ground_losses": completed_mean("red_ground_losses"),
+            "blue_ground_losses": completed_mean("blue_ground_losses"),
             "episode_length": completed_mean("episode_length"),
-            "max_horizontal_pair_separation": completed_mean(
-                "max_horizontal_pair_separation"
-            ),
+            **{
+                f"episode_{name}_total": completed_mean(f"episode_{name}_total")
+                for name in ("r1", "r2", "r3", "r4")
+            },
             "critic_loss": self._last_critic_loss(),
             "actor_loss": self.last_actor_metrics.get("actor_loss"),
             "q_value": self.last_critic_metrics.get("q_value"),
@@ -401,6 +410,7 @@ class MADSACTrainingRunner:
 
     def save_checkpoint(self, path: str | Path) -> None:
         self.trainer.save(path, {
+            "environment_version": ENVIRONMENT_VERSION,
             "scheduler_T": self.scheduler_T,
             "scheduler_update_blocks": self.scheduler_update_blocks,
             "episode_indices": self.vector.episode_indices.tolist(),
@@ -408,6 +418,14 @@ class MADSACTrainingRunner:
 
     def resume(self, path: str | Path) -> None:
         """Resume networks/counters with an empty replay and fresh episodes."""
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        checkpoint_version = state.get("extra", {}).get("environment_version")
+        if checkpoint_version != ENVIRONMENT_VERSION:
+            raise RuntimeError(
+                "checkpoint environment_version mismatch: expected "
+                f"{ENVIRONMENT_VERSION}, got {checkpoint_version!r}; V2.0/V2.1 "
+                "share dimensions but not observation semantics"
+            )
         extra = self.trainer.load(path)
         self.scheduler_T = int(extra.get("scheduler_T", 0))
         # The fallback reads checkpoints made before the counter was renamed;
@@ -455,25 +473,26 @@ class MADSACTrainingRunner:
             "total_blue_attack_kills": int(sum(
                 record["blue_attack_kills"] for record in self.completed_records
             )),
-            "average_red_low_altitude_loss": mean("red_low_altitude_losses"),
-            "average_blue_low_altitude_loss": mean("blue_low_altitude_losses"),
-            "average_red_high_altitude_loss": mean("red_high_altitude_losses"),
-            "average_blue_high_altitude_loss": mean("blue_high_altitude_losses"),
+            "average_red_boundary_exits": mean("red_boundary_exits"),
+            "average_blue_boundary_exits": mean("blue_boundary_exits"),
+            "average_red_ground_losses": mean("red_ground_losses"),
+            "average_blue_ground_losses": mean("blue_ground_losses"),
             "timeout_rate": float(np.mean([
-                record["termination_reason"] == "draw_timeout"
+                record["termination_reason"] == "red_failure_timeout"
                 for record in self.completed_records
             ])) if self.completed_records else 0.0,
             "average_episode_length": mean("episode_length"),
-            "average_max_horizontal_pair_separation": mean(
-                "max_horizontal_pair_separation"
-            ),
             **{
                 f"{side}_{event}_episode_rate": float(np.mean([
                     record[f"{side}_first_{event}_step"] is not None
                     for record in self.completed_records
                 ])) if self.completed_records else 0.0
                 for side in ("red", "blue")
-                for event in ("attackable", "lock", "kill")
+                for event in ("fire_window", "attempt", "hit", "kill")
+            },
+            **{
+                f"average_episode_{name}_total": mean(f"episode_{name}_total")
+                for name in ("r1", "r2", "r3", "r4")
             },
             "last_update_metrics": self.last_metrics,
             "evaluation_history": self.evaluation_history,

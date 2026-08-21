@@ -1,43 +1,61 @@
-# MADSAC public 4v4 combat benchmark
+# MADSAC 4v4 UAV Combat Benchmark
 
-This project combines the existing Multi-Agent Double Soft Actor-Critic
-implementation with Enhanced Combat Environment V2, a lightweight,
-paper-consistent 4v4 3D continuous-action environment. It is an academic
-low-fidelity benchmark, not an engineering flight simulator. The complete active
-definition is in [docs/environment_v2_spec.md](docs/environment_v2_spec.md).
+This repository implements MADSAC against a public, lightweight 3D combat
+environment. The active environment is **Paper-Constrained Direct 4v4 Combat
+Environment V2.1**. It uses the motion equations, action increments, combat
+geometry, attack equations, observation content and segmented reward structure
+reported by Li et al. (2023), with every otherwise missing simulator choice
+declared in `docs/environment_v2_spec.md`.
 
-The active runtime path contains one environment:
+The benchmark is a direct 4v4 engagement: four learned Red agents share an actor
+network and fight four Blue aircraft using a deterministic nearest-target pursuit
+policy. The observation and action dimensions remain 52 and 3. MADSAC network,
+optimizer and Algorithm-1 scheduler semantics are unchanged by V2.1.
 
-- `MultiUAVCombatEnv`, configured by `configs/combat_environment.yaml`
-- six-state 3DOF dynamics with high-level heading/pitch/speed maneuver commands
-- bounded 52-dimensional translation- and rotation-invariant local observations
-- deterministic range/off-boresight/target-aspect firing windows and dwell
-- nearest-target pursuit Blue policy through the same simple response layer
-- shared MADSAC actor, double attention critics, replay, targets, entropy, and
-  the existing Algorithm-1 update scheduler
-- one persistent spawn subprocess per training environment; policy inference,
-  replay, and optimization remain in the CUDA-capable main process
+## Install and test
 
-Run in the requested environment:
+Install the package in editable mode in a Python environment containing the
+dependencies declared by `pyproject.toml`, then run:
 
 ```bash
-conda activate brmamappo
-cd C:\Users\HPK\Desktop\1_uav
-
 pytest -q
 python scripts/validate_combat_environment.py
-python scripts/check_parallel_env.py --num-envs 24 --steps 100
-python scripts/train_madsac.py --smoke --num-envs 24 \
-  --total-sampled-steps 24000 --seed 0
-python scripts/evaluate_madsac.py \
-  --checkpoint outputs/madsac/run_seed_0/latest.pt
 ```
 
-Validation includes straight/head-on and maneuver/combat scripted baselines.
-Combat diagnostics report Red and Blue attackable, completed-lock, and kill rates
-separately. `--smoke` intentionally uses reduced hidden, batch, and replay sizes.
+The validation report covers the controller grid, Eq. (8) Monte Carlo behavior,
+1000 randomized initializations and a 100-episode rule-based combat baseline.
 
-Historical Li et al. reconstruction notes are isolated under
-`docs/archive/li2023/` and are not part of the active environment contract.
-Training checkpoints intentionally omit replay contents, so resumed runs restart
-with a fresh replay buffer and fresh episodes.
+## Train
+
+```bash
+python -u scripts/train_madsac.py \
+  --device cuda \
+  --seed 2023 \
+  --total-sampled-steps 500000 \
+  --num-envs 24 \
+  --output-dir outputs/madsac_v2_1
+```
+
+Training uses one persistent spawned worker per environment. Console output stays
+compact; `training_metrics.jsonl`, evaluation history, summaries and checkpoints
+retain the complete diagnostic record.
+
+V2.0 checkpoints are intentionally incompatible. V2.1 checkpoints contain an
+`environment_version` field, and resume fails before loading model weights when
+the field is absent or different. Replay contents are not checkpointed, so even a
+compatible resume restarts replay collection and episodes.
+
+## Environment contract
+
+- NED 3DOF point-mass dynamics, RK4, `dt=0.1 s`.
+- Relative action increments `[a_psi, a_theta, a_v]` with physical maxima
+  `[pi rad, pi/3 rad, 50 m/s]`.
+- Eq. (2) inverse controller with 2 s response constants and proportional
+  `nz <= 8` projection.
+- Random 8 km diameter initialization inside a hard 5 km arena.
+- Eq. (7) fire window and Eq. (8) probabilistic, entry-triggered attacks.
+- Paper R1-R4 only; ground and boundary semantics are explicitly separated.
+- A 100 s timeout is a Red mission failure, not a draw.
+
+See `docs/environment_v2_spec.md` for the normative formulas, indices, update
+order, provenance and validation criteria.

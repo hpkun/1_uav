@@ -1,4 +1,4 @@
-"""Stationary mixture of representative pre-merge combat geometries."""
+"""Random-diameter 4v4 initialization for the V2.1 benchmark."""
 from __future__ import annotations
 
 import numpy as np
@@ -9,65 +9,36 @@ from ..models import AircraftState
 
 def random_combat_states(
     rng: np.random.Generator,
-    modes: list[str],
-    mode_probabilities: list[float],
-    center_separation_min: float,
-    center_separation_max: float,
+    center_radius: float,
     formation_offsets: list[float],
-    altitude_min: float,
-    altitude_max: float,
+    altitude_center: float,
     altitude_perturbation_max: float,
-    speed_min: float,
-    speed_max: float,
+    speed_center: float,
+    speed_perturbation_max: float,
     heading_perturbation_max: float,
-    offset_angle_min: float,
-    offset_angle_max: float,
     team_size: int = 4,
-) -> tuple[list[AircraftState], list[AircraftState], float, str]:
-    """Sample head-on, offset or flank initial states without curriculum."""
+) -> tuple[list[AircraftState], list[AircraftState], float]:
+    """Place opposing formations at the ends of a random 8-km diameter."""
     if team_size != 4 or len(formation_offsets) != team_size:
-        raise ValueError("this benchmark requires four aircraft and four formation offsets")
-    if modes != ["head_on", "offset", "flank"]:
-        raise ValueError("scenario modes must be head_on, offset and flank")
-    probabilities = np.asarray(mode_probabilities, dtype=float)
-    if probabilities.shape != (3,) or np.any(probabilities < 0.0):
-        raise ValueError("mode_probabilities must contain three non-negative values")
-    probabilities /= probabilities.sum()
-
-    mode = str(rng.choice(modes, p=probabilities))
+        raise ValueError("this benchmark requires four aircraft per team")
     radial_angle = float(rng.uniform(-np.pi, np.pi))
-    separation = float(rng.uniform(center_separation_min, center_separation_max))
     radial = np.array([np.cos(radial_angle), np.sin(radial_angle)])
     lateral = np.array([-radial[1], radial[0]])
-    red_heading = radial_angle
-    blue_heading = wrap_angle(radial_angle + np.pi)
-
-    if mode == "offset":
-        offset = float(rng.uniform(offset_angle_min, offset_angle_max))
-        sign = float(rng.choice([-1.0, 1.0]))
-        red_heading = wrap_angle(red_heading + sign * offset)
-        blue_heading = wrap_angle(blue_heading - sign * offset)
-    elif mode == "flank":
-        crossing = float(rng.choice([-1.0, 1.0])) * np.pi / 2.0
-        if rng.random() < 0.5:
-            blue_heading = wrap_angle(radial_angle + crossing)
-        else:
-            red_heading = wrap_angle(radial_angle + np.pi + crossing)
-
-    base_altitude = float(rng.uniform(altitude_min, altitude_max))
 
     def team(side: float, nominal_heading: float) -> list[AircraftState]:
-        center = side * 0.5 * separation * radial
+        center = side * float(center_radius) * radial
         states = []
         for offset in formation_offsets:
             position = center + float(offset) * lateral
             states.append(AircraftState(
                 x=float(position[0]),
                 y=float(position[1]),
-                z=-float(base_altitude + rng.uniform(
+                z=-float(altitude_center + rng.uniform(
                     -altitude_perturbation_max, altitude_perturbation_max
                 )),
-                v=float(rng.uniform(speed_min, speed_max)),
+                v=float(speed_center + rng.uniform(
+                    -speed_perturbation_max, speed_perturbation_max
+                )),
                 theta=0.0,
                 psi=float(wrap_angle(nominal_heading + rng.uniform(
                     -heading_perturbation_max, heading_perturbation_max
@@ -76,10 +47,9 @@ def random_combat_states(
         return states
 
     return (
-        team(-1.0, red_heading),
-        team(1.0, blue_heading),
+        team(-1.0, radial_angle),
+        team(1.0, wrap_angle(radial_angle + np.pi)),
         radial_angle,
-        mode,
     )
 
 

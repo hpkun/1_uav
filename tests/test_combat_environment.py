@@ -1,238 +1,310 @@
-from pathlib import Path
+"""Strict V2.1 environment-contract tests."""
+from __future__ import annotations
+
 import copy
+from pathlib import Path
 import numpy as np
 import pytest
 
-from uav_combat.config import load_config
+from uav_combat.config import ENVIRONMENT_VERSION, load_config
 from uav_combat.dynamics import PointMassDynamics
 from uav_combat.environment.control import action_to_control, action_to_target
 from uav_combat.environment.env import MultiUAVCombatEnv
 from uav_combat.environment.geometry import engagement_geometry
-from uav_combat.environment.reward import combat_reward_components, relation_score
+from uav_combat.environment.observation import build_team_observations
+from uav_combat.environment.reward import paper_state_reward_components
+from uav_combat.environment.scenario import random_combat_states
+from uav_combat.environment.weapon import FireState, WeaponEnvelope
 from uav_combat.integrator import RK4Integrator
-from uav_combat.models import AircraftState, AircraftSpec
-
+from uav_combat.models import AircraftSpec, AircraftState
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / "configs/combat_environment.yaml"
 
 
-def state(
-    x=0.0, y=0.0, altitude=3000.0, v=225.0,
-    theta=0.0, psi=0.0, alive=True,
-):
-    return AircraftState(x, y, -altitude, v, theta, psi, alive)
+def config():
+    return load_config(ROOT / "configs/combat_environment.yaml")
 
 
-def one_alive(primary: AircraftState) -> list[AircraftState]:
+def state(x=0.0, y=0.0, altitude=3000.0, psi=0.0, theta=0.0,
+          speed=225.0, alive=True):
+    return AircraftState(x, y, -altitude, speed, theta, psi, alive)
+
+
+def one_alive(primary):
     return [primary] + [state(alive=False) for _ in range(3)]
 
 
-def test_level_center_speed_command_is_stable_for_100_steps():
-    config = load_config(CONFIG_PATH)
-    dynamics = PointMassDynamics()
-    integrator = RK4Integrator(config["simulation"]["dt"])
-    spec = AircraftSpec(**config["aircraft"])
-    aircraft = state()
-    for _ in range(100):
-        control = action_to_control(aircraft, np.zeros(3), config["action"])
-        aircraft = integrator.step(aircraft, control, dynamics, spec)
-    assert aircraft.v == pytest.approx(225.0, abs=1e-10)
-    assert aircraft.theta == pytest.approx(0.0, abs=1e-10)
-    assert aircraft.psi == pytest.approx(0.0, abs=1e-10)
-    assert aircraft.altitude == pytest.approx(3000.0, abs=1e-8)
+def test_version_and_frozen_bottom_level_contract():
+    cfg = config()
+    assert cfg["environment_version"] == ENVIRONMENT_VERSION == "2.1"
+    assert cfg["simulation"] == {"dt": 0.1, "max_steps": 1000}
+    assert cfg["aircraft"] == {
+        "v_min": 150.0, "v_max": 300.0,
+        "theta_min": -np.pi / 3.0, "theta_max": np.pi / 3.0,
+    }
+    assert MultiUAVCombatEnv.observation_dim == 52
+    assert MultiUAVCombatEnv.action_dim == 3
 
 
-def test_action_decodes_high_level_heading_pitch_and_speed_commands():
-    config = load_config(CONFIG_PATH)["action"]["command"]
-    own = state(psi=0.2)
-    low = action_to_target(own, [-1, -1, -1], config)
-    high = action_to_target(own, [1, 1, 1], config)
-    assert low.pitch == pytest.approx(-np.pi / 6)
-    assert high.pitch == pytest.approx(np.pi / 6)
-    assert low.speed == pytest.approx(170.0)
-    assert high.speed == pytest.approx(280.0)
-    assert abs(((high.heading - own.psi + np.pi) % (2 * np.pi)) - np.pi) == pytest.approx(np.pi)
+def test_action_order_and_relative_zero_target():
+    cfg = config()["action"]["command"]
+    own = state(psi=0.4, theta=-0.2, speed=231.0)
+    zero = action_to_target(own, np.zeros(3), cfg)
+    assert (zero.heading, zero.pitch, zero.speed) == pytest.approx(
+        (own.psi, own.theta, own.v)
+    )
+    target = action_to_target(own, np.array([0.5, -0.25, 0.4]), cfg)
+    assert target.heading == pytest.approx(own.psi + np.pi / 2)
+    assert target.pitch == pytest.approx(own.theta - np.pi / 12)
+    assert target.speed == pytest.approx(own.v + 20.0)
 
 
-def test_response_mapping_turns_and_climbs_in_commanded_direction():
-    config = load_config(CONFIG_PATH)["action"]
+@pytest.mark.parametrize("heading_deg", [-180, -90, -30, 0, 30, 90, 180])
+@pytest.mark.parametrize("pitch_deg", [-60, -30, -10, 0, 10, 30, 60])
+@pytest.mark.parametrize("speed_delta", [-50, -25, 0, 25, 50])
+def test_controller_grid_is_finite_and_respects_load_caps(
+    heading_deg, pitch_deg, speed_delta
+):
+    cfg = config()["action"]
     own = state()
-    left = action_to_control(own, [0.25, 0, 0], config)
-    right = action_to_control(own, [-0.25, 0, 0], config)
-    climb = action_to_control(own, [0, 0.5, 0], config)
+    action = np.asarray([
+        heading_deg / 180.0, pitch_deg / 60.0, speed_delta / 50.0
+    ])
+    control = action_to_control(own, action, cfg)
+    assert np.all(np.isfinite([control.nx, control.nz, control.phi]))
+    assert 0.0 <= control.nz <= 8.0 + 1e-12
+    assert abs(control.phi) <= np.pi / 2.0 + 1e-12
+
+
+def test_zero_action_is_trim_and_sustained_commands_stay_in_state_envelope():
+    cfg = config()
+    own = state()
+    trim = action_to_control(own, np.zeros(3), cfg["action"])
+    assert (trim.nx, trim.nz, trim.phi) == pytest.approx((0.0, 1.0, 0.0))
     dynamics = PointMassDynamics()
-    assert dynamics.derivatives(own, left)[5] > 0.0
-    assert dynamics.derivatives(own, right)[5] < 0.0
-    assert dynamics.derivatives(own, climb)[4] > 0.0
-    assert abs(left.phi) <= config["controller"]["bank_max"]
-
-
-def test_sustained_level_turn_preserves_altitude_and_speed():
-    config = load_config(CONFIG_PATH)
-    dynamics = PointMassDynamics()
-    integrator = RK4Integrator(config["simulation"]["dt"])
-    spec = AircraftSpec(**config["aircraft"])
-    aircraft = state()
-    for _ in range(100):
-        control = action_to_control(aircraft, [0.25, 0.0, 0.0], config["action"])
-        aircraft = integrator.step(aircraft, control, dynamics, spec)
-    assert aircraft.altitude == pytest.approx(3000.0, abs=1e-7)
-    assert aircraft.v == pytest.approx(225.0, abs=1e-10)
-    assert abs(aircraft.psi) > 0.5
-
-
-def test_random_commands_remain_finite_and_inside_state_limits():
-    config = load_config(CONFIG_PATH)
-    env = MultiUAVCombatEnv(config)
-    env.reset(21)
-    rng = np.random.default_rng(22)
+    integrator = RK4Integrator(0.1)
+    spec = AircraftSpec(**cfg["aircraft"])
+    previous_errors = []
     for _ in range(300):
-        observation, reward, terminated, truncated, _ = env.step(
-            rng.uniform(-1, 1, (4, 3)).astype(np.float32)
+        control = action_to_control(own, np.array([0.5, 0.3, 0.5]), cfg["action"])
+        assert control.nz <= 8.0 + 1e-12
+        own = integrator.step(own, control, dynamics, spec)
+        previous_errors.append(abs(own.theta))
+        assert np.all(np.isfinite(own.as_array()))
+        assert spec.v_min <= own.v <= spec.v_max
+        assert spec.theta_min <= own.theta <= spec.theta_max
+    assert max(previous_errors) <= np.pi / 3.0 + 1e-12
+
+
+def test_canonical_geometry_signs_and_reverse_relation():
+    red = state(psi=0.0)
+    blue = state(x=1000.0, y=1000.0, altitude=4000.0, psi=np.pi / 2)
+    g = engagement_geometry(red, blue)
+    assert g.line_of_sight == pytest.approx(np.pi / 4)
+    assert g.ata == pytest.approx(np.pi / 4)
+    assert g.aa == pytest.approx(np.pi / 4)
+    assert g.ha == pytest.approx(np.arctan2(1000.0, np.sqrt(2e6)))
+    reverse = engagement_geometry(blue, red)
+    assert reverse.distance == pytest.approx(g.distance)
+    assert reverse.ha == pytest.approx(-g.ha)
+
+
+def weapon():
+    return WeaponEnvelope(**config()["weapon"])
+
+
+@pytest.mark.parametrize("distance,expected", [
+    (0.0, True), (4000.0, True), (4000.0001, False),
+])
+def test_weapon_range_boundaries(distance, expected):
+    g = engagement_geometry(state(), state(x=distance, psi=0.0))
+    assert weapon().in_fire_window(g) is expected
+
+
+def test_head_on_fire_gate_ignores_aa_and_uses_ata_ha_only():
+    g = engagement_geometry(state(psi=0.0), state(x=1000.0, psi=np.pi))
+    assert abs(g.aa) == pytest.approx(np.pi)
+    assert weapon().in_fire_window(g)
+
+
+def test_hit_threshold_monotonic_and_4km_ideal_probability():
+    model = weapon()
+    assert model.hit_threshold(0.0) > model.hit_threshold(2000.0) > model.hit_threshold(4000.0)
+    assert model.hit_threshold(4000.0) == pytest.approx(np.pi / 6.0)
+    g = engagement_geometry(state(), state(x=4000.0))
+    rng = np.random.default_rng(2023)
+    rate = np.mean([model.attempt_hit(g, rng) for _ in range(100_000)])
+    assert rate == pytest.approx(0.16, abs=0.01)
+
+
+def test_weapon_rng_reproducibility_and_angle_sign_symmetry():
+    model = weapon()
+    positive = engagement_geometry(state(), state(x=3000.0, y=300.0))
+    negative = engagement_geometry(state(), state(x=3000.0, y=-300.0))
+    a = np.random.default_rng(71)
+    b = np.random.default_rng(71)
+    assert [model.attempt_hit(positive, a) for _ in range(100)] == [
+        model.attempt_hit(positive, b) for _ in range(100)
+    ]
+    p_rate = np.mean([
+        model.attempt_hit(positive, np.random.default_rng(seed))
+        for seed in range(4000)
+    ])
+    n_rate = np.mean([
+        model.attempt_hit(negative, np.random.default_rng(seed))
+        for seed in range(4000)
+    ])
+    assert p_rate == pytest.approx(n_rate, abs=0.03)
+
+
+def test_entry_trigger_is_one_attempt_per_continuous_window_and_rearms():
+    env = MultiUAVCombatEnv(config())
+    env.reset(1)
+    attackers = one_alive(state())
+    targets = one_alive(state(x=1000.0))
+    fire_states = [FireState() for _ in range(4)]
+    counts = [len(env._entry_attempts(attackers, targets, fire_states, "red"))]
+    counts += [len(env._entry_attempts(attackers, targets, fire_states, "red")) for _ in range(99)]
+    assert sum(counts) == 1
+    targets[0].x = 5000.0
+    assert env._entry_attempts(attackers, targets, fire_states, "red") == []
+    targets[0].x = 1000.0
+    assert len(env._entry_attempts(attackers, targets, fire_states, "red")) == 1
+
+
+def test_random_diameter_scenario_contract_over_1000_resets():
+    cfg = config()
+    pair_distances, radii, altitudes, speeds = [], [], [], []
+    radial_angles = []
+    for seed in range(1000):
+        red, blue, angle = random_combat_states(
+            np.random.default_rng(seed), **cfg["scenario"]
         )
-        assert np.all(np.isfinite(observation))
-        assert np.all(np.isfinite(reward))
-        for aircraft in env.red + env.blue:
-            assert config["aircraft"]["v_min"] <= aircraft.v <= config["aircraft"]["v_max"]
-            assert config["aircraft"]["theta_min"] <= aircraft.theta <= config["aircraft"]["theta_max"]
-        if terminated or truncated:
-            break
+        radial_angles.append(angle)
+        all_states = red + blue
+        radii.extend(np.hypot(s.x, s.y) for s in all_states)
+        altitudes.extend(s.altitude for s in all_states)
+        speeds.extend(s.v for s in all_states)
+        pair_distances.extend(
+            engagement_geometry(r, b).distance for r in red for b in blue
+        )
+        assert max(np.hypot(s.x, s.y) for s in all_states) < 5000.0
+        assert min(engagement_geometry(r, b).distance for r in red for b in blue) > 4000.0
+    assert np.ptp(radial_angles) > 6.0
+    assert np.mean(radii) == pytest.approx(np.sqrt(4000.0 ** 2 + 250.0 ** 2), abs=50)
+    assert np.mean(altitudes) == pytest.approx(3000.0, abs=3.0)
+    assert np.min(altitudes) >= 2900.0 and np.max(altitudes) <= 3100.0
+    assert np.mean(speeds) == pytest.approx(225.0, abs=0.3)
+    assert np.percentile(pair_distances, 50) > 7900.0
 
 
-def test_head_on_inside_range_is_not_a_fire_opportunity():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    geometry = engagement_geometry(state(), state(x=1000.0, psi=np.pi))
-    assert geometry.attack_angle == pytest.approx(0.0)
-    assert geometry.target_aspect == pytest.approx(np.pi)
-    assert not env.weapon.in_fire_window(geometry)
+def _reward(red, blue):
+    return paper_state_reward_components(one_alive(red), one_alive(blue), config()["reward"])
 
 
-def test_tail_and_side_aspect_inside_range_are_fire_opportunities():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    tail = engagement_geometry(state(), state(x=1000.0))
-    side = engagement_geometry(state(), state(x=1000.0, psi=np.pi / 2))
-    assert env.weapon.in_fire_window(tail)
-    assert env.weapon.in_fire_window(side)
+def test_reward_standard_states_r3_and_r4_tiers():
+    far = _reward(state(psi=0.0), state(x=5000.0, psi=0.0))
+    assert far["r3"][0] == pytest.approx(0.001)
+    assert far["r4"][0] == 0.0
+    expected = [(0.0, 0.1), (10.0, 0.02), (25.0, 0.01), (35.0, 0.0)]
+    for angle_deg, value in expected:
+        angle = np.deg2rad(angle_deg)
+        blue = state(
+            x=3000.0 * np.cos(angle), y=3000.0 * np.sin(angle),
+            altitude=3000.0 + 3000.0 * np.tan(angle), psi=angle,
+        )
+        result = _reward(state(), blue)
+        assert result["r4"][0] == pytest.approx(value)
 
 
-@pytest.mark.parametrize("distance", [299.0, 2001.0])
-def test_fire_window_respects_both_range_limits(distance):
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    assert not env.weapon.in_fire_window(
-        engagement_geometry(state(), state(x=distance))
-    )
+def test_reward_threat_tiers_and_r41_precedence():
+    for angle_deg, value in [(0.0, -0.15), (10.0, -0.025), (25.0, -0.015)]:
+        angle = np.deg2rad(angle_deg)
+        red = state(psi=np.pi + angle)
+        blue = state(x=3000.0, psi=np.pi - angle)
+        result = _reward(red, blue)
+        assert result["r4"][0] == pytest.approx(value)
+    red = state(psi=np.pi)
+    blue = state(x=3000.0, psi=0.0)
+    assert _reward(red, blue)["r4"][0] == 0.0
 
 
-def test_lock_requires_five_consecutive_steps_and_resets_on_break():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
+def test_observation_exact_layout_and_dead_slots():
+    cfg = config()["observation"]
+    team = [state(x=1000, y=-500, psi=0.2, theta=0.1, speed=240)]
+    team += [state(x=1200), state(alive=False), state(y=1000)]
+    opponents = [state(x=2000), state(alive=False), state(y=2000), state(x=-1000)]
+    obs = build_team_observations(team, opponents, cfg, np.array([0.3, 0, 0, 0]))
+    assert obs.shape == (4, 52)
+    assert obs[0, :7] == pytest.approx([
+        0.2, -0.1, 0.3, 0.2, 0.3 / (np.pi / 2), 0.2 / np.pi, 0.1 / (np.pi / 3)
+    ])
+    assert np.all(obs[0, 14:21] == 0.0)
+    assert np.all(obs[0, 34:40] == 0.0)
+    assert np.all(obs[1] != np.nan)
+
+
+def test_boundary_ground_no_ceiling_and_timeout_semantics():
+    cfg = config()
+    env = MultiUAVCombatEnv(cfg)
     env.reset(2)
-    red, blue = one_alive(state()), one_alive(state(x=1000.0))
-    for _ in range(4):
-        assert env._lock_proposals(red, blue, env.red_locks, "red") == []
-    blue[0].y = 3000.0
-    assert env._lock_proposals(red, blue, env.red_locks, "red") == []
-    assert env.red_locks[0].lock_steps == 0
-    blue[0].y = 0.0
-    for _ in range(4):
-        assert env._lock_proposals(red, blue, env.red_locks, "red") == []
-    assert env._lock_proposals(red, blue, env.red_locks, "red") == [(0, 0)]
-
-
-def test_reward_components_are_finite_and_approach_has_positive_progress():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    current_red = one_alive(state())
-    current_blue = one_alive(state(x=4000.0, v=200.0))
-    next_red = one_alive(state(x=25.0, v=250.0))
-    next_blue = one_alive(state(x=4020.0, v=200.0))
-    components = combat_reward_components(
-        current_red, current_blue, next_red, next_blue,
-        env.weapon, env.config["reward"], env.dt,
+    env.red = one_alive(state(x=4999.0, psi=0.0))
+    env.blue = one_alive(state(x=0.0, y=1000.0, psi=np.pi / 2))
+    _, reward, terminated, _, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
     )
-    assert set(components) == {"progress", "tactical", "fire"}
-    assert all(np.all(np.isfinite(value)) for value in components.values())
-    assert components["progress"][0] > 0.0
+    assert terminated and reward[0] == pytest.approx(-10.0)
+    assert info["r1_rewards"][0] == 0.0 and info["r2_rewards"][0] == -10.0
 
-
-def test_tactical_relation_prefers_tail_position_over_head_on():
-    config = load_config(CONFIG_PATH)["reward"]
-    attacker = state()
-    tail_target = state(x=1000.0)
-    head_on_target = state(x=1000.0, psi=np.pi)
-    assert relation_score(attacker, tail_target, config) > relation_score(
-        attacker, head_on_target, config
+    env.reset(3)
+    env.red = one_alive(state(altitude=1.0, theta=-np.pi / 3))
+    env.blue = one_alive(state(x=1000.0))
+    _, reward, _, _, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
     )
+    assert reward[0] == pytest.approx(-10.0)
+    assert info["red_ground_losses"] == 1
 
-
-def test_kill_credit_is_shared_and_death_penalty_is_finite():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
     env.reset(4)
-    rewards = env._event_rewards([2], {}, {0: [0, 1]})
-    assert rewards.tolist() == [5.0, 5.0, -10.0, 0.0]
-    assert np.all(np.isfinite(rewards))
+    env.red[0] = state(altitude=20_000.0)
+    env.step(np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32))
+    assert env.red[0].alive
+
+    short = copy.deepcopy(cfg)
+    short["simulation"]["max_steps"] = 1
+    env = MultiUAVCombatEnv(short)
+    env.reset(5)
+    _, _, terminated, truncated, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
+    )
+    assert not terminated and truncated
+    assert info["termination_reason"] == "red_failure_timeout"
+    assert not info["red_success"] and not info["red_win"] and not info["draw"]
 
 
-def test_observation_is_52d_finite_bounded_and_masks_dead_slots():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    observation, _ = env.reset(6)
-    env.red[1].alive = False
-    env.blue[2].alive = False
-    env.blue[0].x += 100_000.0
-    observation = env._observations()
-    assert observation.shape == (4, 52)
-    assert np.all(np.isfinite(observation))
-    assert np.max(np.abs(observation)) <= 1.0
-    assert np.all(observation[1] == 0.0)
-    assert observation[0, 9] == 0.0
-    assert observation[0, 44] == 0.0
+def test_blue_exit_is_not_a_red_kill_and_simultaneous_shared_kill_rewards():
+    cfg = config()
+    env = MultiUAVCombatEnv(cfg)
+    env.reset(6)
+    env.red = one_alive(state())
+    env.blue = one_alive(state(x=4999.0, psi=0.0))
+    _, reward, _, _, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
+    )
+    assert info["blue_boundary_exits"] == 1
+    assert info["red_attack_kills"] == 0
+    assert reward.sum() == pytest.approx(0.0)
 
-
-def test_observation_is_translation_and_rotation_invariant():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
+    deterministic = copy.deepcopy(cfg)
+    deterministic["weapon"]["attack_noise_scale"] = 0.0
+    deterministic["weapon"]["height_noise_scale"] = 0.0
+    env = MultiUAVCombatEnv(deterministic)
     env.reset(7)
-    baseline = env._observations()
-    transformed = copy.deepcopy(env)
-    angle = 1.234
-    cosine, sine = np.cos(angle), np.sin(angle)
-    for aircraft in transformed.red + transformed.blue:
-        aircraft.x += 50_000.0
-        aircraft.y -= 30_000.0
-        aircraft.x, aircraft.y = (
-            cosine * aircraft.x - sine * aircraft.y,
-            sine * aircraft.x + cosine * aircraft.y,
-        )
-        aircraft.psi = (aircraft.psi + angle + np.pi) % (2 * np.pi) - np.pi
-    assert np.allclose(transformed._observations(), baseline, atol=2e-6)
-
-
-def test_initialization_covers_all_modes_and_starts_outside_fire_range():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    modes = set()
-    for seed in range(100):
-        _, info = env.reset(seed)
-        modes.add(info["scenario_mode"])
-        minimum = min(
-            engagement_geometry(red, blue).distance
-            for red in env.red for blue in env.blue
-        )
-        assert minimum > env.weapon.range_max
-    assert modes == {"head_on", "offset", "flank"}
-
-
-def test_only_altitude_is_a_battlefield_limit():
-    config = load_config(CONFIG_PATH)
-    assert set(config["flight_envelope"]) == {"altitude_min", "altitude_max"}
-    assert not any("boundary" in key or "center" in key for key in config["reward"])
-
-
-def test_blue_policy_uses_nearest_target_and_common_high_level_mapping():
-    env = MultiUAVCombatEnv(CONFIG_PATH)
-    own = state()
-    targets = [state(x=2000.0), state(x=1000.0)] + [state(alive=False)] * 2
-    assert env.fixed_policy.nearest_target_index(own, targets) == 1
-    action = env.fixed_policy.action(own, targets)
-    control = action_to_control(own, action, env.config["action"])
-    direct = env.integrator.step(own, control, env.dynamics, env.spec)
-    states = [own.copy()]
-    env._advance(states, np.asarray([action]))
-    assert np.allclose(states[0].as_array(), direct.as_array())
+    env.red = [state(y=-10.0), state(y=10.0), state(alive=False), state(alive=False)]
+    env.blue = one_alive(state(x=1000.0, psi=0.0))
+    _, reward, _, _, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
+    )
+    assert info["red_attack_kills"] == 1
+    assert info["r1_rewards"][:2] == pytest.approx([5.0, 5.0])
+    assert reward[:2].sum() >= 10.0

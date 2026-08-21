@@ -2,6 +2,7 @@ from pathlib import Path
 import copy
 import numpy as np
 import pytest
+import torch
 import yaml
 
 from uav_combat.training.evaluator import episode_return_metrics, evaluate
@@ -147,7 +148,7 @@ def test_console_logging_is_read_only_and_compact(tmp_path, monkeypatch):
     assert runner.start_log_line().startswith(
         "[START] mode=smoke | device=cpu | obs=52 | act=3 | agents=4 | hidden=64"
     )
-    assert "return=NA | red_loss=NA | atk=NA | lock=NA | kill=NA" in runner.train_log_line()
+    assert "return=NA | red_loss=NA | fire=NA | attempt=NA | kill=NA" in runner.train_log_line()
     for optimizer in (
         runner.trainer.actor_optimizer, runner.trainer.critic1_optimizer,
         runner.trainer.critic2_optimizer,
@@ -203,12 +204,16 @@ def test_evaluator_exposes_split_combat_and_required_episode_metrics():
         "average_return", "average_agent_return", "win_rate", "loss_rate",
         "draw_rate", "timeout_rate", "average_red_loss", "average_blue_loss",
         "average_red_attack_kills", "average_blue_attack_kills",
-        "average_red_low_altitude_loss", "average_blue_low_altitude_loss",
-        "average_red_high_altitude_loss", "average_blue_high_altitude_loss",
-        "average_episode_length", "average_max_horizontal_pair_separation",
+        "average_red_boundary_exits", "average_blue_boundary_exits",
+        "average_red_ground_losses", "average_blue_ground_losses",
+        "average_episode_length",
     } | {
         f"{side}_{event}_episode_rate"
-        for side in ("red", "blue") for event in ("attackable", "lock", "kill")
+        for side in ("red", "blue")
+        for event in ("fire_window", "attempt", "hit", "kill")
+    }
+    expected |= {
+        f"average_episode_{name}_total" for name in ("r1", "r2", "r3", "r4")
     }
     assert expected <= result.keys()
 
@@ -217,3 +222,24 @@ def test_episode_return_metric_is_team_sum_and_agent_mean():
     team, agent = episode_return_metrics(np.array([1.0, 2.0, 3.0, 4.0]))
     assert team == 10.0
     assert agent == 2.5
+
+
+def test_checkpoint_version_is_saved_and_incompatible_semantics_fail_fast(tmp_path):
+    environment, algorithm = configs()
+    runner = MADSACTrainingRunner(
+        environment, algorithm, num_envs=1, total_sampled_steps=1,
+        output_dir=tmp_path, smoke=True,
+    )
+    try:
+        valid = tmp_path / "valid.pt"
+        invalid = tmp_path / "invalid.pt"
+        runner.save_checkpoint(valid)
+        state = torch.load(valid, map_location="cpu", weights_only=False)
+        assert state["extra"]["environment_version"] == "2.1"
+        state["extra"]["environment_version"] = "2.0"
+        torch.save(state, invalid)
+        with pytest.raises(RuntimeError, match="observation semantics"):
+            runner.resume(invalid)
+        assert runner.trainer.sampled_steps == 0
+    finally:
+        runner.vector.close()

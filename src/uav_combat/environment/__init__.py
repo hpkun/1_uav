@@ -2,9 +2,9 @@
 
 from .env import MultiUAVCombatEnv
 from .geometry import EngagementGeometry, engagement_geometry
-from .weapon import LockState, WeaponEnvelope
+from .weapon import FireState, WeaponEnvelope
 
 __all__ = [
-    "EngagementGeometry", "LockState", "MultiUAVCombatEnv", "WeaponEnvelope",
+    "EngagementGeometry", "FireState", "MultiUAVCombatEnv", "WeaponEnvelope",
     "engagement_geometry",
 ]

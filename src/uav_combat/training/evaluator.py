@@ -39,7 +39,7 @@ def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000
         "loss_rate": mean("blue_win"),
         "draw_rate": mean("draw"),
         "timeout_rate": float(np.mean([
-            record["termination_reason"] == "draw_timeout" for record in records
+            record["termination_reason"] == "red_failure_timeout" for record in records
         ])),
         "average_red_loss": mean("red_losses"),
         "average_blue_loss": mean("blue_losses"),
@@ -48,17 +48,18 @@ def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000
                 record[f"{side}_first_{event}_step"] is not None for record in records
             ]))
             for side in ("red", "blue")
-            for event in ("attackable", "lock", "kill")
+            for event in ("fire_window", "attempt", "hit", "kill")
         },
         "average_red_attack_kills": mean("red_attack_kills"),
         "average_blue_attack_kills": mean("blue_attack_kills"),
-        "average_red_low_altitude_loss": mean("red_low_altitude_losses"),
-        "average_blue_low_altitude_loss": mean("blue_low_altitude_losses"),
-        "average_red_high_altitude_loss": mean("red_high_altitude_losses"),
-        "average_blue_high_altitude_loss": mean("blue_high_altitude_losses"),
+        "average_red_boundary_exits": mean("red_boundary_exits"),
+        "average_blue_boundary_exits": mean("blue_boundary_exits"),
+        "average_red_ground_losses": mean("red_ground_losses"),
+        "average_blue_ground_losses": mean("blue_ground_losses"),
         "average_episode_length": mean("episode_length"),
-        "average_max_horizontal_pair_separation": mean(
-            "max_horizontal_pair_separation"
-        ),
+        **{
+            f"average_episode_{name}_total": mean(f"episode_{name}_total")
+            for name in ("r1", "r2", "r3", "r4")
+        },
         "evaluation_episodes": len(records),
     }
