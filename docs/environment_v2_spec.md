@@ -1,10 +1,13 @@
-# Paper-Constrained Direct 4v4 Combat Environment V2.2
+# Paper-Constrained Direct 4v4 Combat Environment V2.3
 
-This document is the normative active environment contract. V2.2 is a public
+This document is the normative active environment contract. V2.3 is a public
 reconstruction constrained by Li et al. (2023); it is not claimed to be the
-authors' unreleased simulator. V2.2 replaces the separable horizontal ATA / LOS
-elevation launch gate with a true 3-D off-boresight cone. Dynamics, observations,
-reward, attack cadence and the stochastic hit equation are unchanged from V2.1.
+authors' unreleased simulator. V2.2 introduced a true 3-D launch cone, but left
+the hit errors in world-horizontal ATA/HA coordinates. A 100,000-sample audit
+showed statistically different hit probabilities for physically identical
+zero-off-boresight horizontal, climb and dive shots. V2.3 therefore changes only
+the two Eq. (8) angular errors to the attacker's velocity frame. Dynamics,
+observations, rewards, attack cadence, thresholds and noise scales are unchanged.
 
 ## Provenance table
 
@@ -23,7 +26,7 @@ reward, attack cadence and the stochastic hit equation are unchanged from V2.1.
 | Altitude | initial `3000+/-100 m`; only ground `alt<=0` destroys | RECONSTRUCTION | Public initialization and minimal ground rule; no ceiling |
 | Observation | exact 52-scalar self/allies/enemies layout below | PAPER / DERIVED | Eq. (24) content plus explicit normalization/index derivation |
 | Fire gate | `d=[0,4000]`, true 3-D off-boresight `<=30 deg` | RECONSTRUCTION | Uses the paper's 4 km and 30-degree limits but corrects the separable gate so aircraft pitch participates |
-| Hit model | Eq. (8), `D_hit=4000/ln(6)`, `c4=c5=1`, independent draws | PAPER / DERIVED / RECONSTRUCTION | Equation form / calibrated distance / disclosed noise choice |
+| Hit model | Eq. (8) in local velocity-frame azimuth/elevation, `D_hit=4000/ln(6)`, `c4=c5=1`, independent draws | PAPER / DERIVED / RECONSTRUCTION | Equation form / calibrated distance / 3-D consistency correction |
 | Cadence | one attempt on entry into the union of legal windows | RECONSTRUCTION | Prevents hidden 10 Hz repeated-fire assumption |
 | Reward | R1+R2+R3+R4 only | PAPER / DERIVED | Eq. (25), with documented nearest-target and precedence rules |
 | Blue | nearest Red, LOS heading/elevation, 250 m/s, same controller | PAPER / RECONSTRUCTION | Section 2.5 pursuit rule plus disclosed speed/controller |
@@ -77,8 +80,15 @@ u_LOS = [x_j-x_i, y_j-y_i, z_j-z_i] / d
 off_boresight = acos(clip(dot(u_fwd,u_LOS),-1,1))
 ```
 
-ATA, AA, HA and HCA remain available to observations, rewards, hit probability
-and diagnosis. Only `off_boresight` is the active angular launch gate. At zero
+Construct the orthonormal velocity frame as
+`right=[-sin(psi),cos(psi),0]` and `up=cross(right,forward)`. With LOS projections
+`los_f,los_r,los_u`, the hit-model errors are
+`az_error=atan2(los_r,los_f)` and
+`el_error=atan2(los_u,hypot(los_f,los_r))`. They satisfy
+`cos(off_boresight)=cos(el_error)cos(az_error)`.
+
+ATA, AA, HA and HCA remain available to observations, rewards and diagnosis.
+Only `off_boresight` is the active angular launch gate. At zero
 range the LOS direction is undefined and `off_boresight` is defined as zero to
 preserve the inclusive zero-range contract.
 
@@ -94,17 +104,17 @@ There are no scenario modes or curriculum.
 
 ## Weapon and firing state machine
 
-The V2.2 launch window is inclusive: `0<=d<=4000 m` and true 3-D
+The V2.3 launch window is inclusive: `0<=d<=4000 m` and true 3-D
 `off_boresight<=30 deg`. Target aspect AA and any lock/dwell state are not part
 of this gate. The Eq. (8) stochastic hit calculation remains unchanged.
 
-For each attempt, Eq. (8) is evaluated with independent draws
-`epsilon_ATA,epsilon_HA ~ N(0,1)`:
+For each attempt, Eq. (8) is evaluated with independent velocity-frame draws
+`epsilon_az,epsilon_el ~ N(0,1)`:
 
 ```
 threshold = pi*exp(-d/D_hit)
-abs(ATA + epsilon_ATA) <= threshold
-abs(HA  + epsilon_HA ) <= threshold
+abs(az_error + epsilon_az) <= threshold
+abs(el_error + epsilon_el) <= threshold
 D_hit = 4000/ln(6) = 2232.442506204989 m
 ```
 
@@ -182,6 +192,6 @@ steps, and R1-R4 totals for Red and Blue where applicable. Console training outp
 contains only return, Red win/loss, Red fire-window/attempt/kill rates and MADSAC
 critic, actor, Q and entropy diagnostics.
 
-Checkpoints store `environment_version=2.2`. Resume rejects missing or different
-versions before loading weights because V2.0, V2.1 and V2.2 use equal tensor
+Checkpoints store `environment_version=2.3`. Resume rejects missing or different
+versions before loading weights because V2.0-V2.3 use equal tensor
 dimensions with incompatible environment semantics.

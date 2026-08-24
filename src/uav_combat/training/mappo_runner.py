@@ -11,7 +11,7 @@ import torch
 
 from ..config import ENVIRONMENT_VERSION
 from ..environment.env import MultiUAVCombatEnv
-from ..mappo.trainer import MAPPOTrainer, RolloutBatch
+from ..mappo.trainer import MAPPO_IMPL_VERSION, MAPPOTrainer, RolloutBatch
 from .evaluator import episode_return_metrics, evaluate
 from .vector_env import ParallelVectorEnv
 
@@ -72,6 +72,7 @@ class MAPPOTrainingRunner:
         self.completed_records: list[dict[str, Any]] = []
         self.last_metrics: dict[str, float] = {}
         self.evaluation_history: list[dict[str, float]] = []
+        self.best_evaluation: dict[str, float] | None = None
         logging = algorithm_config["runtime_logging"]
         self.console_interval = int(logging["console_interval_sampled_steps"])
         self.recent_episode_window = int(logging["recent_episode_window"])
@@ -211,15 +212,18 @@ class MAPPOTrainingRunner:
             stream.write(json.dumps(record) + "\n")
 
     def collect_rollout(self, vector_steps: int | None = None) -> RolloutBatch:
-        storage = {key: [] for key in ("observations", "actions", "old_log_probs",
+        storage = {key: [] for key in ("observations", "actions", "raw_actions", "old_log_probs",
                    "rewards", "dones", "alive_masks", "next_observations",
                    "next_alive_masks")}
         for _ in range(int(vector_steps or self.rollout_steps)):
             observations, alive = self.observations.copy(), self.alive_masks.copy()
-            actions, log_probs = self.trainer.act(observations, alive, return_log_prob=True)
+            actions, raw_actions, log_probs = self.trainer.act(
+                observations, alive, return_policy_data=True
+            )
             result = self.vector.step_batch(actions)
             storage["observations"].append(observations)
-            storage["actions"].append(np.stack([i["executed_red_actions"] for i in result.infos]))
+            storage["actions"].append(actions)
+            storage["raw_actions"].append(raw_actions)
             storage["old_log_probs"].append(log_probs)
             storage["rewards"].append(result.rewards)
             storage["dones"].append((result.terminated | result.truncated).astype(np.float32))
@@ -257,6 +261,7 @@ class MAPPOTrainingRunner:
                     row = {"sampled_steps": self.trainer.sampled_steps,
                            **evaluate(self.trainer, self.env_config, self.evaluation_seeds)}
                     self.evaluation_history.append(row); self._write_evaluation()
+                    self._consider_best_evaluation(row)
                     print(self.evaluation_log_line(row), flush=True)
                     while self.next_evaluation <= self.trainer.sampled_steps:
                         self.next_evaluation += self.evaluation_interval
@@ -276,16 +281,41 @@ class MAPPOTrainingRunner:
                 writer = csv.DictWriter(stream, fieldnames=list(self.evaluation_history[0]))
                 writer.writeheader(); writer.writerows(self.evaluation_history)
 
+    @staticmethod
+    def _evaluation_key(record: dict[str, float]) -> tuple[float, float, float]:
+        return (
+            float(record["win_rate"]), float(record["average_return"]),
+            -float(record["average_red_loss"]),
+        )
+
+    def _consider_best_evaluation(self, record: dict[str, float]) -> bool:
+        if (
+            self.best_evaluation is not None
+            and self._evaluation_key(record) <= self._evaluation_key(self.best_evaluation)
+        ):
+            return False
+        self.best_evaluation = dict(record)
+        self.save_checkpoint(self.output_dir / "best_eval.pt")
+        return True
+
     def save_checkpoint(self, path: str | Path) -> None:
         self.trainer.save(path, {"environment_version": ENVIRONMENT_VERSION,
+            "mappo_impl_version": MAPPO_IMPL_VERSION,
             "episode_indices": self.vector.episode_indices.tolist(),
-            "evaluation_history": self.evaluation_history})
+            "evaluation_history": self.evaluation_history,
+            "best_evaluation": self.best_evaluation})
 
     def resume(self, path: str | Path) -> None:
         state = torch.load(path, map_location="cpu", weights_only=False)
         version = state.get("extra", {}).get("environment_version")
         if version != ENVIRONMENT_VERSION:
             raise RuntimeError(f"checkpoint environment_version mismatch: expected {ENVIRONMENT_VERSION}, got {version!r}")
+        implementation_version = state.get("mappo_impl_version")
+        if implementation_version != MAPPO_IMPL_VERSION:
+            raise RuntimeError(
+                f"checkpoint MAPPO implementation mismatch: expected {MAPPO_IMPL_VERSION}, "
+                f"got {implementation_version!r}"
+            )
         extra = self.trainer.load(path)
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64)
         if previous.shape != (self.num_envs,):
@@ -293,12 +323,15 @@ class MAPPOTrainingRunner:
         self.vector.episode_indices = previous + 1
         self.observations = self.vector.reset(); self.alive_masks = self.vector.current_alive_masks.copy()
         self.evaluation_history = list(extra.get("evaluation_history", []))
+        best = extra.get("best_evaluation")
+        self.best_evaluation = dict(best) if best is not None else None
         self.next_console_log = (self.trainer.sampled_steps // self.console_interval + 1) * self.console_interval
         self.next_evaluation = (self.trainer.sampled_steps // self.evaluation_interval + 1) * self.evaluation_interval
         self.next_checkpoint = (self.trainer.sampled_steps // self.checkpoint_interval + 1) * self.checkpoint_interval
 
     def summary(self) -> dict[str, Any]:
         mean = lambda key: float(np.mean([r[key] for r in self.completed_records])) if self.completed_records else 0.0
+        best = self.best_evaluation or {}
         return {**self.startup_summary(), "sampled_steps": self.trainer.sampled_steps,
             "vector_steps": self.trainer.vector_steps, "rollout_updates": self.trainer.ppo_update_count,
             "actor_updates": self.trainer.actor_update_count, "critic_updates": self.trainer.critic_update_count,
@@ -316,7 +349,11 @@ class MAPPOTrainingRunner:
             **{f"{side}_{event}_episode_rate": float(np.mean([r[f"{side}_first_{event}_step"] is not None for r in self.completed_records])) if self.completed_records else 0.0
                for side in ("red", "blue") for event in ("fire_window", "attempt", "hit", "kill")},
             **{f"average_episode_{name}_total": mean(f"episode_{name}_total") for name in ("r1", "r2", "r3", "r4")},
-            "last_update_metrics": self.last_metrics, "evaluation_history": self.evaluation_history}
+            "last_update_metrics": self.last_metrics, "evaluation_history": self.evaluation_history,
+            "best_evaluation_steps": best.get("sampled_steps"),
+            "best_evaluation_win_rate": best.get("win_rate"),
+            "best_evaluation_return": best.get("average_return"),
+            "best_evaluation_red_loss": best.get("average_red_loss")}
 
 
 __all__ = ["MAPPOTrainingRunner"]

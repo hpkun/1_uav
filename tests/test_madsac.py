@@ -28,6 +28,32 @@ def test_section4_actor_has_two_256_hidden_layers_and_is_shared():
     assert torch.isfinite(actions).all() and torch.isfinite(log_probability).all()
 
 
+def test_deterministic_action_is_exactly_tanh_distribution_mean():
+    actor = SharedSquashedGaussianActor()
+    observations = torch.randn(7, 4, 52)
+    assert torch.equal(
+        actor.deterministic(observations),
+        torch.tanh(actor.distribution(observations).mean),
+    )
+
+
+def test_madsac_policy_statistics_are_finite_and_distinguish_action_moments():
+    trainer = MADSACTrainer(hidden_dim=32, attention_heads=2)
+    observations = np.random.default_rng(3).normal(size=(5, 4, 52)).astype(np.float32)
+    masks = np.ones((5, 4), dtype=np.float32)
+    metrics = trainer.policy_statistics(observations, masks)
+    expected = {
+        f"{prefix}_{name}"
+        for prefix in (
+            "deterministic_action_mean", "deterministic_action_abs_mean",
+            "policy_log_std_mean",
+        )
+        for name in ("psi", "theta", "v")
+    }
+    assert metrics.keys() == expected
+    assert all(np.isfinite(value) for value in metrics.values())
+
+
 def test_equation19_20_batch_mean_agent_sum_reduction():
     values = torch.ones(2, 4)
     mixed = torch.tensor([[1, 1, 1, 1], [1, 0, 0, 0]], dtype=torch.float32)

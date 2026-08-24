@@ -104,6 +104,7 @@ class MADSACTrainingRunner:
         self.last_actor_metrics: dict[str, float] = {}
         self.last_metrics: dict[str, float] = {}
         self.evaluation_history: list[dict[str, float]] = []
+        self.best_evaluation: dict[str, float] | None = None
         runtime_logging = algorithm_config["runtime_logging"]
         self.console_interval = int(runtime_logging["console_interval_sampled_steps"])
         self.recent_episode_window = int(runtime_logging["recent_episode_window"])
@@ -257,6 +258,9 @@ class MADSACTrainingRunner:
         return len(critic_metrics), len(actor_metrics)
 
     def vector_step(self) -> dict[str, Any]:
+        policy_statistics = self.trainer.policy_statistics(
+            self.observations, self.alive_masks
+        )
         actions = self.trainer.act(self.observations, self.alive_masks)
         result = self.vector.step_batch(actions)
         dones = result.terminated | result.truncated
@@ -360,6 +364,7 @@ class MADSACTrainingRunner:
             "actor_loss": self.last_actor_metrics.get("actor_loss"),
             "q_value": self.last_critic_metrics.get("q_value"),
             "entropy": self.last_actor_metrics.get("entropy"),
+            **policy_statistics,
         }
         with (self.output_dir / "training_metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(metric_record) + "\n")
@@ -385,6 +390,7 @@ class MADSACTrainingRunner:
                     }
                     self.evaluation_history.append(record)
                     self._write_evaluation()
+                    self._consider_best_evaluation(record)
                     print(self.evaluation_log_line(record), flush=True)
                     self.next_evaluation += self.evaluation_interval
                 if self.trainer.sampled_steps >= self.next_checkpoint:
@@ -408,12 +414,31 @@ class MADSACTrainingRunner:
             writer.writeheader()
             writer.writerows(self.evaluation_history)
 
+    @staticmethod
+    def _evaluation_key(record: dict[str, float]) -> tuple[float, float, float]:
+        return (
+            float(record["win_rate"]), float(record["average_return"]),
+            -float(record["average_red_loss"]),
+        )
+
+    def _consider_best_evaluation(self, record: dict[str, float]) -> bool:
+        if (
+            self.best_evaluation is not None
+            and self._evaluation_key(record) <= self._evaluation_key(self.best_evaluation)
+        ):
+            return False
+        self.best_evaluation = dict(record)
+        self.save_checkpoint(self.output_dir / "best_eval.pt")
+        return True
+
     def save_checkpoint(self, path: str | Path) -> None:
         self.trainer.save(path, {
             "environment_version": ENVIRONMENT_VERSION,
             "scheduler_T": self.scheduler_T,
             "scheduler_update_blocks": self.scheduler_update_blocks,
             "episode_indices": self.vector.episode_indices.tolist(),
+            "evaluation_history": self.evaluation_history,
+            "best_evaluation": self.best_evaluation,
         })
 
     def resume(self, path: str | Path) -> None:
@@ -424,7 +449,7 @@ class MADSACTrainingRunner:
             raise RuntimeError(
                 "checkpoint environment_version mismatch: expected "
                 f"{ENVIRONMENT_VERSION}, got {checkpoint_version!r}; "
-                "V2.0/V2.1/V2.2 share dimensions but not environment semantics"
+                "V2.0-V2.3 share dimensions but not environment semantics"
             )
         extra = self.trainer.load(path)
         self.scheduler_T = int(extra.get("scheduler_T", 0))
@@ -433,6 +458,9 @@ class MADSACTrainingRunner:
         self.scheduler_update_blocks = int(
             extra.get("scheduler_update_blocks", extra.get("training_cycles", 0))
         )
+        self.evaluation_history = list(extra.get("evaluation_history", []))
+        best = extra.get("best_evaluation")
+        self.best_evaluation = dict(best) if best is not None else None
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64)
         if previous.shape != (self.num_envs,):
             raise RuntimeError("checkpoint environment count mismatch")
@@ -448,6 +476,7 @@ class MADSACTrainingRunner:
             float(np.mean([record[key] for record in self.completed_records]))
             if self.completed_records else 0.0
         )
+        best = self.best_evaluation or {}
         return {
             **self.startup_summary(),
             "sampled_steps": self.trainer.sampled_steps,
@@ -496,4 +525,8 @@ class MADSACTrainingRunner:
             },
             "last_update_metrics": self.last_metrics,
             "evaluation_history": self.evaluation_history,
+            "best_evaluation_steps": best.get("sampled_steps"),
+            "best_evaluation_win_rate": best.get("win_rate"),
+            "best_evaluation_return": best.get("average_return"),
+            "best_evaluation_red_loss": best.get("average_red_loss"),
         }

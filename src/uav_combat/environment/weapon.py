@@ -45,11 +45,13 @@ class WeaponEnvelope:
         self, geometry: EngagementGeometry, rng: np.random.Generator
     ) -> bool:
         threshold = self.hit_threshold(geometry.distance)
-        attack_noise = float(rng.normal())
-        height_noise = float(rng.normal())
+        azimuth_noise = float(rng.normal())
+        elevation_noise = float(rng.normal())
         return bool(
-            abs(geometry.ata + self.attack_noise_scale * attack_noise) <= threshold
-            and abs(geometry.ha + self.height_noise_scale * height_noise) <= threshold
+            abs(geometry.boresight_azimuth_error
+                + self.attack_noise_scale * azimuth_noise) <= threshold
+            and abs(geometry.boresight_elevation_error
+                    + self.height_noise_scale * elevation_noise) <= threshold
         )
 
 

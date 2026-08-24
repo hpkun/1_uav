@@ -1,4 +1,4 @@
-"""End-to-end V2.2 controller, weapon, initialization and baseline validation."""
+"""End-to-end V2.3 controller, weapon, initialization and baseline validation."""
 from __future__ import annotations
 
 import argparse

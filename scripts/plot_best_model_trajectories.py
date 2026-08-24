@@ -65,7 +65,7 @@ def build_mappo(checkpoint: Path, device: str):
         log_std_min=float(implementation["log_std_min"]),
         log_std_max=float(implementation["log_std_max"]),
     )
-    trainer.load(checkpoint)
+    trainer.load(checkpoint, allow_legacy_diagnostic=True)
     trainer.actor.eval()
     trainer.critic.eval()
     return trainer

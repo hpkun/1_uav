@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.distributions import Normal
 
 
@@ -45,29 +46,44 @@ class SharedMAPPOActor(nn.Module):
     def _squashed_log_prob(
         distribution: Normal, raw_actions: torch.Tensor, actions: torch.Tensor
     ) -> torch.Tensor:
-        return (
-            distribution.log_prob(raw_actions)
-            - torch.log(1.0 - actions.square() + 1e-6)
-        ).sum(dim=-1)
+        del actions
+        # Exact, saturation-safe log|d tanh(x)/dx|.  Computing this from the
+        # latent action avoids the precision loss of log(1-tanh(x)^2).
+        log_jacobian = 2.0 * (
+            math.log(2.0) - raw_actions - F.softplus(-2.0 * raw_actions)
+        )
+        return (distribution.log_prob(raw_actions) - log_jacobian).sum(dim=-1)
 
     def sample(
         self, observations: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         distribution = self.distribution(observations)
         raw_actions = distribution.rsample()
         actions = torch.tanh(raw_actions)
         log_prob = self._squashed_log_prob(distribution, raw_actions, actions)
-        entropy = distribution.entropy().sum(dim=-1)
-        return actions, log_prob, entropy
+        # Monte-Carlo entropy of the bounded policy, including the tanh
+        # Jacobian.  This is deliberately not Normal.entropy().
+        entropy = -log_prob
+        return actions, raw_actions, log_prob, entropy
 
     def evaluate_actions(
-        self, observations: torch.Tensor, actions: torch.Tensor
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        raw_actions: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        bounded = actions.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
-        raw_actions = torch.atanh(bounded)
+        bounded = actions
+        if raw_actions is None:
+            # Diagnostic compatibility only.  Formal PPO updates always pass
+            # the latent action saved in the rollout.
+            bounded = actions.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+            raw_actions = torch.atanh(bounded)
         distribution = self.distribution(observations)
         log_prob = self._squashed_log_prob(distribution, raw_actions, bounded)
-        entropy = distribution.entropy().sum(dim=-1)
+        sampled_actions, sampled_raw, sampled_log_prob, entropy = self.sample(
+            observations
+        )
+        del sampled_actions, sampled_raw, sampled_log_prob
         return log_prob, entropy
 
     def deterministic(self, observations: torch.Tensor) -> torch.Tensor:

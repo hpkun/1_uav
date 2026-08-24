@@ -11,6 +11,9 @@ from torch import nn
 from .networks import CentralizedValueCritic, SharedMAPPOActor
 
 
+MAPPO_IMPL_VERSION = 2
+
+
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (values * mask).sum() / mask.sum().clamp_min(1.0)
 
@@ -47,6 +50,7 @@ def compute_gae(
 class RolloutBatch:
     observations: np.ndarray
     actions: np.ndarray
+    raw_actions: np.ndarray
     old_log_probs: np.ndarray
     rewards: np.ndarray
     dones: np.ndarray
@@ -129,22 +133,28 @@ class MAPPOTrainer:
         alive_mask: np.ndarray | None = None,
         deterministic: bool = False,
         return_log_prob: bool = False,
+        return_policy_data: bool = False,
     ):
         tensor = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
         if deterministic:
-            actions = self.actor.deterministic(tensor)
-            log_prob = None
+            distribution = self.actor.distribution(tensor)
+            raw_actions = distribution.mean
+            actions = torch.tanh(raw_actions)
+            log_prob = self.actor._squashed_log_prob(
+                distribution, raw_actions, actions
+            )
         else:
-            actions, log_prob, _ = self.actor.sample(tensor)
+            actions, raw_actions, log_prob, _ = self.actor.sample(tensor)
         if alive_mask is not None:
             mask = torch.as_tensor(alive_mask, dtype=torch.float32, device=self.device)
             actions = actions * mask.unsqueeze(-1)
             if log_prob is not None:
                 log_prob = log_prob * mask
+            raw_actions = raw_actions * mask.unsqueeze(-1)
         action_array = actions.cpu().numpy()
+        if return_policy_data:
+            return action_array, raw_actions.cpu().numpy(), log_prob.cpu().numpy()
         if return_log_prob:
-            if log_prob is None:
-                log_prob, _ = self.actor.evaluate_actions(tensor, actions)
             return action_array, log_prob.cpu().numpy()
         return action_array
 
@@ -164,6 +174,7 @@ class MAPPOTrainer:
         )
         observations = to_tensor(rollout.observations)
         actions = to_tensor(rollout.actions)
+        raw_actions = to_tensor(rollout.raw_actions)
         old_log_probs = to_tensor(rollout.old_log_probs)
         rewards = to_tensor(rollout.rewards)
         dones = to_tensor(rollout.dones)
@@ -197,6 +208,7 @@ class MAPPOTrainer:
         )
         observations = flatten(observations)
         actions = flatten(actions)
+        raw_actions = flatten(raw_actions)
         old_log_probs = flatten(old_log_probs)
         alive_masks = flatten(alive_masks)
         old_values = flatten(values)
@@ -204,8 +216,11 @@ class MAPPOTrainer:
         advantages = flatten(advantages)
         sample_count = observations.shape[0]
         metric_rows: list[dict[str, float]] = []
+        epoch_rows: list[list[dict[str, float]]] = []
+        first_minibatch: dict[str, float] | None = None
 
-        for _ in range(self.ppo_epochs):
+        for epoch in range(self.ppo_epochs):
+            this_epoch: list[dict[str, float]] = []
             permutation = self.rng.permutation(sample_count)
             for start in range(0, sample_count, self.minibatch_size):
                 indices = torch.as_tensor(
@@ -214,13 +229,16 @@ class MAPPOTrainer:
                 )
                 obs = observations[indices]
                 act = actions[indices]
+                raw_act = raw_actions[indices]
                 old_log = old_log_probs[indices]
                 mask = alive_masks[indices]
                 old_value = old_values[indices]
                 target_return = returns[indices]
                 advantage = advantages[indices]
 
-                new_log_prob, entropy = self.actor.evaluate_actions(obs, act)
+                new_log_prob, entropy = self.actor.evaluate_actions(
+                    obs, act, raw_act
+                )
                 log_ratio = new_log_prob - old_log
                 ratio = log_ratio.exp()
                 unclipped = ratio * advantage
@@ -242,6 +260,24 @@ class MAPPOTrainer:
                     value_error = (value - target_return).square()
                 value_loss = 0.5 * masked_mean(value_error, mask)
                 entropy_mean = masked_mean(entropy, mask)
+
+                with torch.no_grad():
+                    live_ratio = ratio[mask > 0.5]
+                    pre_step = {
+                        "approx_kl": float(masked_mean((ratio - 1.0) - log_ratio, mask)),
+                        "clip_fraction": float(masked_mean(
+                            (torch.abs(ratio - 1.0) > self.clip_ratio).float(), mask
+                        )),
+                        "ratio_mean": float(live_ratio.mean()),
+                        "ratio_std": float(live_ratio.std(unbiased=False)),
+                        "ratio_p1": float(torch.quantile(live_ratio, .01)),
+                        "ratio_p50": float(torch.quantile(live_ratio, .50)),
+                        "ratio_p99": float(torch.quantile(live_ratio, .99)),
+                        "ratio_min": float(live_ratio.min()),
+                        "ratio_max": float(live_ratio.max()),
+                    }
+                    if first_minibatch is None:
+                        first_minibatch = dict(pre_step)
 
                 self.actor_optimizer.zero_grad()
                 (actor_loss - self.entropy_coefficient * entropy_mean).backward()
@@ -266,7 +302,7 @@ class MAPPOTrainer:
                     clip_fraction = masked_mean(
                         (torch.abs(ratio - 1.0) > self.clip_ratio).float(), mask
                     )
-                    metric_rows.append({
+                    row = {
                         "actor_loss": float(actor_loss),
                         "value_loss": float(value_loss),
                         "entropy": float(entropy_mean),
@@ -275,7 +311,12 @@ class MAPPOTrainer:
                         "value": float(masked_mean(value, mask)),
                         "actor_grad_norm": float(actor_grad_norm),
                         "critic_grad_norm": float(critic_grad_norm),
-                    })
+                        **{key: value for key, value in pre_step.items()
+                           if key.startswith("ratio_")},
+                    }
+                    metric_rows.append(row)
+                    this_epoch.append({**pre_step, "epoch": float(epoch)})
+            epoch_rows.append(this_epoch)
 
         self.ppo_update_count += 1
         live = alive_masks > 0.5
@@ -291,6 +332,27 @@ class MAPPOTrainer:
             for key in metric_rows[0]
         }
         metrics["explained_variance"] = float(explained_variance)
+        with torch.no_grad():
+            distribution = self.actor.distribution(observations)
+            live_actions = actions[alive_masks > 0.5]
+            live_log_std = distribution.scale.log()[alive_masks > 0.5]
+            for index, name in enumerate(("psi", "theta", "v")):
+                metrics[f"policy_log_std_mean_{name}"] = float(
+                    live_log_std[:, index].mean()
+                )
+                for threshold, label in ((.9, "0_9"), (.99, "0_99"), (.999, "0_999")):
+                    metrics[f"action_abs_gt_{label}_fraction_{name}"] = float(
+                        (live_actions[:, index].abs() > threshold).float().mean()
+                    )
+        assert first_minibatch is not None
+        for key, value in first_minibatch.items():
+            metrics[f"first_minibatch_{key}"] = value
+        for epoch, rows in enumerate(epoch_rows):
+            for key in rows[0]:
+                if key != "epoch":
+                    metrics[f"epoch_{epoch}_{key}"] = float(np.mean([
+                        row[key] for row in rows
+                    ]))
         if not np.all(np.isfinite(list(metrics.values()))):
             raise FloatingPointError(f"non-finite MAPPO update: {metrics}")
         return metrics
@@ -298,6 +360,7 @@ class MAPPOTrainer:
     def checkpoint_state(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
             "algorithm": "MAPPO",
+            "mappo_impl_version": MAPPO_IMPL_VERSION,
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
             "actor_optimizer": self.actor_optimizer.state_dict(),
@@ -314,12 +377,22 @@ class MAPPOTrainer:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(self.checkpoint_state(extra), path)
 
-    def load(self, path: str | Path) -> dict[str, Any]:
+    def load(
+        self, path: str | Path, allow_legacy_diagnostic: bool = False
+    ) -> dict[str, Any]:
         state = torch.load(path, map_location=self.device, weights_only=False)
         if state.get("algorithm") != "MAPPO":
             raise RuntimeError("checkpoint is not a MAPPO checkpoint")
+        legacy = state.get("mappo_impl_version") != MAPPO_IMPL_VERSION
+        if legacy and not allow_legacy_diagnostic:
+            raise RuntimeError(
+                "checkpoint MAPPO implementation mismatch: old checkpoints are "
+                "read-only diagnostics and cannot resume formal training"
+            )
         self.actor.load_state_dict(state["actor"])
         self.critic.load_state_dict(state["critic"])
+        if legacy:
+            return dict(state.get("extra", {}))
         self.actor_optimizer.load_state_dict(state["actor_optimizer"])
         self.critic_optimizer.load_state_dict(state["critic_optimizer"])
         self.ppo_update_count = int(state.get("ppo_updates", 0))
@@ -330,4 +403,7 @@ class MAPPOTrainer:
         return dict(state.get("extra", {}))
 
 
-__all__ = ["MAPPOTrainer", "RolloutBatch", "compute_gae", "masked_mean"]
+__all__ = [
+    "MAPPO_IMPL_VERSION", "MAPPOTrainer", "RolloutBatch", "compute_gae",
+    "masked_mean",
+]

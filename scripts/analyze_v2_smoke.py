@@ -1,4 +1,4 @@
-"""Summarize V2.2 training metrics and deterministic checkpoint evaluation."""
+"""Summarize historical V2.2 training metrics and checkpoint evaluation."""
 from __future__ import annotations
 
 import argparse

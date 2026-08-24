@@ -235,11 +235,43 @@ def test_checkpoint_version_is_saved_and_incompatible_semantics_fail_fast(tmp_pa
         invalid = tmp_path / "invalid.pt"
         runner.save_checkpoint(valid)
         state = torch.load(valid, map_location="cpu", weights_only=False)
-        assert state["extra"]["environment_version"] == "2.2"
+        assert state["extra"]["environment_version"] == "2.3"
         state["extra"]["environment_version"] = "2.0"
         torch.save(state, invalid)
         with pytest.raises(RuntimeError, match="environment semantics"):
             runner.resume(invalid)
         assert runner.trainer.sampled_steps == 0
+    finally:
+        runner.vector.close()
+
+
+def test_madsac_best_evaluation_uses_win_return_then_lower_red_loss(
+    tmp_path, monkeypatch
+):
+    environment, algorithm = configs()
+    runner = MADSACTrainingRunner(
+        environment, algorithm, num_envs=1, total_sampled_steps=1,
+        output_dir=tmp_path, smoke=True,
+    )
+    saved = []
+    monkeypatch.setattr(runner, "save_checkpoint", lambda path: saved.append(Path(path).name))
+    try:
+        assert runner._consider_best_evaluation({
+            "sampled_steps": 1, "win_rate": .5, "average_return": 10.,
+            "average_red_loss": 2.,
+        })
+        assert not runner._consider_best_evaluation({
+            "sampled_steps": 2, "win_rate": .5, "average_return": 10.,
+            "average_red_loss": 3.,
+        })
+        assert runner._consider_best_evaluation({
+            "sampled_steps": 3, "win_rate": .5, "average_return": 10.,
+            "average_red_loss": 1.,
+        })
+        assert runner._consider_best_evaluation({
+            "sampled_steps": 4, "win_rate": .6, "average_return": -100.,
+            "average_red_loss": 4.,
+        })
+        assert saved == ["best_eval.pt"] * 3
     finally:
         runner.vector.close()

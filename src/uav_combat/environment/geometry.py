@@ -18,6 +18,8 @@ class EngagementGeometry:
     ha: float
     hca: float
     off_boresight: float
+    boresight_azimuth_error: float
+    boresight_elevation_error: float
 
     @property
     def attack_angle(self) -> float:
@@ -45,12 +47,25 @@ def engagement_geometry(
             ct * np.sin(attacker.psi),
             -np.sin(attacker.theta),
         ], dtype=float)
+        right_unit = np.asarray([
+            -np.sin(attacker.psi), np.cos(attacker.psi), 0.0,
+        ], dtype=float)
+        up_unit = np.cross(right_unit, forward_unit)
         cosine = float(np.clip(np.dot(forward_unit, los_unit), -1.0, 1.0))
         off_boresight = float(np.arccos(cosine))
+        los_f = float(np.dot(los_unit, forward_unit))
+        los_r = float(np.dot(los_unit, right_unit))
+        los_u = float(np.dot(los_unit, up_unit))
+        boresight_azimuth_error = float(np.arctan2(los_r, los_f))
+        boresight_elevation_error = float(
+            np.arctan2(los_u, np.hypot(los_f, los_r))
+        )
     else:
         # Preserve the existing zero-range boundary semantics: a coincident
         # target has no defined LOS direction and is treated as aligned.
         off_boresight = 0.0
+        boresight_azimuth_error = 0.0
+        boresight_elevation_error = 0.0
     return EngagementGeometry(
         distance=distance,
         horizontal_distance=horizontal,
@@ -60,6 +75,8 @@ def engagement_geometry(
         ha=float(np.arctan2(-dz, horizontal)),
         hca=float(wrap_angle(target.psi - attacker.psi)),
         off_boresight=off_boresight,
+        boresight_azimuth_error=boresight_azimuth_error,
+        boresight_elevation_error=boresight_elevation_error,
     )
 
 

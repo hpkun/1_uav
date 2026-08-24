@@ -8,11 +8,11 @@ import yaml
 from .models import AircraftSpec
 
 
-ENVIRONMENT_VERSION = "2.2"
+ENVIRONMENT_VERSION = "2.3"
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    """Load and validate the active V2.2 environment configuration."""
+    """Load and validate the active V2.3 environment configuration."""
     with Path(path).open("r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     required = {

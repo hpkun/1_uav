@@ -1,9 +1,9 @@
 """Multi-Agent Proximal Policy Optimization implementation."""
 
 from .networks import CentralizedValueCritic, SharedMAPPOActor
-from .trainer import MAPPOTrainer, RolloutBatch, compute_gae
+from .trainer import MAPPO_IMPL_VERSION, MAPPOTrainer, RolloutBatch, compute_gae
 
 __all__ = [
-    "CentralizedValueCritic", "MAPPOTrainer", "RolloutBatch",
+    "CentralizedValueCritic", "MAPPO_IMPL_VERSION", "MAPPOTrainer", "RolloutBatch",
     "SharedMAPPOActor", "compute_gae",
 ]

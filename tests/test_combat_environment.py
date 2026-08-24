@@ -1,4 +1,4 @@
-"""Strict V2.2 environment-contract tests."""
+"""Strict V2.3 environment-contract tests."""
 from __future__ import annotations
 
 import copy
@@ -36,7 +36,7 @@ def one_alive(primary):
 
 def test_version_and_frozen_bottom_level_contract():
     cfg = config()
-    assert cfg["environment_version"] == ENVIRONMENT_VERSION == "2.2"
+    assert cfg["environment_version"] == ENVIRONMENT_VERSION == "2.3"
     assert cfg["simulation"] == {"dt": 0.1, "max_steps": 1000}
     assert cfg["aircraft"] == {
         "v_min": 150.0, "v_max": 300.0,
@@ -149,6 +149,49 @@ def test_fire_gate_uses_aircraft_pitch_in_true_3d_cone(
     target = state(x=1000.0, altitude=target_altitude)
     geometry = engagement_geometry(attacker, target)
     assert weapon().in_fire_window(geometry) is expected
+
+
+@pytest.mark.parametrize(
+    "pitch_deg,los_elevation_deg,expected_off_boresight_deg",
+    [(0.0, 0.0, 0.0), (30.0, 30.0, 0.0), (-30.0, -30.0, 0.0),
+     (60.0, 0.0, 60.0), (-60.0, 0.0, 60.0)],
+)
+def test_velocity_frame_boresight_analytic_cases(
+    pitch_deg, los_elevation_deg, expected_off_boresight_deg
+):
+    distance = 3000.0
+    elevation = np.deg2rad(los_elevation_deg)
+    geometry = engagement_geometry(
+        state(theta=np.deg2rad(pitch_deg)),
+        state(x=distance * np.cos(elevation),
+              altitude=3000.0 + distance * np.sin(elevation)),
+    )
+    assert np.rad2deg(geometry.off_boresight) == pytest.approx(
+        expected_off_boresight_deg, abs=1e-6
+    )
+    if expected_off_boresight_deg == 0.0:
+        assert geometry.boresight_azimuth_error == pytest.approx(0.0, abs=1e-12)
+        assert geometry.boresight_elevation_error == pytest.approx(0.0, abs=1e-12)
+    assert np.cos(geometry.off_boresight) == pytest.approx(
+        np.cos(geometry.boresight_elevation_error)
+        * np.cos(geometry.boresight_azimuth_error), abs=1e-12
+    )
+
+
+def test_true_pointing_hit_probability_is_rotation_consistent():
+    model = weapon()
+    rates = []
+    for pitch_deg in (0.0, 30.0, -30.0):
+        distance = 3000.0
+        pitch = np.deg2rad(pitch_deg)
+        geometry = engagement_geometry(
+            state(theta=pitch),
+            state(x=distance * np.cos(pitch),
+                  altitude=3000.0 + distance * np.sin(pitch)),
+        )
+        rng = np.random.default_rng(314159)
+        rates.append(np.mean([model.attempt_hit(geometry, rng) for _ in range(100_000)]))
+    assert max(rates) - min(rates) < 1e-12
 
 
 def test_old_separable_ata_ha_window_cannot_authorize_sideways_3d_shot():

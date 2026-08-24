@@ -15,11 +15,16 @@ def episode_return_metrics(agent_returns: np.ndarray) -> tuple[float, float]:
 
 def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000_000, 10_000_020)) -> dict[str, float]:
     records = []
+    policy_rows: list[dict[str, float]] = []
     for seed in seeds:
         env = MultiUAVCombatEnv(config)
         observation, _ = env.reset(int(seed))
         agent_returns = np.zeros(4, dtype=float)
         while True:
+            if hasattr(actor, "policy_statistics"):
+                policy_rows.append(actor.policy_statistics(
+                    observation, env.red_alive_mask
+                ))
             actions = actor.act(observation, env.red_alive_mask, deterministic=True)
             observation, reward, terminated, truncated, info = env.step(actions)
             agent_returns += reward
@@ -32,7 +37,7 @@ def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000
                 })
                 break
     mean = lambda key: float(np.mean([record[key] for record in records]))
-    return {
+    result = {
         "average_return": mean("episode_return"),
         "average_agent_return": mean("mean_agent_episode_return"),
         "win_rate": mean("red_success"),
@@ -53,6 +58,9 @@ def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000
         "average_red_attack_kills": mean("red_attack_kills"),
         "average_blue_attack_kills": mean("blue_attack_kills"),
         "average_red_boundary_exits": mean("red_boundary_exits"),
+        "evaluation_boundary_exit_rate": float(np.mean([
+            record["red_boundary_exits"] > 0 for record in records
+        ])),
         "average_blue_boundary_exits": mean("blue_boundary_exits"),
         "average_red_ground_losses": mean("red_ground_losses"),
         "average_blue_ground_losses": mean("blue_ground_losses"),
@@ -63,3 +71,9 @@ def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000
         },
         "evaluation_episodes": len(records),
     }
+    if policy_rows:
+        result.update({
+            key: float(np.mean([row[key] for row in policy_rows]))
+            for key in policy_rows[0]
+        })
+    return result

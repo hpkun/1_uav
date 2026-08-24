@@ -106,6 +106,31 @@ class MADSACTrainer:
             actions = actions * torch.as_tensor(alive_mask, dtype=torch.float32, device=self.device).unsqueeze(-1)
         return actions.cpu().numpy()
 
+    @torch.no_grad()
+    def policy_statistics(
+        self, observations: np.ndarray, alive_mask: np.ndarray | None = None
+    ) -> dict[str, float]:
+        tensor = torch.as_tensor(
+            observations, dtype=torch.float32, device=self.device
+        )
+        distribution = self.actor.distribution(tensor)
+        deterministic_actions = torch.tanh(distribution.mean)
+        if alive_mask is None:
+            live = torch.ones(deterministic_actions.shape[:-1], dtype=torch.bool,
+                              device=self.device)
+        else:
+            live = torch.as_tensor(alive_mask, device=self.device) > 0.5
+        names = ("psi", "theta", "v")
+        result: dict[str, float] = {}
+        for index, name in enumerate(names):
+            values = deterministic_actions[..., index][live]
+            log_std = distribution.scale.log()[..., index][live]
+            result[f"deterministic_action_mean_{name}"] = float(values.mean())
+            result[f"deterministic_action_abs_mean_{name}"] = float(values.abs().mean())
+            result[f"policy_log_std_mean_{name}"] = float(log_std.mean())
+        self._require_finite(result)
+        return result
+
     def compute_target(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Equation (18): target actor, target double-Q minimum, and entropy."""
         with torch.no_grad():
