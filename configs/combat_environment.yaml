@@ -1,4 +1,4 @@
-environment_version: "2.1"
+environment_version: "2.2"
 simulation:
   dt: 0.1
   max_steps: 1000
@@ -31,8 +31,7 @@ scenario:
 weapon:
   range_min: 0.0
   range_max: 4000.0
-  attack_angle_max: 0.5235987755982988
-  height_angle_max: 0.5235987755982988
+  off_boresight_angle_max: 0.5235987755982988
   effective_hit_distance: 2232.442506204989
   attack_noise_scale: 1.0
   height_noise_scale: 1.0

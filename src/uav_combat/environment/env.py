@@ -1,4 +1,4 @@
-"""Paper-Constrained Direct 4v4 Combat Environment V2.1."""
+"""Paper-Constrained Direct 4v4 Combat Environment V2.2."""
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,6 +1,6 @@
 # Active Environment Specification
 
-The active benchmark is Paper-Constrained Direct 4v4 Combat Environment V2.1.
+The active benchmark is Paper-Constrained Direct 4v4 Combat Environment V2.2.
 Its normative formulas, ordering, observation indices, provenance and validation
 criteria are maintained in `environment_v2_spec.md`.
 

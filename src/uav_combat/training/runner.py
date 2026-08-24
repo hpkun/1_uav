@@ -423,8 +423,8 @@ class MADSACTrainingRunner:
         if checkpoint_version != ENVIRONMENT_VERSION:
             raise RuntimeError(
                 "checkpoint environment_version mismatch: expected "
-                f"{ENVIRONMENT_VERSION}, got {checkpoint_version!r}; V2.0/V2.1 "
-                "share dimensions but not observation semantics"
+                f"{ENVIRONMENT_VERSION}, got {checkpoint_version!r}; "
+                "V2.0/V2.1/V2.2 share dimensions but not environment semantics"
             )
         extra = self.trainer.load(path)
         self.scheduler_T = int(extra.get("scheduler_T", 0))

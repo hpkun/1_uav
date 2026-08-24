@@ -1,4 +1,4 @@
-"""Random-diameter 4v4 initialization for the V2.1 benchmark."""
+"""Random-diameter 4v4 initialization for the V2.2 benchmark."""
 from __future__ import annotations
 
 import numpy as np

@@ -1,4 +1,8 @@
-# V2.1 Design Review
+# V2.1 Design Review (Historical Baseline for V2.2)
+
+V2.2 supersedes only this document's separable ATA/HA launch gate with the true
+3-D off-boresight cone defined in `environment_v2_spec.md`. The remaining V2.1
+choices below are retained.
 
 V2.1 removes the custom V2.0 scenario mixture, absolute command decoder,
 rate-limited controller, 5-step deterministic lock, generic shaping rewards,

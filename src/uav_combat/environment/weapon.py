@@ -16,8 +16,7 @@ class FireState:
 class WeaponEnvelope:
     range_min: float
     range_max: float
-    attack_angle_max: float
-    height_angle_max: float
+    off_boresight_angle_max: float
     effective_hit_distance: float
     attack_noise_scale: float
     height_noise_scale: float
@@ -26,7 +25,7 @@ class WeaponEnvelope:
         if not 0.0 <= self.range_min < self.range_max:
             raise ValueError("weapon range must satisfy 0 <= range_min < range_max")
         if min(
-            self.attack_angle_max, self.height_angle_max,
+            self.off_boresight_angle_max,
             self.effective_hit_distance,
         ) <= 0.0:
             raise ValueError("weapon angle and hit-distance parameters must be positive")
@@ -36,8 +35,7 @@ class WeaponEnvelope:
     def in_fire_window(self, geometry: EngagementGeometry) -> bool:
         return bool(
             self.range_min <= geometry.distance <= self.range_max
-            and abs(geometry.ata) <= self.attack_angle_max
-            and abs(geometry.ha) <= self.height_angle_max
+            and geometry.off_boresight <= self.off_boresight_angle_max
         )
 
     def hit_threshold(self, distance: float) -> float:

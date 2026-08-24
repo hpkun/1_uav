@@ -1,4 +1,4 @@
-"""Strict V2.1 environment-contract tests."""
+"""Strict V2.2 environment-contract tests."""
 from __future__ import annotations
 
 import copy
@@ -36,7 +36,7 @@ def one_alive(primary):
 
 def test_version_and_frozen_bottom_level_contract():
     cfg = config()
-    assert cfg["environment_version"] == ENVIRONMENT_VERSION == "2.1"
+    assert cfg["environment_version"] == ENVIRONMENT_VERSION == "2.2"
     assert cfg["simulation"] == {"dt": 0.1, "max_steps": 1000}
     assert cfg["aircraft"] == {
         "v_min": 150.0, "v_max": 300.0,
@@ -104,6 +104,11 @@ def test_canonical_geometry_signs_and_reverse_relation():
     assert g.ata == pytest.approx(np.pi / 4)
     assert g.aa == pytest.approx(np.pi / 4)
     assert g.ha == pytest.approx(np.arctan2(1000.0, np.sqrt(2e6)))
+    expected_forward = np.asarray([1.0, 0.0, 0.0])
+    expected_los = np.asarray([1000.0, 1000.0, -1000.0]) / np.sqrt(3e6)
+    assert g.off_boresight == pytest.approx(
+        np.arccos(np.dot(expected_forward, expected_los))
+    )
     reverse = engagement_geometry(blue, red)
     assert reverse.distance == pytest.approx(g.distance)
     assert reverse.ha == pytest.approx(-g.ha)
@@ -121,10 +126,39 @@ def test_weapon_range_boundaries(distance, expected):
     assert weapon().in_fire_window(g) is expected
 
 
-def test_head_on_fire_gate_ignores_aa_and_uses_ata_ha_only():
+def test_head_on_fire_gate_ignores_target_aspect_but_uses_true_3d_boresight():
     g = engagement_geometry(state(psi=0.0), state(x=1000.0, psi=np.pi))
     assert abs(g.aa) == pytest.approx(np.pi)
+    assert g.off_boresight == pytest.approx(0.0)
     assert weapon().in_fire_window(g)
+
+
+@pytest.mark.parametrize(
+    "attacker_pitch_deg,target_altitude,expected",
+    [
+        (60.0, 3000.0, False),
+        (-60.0, 3000.0, False),
+        (30.0, 3000.0 + 1000.0 * np.tan(np.pi / 6.0), True),
+        (-30.0, 3000.0 - 1000.0 * np.tan(np.pi / 6.0), True),
+    ],
+)
+def test_fire_gate_uses_aircraft_pitch_in_true_3d_cone(
+    attacker_pitch_deg, target_altitude, expected
+):
+    attacker = state(theta=np.deg2rad(attacker_pitch_deg))
+    target = state(x=1000.0, altitude=target_altitude)
+    geometry = engagement_geometry(attacker, target)
+    assert weapon().in_fire_window(geometry) is expected
+
+
+def test_old_separable_ata_ha_window_cannot_authorize_sideways_3d_shot():
+    attacker = state(theta=np.deg2rad(60.0))
+    target = state(x=3000.0, altitude=1500.0)
+    geometry = engagement_geometry(attacker, target)
+    assert abs(geometry.ata) <= np.deg2rad(30.0)
+    assert abs(geometry.ha) <= np.deg2rad(30.0)
+    assert geometry.off_boresight > np.deg2rad(80.0)
+    assert not weapon().in_fire_window(geometry)
 
 
 def test_hit_threshold_monotonic_and_4km_ideal_probability():

@@ -1,4 +1,4 @@
-"""Summarize V2.1 training metrics and deterministic checkpoint evaluation."""
+"""Summarize V2.2 training metrics and deterministic checkpoint evaluation."""
 from __future__ import annotations
 
 import argparse
@@ -26,14 +26,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--metrics", required=True)
-    parser.add_argument("--output", default="outputs/v2_1_smoke_analysis.json")
+    parser.add_argument("--output", default="outputs/v2_2_smoke_analysis.json")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     checkpoint = (root / args.checkpoint).resolve()
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
     version = state.get("extra", {}).get("environment_version")
     if version != ENVIRONMENT_VERSION:
-        raise RuntimeError(f"checkpoint environment_version is {version!r}, expected 2.1")
+        raise RuntimeError(f"checkpoint environment_version is {version!r}, expected 2.2")
     hidden = int(state["actor"]["backbone.0.weight"].shape[0])
     trainer = MADSACTrainer(observation_dim=OBSERVATION_DIM, hidden_dim=hidden)
     trainer.load(checkpoint)

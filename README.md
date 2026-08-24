@@ -2,7 +2,7 @@
 
 This repository implements MADSAC and MAPPO against a public, lightweight 3D combat
 environment. The active environment is **Paper-Constrained Direct 4v4 Combat
-Environment V2.1**. It uses the motion equations, action increments, combat
+Environment V2.2**. It uses the motion equations, action increments, combat
 geometry, attack equations, observation content and segmented reward structure
 reported by Li et al. (2023), with every otherwise missing simulator choice
 declared in `docs/environment_v2_spec.md`.
@@ -34,7 +34,7 @@ python -u scripts/train_madsac.py \
   --seed 2023 \
   --total-sampled-steps 500000 \
   --num-envs 24 \
-  --output-dir outputs/madsac_v2_1
+  --output-dir outputs/madsac_v2_2
 ```
 
 Training uses one persistent spawned worker per environment. Console output stays
@@ -49,14 +49,14 @@ python -u scripts/train_mappo.py \
   --seed 2023 \
   --total-sampled-steps 8000000 \
   --num-envs 24 \
-  --output-dir outputs/mappo_v2_1_8m_seed2023
+  --output-dir outputs/mappo_v2_2_8m_seed2023
 ```
 
 Its formal hyperparameters are declared in `configs/mappo.yaml`. MAPPO
 checkpoints contain the actor, centralized critic, both optimizers and training
 counters; no partial on-policy rollout is serialized.
 
-V2.0 checkpoints are intentionally incompatible. V2.1 checkpoints contain an
+V2.0/V2.1 checkpoints are intentionally incompatible. V2.2 checkpoints contain an
 `environment_version` field, and resume fails before loading model weights when
 the field is absent or different. Replay contents are not checkpointed, so even a
 compatible resume restarts replay collection and episodes.
@@ -69,7 +69,8 @@ compatible resume restarts replay collection and episodes.
 - Eq. (2) inverse controller with 2 s response constants and proportional
   `nz <= 8` projection.
 - Random 8 km diameter initialization inside a hard 5 km arena.
-- Eq. (7) fire window and Eq. (8) probabilistic, entry-triggered attacks.
+- A 4 km, 30-degree true 3-D off-boresight fire cone and Eq. (8)
+  probabilistic, entry-triggered attacks.
 - Paper R1-R4 only; ground and boundary semantics are explicitly separated.
 - A 100 s timeout is a Red mission failure, not a draw.
 

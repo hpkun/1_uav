@@ -1,4 +1,4 @@
-"""End-to-end V2.1 controller, weapon, initialization and baseline validation."""
+"""End-to-end V2.2 controller, weapon, initialization and baseline validation."""
 from __future__ import annotations
 
 import argparse
@@ -211,7 +211,7 @@ def rule_based_validation(config: dict, episodes: int = 100) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output", default="outputs/paper_environment_v2_1_validation.json"
+        "--output", default="outputs/paper_environment_v2_2_validation.json"
     )
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--weapon-trials", type=int, default=100_000)

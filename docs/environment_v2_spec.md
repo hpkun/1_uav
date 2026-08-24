@@ -1,8 +1,10 @@
-# Paper-Constrained Direct 4v4 Combat Environment V2.1
+# Paper-Constrained Direct 4v4 Combat Environment V2.2
 
-This document is the normative active environment contract. V2.1 is a public
+This document is the normative active environment contract. V2.2 is a public
 reconstruction constrained by Li et al. (2023); it is not claimed to be the
-authors' unreleased simulator.
+authors' unreleased simulator. V2.2 replaces the separable horizontal ATA / LOS
+elevation launch gate with a true 3-D off-boresight cone. Dynamics, observations,
+reward, attack cadence and the stochastic hit equation are unchanged from V2.1.
 
 ## Provenance table
 
@@ -15,12 +17,12 @@ authors' unreleased simulator.
 | Action | relative `[Delta psi,Delta theta,Delta v]`, maxima `[pi,pi/3,50]` | PAPER | Table 2 and Eq. (23) |
 | Controller | 2 s first-order desired rates and Eq. (2) inverse | RECONSTRUCTION | Missing author controller replaced by disclosed prototype-selected design |
 | `nz` limit | 8g, proportional A/B projection | RECONSTRUCTION | Explicit frozen choice from controller prototype validation |
-| Geometry | signed horizontal ATA, AA, HA; optional HCA | PAPER / DERIVED | Eq. (6), with explicit signed `atan2` implementation |
+| Geometry | signed horizontal ATA, AA, HA, optional HCA, and true 3-D off-boresight | PAPER / DERIVED / RECONSTRUCTION | Eq. (6) fields plus disclosed physical launch-cone correction |
 | Combat area | hard horizontal radius 5 km (10 km diameter) | RECONSTRUCTION | Fully disclosed finite benchmark arena |
 | Initialization | random diameter; centers at radius 4 km; disclosed offsets/noise | PAPER / RECONSTRUCTION | Paper random-diameter statement plus public numeric fill-in |
 | Altitude | initial `3000+/-100 m`; only ground `alt<=0` destroys | RECONSTRUCTION | Public initialization and minimal ground rule; no ceiling |
 | Observation | exact 52-scalar self/allies/enemies layout below | PAPER / DERIVED | Eq. (24) content plus explicit normalization/index derivation |
-| Fire gate | `d=[0,4000]`, `abs(ATA),abs(HA)<=30 deg` | PAPER | Eq. (7) and Table 1 |
+| Fire gate | `d=[0,4000]`, true 3-D off-boresight `<=30 deg` | RECONSTRUCTION | Uses the paper's 4 km and 30-degree limits but corrects the separable gate so aircraft pitch participates |
 | Hit model | Eq. (8), `D_hit=4000/ln(6)`, `c4=c5=1`, independent draws | PAPER / DERIVED / RECONSTRUCTION | Equation form / calibrated distance / disclosed noise choice |
 | Cadence | one attempt on entry into the union of legal windows | RECONSTRUCTION | Prevents hidden 10 Hz repeated-fire assumption |
 | Reward | R1+R2+R3+R4 only | PAPER / DERIVED | Eq. (25), with documented nearest-target and precedence rules |
@@ -70,10 +72,15 @@ ATA = wrap(lambda - psi_i)
 AA  = wrap(psi_j - lambda)
 HA  = atan2(alt_j-alt_i, rho) = atan2(-(z_j-z_i), rho)
 HCA = wrap(psi_j-psi_i)
+u_fwd = [cos(theta_i)cos(psi_i), cos(theta_i)sin(psi_i), -sin(theta_i)]
+u_LOS = [x_j-x_i, y_j-y_i, z_j-z_i] / d
+off_boresight = acos(clip(dot(u_fwd,u_LOS),-1,1))
 ```
 
-All active gates use signed values through their absolute magnitude. HCA is
-available for diagnosis but is not an active fire or reward condition.
+ATA, AA, HA and HCA remain available to observations, rewards, hit probability
+and diagnosis. Only `off_boresight` is the active angular launch gate. At zero
+range the LOS direction is undefined and `off_boresight` is defined as zero to
+preserve the inclusive zero-range contract.
 
 ## Scenario
 
@@ -87,8 +94,9 @@ There are no scenario modes or curriculum.
 
 ## Weapon and firing state machine
 
-The Eq. (7) window is inclusive: `0<=d<=4000 m`, `abs(ATA)<=30 deg`, and
-`abs(HA)<=30 deg`. AA and any lock/dwell state are not part of this gate.
+The V2.2 launch window is inclusive: `0<=d<=4000 m` and true 3-D
+`off_boresight<=30 deg`. Target aspect AA and any lock/dwell state are not part
+of this gate. The Eq. (8) stochastic hit calculation remains unchanged.
 
 For each attempt, Eq. (8) is evaluated with independent draws
 `epsilon_ATA,epsilon_HA ~ N(0,1)`:
@@ -174,6 +182,6 @@ steps, and R1-R4 totals for Red and Blue where applicable. Console training outp
 contains only return, Red win/loss, Red fire-window/attempt/kill rates and MADSAC
 critic, actor, Q and entropy diagnostics.
 
-Checkpoints store `environment_version=2.1`. Resume rejects missing or different
-versions before loading weights because V2.0 and V2.1 use equal tensor dimensions
-with incompatible meanings.
+Checkpoints store `environment_version=2.2`. Resume rejects missing or different
+versions before loading weights because V2.0, V2.1 and V2.2 use equal tensor
+dimensions with incompatible environment semantics.
