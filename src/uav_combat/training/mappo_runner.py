@@ -14,7 +14,7 @@ from ..environment.env import MultiUAVCombatEnv
 from ..mappo.trainer import MAPPO_IMPL_VERSION, MAPPOTrainer, RolloutBatch
 from .evaluator import episode_return_metrics, evaluate, persistent_mission_metrics
 from .vector_env import ParallelVectorEnv
-from .checkpoint import validate_checkpoint_environment
+from .checkpoint import evaluation_selection_key, validate_checkpoint_environment
 
 
 class MAPPOTrainingRunner:
@@ -87,6 +87,7 @@ class MAPPOTrainingRunner:
         self.next_checkpoint = self.checkpoint_interval
 
     def startup_summary(self) -> dict[str, Any]:
+        wave_config = self.env_config.get("persistent_waves", {})
         return {
             "algorithm": "MAPPO", "mode": "smoke" if self.smoke else "formal",
             "device": self.device, "observation_dim": self.observation_dim,
@@ -101,6 +102,11 @@ class MAPPOTrainingRunner:
             "gamma": self.trainer.gamma, "gae_lambda": self.trainer.gae_lambda,
             "clip_ratio": self.trainer.clip_ratio,
             "entropy_coefficient": self.trainer.entropy_coefficient,
+            "environment_variant": self.env_config.get(
+                "environment_variant", "direct_v2_3"
+            ),
+            "total_waves": int(wave_config.get("total_waves", 1)),
+            "max_steps": int(self.env_config["simulation"]["max_steps"]),
         }
 
     def start_log_line(self) -> str:
@@ -112,7 +118,9 @@ class MAPPOTrainingRunner:
                 f"| backend={s['environment_backend']} | seed={s['seed']} "
                 f"| total={s['total_sampled_steps']} | rollout={s['rollout_steps']} "
                 f"| epochs={s['ppo_epochs']} | minibatch={s['minibatch_size']} "
-                f"| gamma={s['gamma']} | lambda={s['gae_lambda']} | clip={s['clip_ratio']}")
+                f"| gamma={s['gamma']} | lambda={s['gae_lambda']} | clip={s['clip_ratio']} "
+                f"| variant={s['environment_variant']} | waves={s['total_waves']} "
+                f"| max_steps={s['max_steps']}")
 
     @staticmethod
     def _display(value: float | None, digits: int) -> str:
@@ -282,11 +290,10 @@ class MAPPOTrainingRunner:
                 writer = csv.DictWriter(stream, fieldnames=list(self.evaluation_history[0]))
                 writer.writeheader(); writer.writerows(self.evaluation_history)
 
-    @staticmethod
-    def _evaluation_key(record: dict[str, float]) -> tuple[float, float, float]:
-        return (
-            float(record["win_rate"]), float(record["average_return"]),
-            -float(record["average_red_loss"]),
+    def _evaluation_key(self, record: dict[str, float]) -> tuple[float, ...]:
+        return evaluation_selection_key(
+            record,
+            self.env_config.get("environment_variant", "direct_v2_3"),
         )
 
     def _consider_best_evaluation(self, record: dict[str, float]) -> bool:

@@ -13,7 +13,7 @@ from ..madsac.trainer import MADSACTrainer
 from ..environment.env import MultiUAVCombatEnv
 from .evaluator import episode_return_metrics, evaluate, persistent_mission_metrics
 from .vector_env import ParallelVectorEnv
-from .checkpoint import validate_checkpoint_environment
+from .checkpoint import evaluation_selection_key, validate_checkpoint_environment
 
 
 class MADSACTrainingRunner:
@@ -119,6 +119,7 @@ class MADSACTrainingRunner:
         self.next_checkpoint = self.checkpoint_interval
 
     def startup_summary(self) -> dict[str, Any]:
+        wave_config = self.env_config.get("persistent_waves", {})
         return {
             "mode": "smoke" if self.smoke else "formal",
             "device": self.device,
@@ -137,6 +138,12 @@ class MADSACTrainingRunner:
             "update_steps_n": self.update_steps_n,
             "policy_delay_d": self.policy_delay_d,
             "algorithm1_t_counter": self.algorithm1_t_counter,
+            "gamma": self.trainer.gamma,
+            "environment_variant": self.env_config.get(
+                "environment_variant", "direct_v2_3"
+            ),
+            "total_waves": int(wave_config.get("total_waves", 1)),
+            "max_steps": int(self.env_config["simulation"]["max_steps"]),
         }
 
     def start_log_line(self) -> str:
@@ -149,7 +156,9 @@ class MADSACTrainingRunner:
             f"| backend={summary['environment_backend']} | seed={summary['seed']} "
             f"| total={summary['total_sampled_steps']} | batch={summary['batch_size']} "
             f"| replay={summary['replay_capacity']} | T={summary['steps_per_update']} "
-            f"| n={summary['update_steps_n']} | d={summary['policy_delay_d']}"
+            f"| n={summary['update_steps_n']} | d={summary['policy_delay_d']} "
+            f"| gamma={summary['gamma']} | variant={summary['environment_variant']} "
+            f"| waves={summary['total_waves']} | max_steps={summary['max_steps']}"
         )
 
     def recent_episode_metrics(self) -> dict[str, float | None]:
@@ -415,11 +424,10 @@ class MADSACTrainingRunner:
             writer.writeheader()
             writer.writerows(self.evaluation_history)
 
-    @staticmethod
-    def _evaluation_key(record: dict[str, float]) -> tuple[float, float, float]:
-        return (
-            float(record["win_rate"]), float(record["average_return"]),
-            -float(record["average_red_loss"]),
+    def _evaluation_key(self, record: dict[str, float]) -> tuple[float, ...]:
+        return evaluation_selection_key(
+            record,
+            self.env_config.get("environment_variant", "direct_v2_3"),
         )
 
     def _consider_best_evaluation(self, record: dict[str, float]) -> bool:

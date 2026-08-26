@@ -33,6 +33,7 @@ def persistent_mission_metrics(records: list[dict[str, Any]]) -> dict[str, float
             for row in records
             for wave in row.get("per_wave_metrics", [])
             if wave["wave_index"] == wave_index
+            and wave.get("wave_cleared", True)
         ]
         result[f"average_red_survivors_after_wave_{wave_index}"] = (
             float(np.mean(survivor_values)) if survivor_values else 0.0

@@ -23,7 +23,10 @@ Every replacement Blue wave has four live aircraft. A candidate formation is
 centered at radius 4,400 m, must keep every Blue aircraft inside the 5,000 m
 arena, keep every live Red/Blue three-dimensional distance at least 2,500 m,
 and contain no immediate fire-window pair. Rejection sampling is bounded at
-256 attempts and deliberately has no fallback.
+512 attempts and deliberately has no fallback. The budget was raised from 256
+after the reproducible case 3167 first found a valid candidate at attempt 302;
+the spawn radius, minimum distance, arena, and fire-window constraints did not
+change.
 
 ## Exact boundary order
 
@@ -74,16 +77,34 @@ python scripts/train_mappo.py --device cuda --seed 2023 --num-envs 24 `
 
 Every completed wave records start/end/duration steps, Red survivors at both
 ends, Blue survivors, each side's attempts/hits/combat kills/boundary exits/
-ground losses, R1-R4 totals, and team return. Evaluation and final training
+ground losses, R1-R4 totals, team return, `wave_cleared`, and the wave's terminal
+reason. A final partial wave is also closed on Red elimination, mutual
+destruction, or mission timeout, so terminal episodes never lose their last
+wave record. Evaluation and final training
 summaries add mean waves cleared, unconditional probability of clearing each
 wave, conditional mean Red survivors after each cleared wave, total Blue/Red
 losses, and a loss-denominator-clipped kill/loss ratio.
+
+Direct checkpoints retain the lexicographic selection key
+`(win_rate, average_return, -average_red_loss)`. Persistent checkpoints use
+`(average_waves_cleared, clear_wave_3_probability, average_return,
+-average_red_loss)` so progress before the first full three-wave success can
+still update `best_eval.pt`.
 
 `scripts/validate_persistent_wave_environment.py` performs the pure-environment
 10,000-case replacement stress audit across 1-4 Red survivors and center, edge,
 dispersed, and varied-altitude/heading layouts. It reports failures without
 changing parameters or introducing a fallback, and advances each successful
 case for one second with zero Red action and the fixed Blue policy.
+
+The final 100,000-case audit expanded this to center, boundary, spread,
+altitude, heading, and speed strata. Although case 3167 is fixed by the 512
+budget, 8,326 legal Red states still had no accepted spawn. Representative
+four-survivor heading/speed cases produced zero valid candidates in a 0.01
+degree, 36,000-angle scan even with 4,096 random attempts. No deterministic
+sweep fallback is installed because it cannot solve a genuinely empty feasible
+angle set. Therefore this exact fixed-radius/no-fire-window task is not declared
+ready for unattended long training.
 
 ## Read-only Markov audit
 

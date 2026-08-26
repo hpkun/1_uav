@@ -14,6 +14,8 @@ from uav_combat.environment.factory import make_combat_environment
 from uav_combat.environment.persistent_env import PersistentWaveCombatEnv
 from uav_combat.environment.weapon import FireState
 from uav_combat.training.checkpoint import validate_checkpoint_environment
+from uav_combat.training.checkpoint import evaluation_selection_key
+from uav_combat.training.runner import MADSACTrainingRunner
 from uav_combat.training.mappo_runner import MAPPOTrainingRunner
 from uav_combat.training.vector_env import ParallelVectorEnv
 
@@ -101,6 +103,8 @@ def test_wave_record_is_closed_before_spawn_and_matches_clearing_reward():
     assert record["start_step"] == 0 and record["end_step"] == 1
     assert record["blue_survivors_start"] == 4
     assert record["blue_survivors_end"] == 0
+    assert record["wave_completed"] and record["wave_cleared"]
+    assert record["termination_reason"] == "wave_cleared"
     assert record["team_return"] == pytest.approx(float(reward.sum()))
     assert record["r1_total"] + record["r2_total"] + record["r3_total"] + record["r4_total"] == pytest.approx(record["team_return"])
 
@@ -138,6 +142,9 @@ def test_final_wave_uses_original_success_termination():
     assert not info["spawned_next_wave"]
     assert info["waves_cleared"] == 1
     assert info["blue_losses"] == 4
+    assert len(info["per_wave_metrics"]) == 1
+    assert info["per_wave_metrics"][0]["wave_cleared"]
+    assert info["per_wave_metrics"][0]["termination_reason"] == "red_win"
 
 
 def test_time_limit_prevents_spawning_another_wave():
@@ -154,6 +161,9 @@ def test_time_limit_prevents_spawning_another_wave():
     assert info["termination_reason"] == "red_failure_timeout"
     assert info["wave_index"] == 1
     assert not info["spawned_next_wave"]
+    assert len(info["per_wave_metrics"]) == 1
+    assert info["per_wave_metrics"][0]["wave_cleared"]
+    assert info["per_wave_metrics"][0]["termination_reason"] == "red_failure_timeout"
 
 
 def test_mutual_elimination_has_priority_over_wave_spawn():
@@ -170,6 +180,42 @@ def test_mutual_elimination_has_priority_over_wave_spawn():
     assert info["draw"]
     assert not info["spawned_next_wave"]
     assert info["waves_cleared"] == 0
+    assert len(info["per_wave_metrics"]) == 1
+    assert not info["per_wave_metrics"][0]["wave_cleared"]
+    assert info["per_wave_metrics"][0]["termination_reason"] == "draw_mutual_destruction"
+
+
+def test_red_elimination_finishes_partial_wave_record_once():
+    env = PersistentWaveCombatEnv(persistent_config())
+    env.reset(116)
+    for state in env.red:
+        state.alive = False
+
+    _, _, terminated, truncated, info = env.step(
+        np.zeros((4, 3), dtype=np.float32)
+    )
+
+    assert terminated and not truncated
+    assert len(info["per_wave_metrics"]) == 1
+    record = info["per_wave_metrics"][0]
+    assert not record["wave_cleared"]
+    assert record["termination_reason"] == "blue_win"
+
+
+def test_ordinary_timeout_finishes_partial_wave_record_once():
+    env = PersistentWaveCombatEnv(persistent_config())
+    env.reset(117)
+    env.steps = env.max_steps - 1
+
+    _, _, terminated, truncated, info = env.step(
+        np.zeros((4, 3), dtype=np.float32)
+    )
+
+    assert not terminated and truncated
+    assert len(info["per_wave_metrics"]) == 1
+    record = info["per_wave_metrics"][0]
+    assert not record["wave_cleared"]
+    assert record["termination_reason"] == "red_failure_timeout"
 
 
 def test_next_wave_generation_is_seed_deterministic():
@@ -230,6 +276,59 @@ def test_persistent_algorithm_configs_change_only_discount_and_output_scope():
         direct["training"]["gamma"] = persistent["training"]["gamma"]
         direct["training"]["output_dir"] = persistent["training"]["output_dir"]
         assert direct == persistent
+    mappo = yaml.safe_load(
+        (ROOT / "configs/mappo_persistent_wave.yaml").read_text()
+    )
+    madsac = yaml.safe_load(
+        (ROOT / "configs/madsac_persistent_wave.yaml").read_text()
+    )
+    assert mappo["training"]["output_dir"] != madsac["training"]["output_dir"]
+
+
+def test_persistent_madsac_startup_loads_gamma_and_mission_identity(tmp_path):
+    import yaml
+
+    algorithm = yaml.safe_load(
+        (ROOT / "configs/madsac_persistent_wave.yaml").read_text()
+    )
+    runner = MADSACTrainingRunner(
+        persistent_config(), algorithm, num_envs=1, total_sampled_steps=1,
+        output_dir=tmp_path, smoke=True,
+    )
+    try:
+        summary = runner.startup_summary()
+        assert summary["gamma"] == 0.999
+        assert summary["environment_variant"] == "persistent_wave_v1"
+        assert summary["total_waves"] == 3
+        assert summary["max_steps"] == 3000
+        assert "gamma=0.999 | variant=persistent_wave_v1 | waves=3 | max_steps=3000" in runner.start_log_line()
+    finally:
+        runner.vector.close()
+
+
+def test_persistent_best_selection_prioritizes_mean_waves_for_both_runners():
+    weaker = {
+        "win_rate": 0.0, "average_waves_cleared": 0.5,
+        "clear_wave_3_probability": 0.0, "average_return": 100.0,
+        "average_red_loss": 0.0,
+    }
+    stronger = {
+        "win_rate": 0.0, "average_waves_cleared": 1.5,
+        "clear_wave_3_probability": 0.0, "average_return": -100.0,
+        "average_red_loss": 4.0,
+    }
+    for runner_class in (MAPPOTrainingRunner, MADSACTrainingRunner):
+        runner = runner_class.__new__(runner_class)
+        runner.env_config = {"environment_variant": "persistent_wave_v1"}
+        assert runner._evaluation_key(stronger) > runner._evaluation_key(weaker)
+
+
+def test_direct_best_selection_tuple_is_unchanged():
+    record = {
+        "win_rate": 0.4, "average_return": 5.0, "average_red_loss": 2.0,
+        "average_waves_cleared": 99.0, "clear_wave_3_probability": 1.0,
+    }
+    assert evaluation_selection_key(record, "direct_v2_3") == (0.4, 5.0, -2.0)
 
 
 def test_nonterminal_wave_transition_is_stored_in_mappo_rollout():

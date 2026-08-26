@@ -45,6 +45,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         self._wave_start_red_survivors = self.team_size
         self._wave_start_counts: dict[str, dict[str, int]] = {}
         self._wave_start_rewards: dict[str, float] = {}
+        self._wave_record_open = False
 
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         observation, info = super().reset(seed)
@@ -57,6 +58,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         return observation, info
 
     def _begin_wave_record(self) -> None:
+        self._wave_record_open = True
         self._wave_start_step = self.steps
         self._wave_start_red_survivors = int(self.red_alive_mask.sum())
         self._wave_start_counts = {
@@ -67,7 +69,11 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             for name, values in self.episode_reward_components.items()
         }
 
-    def _finish_wave_record(self) -> None:
+    def _finish_wave_record(
+        self, wave_cleared: bool, termination_reason: str
+    ) -> None:
+        if not self._wave_record_open:
+            return
         record: dict[str, Any] = {
             "wave_index": self.wave_index,
             "start_step": self._wave_start_step,
@@ -77,6 +83,9 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             "red_survivors_end": int(self.red_alive_mask.sum()),
             "blue_survivors_start": self.team_size,
             "blue_survivors_end": int(self.blue_alive_mask.sum()),
+            "wave_completed": True,
+            "wave_cleared": bool(wave_cleared),
+            "termination_reason": termination_reason,
         }
         for side in ("red", "blue"):
             for event in (
@@ -94,6 +103,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             team_return += value
         record["team_return"] = team_return
         self.wave_records.append(record)
+        self._wave_record_open = False
 
     def _candidate_blue_wave(self, radial_angle: float) -> list[AircraftState]:
         scenario = self.config["scenario"]
@@ -203,7 +213,13 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         spawn_radial_angle = None
 
         if wave_cleared:
-            self._finish_wave_record()
+            if self.wave_index < self.total_waves and self.steps >= self.max_steps:
+                clear_reason = "red_failure_timeout"
+            elif self.wave_index == self.total_waves:
+                clear_reason = str(info["termination_reason"])
+            else:
+                clear_reason = "wave_cleared"
+            self._finish_wave_record(True, clear_reason)
             self.waves_cleared += 1
             if self.wave_index < self.total_waves:
                 if self.steps >= self.max_steps:
@@ -231,6 +247,9 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
                         "draw": False,
                         "termination_reason": "ongoing",
                     })
+
+        if (terminated or truncated) and self._wave_record_open:
+            self._finish_wave_record(False, str(info["termination_reason"]))
 
         current_blue_losses = self.team_size - int(self.blue_alive_mask.sum())
         info["blue_losses"] = (

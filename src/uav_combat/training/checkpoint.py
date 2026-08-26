@@ -26,4 +26,28 @@ def validate_checkpoint_environment(
         )
 
 
-__all__ = ["validate_checkpoint_environment"]
+def evaluation_selection_key(
+    record: dict[str, Any], environment_variant: str
+) -> tuple[float, ...]:
+    """Return the variant-specific lexicographic best-checkpoint key."""
+    if environment_variant == "persistent_wave_v1":
+        waves_cleared = record.get(
+            "average_waves_cleared", record.get("mean_waves_cleared", 0.0)
+        )
+        final_clear = record.get(
+            "clear_wave_3_probability", record.get("win_rate", 0.0)
+        )
+        return (
+            float(waves_cleared),
+            float(final_clear),
+            float(record["average_return"]),
+            -float(record["average_red_loss"]),
+        )
+    return (
+        float(record["win_rate"]),
+        float(record["average_return"]),
+        -float(record["average_red_loss"]),
+    )
+
+
+__all__ = ["evaluation_selection_key", "validate_checkpoint_environment"]
