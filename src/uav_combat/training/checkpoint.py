@@ -38,8 +38,8 @@ def evaluation_selection_key(
             "clear_wave_3_probability", record.get("win_rate", 0.0)
         )
         return (
-            float(waves_cleared),
             float(final_clear),
+            float(waves_cleared),
             float(record["average_return"]),
             -float(record["average_red_loss"]),
         )

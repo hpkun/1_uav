@@ -20,13 +20,17 @@ previous V3 redesign proposal.
 `environment_variant: persistent_wave_v1`. The default mission contains three
 waves and has one global horizon of 3,000 physics steps (`dt=0.1`, 300 seconds).
 Every replacement Blue wave has four live aircraft. A candidate formation is
-centered at radius 4,400 m, must keep every Blue aircraft inside the 5,000 m
-arena, keep every live Red/Blue three-dimensional distance at least 2,500 m,
-and contain no immediate fire-window pair. Rejection sampling is bounded at
-512 attempts and deliberately has no fallback. The budget was raised from 256
-after the reproducible case 3167 first found a valid candidate at attempt 302;
-the spawn radius, minimum distance, arena, and fire-window constraints did not
-change.
+centered at radius 4,400 m. The environment enumerates 72 perimeter directions
+at five-degree intervals, generates the complete perturbed four-aircraft
+formation for each direction, and selects the smallest-index candidate whose
+minimum 3D distance to every surviving Red aircraft is greatest. Configuration
+validation proves all 72 formations fit inside the 5,000 m arena.
+
+There is no rejection loop, hard minimum-distance threshold, fallback, or
+spawn-time fire-window exclusion. Actual minimum spawn distance and the selected
+candidate index are diagnostics. A fresh wave may start in a normal V2.3 weapon
+window; it appears in the returned next observation and can only participate in
+weapon resolution on the following call to `step`.
 
 ## Exact boundary order
 
@@ -35,8 +39,8 @@ change.
    attacks, resolves simultaneous hits, and creates the old-wave reward/info.
 2. If Red survives and every Blue slot is dead, the wrapper closes an immutable
    per-wave metric record and increments `waves_cleared`.
-3. On a non-final wave before the global time limit, it samples a fresh Blue
-   formation, resets both Red and Blue `FireState` objects, and zeros only the
+3. On a non-final wave before the global time limit, it enumerates and selects a
+   fresh Blue formation, resets both Red and Blue `FireState` objects, and zeros only the
    new Blue wave's last executed bank values.
 4. Red physical state, live/dead slots, and last executed bank values persist.
    `wave_index` increments, the returned observation is rebuilt from the new
@@ -87,24 +91,15 @@ losses, and a loss-denominator-clipped kill/loss ratio.
 
 Direct checkpoints retain the lexicographic selection key
 `(win_rate, average_return, -average_red_loss)`. Persistent checkpoints use
-`(average_waves_cleared, clear_wave_3_probability, average_return,
+`(clear_wave_3_probability, average_waves_cleared, average_return,
 -average_red_loss)` so progress before the first full three-wave success can
 still update `best_eval.pt`.
 
 `scripts/validate_persistent_wave_environment.py` performs the pure-environment
-10,000-case replacement stress audit across 1-4 Red survivors and center, edge,
-dispersed, and varied-altitude/heading layouts. It reports failures without
-changing parameters or introducing a fallback, and advances each successful
-case for one second with zero Red action and the fixed Blue policy.
-
-The final 100,000-case audit expanded this to center, boundary, spread,
-altitude, heading, and speed strata. Although case 3167 is fixed by the 512
-budget, 8,326 legal Red states still had no accepted spawn. Representative
-four-survivor heading/speed cases produced zero valid candidates in a 0.01
-degree, 36,000-angle scan even with 4,096 random attempts. No deterministic
-sweep fallback is installed because it cannot solve a genuinely empty feasible
-angle set. Therefore this exact fixed-radius/no-fire-window task is not declared
-ready for unattended long training.
+100,000-case replacement stress audit across 1-4 Red survivors and center,
+boundary, spread, altitude, heading, and speed layouts. It records selected
+sectors, distance percentiles, immediate weapon windows, and the following one
+second of normal dynamics without treating a weapon window as a spawn failure.
 
 ## Read-only Markov audit
 

@@ -69,10 +69,34 @@ def test_intermediate_clear_preserves_red_and_spawns_nearest_policy_blue_wave():
     assert 0.0 < abs(env.red[0].x - 1234.0) < 30.0
     assert all(state.alive for state in env.blue)
     assert env.fixed_policy.__class__.__name__ == "NearestTargetPursuitPolicy"
-    assert not any(
-        env._in_fire_window(red, blue) or env._in_fire_window(blue, red)
-        for red in env.red if red.alive for blue in env.blue
+    assert env._blue_wave_inside_arena(env.blue)
+    assert 0 <= info["wave_spawn_candidate_index"] < 72
+    assert info["minimum_spawn_distance"] == pytest.approx(
+        env._minimum_red_blue_distance(env.blue)
     )
+
+
+def test_clearing_step_never_lets_fresh_blue_attack_before_observation():
+    env = PersistentWaveCombatEnv(persistent_config())
+    env.reset(2026)
+    clear_blue(env)
+    attempts_before = env.combat_counts["blue"]["fire_attempts"]
+    hits_before = env.combat_counts["blue"]["weapon_hits"]
+    kills_before = env.combat_counts["blue"]["attack_kills"]
+
+    observation, _, terminated, truncated, info = env.step(
+        np.zeros((4, 3), dtype=np.float32)
+    )
+
+    assert not terminated and not truncated
+    assert info["spawned_next_wave"]
+    assert observation.shape == (4, 52)
+    assert info["blue_step_fire_attempts"] == 0
+    assert info["blue_step_weapon_hits"] == 0
+    assert info["blue_step_attack_kills"] == 0
+    assert env.combat_counts["blue"]["fire_attempts"] == attempts_before
+    assert env.combat_counts["blue"]["weapon_hits"] == hits_before
+    assert env.combat_counts["blue"]["attack_kills"] == kills_before
 
 
 def test_intermediate_clear_rearms_both_sides_and_preserves_red_bank_state():
@@ -236,6 +260,35 @@ def test_next_wave_generation_is_seed_deterministic():
     )
 
 
+def test_spawn_selects_farthest_of_72_complete_formation_candidates():
+    manual = PersistentWaveCombatEnv(persistent_config())
+    actual = PersistentWaveCombatEnv(persistent_config())
+    manual.reset(24680)
+    actual.reset(24680)
+    candidates = [
+        manual._candidate_blue_wave(float(angle))
+        for angle in np.linspace(-np.pi, np.pi, 72, endpoint=False)
+    ]
+    distances = [manual._minimum_red_blue_distance(row) for row in candidates]
+    expected_index = int(np.argmax(distances))
+
+    actual._spawn_next_wave()
+
+    assert actual.last_spawn_candidate_index == expected_index
+    assert actual.last_minimum_spawn_distance == pytest.approx(distances[expected_index])
+    assert np.array_equal(
+        np.stack([state.as_array() for state in actual.blue]),
+        np.stack([state.as_array() for state in candidates[expected_index]]),
+    )
+
+
+def test_spawn_config_has_no_rejection_budget_or_hard_minimum_distance():
+    wave_config = persistent_config()["persistent_waves"]
+    assert wave_config["spawn_direction_count"] == 72
+    assert "max_spawn_attempts" not in wave_config
+    assert "min_red_distance" not in wave_config
+
+
 def test_parallel_worker_constructs_persistent_environment_class():
     with ParallelVectorEnv(1, persistent_config(), base_seed=81_000_000) as vector:
         vector.reset()
@@ -306,7 +359,7 @@ def test_persistent_madsac_startup_loads_gamma_and_mission_identity(tmp_path):
         runner.vector.close()
 
 
-def test_persistent_best_selection_prioritizes_mean_waves_for_both_runners():
+def test_persistent_best_selection_prioritizes_final_clear_then_mean_waves():
     weaker = {
         "win_rate": 0.0, "average_waves_cleared": 0.5,
         "clear_wave_3_probability": 0.0, "average_return": 100.0,
@@ -321,6 +374,15 @@ def test_persistent_best_selection_prioritizes_mean_waves_for_both_runners():
         runner = runner_class.__new__(runner_class)
         runner.env_config = {"environment_variant": "persistent_wave_v1"}
         assert runner._evaluation_key(stronger) > runner._evaluation_key(weaker)
+        mission_success = {
+            **weaker, "clear_wave_3_probability": 0.10,
+            "average_waves_cleared": 2.00,
+        }
+        no_success = {
+            **stronger, "clear_wave_3_probability": 0.0,
+            "average_waves_cleared": 2.01,
+        }
+        assert runner._evaluation_key(mission_success) > runner._evaluation_key(no_success)
 
 
 def test_direct_best_selection_tuple_is_unchanged():

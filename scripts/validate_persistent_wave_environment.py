@@ -22,11 +22,12 @@ CATEGORIES = ("center", "boundary", "spread", "altitude", "heading", "speed")
 
 def percentile_summary(values: list[float]) -> dict[str, float | None]:
     if not values:
-        return {key: None for key in ("mean", "min", "p10", "p50", "p90", "p99", "max")}
+        return {key: None for key in ("mean", "min", "p1", "p10", "p50", "p90", "p99", "max")}
     data = np.asarray(values, dtype=float)
     return {
         "mean": float(data.mean()),
         "min": float(data.min()),
+        "p1": float(np.percentile(data, 1)),
         "p10": float(np.percentile(data, 10)),
         "p50": float(np.percentile(data, 50)),
         "p90": float(np.percentile(data, 90)),
@@ -71,12 +72,13 @@ def _run_stress_batch(
     config: dict[str, Any], start: int, stop: int
 ) -> dict[str, Any]:
     env = PersistentWaveCombatEnv(config)
-    attempts: list[float] = []
+    selected_indices: list[int] = []
+    selected_angles_degrees: list[float] = []
     minimum_distances: list[float] = []
     first_red_window_steps: list[float] = []
     first_blue_window_steps: list[float] = []
     immediate_red_pairs = immediate_blue_pairs = failures = invalid_spawns = 0
-    fallback_count = 0
+    immediate_red_cases = immediate_blue_cases = 0
     failure_examples: list[dict[str, Any]] = []
     strata: dict[str, dict[str, int]] = {}
 
@@ -90,7 +92,7 @@ def _run_stress_batch(
         env.reset(seed)
         env.red = red_layout(category, survivors, env.rng)
         try:
-            env._spawn_next_wave()
+            selected_angle = env._spawn_next_wave()
         except RuntimeError as error:
             failures += 1
             stratum["failures"] += 1
@@ -101,8 +103,8 @@ def _run_stress_batch(
                 })
             continue
         stratum["successes"] += 1
-        fallback_count += int(getattr(env, "last_spawn_used_fallback", False))
-        attempts.append(float(env.last_spawn_attempts))
+        selected_indices.append(int(env.last_spawn_candidate_index))
+        selected_angles_degrees.append(float(np.rad2deg(selected_angle)))
         alive_red = [state for state in env.red if state.alive]
         pair_distances = [
             engagement_geometry(red, blue).distance
@@ -111,9 +113,11 @@ def _run_stress_batch(
         minimum_distances.append(float(min(pair_distances)))
         red_pairs = env._window_pair_count(alive_red, env.blue)
         blue_pairs = env._window_pair_count(env.blue, alive_red)
-        invalid_spawns += int(not env._valid_blue_wave(env.blue))
+        invalid_spawns += int(not env._blue_wave_inside_arena(env.blue))
         immediate_red_pairs += red_pairs
         immediate_blue_pairs += blue_pairs
+        immediate_red_cases += int(red_pairs > 0)
+        immediate_blue_cases += int(blue_pairs > 0)
 
         red_first = blue_first = None
         zero_actions = np.zeros((4, 3), dtype=np.float32)
@@ -131,7 +135,8 @@ def _run_stress_batch(
             first_blue_window_steps.append(float(blue_first))
 
     return {
-        "attempts": attempts,
+        "selected_indices": selected_indices,
+        "selected_angles_degrees": selected_angles_degrees,
         "minimum_distances": minimum_distances,
         "first_red_window_steps": first_red_window_steps,
         "first_blue_window_steps": first_blue_window_steps,
@@ -139,7 +144,8 @@ def _run_stress_batch(
         "immediate_blue_pairs": immediate_blue_pairs,
         "failures": failures,
         "invalid_spawns": invalid_spawns,
-        "fallback_count": fallback_count,
+        "immediate_red_cases": immediate_red_cases,
+        "immediate_blue_cases": immediate_blue_cases,
         "failure_examples": failure_examples,
         "strata": strata,
     }
@@ -162,7 +168,7 @@ def run_stress(
     merged_lists = {
         key: [value for batch in batches for value in batch[key]]
         for key in (
-            "attempts", "minimum_distances", "first_red_window_steps",
+            "selected_indices", "selected_angles_degrees", "minimum_distances", "first_red_window_steps",
             "first_blue_window_steps", "failure_examples",
         )
     }
@@ -170,7 +176,7 @@ def run_stress(
         key: sum(batch[key] for batch in batches)
         for key in (
             "immediate_red_pairs", "immediate_blue_pairs", "failures",
-            "invalid_spawns", "fallback_count",
+            "invalid_spawns", "immediate_red_cases", "immediate_blue_cases",
         )
     }
     strata: dict[str, dict[str, int]] = {}
@@ -181,14 +187,18 @@ def run_stress(
             )
             for field in target:
                 target[field] += row[field]
-    attempts = merged_lists["attempts"]
+    selected_indices = merged_lists["selected_indices"]
+    selected_angles_degrees = merged_lists["selected_angles_degrees"]
     minimum_distances = merged_lists["minimum_distances"]
     first_red_window_steps = merged_lists["first_red_window_steps"]
     first_blue_window_steps = merged_lists["first_blue_window_steps"]
     failures = totals["failures"]
     successes = cases - failures
     dt = float(config["simulation"]["dt"])
-    min_red_distance = float(config["persistent_waves"]["min_red_distance"])
+    index_counts = {
+        str(index): selected_indices.count(index)
+        for index in range(int(config["persistent_waves"]["spawn_direction_count"]))
+    }
     result = {
         "environment_variant": config["environment_variant"],
         "cases": cases,
@@ -197,14 +207,14 @@ def run_stress(
         "success_rate": successes / cases,
         "failure_rate": failures / cases,
         "workers": workers,
-        "spawn_attempts": percentile_summary(attempts),
-        "fallback_exists": False,
-        "fallback_count": totals["fallback_count"],
-        "fallback_rate": totals["fallback_count"] / max(successes, 1),
+        "selected_candidate_index_counts": index_counts,
+        "selected_angle_degrees": percentile_summary(selected_angles_degrees),
         "invalid_spawns": totals["invalid_spawns"],
         "minimum_3d_red_blue_distance_m": percentile_summary(minimum_distances),
         "immediate_red_fire_window_pairs": totals["immediate_red_pairs"],
         "immediate_blue_fire_window_pairs": totals["immediate_blue_pairs"],
+        "immediate_red_fire_window_rate": totals["immediate_red_cases"] / max(successes, 1),
+        "immediate_blue_fire_window_rate": totals["immediate_blue_cases"] / max(successes, 1),
         "first_red_fire_window_within_1s_rate": len(first_red_window_steps) / max(successes, 1),
         "first_blue_fire_window_within_1s_rate": len(first_blue_window_steps) / max(successes, 1),
         "first_red_fire_window_step": percentile_summary(first_red_window_steps),
@@ -219,13 +229,14 @@ def run_stress(
         ),
         "strata": strata,
         "failure_examples": merged_lists["failure_examples"][:20],
+        "minimum_distance_below_rate": {
+            str(threshold): float(np.mean(np.asarray(minimum_distances) < threshold))
+            for threshold in (500, 1000, 1500, 2000, 2500)
+        },
     }
     result["passed"] = bool(
         failures == 0
         and totals["invalid_spawns"] == 0
-        and totals["immediate_red_pairs"] == 0
-        and totals["immediate_blue_pairs"] == 0
-        and (not minimum_distances or min(minimum_distances) >= min_red_distance)
     )
     return result
 

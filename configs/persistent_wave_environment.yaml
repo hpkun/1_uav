@@ -55,5 +55,4 @@ blue_policy:
 persistent_waves:
   total_waves: 3
   spawn_radius: 4400.0
-  min_red_distance: 2500.0
-  max_spawn_attempts: 512
+  spawn_direction_count: 72

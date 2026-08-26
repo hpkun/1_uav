@@ -29,17 +29,20 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             raise ValueError("persistent_waves configuration is required")
         self.total_waves = int(wave_config["total_waves"])
         self.spawn_radius = float(wave_config["spawn_radius"])
-        self.min_red_distance = float(wave_config["min_red_distance"])
-        self.max_spawn_attempts = int(wave_config["max_spawn_attempts"])
+        self.spawn_direction_count = int(wave_config["spawn_direction_count"])
         if self.total_waves < 1:
             raise ValueError("total_waves must be positive")
         if not 0.0 < self.spawn_radius < self.arena_radius:
             raise ValueError("spawn_radius must be inside the arena")
-        if self.min_red_distance < 0.0 or self.max_spawn_attempts < 1:
-            raise ValueError("invalid persistent-wave spawn constraints")
+        if self.spawn_direction_count < 1:
+            raise ValueError("spawn_direction_count must be positive")
+        maximum_offset = max(map(abs, self.config["scenario"]["formation_offsets"]))
+        if np.hypot(self.spawn_radius, maximum_offset) >= self.arena_radius:
+            raise ValueError("configured Blue formation does not fit inside arena")
         self.wave_index = 1
         self.waves_cleared = 0
-        self.last_spawn_attempts: int | None = None
+        self.last_spawn_candidate_index: int | None = None
+        self.last_minimum_spawn_distance: float | None = None
         self.wave_records: list[dict[str, Any]] = []
         self._wave_start_step = 0
         self._wave_start_red_survivors = self.team_size
@@ -51,7 +54,8 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         observation, info = super().reset(seed)
         self.wave_index = 1
         self.waves_cleared = 0
-        self.last_spawn_attempts = None
+        self.last_spawn_candidate_index = None
+        self.last_minimum_spawn_distance = None
         self.wave_records = []
         self._begin_wave_record()
         info.update(self._wave_info(False, False, None))
@@ -137,20 +141,20 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             ))
         return states
 
-    def _valid_blue_wave(self, states: list[AircraftState]) -> bool:
+    def _blue_wave_inside_arena(self, states: list[AircraftState]) -> bool:
+        return bool(
+            len(states) == self.team_size
+            and all(np.hypot(state.x, state.y) < self.arena_radius for state in states)
+        )
+
+    def _minimum_red_blue_distance(self, states: list[AircraftState]) -> float:
         alive_red = [state for state in self.red if state.alive]
         if len(states) != self.team_size or not alive_red:
-            return False
-        if any(np.hypot(state.x, state.y) >= self.arena_radius for state in states):
-            return False
-        if any(
-            np.linalg.norm(np.array([blue.x - red.x, blue.y - red.y, blue.z - red.z]))
-            < self.min_red_distance
-            for blue in states for red in alive_red
-        ):
-            return False
-        return not any(
-            self._in_fire_window(red, blue) or self._in_fire_window(blue, red)
+            raise RuntimeError("minimum spawn distance requires surviving Red")
+        return min(
+            float(np.linalg.norm(np.array([
+                blue.x - red.x, blue.y - red.y, blue.z - red.z,
+            ])))
             for blue in states for red in alive_red
         )
 
@@ -158,30 +162,30 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         alive_red = [state for state in self.red if state.alive]
         if not alive_red:
             raise RuntimeError("cannot spawn a wave after Red elimination")
-        red_center = np.mean([[state.x, state.y] for state in alive_red], axis=0)
-        if float(np.linalg.norm(red_center)) > 1e-9:
-            base_angle = float(np.arctan2(-red_center[1], -red_center[0]))
-        else:
-            base_angle = float(self.rng.uniform(-np.pi, np.pi))
-        for attempt in range(self.max_spawn_attempts):
-            if attempt == 0:
-                radial_angle = base_angle
-            else:
-                radial_angle = float(wrap_angle(
-                    base_angle + self.rng.uniform(-np.pi, np.pi)
-                ))
+        best_index = 0
+        best_angle = -np.pi
+        best_distance = -np.inf
+        best_candidate: list[AircraftState] | None = None
+        for index, radial_angle in enumerate(np.linspace(
+            -np.pi, np.pi, self.spawn_direction_count, endpoint=False
+        )):
+            radial_angle = float(radial_angle)
             candidate = self._candidate_blue_wave(radial_angle)
-            if self._valid_blue_wave(candidate):
-                self.blue = candidate
-                # Both sides start every new round with a fresh entry trigger.
-                self.red_fire_states = [FireState() for _ in range(self.team_size)]
-                self.blue_fire_states = [FireState() for _ in range(self.team_size)]
-                self.blue_last_executed_phi.fill(0.0)
-                self.last_spawn_attempts = attempt + 1
-                return radial_angle
-        raise RuntimeError(
-            "failed to generate a valid Blue wave within max_spawn_attempts"
-        )
+            distance = self._minimum_red_blue_distance(candidate)
+            if distance > best_distance:
+                best_index = index
+                best_angle = radial_angle
+                best_distance = distance
+                best_candidate = candidate
+        # __init__ proves every enumerated formation fits inside the arena.
+        assert best_candidate is not None and self._blue_wave_inside_arena(best_candidate)
+        self.blue = best_candidate
+        self.red_fire_states = [FireState() for _ in range(self.team_size)]
+        self.blue_fire_states = [FireState() for _ in range(self.team_size)]
+        self.blue_last_executed_phi.fill(0.0)
+        self.last_spawn_candidate_index = best_index
+        self.last_minimum_spawn_distance = best_distance
+        return best_angle
 
     def _wave_info(
         self,
@@ -197,7 +201,12 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             "wave_cleared_this_step": wave_cleared,
             "spawned_next_wave": spawned_next_wave,
             "wave_spawn_radial_angle": spawn_radial_angle,
-            "wave_spawn_attempts": self.last_spawn_attempts if spawned_next_wave else None,
+            "wave_spawn_candidate_index": (
+                self.last_spawn_candidate_index if spawned_next_wave else None
+            ),
+            "minimum_spawn_distance": (
+                self.last_minimum_spawn_distance if spawned_next_wave else None
+            ),
             "per_wave_metrics": [dict(record) for record in self.wave_records],
         }
 
