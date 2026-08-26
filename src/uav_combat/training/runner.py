@@ -434,6 +434,7 @@ class MADSACTrainingRunner:
     def save_checkpoint(self, path: str | Path) -> None:
         self.trainer.save(path, {
             "environment_version": ENVIRONMENT_VERSION,
+            "environment_variant": self.env_config.get("environment_variant", "direct_v2_3"),
             "scheduler_T": self.scheduler_T,
             "scheduler_update_blocks": self.scheduler_update_blocks,
             "episode_indices": self.vector.episode_indices.tolist(),
@@ -450,6 +451,15 @@ class MADSACTrainingRunner:
                 "checkpoint environment_version mismatch: expected "
                 f"{ENVIRONMENT_VERSION}, got {checkpoint_version!r}; "
                 "V2.0-V2.3 share dimensions but not environment semantics"
+            )
+        expected_variant = self.env_config.get("environment_variant", "direct_v2_3")
+        checkpoint_variant = state.get("extra", {}).get(
+            "environment_variant", "direct_v2_3"
+        )
+        if checkpoint_variant != expected_variant:
+            raise RuntimeError(
+                "checkpoint environment_variant mismatch: expected "
+                f"{expected_variant!r}, got {checkpoint_variant!r}"
             )
         extra = self.trainer.load(path)
         self.scheduler_T = int(extra.get("scheduler_T", 0))

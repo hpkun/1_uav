@@ -5,13 +5,13 @@ import os
 import traceback
 from typing import Any
 
-from .env import MultiUAVCombatEnv
+from .factory import make_combat_environment
 
 
 def combat_environment_worker(connection: Any, config: Any) -> None:
     """Own one environment and serve reset/step commands over a pipe."""
     try:
-        environment = MultiUAVCombatEnv(config)
+        environment = make_combat_environment(config)
         connection.send(("ready", os.getpid()))
         while True:
             command, payload = connection.recv()

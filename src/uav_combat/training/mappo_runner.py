@@ -300,6 +300,7 @@ class MAPPOTrainingRunner:
 
     def save_checkpoint(self, path: str | Path) -> None:
         self.trainer.save(path, {"environment_version": ENVIRONMENT_VERSION,
+            "environment_variant": self.env_config.get("environment_variant", "direct_v2_3"),
             "mappo_impl_version": MAPPO_IMPL_VERSION,
             "episode_indices": self.vector.episode_indices.tolist(),
             "evaluation_history": self.evaluation_history,
@@ -310,6 +311,15 @@ class MAPPOTrainingRunner:
         version = state.get("extra", {}).get("environment_version")
         if version != ENVIRONMENT_VERSION:
             raise RuntimeError(f"checkpoint environment_version mismatch: expected {ENVIRONMENT_VERSION}, got {version!r}")
+        expected_variant = self.env_config.get("environment_variant", "direct_v2_3")
+        checkpoint_variant = state.get("extra", {}).get(
+            "environment_variant", "direct_v2_3"
+        )
+        if checkpoint_variant != expected_variant:
+            raise RuntimeError(
+                "checkpoint environment_variant mismatch: expected "
+                f"{expected_variant!r}, got {checkpoint_variant!r}"
+            )
         implementation_version = state.get("mappo_impl_version")
         if implementation_version != MAPPO_IMPL_VERSION:
             raise RuntimeError(

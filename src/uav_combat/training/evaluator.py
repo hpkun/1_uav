@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from ..environment.env import MultiUAVCombatEnv
+from ..environment.factory import make_combat_environment
 
 
 def episode_return_metrics(agent_returns: np.ndarray) -> tuple[float, float]:
@@ -17,7 +17,7 @@ def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000
     records = []
     policy_rows: list[dict[str, float]] = []
     for seed in seeds:
-        env = MultiUAVCombatEnv(config)
+        env = make_combat_environment(config)
         observation, _ = env.reset(int(seed))
         agent_returns = np.zeros(4, dtype=float)
         while True:

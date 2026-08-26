@@ -15,10 +15,14 @@ def main() -> None:
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--output-dir")
     parser.add_argument("--resume")
+    parser.add_argument("--env-config", default="configs/combat_environment.yaml")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    env_config = yaml.safe_load((root / "configs/combat_environment.yaml").read_text(encoding="utf-8"))
+    env_path = Path(args.env_config)
+    if not env_path.is_absolute():
+        env_path = root / env_path
+    env_config = yaml.safe_load(env_path.read_text(encoding="utf-8"))
     algorithm_config = yaml.safe_load((root / "configs/mappo.yaml").read_text(encoding="utf-8"))
     runner = MAPPOTrainingRunner(env_config, algorithm_config, args.num_envs,
         args.total_sampled_steps or (192 if args.smoke else None), args.device,
