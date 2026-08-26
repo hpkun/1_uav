@@ -89,8 +89,9 @@ order, provenance and validation criteria.
 `PersistentWaveCombatEnv` keeps the frozen V2.3 observation, reward, dynamics,
 weapon, and nearest-target Blue policy. When a non-final Blue formation is
 eliminated, a fresh four-aircraft Blue wave is spawned immediately while Red
-states and losses persist. The default configuration contains three waves and
-does not add ammunition or new observation features.
+physical states and losses persist. Both sides receive fresh Boolean FireState
+entry triggers at a wave boundary. The default configuration contains three
+waves and does not add ammunition or new observation features.
 
 Run a MAPPO smoke test with the variant using:
 
@@ -100,8 +101,13 @@ python scripts/train_mappo.py \
   --device cpu \
   --num-envs 1 \
   --env-config configs/persistent_wave_environment.yaml \
+  --algorithm-config configs/mappo_persistent_wave.yaml \
   --output-dir outputs/mappo_persistent_wave_smoke
 ```
+
+Persistent algorithm configs use `gamma=0.999`; the original Direct configs
+remain at `gamma=0.99`. Checkpoint resume also requires the environment variant
+to match.
 
 The implementation scope and deferred extensions are documented in
 `docs/persistent_wave_environment_design.md`.

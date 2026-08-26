@@ -12,7 +12,13 @@ def combat_environment_worker(connection: Any, config: Any) -> None:
     """Own one environment and serve reset/step commands over a pipe."""
     try:
         environment = make_combat_environment(config)
-        connection.send(("ready", os.getpid()))
+        connection.send(("ready", {
+            "pid": os.getpid(),
+            "environment_class": environment.__class__.__name__,
+            "environment_variant": getattr(
+                environment, "environment_variant", "direct_v2_3"
+            ),
+        }))
         while True:
             command, payload = connection.recv()
             if command == "reset":

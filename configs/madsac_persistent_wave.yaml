@@ -1,0 +1,40 @@
+algorithm: MADSAC
+network:
+  observation_dim: 52
+  action_dim: 3
+  num_agents: 4
+  actor_hidden_layers: [256, 256]
+  critic_hidden_layers: [256, 256]
+  attention_heads: 2
+training:
+  optimizer: Adam
+  learning_rate: 0.0001
+  replay_buffer_size: 1000000
+  batch_size: 1024
+  tau: 0.001
+  gamma: 0.999
+  alpha: 0.1
+  num_train_envs: 24
+  total_sampled_steps: 8000001
+  evaluation_episodes: 20
+  independent_training_runs: 5
+  confidence_interval: 0.95
+  device: cpu
+  seed: 0
+  output_dir: outputs/madsac_persistent_wave
+  evaluation_every_training_cycles: 2
+runtime_logging:
+  console_interval_sampled_steps: 20000
+  recent_episode_window: 100
+implementation:
+  actor_activation: relu
+  log_std_min: -5.0
+  log_std_max: 2.0
+  critic_activation: relu
+  steps_per_update: 24
+  update_steps_n: 1
+  policy_delay_d: 2
+  algorithm1_t_counter: global_vector_step
+  assumed_sampled_steps_per_training_cycle: 50000
+  evaluation_seed_base: 10000000
+  checkpoint_interval_sampled_steps: 500000

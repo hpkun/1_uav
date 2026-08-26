@@ -62,9 +62,16 @@ class ParallelVectorEnv:
                 child.close()
                 self._connections.append(parent)
                 self._processes.append(process)
-            self.worker_pids = [
-                int(self._receive(connection, "startup"))
+            self.worker_metadata = [
+                dict(self._receive(connection, "startup"))
                 for connection in self._connections
+            ]
+            self.worker_pids = [int(row["pid"]) for row in self.worker_metadata]
+            self.worker_environment_classes = [
+                str(row["environment_class"]) for row in self.worker_metadata
+            ]
+            self.worker_environment_variants = [
+                str(row["environment_variant"]) for row in self.worker_metadata
             ]
         except BaseException:
             self.close()

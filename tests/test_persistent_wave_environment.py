@@ -3,13 +3,19 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from uav_combat.config import load_config
 from uav_combat.environment.env import MultiUAVCombatEnv
 from uav_combat.environment.factory import make_combat_environment
 from uav_combat.environment.persistent_env import PersistentWaveCombatEnv
+from uav_combat.environment.weapon import FireState
+from uav_combat.training.checkpoint import validate_checkpoint_environment
+from uav_combat.training.mappo_runner import MAPPOTrainingRunner
+from uav_combat.training.vector_env import ParallelVectorEnv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +59,8 @@ def test_intermediate_clear_preserves_red_and_spawns_nearest_policy_blue_wave():
     assert info["spawned_next_wave"]
     assert info["termination_reason"] == "ongoing"
     assert info["blue_survivors"] == 4
+    assert np.array_equal(info["blue_alive_mask"], np.ones(4, dtype=np.float32))
+    assert np.array_equal(info["red_alive_mask"], env.red_alive_mask)
     assert info["blue_losses"] == 4
     assert observation.shape == (4, 52)
     assert not env.red[1].alive
@@ -63,6 +71,38 @@ def test_intermediate_clear_preserves_red_and_spawns_nearest_policy_blue_wave():
         env._in_fire_window(red, blue) or env._in_fire_window(blue, red)
         for red in env.red if red.alive for blue in env.blue
     )
+
+
+def test_intermediate_clear_rearms_both_sides_and_preserves_red_bank_state():
+    env = PersistentWaveCombatEnv(persistent_config())
+    env.reset(3025)
+    env.red_fire_states = [FireState(armed=False) for _ in range(4)]
+    env.blue_fire_states = [FireState(armed=False) for _ in range(4)]
+    clear_blue(env)
+    actions = np.zeros((4, 3), dtype=np.float32)
+    actions[:, 0] = 1.0
+
+    env.step(actions)
+
+    assert all(state.armed for state in env.red_fire_states)
+    assert all(state.armed for state in env.blue_fire_states)
+    assert np.count_nonzero(env.red_last_executed_phi) == 4
+    assert np.count_nonzero(env.blue_last_executed_phi) == 0
+
+
+def test_wave_record_is_closed_before_spawn_and_matches_clearing_reward():
+    env = PersistentWaveCombatEnv(persistent_config())
+    env.reset(91)
+    clear_blue(env)
+    _, reward, _, _, info = env.step(np.zeros((4, 3), dtype=np.float32))
+
+    record = info["per_wave_metrics"][0]
+    assert record["wave_index"] == 1
+    assert record["start_step"] == 0 and record["end_step"] == 1
+    assert record["blue_survivors_start"] == 4
+    assert record["blue_survivors_end"] == 0
+    assert record["team_return"] == pytest.approx(float(reward.sum()))
+    assert record["r1_total"] + record["r2_total"] + record["r3_total"] + record["r4_total"] == pytest.approx(record["team_return"])
 
 
 def test_wave_refresh_does_not_change_the_clearing_step_reward():
@@ -116,6 +156,22 @@ def test_time_limit_prevents_spawning_another_wave():
     assert not info["spawned_next_wave"]
 
 
+def test_mutual_elimination_has_priority_over_wave_spawn():
+    env = PersistentWaveCombatEnv(persistent_config())
+    env.reset(16)
+    for state in env.red + env.blue:
+        state.alive = False
+
+    _, _, terminated, truncated, info = env.step(
+        np.zeros((4, 3), dtype=np.float32)
+    )
+
+    assert terminated and not truncated
+    assert info["draw"]
+    assert not info["spawned_next_wave"]
+    assert info["waves_cleared"] == 0
+
+
 def test_next_wave_generation_is_seed_deterministic():
     first = PersistentWaveCombatEnv(persistent_config())
     second = PersistentWaveCombatEnv(persistent_config())
@@ -132,3 +188,92 @@ def test_next_wave_generation_is_seed_deterministic():
         np.stack([state.as_array() for state in first.blue]),
         np.stack([state.as_array() for state in second.blue]),
     )
+
+
+def test_parallel_worker_constructs_persistent_environment_class():
+    with ParallelVectorEnv(1, persistent_config(), base_seed=81_000_000) as vector:
+        vector.reset()
+        assert vector.worker_environment_classes == ["PersistentWaveCombatEnv"]
+        assert vector.worker_environment_variants == ["persistent_wave_v1"]
+
+
+@pytest.mark.parametrize(
+    "checkpoint_variant,requested_variant",
+    [
+        ("direct_v2_3", "persistent_wave_v1"),
+        ("persistent_wave_v1", "direct_v2_3"),
+    ],
+)
+def test_checkpoint_rejects_direct_persistent_cross_loading(
+    checkpoint_variant, requested_variant
+):
+    state = {"extra": {
+        "environment_version": "2.3",
+        "environment_variant": checkpoint_variant,
+    }}
+    with pytest.raises(RuntimeError, match="environment_variant mismatch"):
+        validate_checkpoint_environment(
+            state, {"environment_variant": requested_variant}
+        )
+
+
+def test_persistent_algorithm_configs_change_only_discount_and_output_scope():
+    import yaml
+
+    for algorithm in ("mappo", "madsac"):
+        direct = yaml.safe_load((ROOT / f"configs/{algorithm}.yaml").read_text())
+        persistent = yaml.safe_load(
+            (ROOT / f"configs/{algorithm}_persistent_wave.yaml").read_text()
+        )
+        assert direct["training"]["gamma"] == 0.99
+        assert persistent["training"]["gamma"] == 0.999
+        direct["training"]["gamma"] = persistent["training"]["gamma"]
+        direct["training"]["output_dir"] = persistent["training"]["output_dir"]
+        assert direct == persistent
+
+
+def test_nonterminal_wave_transition_is_stored_in_mappo_rollout():
+    old_observation = np.zeros((1, 4, 52), dtype=np.float32)
+    fresh_wave_observation = np.ones((1, 4, 52), dtype=np.float32)
+    alive = np.ones((1, 4), dtype=np.float32)
+
+    class FakeTrainer:
+        sampled_steps = 0
+        vector_steps = 0
+
+        @staticmethod
+        def act(observations, masks, return_policy_data=False):
+            actions = np.zeros((1, 4, 3), dtype=np.float32)
+            raw = actions.copy()
+            log_probs = np.zeros((1, 4), dtype=np.float32)
+            return actions, raw, log_probs
+
+    class FakeVector:
+        current_alive_masks = alive
+
+        @staticmethod
+        def step_batch(actions):
+            return SimpleNamespace(
+                observations=fresh_wave_observation,
+                transition_next_observations=fresh_wave_observation,
+                rewards=np.zeros((1, 4), dtype=np.float32),
+                terminated=np.array([False]), truncated=np.array([False]),
+                infos=[{"wave_cleared_this_step": True}],
+                alive_masks=alive, next_alive_masks=alive,
+            )
+
+    runner = MAPPOTrainingRunner.__new__(MAPPOTrainingRunner)
+    runner.trainer = FakeTrainer()
+    runner.vector = FakeVector()
+    runner.num_envs = 1
+    runner.rollout_steps = 1
+    runner.observations = old_observation
+    runner.alive_masks = alive
+    runner._completed = lambda result: []
+    runner._write_step_metrics = lambda result, rows: None
+
+    rollout = runner.collect_rollout(1)
+
+    assert rollout.dones[0, 0] == 0.0
+    assert np.array_equal(rollout.observations[0], old_observation)
+    assert np.array_equal(rollout.next_observations[0], fresh_wave_observation)

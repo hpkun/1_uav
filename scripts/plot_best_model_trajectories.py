@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from uav_combat.environment.env import MultiUAVCombatEnv
+from uav_combat.environment.factory import make_combat_environment
 from uav_combat.madsac.trainer import MADSACTrainer
 from uav_combat.mappo.trainer import MAPPOTrainer
 
@@ -72,7 +72,7 @@ def build_mappo(checkpoint: Path, device: str):
 
 
 def rollout(actor, environment_config: dict, seed: int, capture: bool = False):
-    env = MultiUAVCombatEnv(environment_config)
+    env = make_combat_environment(environment_config)
     observation, _ = env.reset(seed)
     returns = np.zeros(4, dtype=np.float64)
     tracks = {(side, index): [] for side in ("red", "blue") for index in range(4)}
@@ -199,10 +199,12 @@ def main() -> None:
     parser.add_argument("--seed-base", type=int, default=10_000_000)
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--selected-seed", type=int)
+    parser.add_argument("--env-config", default="configs/combat_environment.yaml")
     args = parser.parse_args()
-    environment = yaml.safe_load(
-        (ROOT / "configs/combat_environment.yaml").read_text(encoding="utf-8")
-    )
+    environment_path = Path(args.env_config)
+    if not environment_path.is_absolute():
+        environment_path = ROOT / environment_path
+    environment = yaml.safe_load(environment_path.read_text(encoding="utf-8"))
     actors = {
         "madsac": build_madsac(args.madsac_checkpoint, args.device),
         "mappo": build_mappo(args.mappo_checkpoint, args.device),

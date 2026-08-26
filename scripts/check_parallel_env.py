@@ -16,14 +16,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-envs", type=int, default=24)
     parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument("--env-config", default="configs/combat_environment.yaml")
     args = parser.parse_args()
     if min(args.num_envs, args.steps) <= 0:
         raise ValueError("num-envs and steps must be positive")
 
     root = Path(__file__).resolve().parents[1]
-    config = yaml.safe_load(
-        (root / "configs/combat_environment.yaml").read_text(encoding="utf-8")
-    )
+    config_path = Path(args.env_config)
+    if not config_path.is_absolute():
+        config_path = root / config_path
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     actions = np.zeros((args.num_envs, 4, 3), dtype=np.float32)
     with ParallelVectorEnv(args.num_envs, config, base_seed=91_000_000) as vector:
         vector.reset()
@@ -35,6 +37,12 @@ def main() -> None:
         print(f"backend={vector.backend}")
         print(f"workers={vector.num_workers}")
         print("worker_pids=" + ",".join(map(str, vector.worker_pids)))
+        print("worker_environment_classes=" + ",".join(
+            vector.worker_environment_classes
+        ))
+        print("worker_environment_variants=" + ",".join(
+            vector.worker_environment_variants
+        ))
         print(f"unique_worker_pids={len(set(vector.worker_pids))}")
         print(f"batch_steps={args.steps}")
         print(f"environment_transitions={args.steps * args.num_envs}")

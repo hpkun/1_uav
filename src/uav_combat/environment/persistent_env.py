@@ -39,13 +39,61 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             raise ValueError("invalid persistent-wave spawn constraints")
         self.wave_index = 1
         self.waves_cleared = 0
+        self.last_spawn_attempts: int | None = None
+        self.wave_records: list[dict[str, Any]] = []
+        self._wave_start_step = 0
+        self._wave_start_red_survivors = self.team_size
+        self._wave_start_counts: dict[str, dict[str, int]] = {}
+        self._wave_start_rewards: dict[str, float] = {}
 
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         observation, info = super().reset(seed)
         self.wave_index = 1
         self.waves_cleared = 0
+        self.last_spawn_attempts = None
+        self.wave_records = []
+        self._begin_wave_record()
         info.update(self._wave_info(False, False, None))
         return observation, info
+
+    def _begin_wave_record(self) -> None:
+        self._wave_start_step = self.steps
+        self._wave_start_red_survivors = int(self.red_alive_mask.sum())
+        self._wave_start_counts = {
+            side: dict(counts) for side, counts in self.combat_counts.items()
+        }
+        self._wave_start_rewards = {
+            name: float(values.sum())
+            for name, values in self.episode_reward_components.items()
+        }
+
+    def _finish_wave_record(self) -> None:
+        record: dict[str, Any] = {
+            "wave_index": self.wave_index,
+            "start_step": self._wave_start_step,
+            "end_step": self.steps,
+            "duration_steps": self.steps - self._wave_start_step,
+            "red_survivors_start": self._wave_start_red_survivors,
+            "red_survivors_end": int(self.red_alive_mask.sum()),
+            "blue_survivors_start": self.team_size,
+            "blue_survivors_end": int(self.blue_alive_mask.sum()),
+        }
+        for side in ("red", "blue"):
+            for event in (
+                "fire_attempts", "weapon_hits", "attack_kills",
+                "boundary_exits", "ground_losses",
+            ):
+                record[f"{side}_{event}"] = (
+                    self.combat_counts[side][event]
+                    - self._wave_start_counts[side][event]
+                )
+        team_return = 0.0
+        for name, values in self.episode_reward_components.items():
+            value = float(values.sum()) - self._wave_start_rewards[name]
+            record[f"{name}_total"] = value
+            team_return += value
+        record["team_return"] = team_return
+        self.wave_records.append(record)
 
     def _candidate_blue_wave(self, radial_angle: float) -> list[AircraftState]:
         scenario = self.config["scenario"]
@@ -115,8 +163,11 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             candidate = self._candidate_blue_wave(radial_angle)
             if self._valid_blue_wave(candidate):
                 self.blue = candidate
+                # Both sides start every new round with a fresh entry trigger.
+                self.red_fire_states = [FireState() for _ in range(self.team_size)]
                 self.blue_fire_states = [FireState() for _ in range(self.team_size)]
                 self.blue_last_executed_phi.fill(0.0)
+                self.last_spawn_attempts = attempt + 1
                 return radial_angle
         raise RuntimeError(
             "failed to generate a valid Blue wave within max_spawn_attempts"
@@ -136,6 +187,8 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             "wave_cleared_this_step": wave_cleared,
             "spawned_next_wave": spawned_next_wave,
             "wave_spawn_radial_angle": spawn_radial_angle,
+            "wave_spawn_attempts": self.last_spawn_attempts if spawned_next_wave else None,
+            "per_wave_metrics": [dict(record) for record in self.wave_records],
         }
 
     def step(
@@ -150,6 +203,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         spawn_radial_angle = None
 
         if wave_cleared:
+            self._finish_wave_record()
             self.waves_cleared += 1
             if self.wave_index < self.total_waves:
                 if self.steps >= self.max_steps:
@@ -165,6 +219,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
                 else:
                     spawn_radial_angle = self._spawn_next_wave()
                     self.wave_index += 1
+                    self._begin_wave_record()
                     spawned_next_wave = True
                     terminated = False
                     truncated = False
@@ -175,7 +230,6 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
                         "blue_win": False,
                         "draw": False,
                         "termination_reason": "ongoing",
-                        "blue_survivors": int(self.blue_alive_mask.sum()),
                     })
 
         current_blue_losses = self.team_size - int(self.blue_alive_mask.sum())
@@ -184,6 +238,14 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             if wave_cleared
             else self.waves_cleared * self.team_size + current_blue_losses
         )
+        # super().step() built info before an intermediate replacement. Always
+        # overwrite state-derived fields so returned masks match observation.
+        info.update({
+            "red_survivors": int(self.red_alive_mask.sum()),
+            "blue_survivors": int(self.blue_alive_mask.sum()),
+            "red_alive_mask": self.red_alive_mask,
+            "blue_alive_mask": self.blue_alive_mask,
+        })
         info.update(self._wave_info(
             wave_cleared, spawned_next_wave, spawn_radial_angle
         ))

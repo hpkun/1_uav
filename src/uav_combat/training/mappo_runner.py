@@ -12,8 +12,9 @@ import torch
 from ..config import ENVIRONMENT_VERSION
 from ..environment.env import MultiUAVCombatEnv
 from ..mappo.trainer import MAPPO_IMPL_VERSION, MAPPOTrainer, RolloutBatch
-from .evaluator import episode_return_metrics, evaluate
+from .evaluator import episode_return_metrics, evaluate, persistent_mission_metrics
 from .vector_env import ParallelVectorEnv
+from .checkpoint import validate_checkpoint_environment
 
 
 class MAPPOTrainingRunner:
@@ -308,18 +309,7 @@ class MAPPOTrainingRunner:
 
     def resume(self, path: str | Path) -> None:
         state = torch.load(path, map_location="cpu", weights_only=False)
-        version = state.get("extra", {}).get("environment_version")
-        if version != ENVIRONMENT_VERSION:
-            raise RuntimeError(f"checkpoint environment_version mismatch: expected {ENVIRONMENT_VERSION}, got {version!r}")
-        expected_variant = self.env_config.get("environment_variant", "direct_v2_3")
-        checkpoint_variant = state.get("extra", {}).get(
-            "environment_variant", "direct_v2_3"
-        )
-        if checkpoint_variant != expected_variant:
-            raise RuntimeError(
-                "checkpoint environment_variant mismatch: expected "
-                f"{expected_variant!r}, got {checkpoint_variant!r}"
-            )
+        validate_checkpoint_environment(state, self.env_config)
         implementation_version = state.get("mappo_impl_version")
         if implementation_version != MAPPO_IMPL_VERSION:
             raise RuntimeError(
@@ -359,6 +349,7 @@ class MAPPOTrainingRunner:
             **{f"{side}_{event}_episode_rate": float(np.mean([r[f"{side}_first_{event}_step"] is not None for r in self.completed_records])) if self.completed_records else 0.0
                for side in ("red", "blue") for event in ("fire_window", "attempt", "hit", "kill")},
             **{f"average_episode_{name}_total": mean(f"episode_{name}_total") for name in ("r1", "r2", "r3", "r4")},
+            **persistent_mission_metrics(self.completed_records),
             "last_update_metrics": self.last_metrics, "evaluation_history": self.evaluation_history,
             "best_evaluation_steps": best.get("sampled_steps"),
             "best_evaluation_win_rate": best.get("win_rate"),

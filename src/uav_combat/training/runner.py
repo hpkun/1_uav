@@ -11,8 +11,9 @@ import torch
 from ..config import ENVIRONMENT_VERSION
 from ..madsac.trainer import MADSACTrainer
 from ..environment.env import MultiUAVCombatEnv
-from .evaluator import episode_return_metrics, evaluate
+from .evaluator import episode_return_metrics, evaluate, persistent_mission_metrics
 from .vector_env import ParallelVectorEnv
+from .checkpoint import validate_checkpoint_environment
 
 
 class MADSACTrainingRunner:
@@ -445,22 +446,7 @@ class MADSACTrainingRunner:
     def resume(self, path: str | Path) -> None:
         """Resume networks/counters with an empty replay and fresh episodes."""
         state = torch.load(path, map_location="cpu", weights_only=False)
-        checkpoint_version = state.get("extra", {}).get("environment_version")
-        if checkpoint_version != ENVIRONMENT_VERSION:
-            raise RuntimeError(
-                "checkpoint environment_version mismatch: expected "
-                f"{ENVIRONMENT_VERSION}, got {checkpoint_version!r}; "
-                "V2.0-V2.3 share dimensions but not environment semantics"
-            )
-        expected_variant = self.env_config.get("environment_variant", "direct_v2_3")
-        checkpoint_variant = state.get("extra", {}).get(
-            "environment_variant", "direct_v2_3"
-        )
-        if checkpoint_variant != expected_variant:
-            raise RuntimeError(
-                "checkpoint environment_variant mismatch: expected "
-                f"{expected_variant!r}, got {checkpoint_variant!r}"
-            )
+        validate_checkpoint_environment(state, self.env_config)
         extra = self.trainer.load(path)
         self.scheduler_T = int(extra.get("scheduler_T", 0))
         # The fallback reads checkpoints made before the counter was renamed;
@@ -533,6 +519,7 @@ class MADSACTrainingRunner:
                 f"average_episode_{name}_total": mean(f"episode_{name}_total")
                 for name in ("r1", "r2", "r3", "r4")
             },
+            **persistent_mission_metrics(self.completed_records),
             "last_update_metrics": self.last_metrics,
             "evaluation_history": self.evaluation_history,
             "best_evaluation_steps": best.get("sampled_steps"),
