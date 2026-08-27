@@ -385,3 +385,48 @@ def test_blue_exit_is_not_a_red_kill_and_simultaneous_shared_kill_rewards():
     assert info["red_attack_kills"] == 1
     assert info["r1_rewards"][:2] == pytest.approx([5.0, 5.0])
     assert reward[:2].sum() >= 10.0
+
+
+def test_noncombat_deaths_are_exclusive_and_have_exact_reward_attribution():
+    cfg = config()
+
+    # A Blue ground impact is neither an attack kill nor a Red reward.
+    env = MultiUAVCombatEnv(cfg)
+    env.reset(61)
+    env.red = one_alive(state(x=-4000.0))
+    env.blue = one_alive(state(x=4000.0, altitude=1.0, theta=-np.pi / 3))
+    _, reward, _, _, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
+    )
+    assert info["blue_ground_losses"] == 1
+    assert info["blue_boundary_exits"] == 0
+    assert info["red_attack_kills"] == 0
+    assert reward.sum() == pytest.approx(0.0)
+
+    # A Red ground impact receives one R1 loss penalty and no R2 penalty.
+    env.reset(62)
+    env.red = one_alive(state(x=-4000.0, altitude=1.0, theta=-np.pi / 3))
+    env.blue = one_alive(state(x=4000.0))
+    _, reward, _, _, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
+    )
+    assert info["red_ground_losses"] == 1
+    assert info["red_boundary_exits"] == 0
+    assert info["blue_attack_kills"] == 0
+    assert info["r1_rewards"][0] == pytest.approx(-10.0)
+    assert info["r2_rewards"][0] == pytest.approx(0.0)
+    assert reward[0] == pytest.approx(-10.0)
+
+    # A Red boundary exit receives only R2, never the R1 loss penalty too.
+    env.reset(63)
+    env.red = one_alive(state(x=4999.0, psi=0.0))
+    env.blue = one_alive(state(x=-4000.0))
+    _, reward, _, _, info = env.step(
+        np.zeros((4, 3), np.float32), np.zeros((4, 3), np.float32)
+    )
+    assert info["red_boundary_exits"] == 1
+    assert info["red_ground_losses"] == 0
+    assert info["blue_attack_kills"] == 0
+    assert info["r1_rewards"][0] == pytest.approx(0.0)
+    assert info["r2_rewards"][0] == pytest.approx(-10.0)
+    assert reward[0] == pytest.approx(-10.0)
