@@ -6,10 +6,10 @@ import pytest
 import torch
 import yaml
 
-from uav_combat.environment.env import MultiUAVCombatEnv
-from uav_combat.training.evaluator import episode_return_metrics, evaluate
-from uav_combat.training.mappo_runner import MAPPOTrainingRunner
-from uav_combat.training.vector_env import ParallelVectorEnv
+from env.combat_env import MultiUAVCombatEnv
+from algorithm.common.evaluator import episode_return_metrics, evaluate
+from algorithm.mappo.runner import MAPPOTrainingRunner
+from algorithm.common.vector_env import ParallelVectorEnv
 
 
 ROOT = Path(__file__).resolve().parents[1]

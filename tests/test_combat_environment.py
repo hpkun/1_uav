@@ -6,17 +6,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from uav_combat.config import ENVIRONMENT_VERSION, load_config
-from uav_combat.dynamics import PointMassDynamics
-from uav_combat.environment.control import action_to_control, action_to_target
-from uav_combat.environment.env import MultiUAVCombatEnv
-from uav_combat.environment.geometry import engagement_geometry
-from uav_combat.environment.observation import build_team_observations
-from uav_combat.environment.reward import paper_state_reward_components
-from uav_combat.environment.scenario import random_combat_states
-from uav_combat.environment.weapon import FireState, WeaponEnvelope
-from uav_combat.integrator import RK4Integrator
-from uav_combat.models import AircraftSpec, AircraftState
+from env.config import ENVIRONMENT_VERSION, load_config
+from env.dynamics import PointMassDynamics
+from env.control import action_to_control, action_to_target
+from env.combat_env import MultiUAVCombatEnv
+from env.geometry import engagement_geometry
+from env.observation import build_team_observations
+from env.reward import paper_state_reward_components
+from env.scenario import random_combat_states
+from env.weapon import FireState, WeaponEnvelope
+from env.integrator import RK4Integrator
+from env.models import AircraftSpec, AircraftState
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -8,15 +8,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from uav_combat.config import load_config
-from uav_combat.environment.env import MultiUAVCombatEnv
-from uav_combat.environment.factory import make_combat_environment
-from uav_combat.environment.persistent_env import PersistentWaveCombatEnv
-from uav_combat.environment.weapon import FireState
-from uav_combat.training.checkpoint import validate_checkpoint_environment
-from uav_combat.training.checkpoint import evaluation_selection_key
-from uav_combat.training.mappo_runner import MAPPOTrainingRunner
-from uav_combat.training.vector_env import ParallelVectorEnv
+from env.config import load_config
+from env.combat_env import MultiUAVCombatEnv
+from env.factory import make_combat_environment
+from env.persistent_env import PersistentWaveCombatEnv
+from env.weapon import FireState
+from algorithm.common.checkpoint import validate_checkpoint_environment
+from algorithm.common.checkpoint import evaluation_selection_key
+from algorithm.mappo.runner import MAPPOTrainingRunner
+from algorithm.common.vector_env import ParallelVectorEnv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -315,7 +315,7 @@ def test_checkpoint_rejects_direct_persistent_cross_loading(
         )
 
 
-def test_persistent_algorithm_configs_change_only_discount_and_output_scope():
+def test_persistent_algorithm_configs_change_only_discount():
     import yaml
 
     direct = yaml.safe_load((ROOT / "configs/mappo.yaml").read_text())
@@ -325,7 +325,6 @@ def test_persistent_algorithm_configs_change_only_discount_and_output_scope():
     assert direct["training"]["gamma"] == 0.99
     assert persistent["training"]["gamma"] == 0.999
     direct["training"]["gamma"] = persistent["training"]["gamma"]
-    direct["training"]["output_dir"] = persistent["training"]["output_dir"]
     assert direct == persistent
 
 

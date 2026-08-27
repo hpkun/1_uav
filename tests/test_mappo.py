@@ -7,11 +7,11 @@ import torch
 from torch import nn
 import yaml
 
-from uav_combat.mappo import (
+from algorithm.mappo import (
     CentralizedValueCritic, MAPPO_IMPL_VERSION, MAPPOTrainer, RolloutBatch, SharedMAPPOActor,
     compute_gae,
 )
-from uav_combat.training.mappo_runner import MAPPOTrainingRunner
+from algorithm.mappo.runner import MAPPOTrainingRunner
 
 
 ROOT = Path(__file__).resolve().parents[1]

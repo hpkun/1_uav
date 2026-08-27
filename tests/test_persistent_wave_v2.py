@@ -6,19 +6,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from uav_combat.config import load_config
-from uav_combat.environment.control import action_to_control
-from uav_combat.environment.control import action_to_target
-from uav_combat.environment.factory import make_combat_environment
-from uav_combat.environment.fixed_policy import (
+from env.config import load_config
+from env.control import action_to_control
+from env.control import action_to_target
+from env.factory import make_combat_environment
+from env.fixed_policy import (
     GroundAwareNearestTargetPursuitPolicy,
     NearestTargetPursuitPolicy,
 )
-from uav_combat.integrator import RK4Integrator
-from uav_combat.math_utils import wrap_angle
-from uav_combat.models import AircraftState
-from uav_combat.training.checkpoint import validate_checkpoint_environment
-from uav_combat.training.vector_env import ParallelVectorEnv
+from env.integrator import RK4Integrator
+from env.math_utils import wrap_angle
+from env.models import AircraftState
+from algorithm.common.checkpoint import validate_checkpoint_environment
+from algorithm.common.vector_env import ParallelVectorEnv
 
 
 ROOT = Path(__file__).resolve().parents[1]

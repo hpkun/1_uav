@@ -25,7 +25,6 @@ training:
   evaluation_interval_sampled_steps: 100000
   device: cpu
   seed: 0
-  output_dir: outputs/mappo
 runtime_logging:
   console_interval_sampled_steps: 20000
   recent_episode_window: 100

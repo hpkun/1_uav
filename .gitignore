@@ -2,26 +2,18 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
-# Generated experiment outputs
-outputs/
-tmp/pdfs/
+# Generated experiment outputs (keep only the directory placeholder).
+outputs/*
+!outputs/.gitkeep
+
+# Temporary local files.
+tmp/
 
 # Model checkpoints
 *.pt
 *.pth
 *.ckpt
 
-# Local test/runtime artifacts
+# Test/runtime artifacts.
 .pytest_tmp/
 .pytest_cache/
-outputs/mappo/checkpoints/
-outputs/mappo/*.csv
-outputs/mappo/*.json
-outputs/mappo/*.png
-outputs/mappo_smoke/
-outputs/baselines/
-outputs/mappo_v5/
-outputs/mappo_v5_smoke/
-outputs/mappo_v6/
-outputs/mappo_v6_smoke/
-outputs/mappo_v6_*/
