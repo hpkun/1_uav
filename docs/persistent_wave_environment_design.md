@@ -125,11 +125,11 @@ the original `NearestTargetPursuitPolicy`; v2 constructs
 
 The v2 policy first computes the same nearest-target heading, executable LOS
 pitch command, and desired speed as v1. Let altitude be `h`, speed be `v`,
-current flight-path pitch be `theta`, and the executable baseline pitch target
-be `theta_cmd`. It computes
+current flight-path pitch be `theta`, and the nearest-target LOS elevation be
+`theta_los`. It computes
 
 ```
-v_down = max(-v sin(theta), -v sin(theta_cmd), 0)
+v_down = max(-v sin(theta), -v sin(theta_los), 0)
 t_ground = h / v_down
 ```
 

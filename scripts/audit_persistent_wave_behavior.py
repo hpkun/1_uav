@@ -19,7 +19,7 @@ import numpy as np
 import yaml
 
 from evaluate_checkpoint import build_trainer, resolved
-from uav_combat.environment.control import action_to_control, action_to_target
+from uav_combat.environment.control import action_to_control
 from uav_combat.environment.factory import make_combat_environment
 from uav_combat.training.checkpoint import validate_checkpoint_environment
 
@@ -143,12 +143,11 @@ def new_scan_state(seed: int) -> dict[str, Any]:
     }
 
 
-def guard_candidate(state, action: np.ndarray, config: dict[str, Any],
+def guard_candidate(state, commanded_pitch: float, config: dict[str, Any],
                     multiplier: int) -> tuple[bool, float | None]:
-    target = action_to_target(state, action, config["action"]["command"])
     downward_speed = max(
         -state.v * np.sin(state.theta),
-        -state.v * np.sin(target.pitch),
+        -state.v * np.sin(commanded_pitch),
         0.0,
     )
     if downward_speed <= 1e-6:
@@ -228,9 +227,14 @@ def scan_checkpoint(actor, config: dict[str, Any], seeds: list[int]) -> list[dic
                 row = state_row(state, blue_actions[i], target)
                 audit["blue_history"][i].append(row)
                 audit["blue_decision_steps"] += 1
+                target_state = pre_red[target]
+                commanded_pitch = float(np.arctan2(
+                    state.z - target_state.z,
+                    np.hypot(target_state.x - state.x, target_state.y - state.y),
+                ))
                 for multiplier in GUARD_CANDIDATES:
                     triggered, _ = guard_candidate(
-                        state, blue_actions[i], config, multiplier
+                        state, commanded_pitch, config, multiplier
                     )
                     if triggered:
                         audit["guard_candidate_steps"][multiplier] += 1

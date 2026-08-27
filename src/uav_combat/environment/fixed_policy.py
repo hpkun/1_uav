@@ -128,11 +128,7 @@ class GroundAwareNearestTargetPursuitPolicy(NearestTargetPursuitPolicy):
         baseline = self.action_toward(
             own, desired_heading, desired_pitch, float(self.config["desired_speed"])
         )
-        executable_pitch = float(
-            own.theta
-            + float(self.command_config["pitch_delta_max"]) * baseline[1]
-        )
-        override, _ = self.ground_risk(own, executable_pitch)
+        override, _ = self.ground_risk(own, desired_pitch)
         if override:
             baseline = self.action_toward(
                 own, desired_heading, self.theta_max,
