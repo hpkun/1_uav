@@ -709,7 +709,7 @@ def write_trajectories(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writeheader(); writer.writerows(rows)
 
 
-def load_actor(algorithm: str, checkpoint: Path, algorithm_config: Path, device: str,
+def load_actor(checkpoint: Path, algorithm_config: Path, device: str,
                environment_config: dict[str, Any],
                checkpoint_environment_variant: str | None = None):
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
@@ -718,14 +718,14 @@ def load_actor(algorithm: str, checkpoint: Path, algorithm_config: Path, device:
         checkpoint_config["environment_variant"] = checkpoint_environment_variant
     validate_checkpoint_environment(state, checkpoint_config)
     config = yaml.safe_load(algorithm_config.read_text(encoding="utf-8"))
-    actor = build_trainer(algorithm, config, device)
+    actor = build_trainer(config, device)
     actor.load(checkpoint)
     return actor
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--algorithm", choices=("mappo", "madsac"), required=True)
+    parser.add_argument("--algorithm", choices=("mappo",), default="mappo")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--algorithm-config", required=True)
     parser.add_argument("--env-config", default="configs/persistent_wave_environment.yaml")
@@ -756,8 +756,8 @@ def main() -> None:
         ] = args.ground_guard_time_constants
     checkpoint = resolved(args.checkpoint)
     actor = load_actor(
-        args.algorithm, checkpoint, resolved(args.algorithm_config), args.device,
-        env_config, args.checkpoint_environment_variant,
+        checkpoint, resolved(args.algorithm_config), args.device, env_config,
+        args.checkpoint_environment_variant,
     )
     output = resolved(args.output_dir); output.mkdir(parents=True, exist_ok=True)
     seeds = list(range(args.seed_base, args.seed_base + args.episodes))
@@ -772,7 +772,7 @@ def main() -> None:
         trajectory_rows.extend(captured); trajectory_summaries.append(summary)
     write_trajectories(trajectory_rows, output / "representative_trajectories.csv")
     report = {
-        "algorithm": args.algorithm.upper(), "checkpoint": str(checkpoint),
+        "algorithm": "MAPPO", "checkpoint": str(checkpoint),
         "environment_config": str(env_path), "seed_base": args.seed_base,
         "episodes": args.episodes, "summary": summarize(rows),
         "representative_seeds": selected,

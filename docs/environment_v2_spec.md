@@ -32,7 +32,7 @@ observations, rewards, attack cadence, thresholds and noise scales are unchanged
 | Blue | nearest Red, LOS heading/elevation, 250 m/s, same controller | PAPER / RECONSTRUCTION | Section 2.5 pursuit rule plus disclosed speed/controller |
 | Termination | elimination outcomes; 1000-step Red failure; mutual destruction draw | PAPER / RECONSTRUCTION | Paper Red success criterion plus explicit edge cases |
 | Sensor noise | disabled | RECONSTRUCTION | Deterministic public benchmark choice |
-| MADSAC implementation | unchanged | PREDECESSOR | Frozen project networks, optimizer and Algorithm-1 schedule |
+| MAPPO baseline | unchanged | PROJECT | Shared actor, centralized attention critic and PPO/GAE training are outside the environment contract |
 
 ## Dynamics and action
 
@@ -189,8 +189,7 @@ teams alive is `red_failure_timeout`: `red_success=false`, `red_win=false`, and
 Per-step and episode JSON metrics distinguish fire-window steps/pairs, attempts,
 successful weapon hits, credited kills, hard exits, ground losses, first-event
 steps, and R1-R4 totals for Red and Blue where applicable. Console training output
-contains only return, Red win/loss, Red fire-window/attempt/kill rates and MADSAC
-critic, actor, Q and entropy diagnostics.
+contains compact MAPPO return, win/loss, fire/kill and PPO diagnostics.
 
 Checkpoints store `environment_version=2.3`. Resume rejects missing or different
 versions before loading weights because V2.0-V2.3 use equal tensor

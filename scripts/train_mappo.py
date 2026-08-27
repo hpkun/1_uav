@@ -15,8 +15,8 @@ def main() -> None:
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--output-dir")
     parser.add_argument("--resume")
-    parser.add_argument("--env-config", default="configs/combat_environment.yaml")
-    parser.add_argument("--algorithm-config", default="configs/mappo.yaml")
+    parser.add_argument("--env-config", default="configs/persistent_wave_v2_environment.yaml")
+    parser.add_argument("--algorithm-config", default="configs/mappo_persistent_wave.yaml")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]

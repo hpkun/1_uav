@@ -26,8 +26,8 @@ all noise scales. V2.1 therefore labels the following as reconstruction choices:
 - timeout as a distinct Red mission failure.
 
 These choices are intentionally simple, fully public and testable. They are not
-presented as recovered hidden author parameters. No MADSAC optimizer, network,
-replay, entropy, target-update or delayed-policy-update behavior was altered.
+presented as recovered hidden author parameters. Optimizer, network and
+training-loop behavior are outside this environment design review.
 
 The release gate is: full pytest, controller case validation, Eq. (8) Monte Carlo,
 1000 reset statistics and 100-200 rule-based episodes. A fresh training sanity run

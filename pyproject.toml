@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "uav-combat"
 version = "0.1.0"
-description = "MADSAC on a public low-fidelity 4v4 multi-UAV combat environment"
+description = "MAPPO on public low-fidelity 4v4 multi-UAV combat environments"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "PyYAML>=6.0", "matplotlib>=3.7", "torch>=2.0"]

@@ -1,4 +1,4 @@
-"""Holdout evaluation for a formal MAPPO or MADSAC checkpoint."""
+"""Holdout evaluation for a formal MAPPO checkpoint."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,6 @@ from pathlib import Path
 import torch
 import yaml
 
-from uav_combat.madsac.trainer import MADSACTrainer
 from uav_combat.mappo.trainer import MAPPOTrainer
 from uav_combat.training.checkpoint import validate_checkpoint_environment
 from uav_combat.training.evaluator import evaluate
@@ -22,7 +21,7 @@ def resolved(path: str) -> Path:
     return value if value.is_absolute() else ROOT / value
 
 
-def build_trainer(algorithm: str, config: dict, device: str):
+def build_trainer(config: dict, device: str):
     network = config["network"]
     training = config["training"]
     implementation = config["implementation"]
@@ -38,33 +37,26 @@ def build_trainer(algorithm: str, config: dict, device: str):
         "log_std_min": float(implementation["log_std_min"]),
         "log_std_max": float(implementation["log_std_max"]),
     }
-    if algorithm == "mappo":
-        return MAPPOTrainer(
-            **common,
-            actor_learning_rate=float(training["actor_learning_rate"]),
-            critic_learning_rate=float(training["critic_learning_rate"]),
-            gamma=float(training["gamma"]),
-            gae_lambda=float(training["gae_lambda"]),
-            clip_ratio=float(training["clip_ratio"]),
-            value_loss_coefficient=float(training["value_loss_coefficient"]),
-            entropy_coefficient=float(training["entropy_coefficient"]),
-            max_grad_norm=float(training["max_grad_norm"]),
-            ppo_epochs=int(training["ppo_epochs"]),
-            minibatch_size=int(training["minibatch_size"]),
-            normalize_advantages=bool(implementation["normalize_advantages"]),
-            clip_value_loss=bool(implementation["clip_value_loss"]),
-        )
-    return MADSACTrainer(
+    return MAPPOTrainer(
         **common,
-        learning_rate=float(training["learning_rate"]),
-        gamma=float(training["gamma"]), tau=float(training["tau"]),
-        alpha=float(training["alpha"]), replay_capacity=1, batch_size=1,
+        actor_learning_rate=float(training["actor_learning_rate"]),
+        critic_learning_rate=float(training["critic_learning_rate"]),
+        gamma=float(training["gamma"]),
+        gae_lambda=float(training["gae_lambda"]),
+        clip_ratio=float(training["clip_ratio"]),
+        value_loss_coefficient=float(training["value_loss_coefficient"]),
+        entropy_coefficient=float(training["entropy_coefficient"]),
+        max_grad_norm=float(training["max_grad_norm"]),
+        ppo_epochs=int(training["ppo_epochs"]),
+        minibatch_size=int(training["minibatch_size"]),
+        normalize_advantages=bool(implementation["normalize_advantages"]),
+        clip_value_loss=bool(implementation["clip_value_loss"]),
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--algorithm", choices=("mappo", "madsac"), required=True)
+    parser.add_argument("--algorithm", choices=("mappo",), default="mappo")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--env-config", required=True)
     parser.add_argument("--algorithm-config", required=True)
@@ -83,12 +75,12 @@ def main() -> None:
     checkpoint = resolved(args.checkpoint)
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
     validate_checkpoint_environment(state, env_config)
-    trainer = build_trainer(args.algorithm, algorithm_config, args.device)
+    trainer = build_trainer(algorithm_config, args.device)
     trainer.load(checkpoint)
     seeds = range(args.seed_base, args.seed_base + args.episodes)
     result = evaluate(trainer, env_config, seeds)
     result.update({
-        "algorithm": args.algorithm.upper(),
+        "algorithm": "MAPPO",
         "checkpoint": str(checkpoint),
         "holdout_seed_base": args.seed_base,
     })

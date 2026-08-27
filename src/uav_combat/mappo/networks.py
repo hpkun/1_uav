@@ -9,7 +9,7 @@ from torch.distributions import Normal
 
 
 class SharedMAPPOActor(nn.Module):
-    """Two-layer shared tanh-Gaussian policy matching the MADSAC actor size."""
+    """Two-layer shared tanh-Gaussian policy for homogeneous Red agents."""
 
     def __init__(
         self,

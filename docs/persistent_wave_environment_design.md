@@ -2,7 +2,7 @@
 
 This document describes the implemented persistent-wave variants. Version 1 is a
 minimal wrapper around the frozen V2.3 direct-combat environment, not the
-previous V3 redesign proposal.
+previous V3 redesign proposal. Version 2 is the current primary environment.
 
 ## Frozen contracts
 
@@ -61,9 +61,8 @@ at startup for auditability. Training checkpoints store both
 checkpoints are rejected on resume in either direction. Explicit diagnostic
 weight loading remains possible in standalone evaluation tools.
 
-The Direct algorithm files remain unchanged at `gamma: 0.99`. Persistent runs
-must select `configs/mappo_persistent_wave.yaml` or
-`configs/madsac_persistent_wave.yaml`, which use `gamma: 0.999`. With 0.1-second
+The Direct MAPPO algorithm file remains unchanged at `gamma: 0.99`. Persistent
+runs use `configs/mappo_persistent_wave.yaml`, which uses `gamma: 0.999`. With 0.1-second
 steps, preserving a conventional per-second discount gives
 `0.99 ** 0.1 = 0.998995...`, hence the rounded value.
 
@@ -72,9 +71,9 @@ Example:
 ```powershell
 python scripts/train_mappo.py --device cuda --seed 2023 --num-envs 24 `
   --total-sampled-steps 8000000 `
-  --env-config configs/persistent_wave_environment.yaml `
+  --env-config configs/persistent_wave_v2_environment.yaml `
   --algorithm-config configs/mappo_persistent_wave.yaml `
-  --output-dir outputs/mappo_persistent_wave
+  --output-dir outputs/mappo_persistent_wave_v2
 ```
 
 ## Per-wave and mission metrics

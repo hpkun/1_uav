@@ -15,7 +15,6 @@ from uav_combat.environment.persistent_env import PersistentWaveCombatEnv
 from uav_combat.environment.weapon import FireState
 from uav_combat.training.checkpoint import validate_checkpoint_environment
 from uav_combat.training.checkpoint import evaluation_selection_key
-from uav_combat.training.runner import MADSACTrainingRunner
 from uav_combat.training.mappo_runner import MAPPOTrainingRunner
 from uav_combat.training.vector_env import ParallelVectorEnv
 
@@ -319,32 +318,24 @@ def test_checkpoint_rejects_direct_persistent_cross_loading(
 def test_persistent_algorithm_configs_change_only_discount_and_output_scope():
     import yaml
 
-    for algorithm in ("mappo", "madsac"):
-        direct = yaml.safe_load((ROOT / f"configs/{algorithm}.yaml").read_text())
-        persistent = yaml.safe_load(
-            (ROOT / f"configs/{algorithm}_persistent_wave.yaml").read_text()
-        )
-        assert direct["training"]["gamma"] == 0.99
-        assert persistent["training"]["gamma"] == 0.999
-        direct["training"]["gamma"] = persistent["training"]["gamma"]
-        direct["training"]["output_dir"] = persistent["training"]["output_dir"]
-        assert direct == persistent
-    mappo = yaml.safe_load(
+    direct = yaml.safe_load((ROOT / "configs/mappo.yaml").read_text())
+    persistent = yaml.safe_load(
         (ROOT / "configs/mappo_persistent_wave.yaml").read_text()
     )
-    madsac = yaml.safe_load(
-        (ROOT / "configs/madsac_persistent_wave.yaml").read_text()
-    )
-    assert mappo["training"]["output_dir"] != madsac["training"]["output_dir"]
+    assert direct["training"]["gamma"] == 0.99
+    assert persistent["training"]["gamma"] == 0.999
+    direct["training"]["gamma"] = persistent["training"]["gamma"]
+    direct["training"]["output_dir"] = persistent["training"]["output_dir"]
+    assert direct == persistent
 
 
-def test_persistent_madsac_startup_loads_gamma_and_mission_identity(tmp_path):
+def test_persistent_mappo_startup_loads_gamma_and_mission_identity(tmp_path):
     import yaml
 
     algorithm = yaml.safe_load(
-        (ROOT / "configs/madsac_persistent_wave.yaml").read_text()
+        (ROOT / "configs/mappo_persistent_wave.yaml").read_text()
     )
-    runner = MADSACTrainingRunner(
+    runner = MAPPOTrainingRunner(
         persistent_config(), algorithm, num_envs=1, total_sampled_steps=1,
         output_dir=tmp_path, smoke=True,
     )
@@ -354,7 +345,7 @@ def test_persistent_madsac_startup_loads_gamma_and_mission_identity(tmp_path):
         assert summary["environment_variant"] == "persistent_wave_v1"
         assert summary["total_waves"] == 3
         assert summary["max_steps"] == 3000
-        assert "gamma=0.999 | variant=persistent_wave_v1 | waves=3 | max_steps=3000" in runner.start_log_line()
+        assert "gamma=0.999 | lambda=0.95 | clip=0.2 | variant=persistent_wave_v1 | waves=3 | max_steps=3000" in runner.start_log_line()
     finally:
         runner.vector.close()
 
@@ -370,19 +361,18 @@ def test_persistent_best_selection_prioritizes_final_clear_then_mean_waves():
         "clear_wave_3_probability": 0.0, "average_return": -100.0,
         "average_red_loss": 4.0,
     }
-    for runner_class in (MAPPOTrainingRunner, MADSACTrainingRunner):
-        runner = runner_class.__new__(runner_class)
-        runner.env_config = {"environment_variant": "persistent_wave_v1"}
-        assert runner._evaluation_key(stronger) > runner._evaluation_key(weaker)
-        mission_success = {
-            **weaker, "clear_wave_3_probability": 0.10,
-            "average_waves_cleared": 2.00,
-        }
-        no_success = {
-            **stronger, "clear_wave_3_probability": 0.0,
-            "average_waves_cleared": 2.01,
-        }
-        assert runner._evaluation_key(mission_success) > runner._evaluation_key(no_success)
+    runner = MAPPOTrainingRunner.__new__(MAPPOTrainingRunner)
+    runner.env_config = {"environment_variant": "persistent_wave_v1"}
+    assert runner._evaluation_key(stronger) > runner._evaluation_key(weaker)
+    mission_success = {
+        **weaker, "clear_wave_3_probability": 0.10,
+        "average_waves_cleared": 2.00,
+    }
+    no_success = {
+        **stronger, "clear_wave_3_probability": 0.0,
+        "average_waves_cleared": 2.01,
+    }
+    assert runner._evaluation_key(mission_success) > runner._evaluation_key(no_success)
 
 
 def test_direct_best_selection_tuple_is_unchanged():

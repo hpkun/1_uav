@@ -1,22 +1,27 @@
 from pathlib import Path
 import copy
+
 import numpy as np
 import pytest
 import torch
 import yaml
 
-from uav_combat.training.evaluator import episode_return_metrics, evaluate
-from uav_combat.training.runner import MADSACTrainingRunner
-from uav_combat.training.vector_env import ParallelVectorEnv
 from uav_combat.environment.env import MultiUAVCombatEnv
+from uav_combat.training.evaluator import episode_return_metrics, evaluate
+from uav_combat.training.mappo_runner import MAPPOTrainingRunner
+from uav_combat.training.vector_env import ParallelVectorEnv
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def configs():
-    environment = yaml.safe_load((ROOT / "configs/combat_environment.yaml").read_text(encoding="utf-8"))
-    algorithm = yaml.safe_load((ROOT / "configs/madsac.yaml").read_text(encoding="utf-8"))
+    environment = yaml.safe_load(
+        (ROOT / "configs/combat_environment.yaml").read_text(encoding="utf-8")
+    )
+    algorithm = yaml.safe_load(
+        (ROOT / "configs/mappo.yaml").read_text(encoding="utf-8")
+    )
     return environment, algorithm
 
 
@@ -79,98 +84,24 @@ def test_parallel_workers_match_direct_environment_step_semantics():
     vector.close()
 
 
-def test_24_environment_step_adds_exactly_24_transitions(tmp_path):
+def test_mappo_startup_summary_reports_effective_network_and_rollout(tmp_path):
     environment, algorithm = configs()
-    runner = MADSACTrainingRunner(
-        environment, algorithm, num_envs=24, total_sampled_steps=24,
+    runner = MAPPOTrainingRunner(
+        environment, algorithm, num_envs=2, total_sampled_steps=4,
         output_dir=tmp_path, smoke=True,
     )
-    assert runner.observations.shape == (24, 4, 52)
-    result = runner.vector_step()
-    assert result["new_transitions"] == 24
-    assert runner.trainer.sampled_steps == 24
-    assert runner.trainer.replay.size == 24
-
-
-def test_algorithm1_T_n_d_and_target_schedule_are_unchanged(tmp_path):
-    environment, algorithm = configs()
-    runner = MADSACTrainingRunner(
-        environment, algorithm, num_envs=24, total_sampled_steps=96,
-        output_dir=tmp_path, smoke=True,
-    )
-    runner.trainer.act = lambda observations, masks: np.zeros((24, 4, 3), dtype=np.float32)
-    runner.trainer.batch_size = 1
-    calls = {"critic": 0, "actor": 0, "target": 0}
-    runner.trainer.update_critics = lambda: calls.__setitem__("critic", calls["critic"] + 1) or {
-        "critic1_loss": 1.0, "critic2_loss": 1.0, "q_value": 0.0,
-    }
-    runner.trainer.update_actor = lambda: calls.__setitem__("actor", calls["actor"] + 1) or {
-        "actor_loss": 1.0, "entropy": 1.0,
-    }
-    runner.trainer.update_targets = lambda: calls.__setitem__("target", calls["target"] + 1)
-    expected = [
-        {"critic": 1, "actor": 0, "target": 0},
-        {"critic": 2, "actor": 1, "target": 1},
-        {"critic": 3, "actor": 1, "target": 1},
-        {"critic": 4, "actor": 2, "target": 2},
-    ]
-    for counts in expected:
-        result = runner.vector_step()
-        assert calls == counts
-        assert result["scheduler_T"] == 0
-
-
-def test_n_updates_still_perform_one_target_update_per_actor_branch(tmp_path):
-    environment, algorithm = configs()
-    algorithm = copy.deepcopy(algorithm)
-    algorithm["implementation"]["update_steps_n"] = 3
-    algorithm["implementation"]["policy_delay_d"] = 1
-    runner = MADSACTrainingRunner(
-        environment, algorithm, num_envs=24, total_sampled_steps=24,
-        output_dir=tmp_path, smoke=True,
-    )
-    runner.trainer.batch_size = 1
-    runner.trainer.act = lambda observations, masks: np.zeros((24, 4, 3), dtype=np.float32)
-    calls = {"critic": 0, "actor": 0, "target": 0}
-    runner.trainer.update_critics = lambda: calls.__setitem__("critic", calls["critic"] + 1) or {"critic1_loss": 1.0}
-    runner.trainer.update_actor = lambda: calls.__setitem__("actor", calls["actor"] + 1) or {"actor_loss": 1.0}
-    runner.trainer.update_targets = lambda: calls.__setitem__("target", calls["target"] + 1)
-    runner.vector_step()
-    assert calls == {"critic": 3, "actor": 3, "target": 1}
-
-
-def test_console_logging_is_read_only_and_compact(tmp_path, monkeypatch):
-    environment, algorithm = configs()
-    runner = MADSACTrainingRunner(
-        environment, algorithm, num_envs=24, total_sampled_steps=24_000,
-        output_dir=tmp_path, smoke=True,
-    )
-    assert runner.start_log_line().startswith(
-        "[START] mode=smoke | device=cpu | obs=52 | act=3 | agents=4 | hidden=64"
-    )
-    assert "return=NA | red_loss=NA | fire=NA | attempt=NA | kill=NA" in runner.train_log_line()
-    for optimizer in (
-        runner.trainer.actor_optimizer, runner.trainer.critic1_optimizer,
-        runner.trainer.critic2_optimizer,
-    ):
-        monkeypatch.setattr(optimizer, "step", lambda: pytest.fail("logging must not optimize"))
-    runner.train_log_line()
-
-
-def test_formal_startup_summary_reports_effective_network_and_replay(tmp_path):
-    environment, algorithm = configs()
-    runner = MADSACTrainingRunner(
-        environment, algorithm, num_envs=24, total_sampled_steps=24,
-        output_dir=tmp_path,
-    )
-    summary = runner.startup_summary()
-    assert summary["mode"] == "formal"
-    assert (summary["observation_dim"], summary["action_dim"], summary["num_agents"]) == (52, 3, 4)
-    assert summary["effective_hidden_dim"] == 256
-    assert summary["batch_size"] == 1024
-    assert summary["replay_capacity"] == 1_000_000
-    assert summary["environment_backend"] == "multiprocess_spawn"
-    assert summary["environment_workers"] == 24
+    try:
+        summary = runner.startup_summary()
+        assert summary["algorithm"] == "MAPPO"
+        assert summary["mode"] == "smoke"
+        assert (summary["observation_dim"], summary["action_dim"], summary["num_agents"]) == (52, 3, 4)
+        assert summary["effective_hidden_dim"] == 64
+        assert summary["rollout_steps"] == 4
+        assert summary["ppo_epochs"] == 2
+        assert summary["environment_backend"] == "multiprocess_spawn"
+        assert summary["environment_workers"] == 2
+    finally:
+        runner.vector.close()
 
 
 @pytest.mark.parametrize("field,value", [
@@ -183,8 +114,9 @@ def test_runner_fails_fast_on_network_environment_dimension_mismatch(
     algorithm = copy.deepcopy(algorithm)
     algorithm["network"][field] = value
     with pytest.raises(ValueError, match="network/environment dimension mismatch"):
-        MADSACTrainingRunner(
-            environment, algorithm, total_sampled_steps=24, output_dir=tmp_path
+        MAPPOTrainingRunner(
+            environment, algorithm, total_sampled_steps=4, output_dir=tmp_path,
+            smoke=True,
         )
 
 
@@ -226,7 +158,7 @@ def test_episode_return_metric_is_team_sum_and_agent_mean():
 
 def test_checkpoint_version_is_saved_and_incompatible_semantics_fail_fast(tmp_path):
     environment, algorithm = configs()
-    runner = MADSACTrainingRunner(
+    runner = MAPPOTrainingRunner(
         environment, algorithm, num_envs=1, total_sampled_steps=1,
         output_dir=tmp_path, smoke=True,
     )
@@ -241,37 +173,5 @@ def test_checkpoint_version_is_saved_and_incompatible_semantics_fail_fast(tmp_pa
         with pytest.raises(RuntimeError, match="environment semantics"):
             runner.resume(invalid)
         assert runner.trainer.sampled_steps == 0
-    finally:
-        runner.vector.close()
-
-
-def test_madsac_best_evaluation_uses_win_return_then_lower_red_loss(
-    tmp_path, monkeypatch
-):
-    environment, algorithm = configs()
-    runner = MADSACTrainingRunner(
-        environment, algorithm, num_envs=1, total_sampled_steps=1,
-        output_dir=tmp_path, smoke=True,
-    )
-    saved = []
-    monkeypatch.setattr(runner, "save_checkpoint", lambda path: saved.append(Path(path).name))
-    try:
-        assert runner._consider_best_evaluation({
-            "sampled_steps": 1, "win_rate": .5, "average_return": 10.,
-            "average_red_loss": 2.,
-        })
-        assert not runner._consider_best_evaluation({
-            "sampled_steps": 2, "win_rate": .5, "average_return": 10.,
-            "average_red_loss": 3.,
-        })
-        assert runner._consider_best_evaluation({
-            "sampled_steps": 3, "win_rate": .5, "average_return": 10.,
-            "average_red_loss": 1.,
-        })
-        assert runner._consider_best_evaluation({
-            "sampled_steps": 4, "win_rate": .6, "average_return": -100.,
-            "average_red_loss": 4.,
-        })
-        assert saved == ["best_eval.pt"] * 3
     finally:
         runner.vector.close()

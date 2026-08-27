@@ -27,7 +27,7 @@ def configs():
     return environment, algorithm
 
 
-def test_mappo_actor_matches_madsac_network_size_and_log_prob_round_trip():
+def test_mappo_actor_network_size_and_log_prob_round_trip():
     actor = SharedMAPPOActor()
     linear = [layer for layer in actor.backbone if isinstance(layer, nn.Linear)]
     assert [(layer.in_features, layer.out_features) for layer in linear] == [
