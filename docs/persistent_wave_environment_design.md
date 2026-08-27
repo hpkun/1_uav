@@ -1,6 +1,6 @@
 # Persistent-Wave / Multi-Round environment audit
 
-This document describes the implemented `persistent_wave_v1` variant. It is a
+This document describes the implemented persistent-wave variants. Version 1 is a
 minimal wrapper around the frozen V2.3 direct-combat environment, not the
 previous V3 redesign proposal.
 
@@ -114,3 +114,30 @@ unchanged physical observation. A feed-forward critic cannot distinguish these
 two continuation values. This is a real experimental limitation to disclose,
 but resolving it would require the explicitly forbidden 53D/mission-context
 observation change and is outside `persistent_wave_v1`.
+
+## Persistent wave v2 ground avoidance
+
+`persistent_wave_v2` preserves every v1 mission, spawn, weapon, reward,
+observation, and Red-side transition rule. Its only semantic change is the
+fixed Blue policy. Direct V2.3 and `persistent_wave_v1` continue to construct
+the original `NearestTargetPursuitPolicy`; v2 constructs
+`GroundAwareNearestTargetPursuitPolicy`.
+
+The v2 policy first computes the same nearest-target heading, executable LOS
+pitch command, and desired speed as v1. Let altitude be `h`, speed be `v`,
+current flight-path pitch be `theta`, and the executable baseline pitch target
+be `theta_cmd`. It computes
+
+```
+v_down = max(-v sin(theta), -v sin(theta_cmd), 0)
+t_ground = h / v_down
+```
+
+when `v_down > 1e-6 m/s`. If `t_ground <= 2 * pitch_time_constant`, only the
+pitch target is replaced with `theta_max`; heading and speed remain the normal
+nearest-target commands. The check is stateless and is recomputed each step.
+There is no fixed safe altitude or protected band.
+
+Because this changes the environment-owned Blue transition semantics, v1 and
+v2 checkpoint identities are intentionally incompatible for resume. Explicit
+cross-variant diagnostic evaluation must name the checkpoint's source variant.

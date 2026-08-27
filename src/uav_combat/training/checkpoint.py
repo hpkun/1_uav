@@ -30,7 +30,7 @@ def evaluation_selection_key(
     record: dict[str, Any], environment_variant: str
 ) -> tuple[float, ...]:
     """Return the variant-specific lexicographic best-checkpoint key."""
-    if environment_variant == "persistent_wave_v1":
+    if environment_variant in {"persistent_wave_v1", "persistent_wave_v2"}:
         waves_cleared = record.get(
             "average_waves_cleared", record.get("mean_waves_cleared", 0.0)
         )

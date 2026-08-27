@@ -19,13 +19,14 @@ import numpy as np
 import yaml
 
 from evaluate_checkpoint import build_trainer, resolved
-from uav_combat.environment.control import action_to_control
+from uav_combat.environment.control import action_to_control, action_to_target
 from uav_combat.environment.factory import make_combat_environment
 from uav_combat.training.checkpoint import validate_checkpoint_environment
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HISTORY_STEPS = 50  # five seconds at dt=0.1
+GUARD_CANDIDATES = (1, 2, 3)
 
 
 def plain(value: Any) -> Any:
@@ -134,7 +135,30 @@ def new_scan_state(seed: int) -> dict[str, Any]:
         "max_blue_displacement_m": 0.0, "invalid_state_count": 0,
         "no_red_kill_steps": 0, "no_red_kill_shaping": 0.0,
         "max_no_red_kill_steps": 0, "max_no_red_kill_shaping_abs": 0.0,
+        "blue_decision_steps": 0,
+        "guard_candidate_steps": {value: 0 for value in GUARD_CANDIDATES},
+        "guard_first_trigger_steps": {
+            value: [None] * 4 for value in GUARD_CANDIDATES
+        },
     }
+
+
+def guard_candidate(state, action: np.ndarray, config: dict[str, Any],
+                    multiplier: int) -> tuple[bool, float | None]:
+    target = action_to_target(state, action, config["action"]["command"])
+    downward_speed = max(
+        -state.v * np.sin(state.theta),
+        -state.v * np.sin(target.pitch),
+        0.0,
+    )
+    if downward_speed <= 1e-6:
+        return False, None
+    time_to_ground = state.altitude / downward_speed
+    guard_time = (
+        multiplier
+        * float(config["action"]["controller"]["pitch_time_constant"])
+    )
+    return bool(time_to_ground <= guard_time), float(time_to_ground)
 
 
 def update_first_attempts(audit: dict[str, Any], step: int,
@@ -182,6 +206,7 @@ def scan_checkpoint(actor, config: dict[str, Any], seeds: list[int]) -> list[dic
         )
         for batch_index, env_index in enumerate(indices):
             env, audit = envs[env_index], audits[env_index]
+            wave_before = int(env.wave_index)
             red_actions = batch_actions[batch_index]
             blue_actions = env.fixed_policy.team_actions(env.blue, env.red)
             pre_red = [state.copy() for state in env.red]
@@ -202,6 +227,15 @@ def scan_checkpoint(actor, config: dict[str, Any], seeds: list[int]) -> list[dic
                 target = blue_targets[i]
                 row = state_row(state, blue_actions[i], target)
                 audit["blue_history"][i].append(row)
+                audit["blue_decision_steps"] += 1
+                for multiplier in GUARD_CANDIDATES:
+                    triggered, _ = guard_candidate(
+                        state, blue_actions[i], config, multiplier
+                    )
+                    if triggered:
+                        audit["guard_candidate_steps"][multiplier] += 1
+                        if audit["guard_first_trigger_steps"][multiplier][i] is None:
+                            audit["guard_first_trigger_steps"][multiplier][i] = env.steps
                 if target is not None and pre_red[target].alive:
                     audit["blue_target_history"][i].append(
                         state_row(pre_red[target], red_actions[target], None)
@@ -270,13 +304,20 @@ def scan_checkpoint(actor, config: dict[str, Any], seeds: list[int]) -> list[dic
                         target_rows = list(audit["blue_target_history"][aircraft])
                     event = {
                         "seed": seeds[env_index], "step": step,
-                        "wave_index": int(info["wave_index"]),
+                        "wave_index": wave_before,
                         "side": side, "aircraft": aircraft,
                         **history_features(
                             list(histories[aircraft]), after_for_death[aircraft],
                             target_rows,
                         ),
                     }
+                    if side == "blue" and death_type == "ground_loss":
+                        for multiplier in GUARD_CANDIDATES:
+                            first = audit["guard_first_trigger_steps"][multiplier][aircraft]
+                            event[f"guard_{multiplier}tau_triggered"] = first is not None
+                            event[f"guard_{multiplier}tau_lead_steps"] = (
+                                None if first is None else step - first
+                            )
                     audit["ground_events" if death_type == "ground_loss"
                           else "boundary_events"].append(event)
 
@@ -317,6 +358,9 @@ def scan_checkpoint(actor, config: dict[str, Any], seeds: list[int]) -> list[dic
                 ]
                 audit["last_blue_target"] = [None] * 4
                 audit["previous_blue_target"] = [None] * 4
+                audit["guard_first_trigger_steps"] = {
+                    value: [None] * 4 for value in GUARD_CANDIDATES
+                }
 
             for side, before, after in (
                 ("red", pre_red, env.red), ("blue", pre_blue, env.blue)
@@ -358,6 +402,9 @@ def scan_checkpoint(actor, config: dict[str, Any], seeds: list[int]) -> list[dic
                         "blue_boundary_exits", "red_ground_losses",
                         "blue_ground_losses", "episode_r1_total",
                         "episode_r2_total", "episode_r3_total", "episode_r4_total",
+                        "red_fire_window_steps", "blue_fire_window_steps",
+                        "red_fire_attempts", "blue_fire_attempts",
+                        "red_weapon_hits", "blue_weapon_hits",
                     )},
                     "target_switches": audit["target_switches"],
                     "target_transitions": audit["target_transitions"],
@@ -370,6 +417,15 @@ def scan_checkpoint(actor, config: dict[str, Any], seeds: list[int]) -> list[dic
                     "ground_events": audit["ground_events"],
                     "boundary_events": audit["boundary_events"],
                     "spawn_events": audit["spawn_events"],
+                    "blue_decision_steps": audit["blue_decision_steps"],
+                    "guard_candidate_steps": audit["guard_candidate_steps"],
+                    **({key: plain(info[key]) for key in (
+                        "blue_ground_guard_decision_steps",
+                        "blue_ground_guard_override_steps",
+                        "blue_ground_guard_activations",
+                        "blue_ground_guard_activation_ratio",
+                        "blue_ground_guard_max_duration_steps",
+                    )} if "blue_ground_guard_decision_steps" in info else {}),
                 }
                 active[env_index] = False
     return [row for row in final_rows if row is not None]
@@ -421,6 +477,25 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "red_boundary_episode_rate": float(np.mean([r["red_boundary_exits"] > 0 for r in rows])),
         "blue_boundary_episode_rate": float(np.mean([r["blue_boundary_exits"] > 0 for r in rows])),
         "blue_ground_event_count": len(blue_grounds),
+        **{
+            f"guard_{multiplier}tau_historical_ground_event_coverage": (
+                float(np.mean([
+                    event.get(f"guard_{multiplier}tau_triggered", False)
+                    for event in blue_grounds
+                ])) if blue_grounds else None
+            )
+            for multiplier in GUARD_CANDIDATES
+        },
+        **{
+            f"guard_{multiplier}tau_candidate_step_ratio": (
+                sum(row["guard_candidate_steps"][str(multiplier)]
+                    if str(multiplier) in row["guard_candidate_steps"]
+                    else row["guard_candidate_steps"][multiplier]
+                    for row in rows)
+                / max(sum(row["blue_decision_steps"] for row in rows), 1)
+            )
+            for multiplier in GUARD_CANDIDATES
+        },
         "blue_ground_low_diving_target_pattern_rate": (
             float(np.mean([e.get("low_diving_target_pattern", False) for e in blue_grounds]))
             if blue_grounds else None
@@ -481,6 +556,31 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "invalid_physical_state_count": sum(r["invalid_state_count"] for r in rows),
         "maximum_no_red_kill_interval_s": 0.1 * max(r["max_no_red_kill_steps"] for r in rows),
         "maximum_abs_shaping_without_red_kill": max(r["max_no_red_kill_shaping_abs"] for r in rows),
+        "average_blue_fire_window_steps": mean(rows, "blue_fire_window_steps"),
+        "average_blue_fire_attempts": mean(rows, "blue_fire_attempts"),
+        "average_blue_weapon_hits": mean(rows, "blue_weapon_hits"),
+        **({
+            "ground_guard_activation_episode_rate": float(np.mean([
+                row["blue_ground_guard_activations"] > 0 for row in rows
+            ])),
+            "average_ground_guard_activations": mean(
+                rows, "blue_ground_guard_activations"
+            ),
+            "ground_guard_override_step_ratio": (
+                sum(row["blue_ground_guard_override_steps"] for row in rows)
+                / max(sum(row["blue_ground_guard_decision_steps"] for row in rows), 1)
+            ),
+            "ground_guard_mean_activation_duration_steps": (
+                sum(row["blue_ground_guard_override_steps"] for row in rows)
+                / max(sum(row["blue_ground_guard_activations"] for row in rows), 1)
+            ),
+            "average_ground_guard_max_duration_steps": mean(
+                rows, "blue_ground_guard_max_duration_steps"
+            ),
+            "maximum_ground_guard_duration_steps": max(
+                row["blue_ground_guard_max_duration_steps"] for row in rows
+            ),
+        } if "blue_ground_guard_activations" in rows[0] else {}),
     }
 
 
@@ -492,6 +592,9 @@ def representatives(rows: list[dict[str, Any]]) -> dict[str, int | None]:
         "red_boundary_loss": lambda r: r["red_boundary_exits"] > 0,
         "red_ground_loss": lambda r: r["red_ground_losses"] > 0,
         "blue_ground_loss": lambda r: r["blue_ground_losses"] > 0,
+        "ground_guard_active": lambda r: r.get(
+            "blue_ground_guard_activations", 0
+        ) > 0,
     }
     result = {}
     for name, predicate in predicates.items():
@@ -517,6 +620,9 @@ def capture_trajectory(actor, config: dict[str, Any], seed: int,
             env.fixed_policy.nearest_target_index(state, env.red)
             if state.alive else None for state in env.blue
         ]
+        guard_mask = getattr(
+            env.fixed_policy, "last_override_mask", np.zeros(4, dtype=bool)
+        ).copy()
         step_rows = []
         for side, states, side_actions in (
             ("red", pre_red, actions), ("blue", pre_blue, blue_actions)
@@ -534,6 +640,9 @@ def capture_trajectory(actor, config: dict[str, Any], seed: int,
                         if side == "red" else env.blue_last_executed_phi[aircraft]
                     ),
                     "event": "", "spawned_next_wave": False,
+                    "ground_guard_override": (
+                        bool(guard_mask[aircraft]) if side == "blue" else False
+                    ),
                     "wave_spawn_candidate_index": None,
                     "minimum_spawn_distance": None,
                 }
@@ -597,9 +706,13 @@ def write_trajectories(rows: list[dict[str, Any]], path: Path) -> None:
 
 
 def load_actor(algorithm: str, checkpoint: Path, algorithm_config: Path, device: str,
-               environment_config: dict[str, Any]):
+               environment_config: dict[str, Any],
+               checkpoint_environment_variant: str | None = None):
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    validate_checkpoint_environment(state, environment_config)
+    checkpoint_config = dict(environment_config)
+    if checkpoint_environment_variant is not None:
+        checkpoint_config["environment_variant"] = checkpoint_environment_variant
+    validate_checkpoint_environment(state, checkpoint_config)
     config = yaml.safe_load(algorithm_config.read_text(encoding="utf-8"))
     actor = build_trainer(algorithm, config, device)
     actor.load(checkpoint)
@@ -617,6 +730,14 @@ def main() -> None:
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--checkpoint-environment-variant",
+        help="Explicit source variant for diagnostic cross-environment evaluation",
+    )
+    parser.add_argument(
+        "--ground-guard-time-constants", type=float,
+        help="Diagnostic override for the v2 guard multiplier",
+    )
     args = parser.parse_args()
     if args.episodes <= 0:
         raise ValueError("episodes must be positive")
@@ -625,10 +746,14 @@ def main() -> None:
     torch.set_num_threads(args.torch_threads)
     env_path = resolved(args.env_config)
     env_config = yaml.safe_load(env_path.read_text(encoding="utf-8"))
+    if args.ground_guard_time_constants is not None:
+        env_config["blue_policy"]["ground_avoidance"][
+            "guard_time_constants"
+        ] = args.ground_guard_time_constants
     checkpoint = resolved(args.checkpoint)
     actor = load_actor(
         args.algorithm, checkpoint, resolved(args.algorithm_config), args.device,
-        env_config,
+        env_config, args.checkpoint_environment_variant,
     )
     output = resolved(args.output_dir); output.mkdir(parents=True, exist_ok=True)
     seeds = list(range(args.seed_base, args.seed_base + args.episodes))

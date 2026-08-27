@@ -73,6 +73,9 @@ class ParallelVectorEnv:
             self.worker_environment_variants = [
                 str(row["environment_variant"]) for row in self.worker_metadata
             ]
+            self.worker_fixed_policy_classes = [
+                str(row["fixed_policy_class"]) for row in self.worker_metadata
+            ]
         except BaseException:
             self.close()
             raise

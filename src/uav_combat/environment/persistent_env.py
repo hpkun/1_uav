@@ -7,10 +7,15 @@ import numpy as np
 from ..math_utils import wrap_angle
 from ..models import AircraftState
 from .env import MultiUAVCombatEnv
+from .fixed_policy import GroundAwareNearestTargetPursuitPolicy
 from .weapon import FireState
 
 
 PERSISTENT_WAVE_VARIANT = "persistent_wave_v1"
+PERSISTENT_WAVE_V2_VARIANT = "persistent_wave_v2"
+PERSISTENT_WAVE_VARIANTS = frozenset({
+    PERSISTENT_WAVE_VARIANT, PERSISTENT_WAVE_V2_VARIANT,
+})
 
 
 class PersistentWaveCombatEnv(MultiUAVCombatEnv):
@@ -20,9 +25,16 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
 
     def __init__(self, config: Any = "configs/persistent_wave_environment.yaml") -> None:
         super().__init__(config)
-        if self.config.get("environment_variant") != self.environment_variant:
+        variant = self.config.get("environment_variant")
+        if variant not in PERSISTENT_WAVE_VARIANTS:
             raise ValueError(
-                f"environment_variant must be {self.environment_variant!r}"
+                f"environment_variant must be one of {sorted(PERSISTENT_WAVE_VARIANTS)!r}"
+            )
+        self.environment_variant = str(variant)
+        if self.environment_variant == PERSISTENT_WAVE_V2_VARIANT:
+            self.fixed_policy = GroundAwareNearestTargetPursuitPolicy(
+                self.config["blue_policy"], self.config["action"],
+                self.config["aircraft"],
             )
         wave_config = self.config.get("persistent_waves")
         if not isinstance(wave_config, dict):
@@ -52,6 +64,8 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
 
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         observation, info = super().reset(seed)
+        if isinstance(self.fixed_policy, GroundAwareNearestTargetPursuitPolicy):
+            self.fixed_policy.reset_diagnostics()
         self.wave_index = 1
         self.waves_cleared = 0
         self.last_spawn_candidate_index = None
@@ -183,6 +197,8 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         self.red_fire_states = [FireState() for _ in range(self.team_size)]
         self.blue_fire_states = [FireState() for _ in range(self.team_size)]
         self.blue_last_executed_phi.fill(0.0)
+        if isinstance(self.fixed_policy, GroundAwareNearestTargetPursuitPolicy):
+            self.fixed_policy.reset_transient_state()
         self.last_spawn_candidate_index = best_index
         self.last_minimum_spawn_distance = best_distance
         return best_angle
@@ -193,7 +209,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         spawned_next_wave: bool,
         spawn_radial_angle: float | None,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "environment_variant": self.environment_variant,
             "wave_index": self.wave_index,
             "total_waves": self.total_waves,
@@ -209,6 +225,12 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             ),
             "per_wave_metrics": [dict(record) for record in self.wave_records],
         }
+        if isinstance(self.fixed_policy, GroundAwareNearestTargetPursuitPolicy):
+            result.update(self.fixed_policy.diagnostics())
+            result["blue_ground_guard_override_mask"] = (
+                self.fixed_policy.last_override_mask.copy()
+            )
+        return result
 
     def step(
         self, red_actions: np.ndarray, blue_actions: np.ndarray | None = None
@@ -280,4 +302,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         return observation, reward, terminated, truncated, info
 
 
-__all__ = ["PERSISTENT_WAVE_VARIANT", "PersistentWaveCombatEnv"]
+__all__ = [
+    "PERSISTENT_WAVE_VARIANT", "PERSISTENT_WAVE_V2_VARIANT",
+    "PERSISTENT_WAVE_VARIANTS", "PersistentWaveCombatEnv",
+]

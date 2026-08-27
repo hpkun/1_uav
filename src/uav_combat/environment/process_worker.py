@@ -18,6 +18,7 @@ def combat_environment_worker(connection: Any, config: Any) -> None:
             "environment_variant": getattr(
                 environment, "environment_variant", "direct_v2_3"
             ),
+            "fixed_policy_class": environment.fixed_policy.__class__.__name__,
         }))
         while True:
             command, payload = connection.recv()
