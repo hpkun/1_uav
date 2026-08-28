@@ -10,12 +10,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import torch
 import yaml
 
-from algorithm.common.checkpoint import validate_checkpoint_environment
-from algorithm.common.evaluator import evaluate
-from algorithm.mappo.factory import build_mappo_trainer
+from algorithm.mappo.evaluation import evaluate_mappo_checkpoint
 
 
 def resolved(path: str) -> Path:
@@ -33,6 +30,7 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--allow-cross-variant", action="store_true")
     args = parser.parse_args()
     if args.episodes <= 0:
         raise ValueError("episodes must be positive")
@@ -42,17 +40,15 @@ def main() -> None:
         resolved(args.algorithm_config).read_text(encoding="utf-8")
     )
     checkpoint = resolved(args.checkpoint)
-    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    validate_checkpoint_environment(state, env_config)
-    trainer = build_mappo_trainer(algorithm_config, args.device)
-    trainer.load(checkpoint)
     seeds = range(args.seed_base, args.seed_base + args.episodes)
-    result = evaluate(trainer, env_config, seeds)
-    result.update({
-        "algorithm": "MAPPO",
-        "checkpoint": str(checkpoint),
-        "holdout_seed_base": args.seed_base,
-    })
+    result = evaluate_mappo_checkpoint(
+        checkpoint,
+        algorithm_config,
+        env_config,
+        args.device,
+        seeds,
+        allow_cross_variant=args.allow_cross_variant,
+    )
     output = resolved(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2), encoding="utf-8")

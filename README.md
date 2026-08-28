@@ -97,6 +97,25 @@ python algorithm/evaluate_mappo.py \
 Checkpoint loading validates `environment_version`, `environment_variant`, and
 MAPPO implementation compatibility before formal use.
 
+Cross-variant policy transfer is never implicit. To evaluate a Direct-trained
+checkpoint in Persistent-Wave V2 (or the reverse), add the explicit flag:
+
+```bash
+python algorithm/evaluate_mappo.py \
+  --checkpoint outputs/direct_g099_seed2023/best_eval.pt \
+  --env-config configs/persistent_wave_v2_environment.yaml \
+  --algorithm-config configs/mappo.yaml \
+  --seed-base 20000000 \
+  --episodes 200 \
+  --device cpu \
+  --allow-cross-variant \
+  --output outputs/direct_g099_seed2023/holdout_on_pw_v2.json
+```
+
+Without `--allow-cross-variant`, an environment-variant mismatch is rejected.
+Environment version, MAPPO implementation version, dimensions, and model weight
+structure remain strict even in transfer evaluation.
+
 ## Validation and tools
 
 Common direct commands include:
@@ -137,6 +156,108 @@ entry creates one timestamped directory directly under `outputs/`. Every run
 stores snapshots of both YAML inputs plus a JSON record of effective command-line
 settings.
 
+Fresh training accepts only a missing or completely empty output directory. A
+non-empty directory is rejected before the runner or multiprocessing workers are
+created. With `--resume`, omission of `--output-dir` reuses the checkpoint's
+parent directory; an explicitly different directory is rejected. Stored YAML
+snapshots must match, and every continuation is appended to
+`resume_history.jsonl` without rewriting the original `run_config.json`.
+
+## Formal experiment workflow
+
+The following long commands are protocol examples for the user to run manually.
+They are not launched as part of code-maintenance validation.
+
+### A. Direct training
+
+```bash
+python -u algorithm/train_mappo.py \
+  --device cuda \
+  --seed 2023 \
+  --num-envs 24 \
+  --total-sampled-steps 3000000 \
+  --env-config configs/combat_environment.yaml \
+  --algorithm-config configs/mappo.yaml \
+  --output-dir outputs/direct_g099_seed2023
+```
+
+Repeat with three to five independent training seeds and one run directory per
+seed.
+
+### B. Persistent-Wave V2 training
+
+```bash
+python -u algorithm/train_mappo.py \
+  --device cuda \
+  --seed 2023 \
+  --num-envs 24 \
+  --total-sampled-steps 3000000 \
+  --env-config configs/persistent_wave_v2_environment.yaml \
+  --algorithm-config configs/mappo_persistent_wave.yaml \
+  --output-dir outputs/pw_v2_g0999_seed2023
+```
+
+### C. Four-cell policy-transfer evaluation
+
+```bash
+python tools/evaluate_policy_matrix.py \
+  --direct-checkpoint outputs/direct_g099_seed2023/best_eval.pt \
+  --persistent-checkpoint outputs/pw_v2_g0999_seed2023/best_eval.pt \
+  --seed-base 20000000 \
+  --episodes 200 \
+  --device cpu \
+  --output-dir outputs/transfer_matrix_seed2023
+```
+
+This evaluates D→D, D→PW, PW→D, and PW→PW with exactly the same holdout seeds.
+It writes four complete JSON files, `matrix_summary.csv`,
+`matrix_summary.json`, and `evaluation_manifest.json`.
+
+### D. Final holdout evaluation
+
+Use a range completely disjoint from training resets and training-time
+evaluation. The recommended example is `seed-base=20000000` with 200 episodes.
+Formal 200-episode evaluations are run manually, not during repository tests.
+
+### E. Multi-seed aggregation
+
+```bash
+python tools/aggregate_training_runs.py \
+  outputs/pw_v2_g0999_seed2023 \
+  outputs/pw_v2_g0999_seed2024 \
+  outputs/pw_v2_g0999_seed2025 \
+  --output-dir outputs/pw_v2_training_summary
+```
+
+```bash
+python tools/aggregate_holdout_results.py \
+  outputs/pw_v2_g0999_seed2023/holdout_persistent.json \
+  outputs/pw_v2_g0999_seed2024/holdout_persistent.json \
+  outputs/pw_v2_g0999_seed2025/holdout_persistent.json \
+  --output-dir outputs/pw_v2_holdout_summary
+```
+
+The training aggregator discovers all common numeric history metrics. The
+holdout aggregator first requires matching algorithm, source/target environment,
+episode count, and seed range. Both report mean, sample standard deviation, SEM,
+and a two-sided 95% Student-t interval, using a fixed t table for df 1–30 and
+1.96 only for df greater than 30.
+
+## Discount/environment 2×2 protocol
+
+Algorithm and environment YAML files are intentionally independent. Four
+duplicate configs are unnecessary:
+
+| Label | Environment config | Algorithm config | Gamma |
+|---|---|---|---:|
+| D-99 | `combat_environment.yaml` | `mappo.yaml` | 0.99 |
+| D-999 | `combat_environment.yaml` | `mappo_persistent_wave.yaml` | 0.999 |
+| PW-99 | `persistent_wave_v2_environment.yaml` | `mappo.yaml` | 0.99 |
+| PW-999 | `persistent_wave_v2_environment.yaml` | `mappo_persistent_wave.yaml` | 0.999 |
+
+The training entry does not bind either MAPPO config to one environment
+variant. The two MAPPO YAML files remain identical except for gamma.
+
 ## Environment contract
 
 - Four homogeneous learned Red UAVs fight four deterministic Blue UAVs.
@@ -153,4 +274,3 @@ The normative Direct formulas and update order are in
 are documented in `docs/persistent_wave_environment_design.md`. Files under
 `docs/archive/` are historical records and are not rewritten as active runtime
 instructions.
-

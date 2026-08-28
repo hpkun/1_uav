@@ -7,13 +7,16 @@ from datetime import datetime
 import json
 from pathlib import Path
 import sys
+import warnings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import yaml
+import torch
 
+from algorithm.common.checkpoint import validate_checkpoint_for_resume
 from algorithm.mappo.runner import MAPPOTrainingRunner
 
 
@@ -50,6 +53,74 @@ def default_output_dir(seed: int) -> Path:
     return candidate
 
 
+def ensure_fresh_output_directory(output_dir: Path) -> None:
+    """Create or accept an empty directory, rejecting any existing contents."""
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise RuntimeError(f"fresh output_dir is not a directory: {output_dir}")
+        if any(output_dir.iterdir()):
+            raise RuntimeError(
+                f"fresh training output_dir is non-empty: {output_dir}; "
+                "choose a new run directory"
+            )
+    else:
+        output_dir.mkdir(parents=True)
+
+
+def resolve_run_paths(
+    output_arg: str | None,
+    resume_arg: str | None,
+    seed: int,
+) -> tuple[Path, Path | None]:
+    """Resolve the final run directory and optional resume checkpoint."""
+    if resume_arg is None:
+        output_dir = (
+            default_output_dir(seed) if output_arg is None else resolved(output_arg)
+        )
+        ensure_fresh_output_directory(output_dir)
+        return output_dir, None
+    checkpoint = resolved(resume_arg).resolve()
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"resume checkpoint not found: {checkpoint}")
+    checkpoint_parent = checkpoint.parent
+    output_dir = checkpoint_parent if output_arg is None else resolved(output_arg).resolve()
+    if output_dir != checkpoint_parent:
+        raise RuntimeError(
+            "resume output_dir must equal checkpoint.parent: "
+            f"expected {checkpoint_parent}, got {output_dir}"
+        )
+    return output_dir, checkpoint
+
+
+def validate_resume_config_snapshots(
+    output_dir: Path,
+    env_config: dict,
+    algorithm_config: dict,
+) -> list[tuple[Path, dict]]:
+    """Reject changed snapshots and return legacy snapshots that are missing."""
+    missing: list[tuple[Path, dict]] = []
+    for name, current in (
+        ("env_config.yaml", env_config),
+        ("algorithm_config.yaml", algorithm_config),
+    ):
+        path = output_dir / name
+        if not path.exists():
+            warnings.warn(
+                f"resume run is missing {name}; creating a compatibility snapshot",
+                RuntimeWarning,
+            )
+            missing.append((path, current))
+            continue
+        stored = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if stored != current:
+            raise RuntimeError(f"resume {name} mismatch with stored run snapshot")
+    return missing
+
+
+def write_yaml_snapshot(path: Path, config: dict) -> None:
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", choices=["cpu", "cuda"])
@@ -68,21 +139,30 @@ def main() -> None:
     algorithm_config = yaml.safe_load(algorithm_path.read_text(encoding="utf-8"))
     configured_seed = int(algorithm_config["training"]["seed"])
     effective_seed = configured_seed if args.seed is None else args.seed
-    output_dir = (
-        default_output_dir(effective_seed)
-        if args.output_dir is None
-        else resolved(args.output_dir)
+    output_dir, resume_checkpoint = resolve_run_paths(
+        args.output_dir, args.resume, effective_seed
     )
+    missing_snapshots: list[tuple[Path, dict]] = []
+    resume_state = None
+    if resume_checkpoint is not None:
+        missing_snapshots = validate_resume_config_snapshots(
+            output_dir, env_config, algorithm_config
+        )
+        resume_state = torch.load(
+            resume_checkpoint, map_location="cpu", weights_only=False
+        )
+        validate_checkpoint_for_resume(resume_state, env_config, algorithm_config)
     runner = MAPPOTrainingRunner(env_config, algorithm_config, args.num_envs,
         args.total_sampled_steps or (192 if args.smoke else None), args.device,
         args.seed, output_dir, args.smoke)
-    runner.output_dir.mkdir(parents=True, exist_ok=True)
-    (runner.output_dir / "env_config.yaml").write_text(
-        yaml.safe_dump(env_config, sort_keys=False), encoding="utf-8"
-    )
-    (runner.output_dir / "algorithm_config.yaml").write_text(
-        yaml.safe_dump(algorithm_config, sort_keys=False), encoding="utf-8"
-    )
+    if resume_checkpoint is None:
+        write_yaml_snapshot(runner.output_dir / "env_config.yaml", env_config)
+        write_yaml_snapshot(
+            runner.output_dir / "algorithm_config.yaml", algorithm_config
+        )
+    else:
+        for path, config in missing_snapshots:
+            write_yaml_snapshot(path, config)
     startup = runner.startup_summary()
     run_config = {
         "device": startup["device"],
@@ -95,15 +175,36 @@ def main() -> None:
         "environment_variant": startup["environment_variant"],
         "environment_version": str(env_config["environment_version"]),
         "algorithm": "MAPPO",
+        "effective_hidden_dim": startup["effective_hidden_dim"],
+        "output_dir": str(runner.output_dir.resolve()),
+        "resume_checkpoint": (
+            None if resume_checkpoint is None else str(resume_checkpoint)
+        ),
     }
-    (runner.output_dir / "run_config.json").write_text(
-        json.dumps(run_config, indent=2), encoding="utf-8"
-    )
+    if resume_checkpoint is None:
+        (runner.output_dir / "run_config.json").write_text(
+            json.dumps(run_config, indent=2), encoding="utf-8"
+        )
     with (runner.output_dir / "train.log").open("a", encoding="utf-8") as log_stream:
         with redirect_stdout(TeeOutput(sys.stdout, log_stream)):
             print(runner.start_log_line(), flush=True)
-            if args.resume:
-                runner.resume(resolved(args.resume))
+            if resume_checkpoint is not None:
+                runner.resume(resume_checkpoint)
+                resume_record = {
+                    "timestamp": datetime.now().astimezone().isoformat(),
+                    "checkpoint": str(resume_checkpoint),
+                    "checkpoint_sampled_steps": int(
+                        resume_state.get("sampled_steps", 0)
+                    ),
+                    "seed": startup["seed"],
+                    "device": startup["device"],
+                    "num_envs": startup["num_envs_M"],
+                    "total_sampled_steps": startup["total_sampled_steps"],
+                }
+                with (runner.output_dir / "resume_history.jsonl").open(
+                    "a", encoding="utf-8"
+                ) as stream:
+                    stream.write(json.dumps(resume_record) + "\n")
             summary = runner.run()
             (runner.output_dir / "run_summary.json").write_text(
                 json.dumps(summary, indent=2), encoding="utf-8"

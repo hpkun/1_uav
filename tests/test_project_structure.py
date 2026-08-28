@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -93,3 +94,42 @@ def test_direct_entry_runs_outside_project_with_spawn_and_flat_results():
         assert "backend=multiprocess_spawn" in log
         assert "workers=1" in log
 
+        original_run_config = (run_dir / "run_config.json").read_text(
+            encoding="utf-8"
+        )
+        resumed = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--smoke",
+                "--device",
+                "cpu",
+                "--num-envs",
+                "1",
+                "--total-sampled-steps",
+                "8",
+                "--env-config",
+                "configs/combat_environment.yaml",
+                "--algorithm-config",
+                "configs/mappo.yaml",
+                "--resume",
+                str(run_dir / "latest.pt"),
+            ],
+            cwd=cwd,
+            env=process_env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+        history = [
+            json.loads(line)
+            for line in (run_dir / "resume_history.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        assert history[-1]["checkpoint_sampled_steps"] == 4
+        assert history[-1]["total_sampled_steps"] == 8
+        assert (run_dir / "run_config.json").read_text(
+            encoding="utf-8"
+        ) == original_run_config

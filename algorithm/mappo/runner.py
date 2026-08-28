@@ -20,7 +20,7 @@ from algorithm.common.evaluator import (
 from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.common.checkpoint import (
     evaluation_selection_key,
-    validate_checkpoint_environment,
+    validate_checkpoint_for_resume,
 )
 
 
@@ -319,19 +319,18 @@ class MAPPOTrainingRunner:
         self.trainer.save(path, {"environment_version": ENVIRONMENT_VERSION,
             "environment_variant": self.env_config.get("environment_variant", "direct_v2_3"),
             "mappo_impl_version": MAPPO_IMPL_VERSION,
+            "observation_dim": self.observation_dim,
+            "action_dim": self.action_dim,
+            "num_agents": self.num_agents,
             "episode_indices": self.vector.episode_indices.tolist(),
             "evaluation_history": self.evaluation_history,
             "best_evaluation": self.best_evaluation})
 
     def resume(self, path: str | Path) -> None:
         state = torch.load(path, map_location="cpu", weights_only=False)
-        validate_checkpoint_environment(state, self.env_config)
-        implementation_version = state.get("mappo_impl_version")
-        if implementation_version != MAPPO_IMPL_VERSION:
-            raise RuntimeError(
-                f"checkpoint MAPPO implementation mismatch: expected {MAPPO_IMPL_VERSION}, "
-                f"got {implementation_version!r}"
-            )
+        validate_checkpoint_for_resume(
+            state, self.env_config, self.algorithm_config
+        )
         extra = self.trainer.load(path)
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64)
         if previous.shape != (self.num_envs,):
