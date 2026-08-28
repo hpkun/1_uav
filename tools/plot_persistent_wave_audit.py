@@ -29,7 +29,9 @@ def plot_curve(rows: list[dict], columns: list[str], output: Path,
     axis.axvline(best_step, color="green", linestyle="--", label="best_eval")
     axis.axvline(final_step, color="black", linestyle=":", label="final")
     axis.set(xlabel="sampled steps", title=title)
-    axis.grid(True, alpha=0.25); axis.legend(fontsize=8)
+    axis.grid(True, alpha=0.25)
+    handles, labels = axis.get_legend_handles_labels()
+    if handles: axis.legend(fontsize=8)
     fig.savefig(output, dpi=190); plt.close(fig)
 
 
@@ -117,10 +119,23 @@ def render_analysis(run_dir: Path, analysis_dir: Path) -> list[Path]:
 
 
 def main() -> None:
-    parser=argparse.ArgumentParser(); parser.add_argument("--run-dir",type=Path,required=True); parser.add_argument("--analysis-dir",type=Path,required=True); args=parser.parse_args()
-    run=args.run_dir if args.run_dir.is_absolute() else PROJECT_ROOT/args.run_dir
-    analysis=args.analysis_dir if args.analysis_dir.is_absolute() else PROJECT_ROOT/args.analysis_dir
-    outputs=render_analysis(run,analysis); print(json.dumps({"rendered":[str(p) for p in outputs]},indent=2))
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--run-dir",type=Path)
+    parser.add_argument("--analysis-dir",type=Path)
+    parser.add_argument("--trajectory-dir",type=Path)
+    args=parser.parse_args()
+    if args.trajectory_dir:
+        directory=args.trajectory_dir if args.trajectory_dir.is_absolute() else PROJECT_ROOT/args.trajectory_dir
+        outputs=[]
+        for csv_path in sorted(directory.glob("*.csv")):
+            outputs.extend(render_trajectory(csv_path,csv_path.with_suffix(".json"),True))
+    else:
+        if not args.run_dir or not args.analysis_dir:
+            parser.error("--run-dir and --analysis-dir are required unless --trajectory-dir is used")
+        run=args.run_dir if args.run_dir.is_absolute() else PROJECT_ROOT/args.run_dir
+        analysis=args.analysis_dir if args.analysis_dir.is_absolute() else PROJECT_ROOT/args.analysis_dir
+        outputs=render_analysis(run,analysis)
+    print(json.dumps({"rendered":[str(p) for p in outputs]},indent=2))
 
 
 if __name__=="__main__": main()

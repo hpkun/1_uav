@@ -284,7 +284,15 @@ def write_reports(output: Path, audit: dict, trajectory_records: list[dict]) -> 
     fmt = lambda value: "NA" if value is None else f"{value:.1f}"
     best = audit["best_training_evaluation"]; final = audit["final_training_evaluation"]
     diagnostic = audit["diagnostic_comparison"]
-    report = ["# PW-999 MAPPO training audit", "", "## Run protocol", "",
+    wave_keys = sorted(
+        key for key in best if key.startswith("clear_wave_") and key.endswith("_probability")
+    )
+    wave_summary = lambda row: ("/".join(f"{row[key]:.2f}" for key in wave_keys)
+                                if wave_keys else f"{row['win_rate']:.2f}")
+    wave_label = ("/".join(f"W{index + 1}" for index in range(len(wave_keys)))
+                  if wave_keys else "win_rate")
+    primary_key = wave_keys[-1] if wave_keys else "win_rate"
+    report = [f"# {audit['protocol']['environment_variant']} MAPPO training audit", "", "## Run protocol", "",
               f"- Protocol complete: `{audit['protocol']['protocol_complete']}`",
               f"- Variant/version: `{audit['protocol']['environment_variant']}` / `{audit['protocol']['environment_version']}`",
               f"- seed/gamma/envs/target: {audit['protocol']['seed']} / {audit['protocol']['gamma']} / {audit['protocol']['num_envs']} / {audit['protocol']['total_sampled_steps']}",
@@ -294,20 +302,20 @@ def write_reports(output: Path, audit: dict, trajectory_records: list[dict]) -> 
               f"- latest and checkpoint_3000000 weights identical: {audit['completion']['latest_matches_final_weights']}.",
               "", "## Training completion", "",
               f"- latest.pt sampled_steps={audit['completion']['sampled_steps']}; checkpoint_3000000.pt and latest.pt have identical tensor digests.",
-              "- Both train.log and nohup log end with the 3M evaluation, checkpoint save, and DONE record.",
+              "- train.log ends with the 3M evaluation, checkpoint save, and DONE record; any present auxiliary log was also scanned.",
               "", "## Evaluation curve", "",
               f"- Evaluation steps: {audit['evaluation_sampled_steps']}",
               f"- First non-zero wave clears: {audit['learning_onset']}.",
               "", "## Best checkpoint", "",
               f"- Current selection rule chooses **{int(best['sampled_steps'])}** steps.",
-              f"- Best: return={best['average_return']:.3f}, W1/W2/W3={best['clear_wave_1_probability']:.2f}/{best['clear_wave_2_probability']:.2f}/{best['clear_wave_3_probability']:.2f}, waves={best['average_waves_cleared']:.2f}, Red loss={best['average_red_loss']:.2f}.",
+              f"- Best: return={best['average_return']:.3f}, {wave_label}={wave_summary(best)}, waves={best.get('average_waves_cleared', best.get('win_rate', 0.0)):.2f}, Red loss={best['average_red_loss']:.2f}.",
               "", "## Final checkpoint", "",
-              f"- Final: return={final['average_return']:.3f}, W1/W2/W3={final['clear_wave_1_probability']:.2f}/{final['clear_wave_2_probability']:.2f}/{final['clear_wave_3_probability']:.2f}, waves={final['average_waves_cleared']:.2f}, Red loss={final['average_red_loss']:.2f}.",
+              f"- Final: return={final['average_return']:.3f}, {wave_label}={wave_summary(final)}, waves={final.get('average_waves_cleared', final.get('win_rate', 0.0)):.2f}, Red loss={final['average_red_loss']:.2f}.",
               "", "## Best vs final", "",
               f"- Training-time best-to-final deltas: {audit['best_minus_final_training']}.",
               "", "## Wave metrics", "",
-              f"- Best W1/W2/W3 and average waves: {best['clear_wave_1_probability']:.2f}/{best['clear_wave_2_probability']:.2f}/{best['clear_wave_3_probability']:.2f}; {best['average_waves_cleared']:.2f}.",
-              f"- Final W1/W2/W3 and average waves: {final['clear_wave_1_probability']:.2f}/{final['clear_wave_2_probability']:.2f}/{final['clear_wave_3_probability']:.2f}; {final['average_waves_cleared']:.2f}.",
+              f"- Best {wave_label} and average waves: {wave_summary(best)}; {best.get('average_waves_cleared', best.get('win_rate', 0.0)):.2f}.",
+              f"- Final {wave_label} and average waves: {wave_summary(final)}; {final.get('average_waves_cleared', final.get('win_rate', 0.0)):.2f}.",
               "", "## Optimization stability", "",
               f"- Optimization rows: {audit['optimization']['row_count']}; non-finite values: {len(audit['optimization']['nonfinite_values'])}.",
               "", "## KL / clip / entropy / value diagnostics", "",
@@ -317,10 +325,10 @@ def write_reports(output: Path, audit: dict, trajectory_records: list[dict]) -> 
               f"- Best boundary/ground/timeout: {best.get('average_red_boundary_exits'):.3f} / {best.get('average_red_ground_losses'):.3f} / {best.get('timeout_rate'):.3f}.",
               f"- Final boundary/ground/timeout: {final.get('average_red_boundary_exits'):.3f} / {final.get('average_red_ground_losses'):.3f} / {final.get('timeout_rate'):.3f}.",
               "", "## Policy-drift evidence", "",
-              f"- Training evaluation best-to-final return delta={best['average_return']-final['average_return']:.3f}, W3 delta={best['clear_wave_3_probability']-final['clear_wave_3_probability']:.3f}, Red-loss delta={best['average_red_loss']-final['average_red_loss']:.3f}.",
+              f"- Training evaluation best-to-final return delta={best['average_return']-final['average_return']:.3f}, {primary_key} delta={best[primary_key]-final[primary_key]:.3f}, Red-loss delta={best['average_red_loss']-final['average_red_loss']:.3f}.",
               "", "## Diagnostic best-vs-latest comparison", "",
               f"- Seeds: {diagnostic['seed_base']}–{diagnostic['seed_end']} (diagnostic only; not formal holdout).",
-              f"- Best W3={diagnostic['best']['clear_wave_3_probability']:.3f}, latest W3={diagnostic['latest']['clear_wave_3_probability']:.3f}.",
+              f"- Best {primary_key}={diagnostic['best'][primary_key]:.3f}, latest={diagnostic['latest'][primary_key]:.3f}.",
               f"- Best average waves={diagnostic['best']['average_waves_cleared']:.3f}, latest={diagnostic['latest']['average_waves_cleared']:.3f}.",
               f"- Best return={diagnostic['best']['average_return']:.3f}, latest={diagnostic['latest']['average_return']:.3f}.",
               f"- Policy-drift diagnostic: {diagnostic['interpretation']}",
@@ -366,6 +374,7 @@ def main() -> None:
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--reuse-diagnostics", action="store_true")
     parser.add_argument("--skip-plots", action="store_true")
+    parser.add_argument("--skip-trajectories", action="store_true")
     args = parser.parse_args()
     if args.episodes < 1 or args.episodes > 30: raise ValueError("episodes must be 1..30")
     if 20_000_000 <= args.seed_base <= 20_000_199 or 20_000_000 <= args.seed_base + args.episodes - 1 <= 20_000_199:
@@ -376,8 +385,10 @@ def main() -> None:
     env_config = yaml.safe_load(env_path.read_text(encoding="utf-8")); alg_config = yaml.safe_load(alg_path.read_text(encoding="utf-8"))
     run_config = json.loads((run / "run_config.json").read_text(encoding="utf-8"))
     env_hash, alg_hash = config_sha256(env_config), config_sha256(alg_config)
+    checkpoint_names = sorted({"best_eval.pt", "latest.pt"} |
+                              {path.name for path in run.glob("checkpoint_*.pt")})
     checkpoint_files = {name: checkpoint_audit(run / name, env_hash, alg_hash)
-                        for name in ("best_eval.pt", "latest.pt", "checkpoint_3000000.pt")}
+                        for name in checkpoint_names}
     numeric_columns, eval_rows = read_csv_numeric(run / "evaluation_history.csv")
     variant = str(env_config.get("environment_variant", "direct_v2_3"))
     best_row = max(eval_rows, key=lambda row: evaluation_selection_key(row, variant))
@@ -390,11 +401,13 @@ def main() -> None:
     log_paths = [run / "train.log", run.parent / f"{run.name}_nohup.log"]
     pattern = re.compile(r"traceback|\bnan\b|\binf\b|floatingpointerror|out of memory|worker.*crash|exception|protocol mismatch", re.I)
     log_matches = [{"file": str(path), "line": i, "text": line}
-                   for path in log_paths for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                   for path in log_paths if path.exists()
+                   for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
                    if pattern.search(line)]
+    total_waves = int(env_config.get("persistent_waves", {}).get("total_waves", 1))
     onset = {f"wave_{wave}": next((int(r["sampled_steps"]) for r in eval_rows
-                                    if r.get(f"clear_wave_{wave}_probability", 0) > 0), None)
-             for wave in (1, 2, 3)}
+                                    if r.get(f"clear_wave_{wave}_probability", r.get("win_rate", 0)) > 0), None)
+             for wave in range(1, total_waves + 1)}
     seeds = list(range(args.seed_base, args.seed_base + args.episodes))
     if args.reuse_diagnostics:
         best_saved=json.loads((output/"best_diagnostic_evaluation.json").read_text(encoding="utf-8"))
@@ -419,15 +432,17 @@ def main() -> None:
                 "algorithm_config_sha256":alg_hash, "best_checkpoint":checkpoint_files["best_eval.pt"],
                 "latest_checkpoint":checkpoint_files["latest.pt"]}
     (output / "diagnostic_manifest.json").write_text(json.dumps(plain(manifest), indent=2), encoding="utf-8")
-    selected = select_representative_cases(best_episodes, latest_episodes)
+    selected = (select_representative_cases(best_episodes, latest_episodes)
+                if not args.skip_trajectories else {})
     trajectory_records=[]
     jobs=[]
-    if selected["best_success"] is not None: jobs.append(("best_success","best",best_actor,selected["best_success"],True))
-    if selected["best_partial"] is not None: jobs.append(("best_partial","best",best_actor,selected["best_partial"],False))
-    if selected["drift_pair"] is not None:
-        jobs += [("drift_best","best",best_actor,selected["drift_pair"],True),
-                 ("drift_latest","latest",latest_actor,selected["drift_pair"],True)]
-    if selected["latest_success"] is not None: jobs.append(("latest_success","latest",latest_actor,selected["latest_success"],False))
+    if not args.skip_trajectories:
+        if selected["best_success"] is not None: jobs.append(("best_success","best",best_actor,selected["best_success"],True))
+        if selected["best_partial"] is not None: jobs.append(("best_partial","best",best_actor,selected["best_partial"],False))
+        if selected["drift_pair"] is not None:
+            jobs += [("drift_best","best",best_actor,selected["drift_pair"],True),
+                     ("drift_latest","latest",latest_actor,selected["drift_pair"],True)]
+        if selected["latest_success"] is not None: jobs.append(("latest_success","latest",latest_actor,selected["latest_success"],False))
     for category,label,actor,seed,views in jobs:
         summary,tracks=rollout(actor,env_config,int(seed),capture=True)
         stem=output/f"trajectory_{category}_seed_{seed}"
@@ -446,10 +461,11 @@ def main() -> None:
         for metric,name in (("approx_kl","optimization_kl_curve.png"),("entropy","optimization_entropy_curve.png"),("value_loss","optimization_value_loss_curve.png")):
             plot_curve(optimization_rows,[metric],output/name,int(best_row["sampled_steps"]),3_000_000,metric)
     training_delta={key:best_row[key]-final_row[key] for key in numeric_columns if key in best_row and key in final_row}
-    diag_gap=best_diag["clear_wave_3_probability"]-latest_diag["clear_wave_3_probability"]
+    primary_key = f"clear_wave_{total_waves}_probability"
+    diag_gap=best_diag[primary_key]-latest_diag[primary_key]
     interpretation=("30-seed diagnostics support final-policy regression" if diag_gap >= 0.10 and best_diag["average_waves_cleared"] > latest_diag["average_waves_cleared"] else
-                    "30-seed diagnostics do not show a clear persistent regression; training-evaluation noise remains important")
-    protocol={"algorithm":run_config["algorithm"],"environment_variant":env_config["environment_variant"],
+                    "30-seed diagnostics do not show a clear policy regression; training-evaluation noise remains important")
+    protocol={"algorithm":run_config["algorithm"],"environment_variant":variant,
               "environment_version":str(env_config["environment_version"]),"seed":run_config["seed"],
               "gamma":float(alg_config["training"]["gamma"]),"num_envs":run_config["num_envs"],
               "total_sampled_steps":run_config["total_sampled_steps"],"mode":"smoke" if run_config["smoke"] else "formal",
@@ -468,7 +484,7 @@ def main() -> None:
                                     "interpretation":interpretation},
            "representative_selection":selected,"trajectory_records":trajectory_records,
            "main_conclusions":[f"Training completed at {checkpoint_files['latest.pt']['sampled_steps']} sampled steps without recorded non-finite optimizer values.",
-                               f"The current persistent-wave selection key chooses step {int(best_row['sampled_steps'])}.",
+                               f"The current {variant} selection key chooses step {int(best_row['sampled_steps'])}.",
                                f"latest.pt and checkpoint_3000000.pt contain identical actor/critic weights.",
                                interpretation]}
     (output/"training_audit_summary.json").write_text(json.dumps(plain(audit),indent=2),encoding="utf-8")
