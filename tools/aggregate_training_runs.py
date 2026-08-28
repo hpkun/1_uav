@@ -6,11 +6,17 @@ import csv
 import json
 import math
 from pathlib import Path
+import sys
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
+import yaml
+
+from algorithm.common.protocol import config_sha256
 
 
 T_CRITICAL_95 = (
@@ -21,6 +27,18 @@ T_CRITICAL_95 = (
     2.048, 2.045, 2.042,
 )
 CI_METHOD = "two-sided 95% Student t interval; df 1-30 table, df > 30 uses 1.96"
+TRAINING_PROTOCOL_FIELDS = (
+    "algorithm",
+    "environment_version",
+    "environment_variant",
+    "training_gamma",
+    "environment_config_sha256",
+    "algorithm_config_sha256",
+    "num_envs",
+    "total_sampled_steps",
+    "smoke",
+    "effective_hidden_dim",
+)
 
 
 def t_critical_95(degrees_of_freedom: int) -> float:
@@ -73,11 +91,57 @@ def _finite_float(value: Any) -> float:
     return number
 
 
+def read_run_protocol(run_dir: Path) -> dict[str, Any]:
+    run_config_path = run_dir / "run_config.json"
+    environment_path = run_dir / "env_config.yaml"
+    algorithm_path = run_dir / "algorithm_config.yaml"
+    for path in (run_config_path, environment_path, algorithm_path):
+        if not path.is_file():
+            raise RuntimeError(f"training run protocol file missing: {path}")
+    run_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+    environment = yaml.safe_load(environment_path.read_text(encoding="utf-8"))
+    algorithm = yaml.safe_load(algorithm_path.read_text(encoding="utf-8"))
+    return {
+        "algorithm": run_config.get("algorithm"),
+        "environment_version": str(environment.get("environment_version")),
+        "environment_variant": str(
+            environment.get("environment_variant", "direct_v2_3")
+        ),
+        "environment_config_sha256": config_sha256(environment),
+        "algorithm_config_sha256": config_sha256(algorithm),
+        "num_envs": int(run_config["num_envs"]),
+        "total_sampled_steps": int(run_config["total_sampled_steps"]),
+        "smoke": bool(run_config["smoke"]),
+        "effective_hidden_dim": run_config.get("effective_hidden_dim"),
+        "training_gamma": float(algorithm["training"]["gamma"]),
+        "training_seed": int(run_config["seed"]),
+        "device": run_config.get("device"),
+    }
+
+
+def validate_training_protocols(protocols: list[dict[str, Any]]) -> dict[str, Any]:
+    reference = protocols[0]
+    for field in TRAINING_PROTOCOL_FIELDS:
+        expected = reference.get(field)
+        for index, protocol in enumerate(protocols[1:], start=2):
+            if protocol.get(field) != expected:
+                raise RuntimeError(
+                    f"training protocol mismatch for {field}: run 1 has "
+                    f"{expected!r}, run {index} has {protocol.get(field)!r}"
+                )
+    seeds = [protocol["training_seed"] for protocol in protocols]
+    if len(set(seeds)) != len(seeds):
+        raise RuntimeError("training protocol requires unique training_seed values")
+    return {field: reference.get(field) for field in TRAINING_PROTOCOL_FIELDS}
+
+
 def aggregate_training_histories(
     run_dirs: list[Path], output_dir: Path
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if len(run_dirs) < 2:
         raise ValueError("at least two run directories are required")
+    protocols = [read_run_protocol(path) for path in run_dirs]
+    protocol = validate_training_protocols(protocols)
     loaded = [read_history(path) for path in run_dirs]
     columns = [set(item[0]) for item in loaded]
     histories = [item[1] for item in loaded]
@@ -119,6 +183,9 @@ def aggregate_training_histories(
         "aggregated_metrics": numeric_metrics,
         "skipped_columns": skipped_columns,
         "ci_method": CI_METHOD,
+        "protocol": protocol,
+        "training_seeds": [item["training_seed"] for item in protocols],
+        "devices": [item["device"] for item in protocols],
     }
     (output_dir / "aggregation_manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
@@ -192,4 +259,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

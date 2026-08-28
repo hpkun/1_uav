@@ -22,6 +22,7 @@ from algorithm.common.checkpoint import (
     evaluation_selection_key,
     validate_checkpoint_for_resume,
 )
+from algorithm.common.protocol import config_sha256
 
 
 class MAPPOTrainingRunner:
@@ -322,6 +323,14 @@ class MAPPOTrainingRunner:
             "observation_dim": self.observation_dim,
             "action_dim": self.action_dim,
             "num_agents": self.num_agents,
+            "training_seed": self.seed,
+            "training_gamma": self.trainer.gamma,
+            "training_num_envs": self.num_envs,
+            "training_total_sampled_steps": self.total_sampled_steps,
+            "training_smoke": self.smoke,
+            "effective_hidden_dim": self.effective_hidden_dim,
+            "environment_config_sha256": config_sha256(self.env_config),
+            "algorithm_config_sha256": config_sha256(self.algorithm_config),
             "episode_indices": self.vector.episode_indices.tolist(),
             "evaluation_history": self.evaluation_history,
             "best_evaluation": self.best_evaluation})

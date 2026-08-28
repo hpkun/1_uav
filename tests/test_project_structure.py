@@ -97,6 +97,7 @@ def test_direct_entry_runs_outside_project_with_spawn_and_flat_results():
         original_run_config = (run_dir / "run_config.json").read_text(
             encoding="utf-8"
         )
+        original_runtime = json.loads(original_run_config)
         resumed = subprocess.run(
             [
                 sys.executable,
@@ -130,6 +131,17 @@ def test_direct_entry_runs_outside_project_with_spawn_and_flat_results():
         ]
         assert history[-1]["checkpoint_sampled_steps"] == 4
         assert history[-1]["total_sampled_steps"] == 8
+        assert history[-1]["original_seed"] == original_runtime["seed"]
+        assert history[-1]["effective_seed"] == original_runtime["seed"]
+        assert history[-1]["original_num_envs"] == 1
+        assert history[-1]["effective_num_envs"] == 1
+        assert history[-1]["original_total_sampled_steps"] == 4
+        assert history[-1]["effective_total_sampled_steps"] == 8
+        assert history[-1]["extended_training_target"] is True
+        assert history[-1]["rollback_performed"] is True
+        assert history[-1]["environment_config_sha256"]
+        assert history[-1]["algorithm_config_sha256"]
+        assert list(run_dir.glob("run_summary.pre_resume_*.json"))
         assert (run_dir / "run_config.json").read_text(
             encoding="utf-8"
         ) == original_run_config

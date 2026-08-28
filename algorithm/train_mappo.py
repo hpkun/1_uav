@@ -6,8 +6,9 @@ from contextlib import redirect_stdout
 from datetime import datetime
 import json
 from pathlib import Path
+import csv
+import shutil
 import sys
-import warnings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -17,6 +18,7 @@ import yaml
 import torch
 
 from algorithm.common.checkpoint import validate_checkpoint_for_resume
+from algorithm.common.protocol import config_sha256
 from algorithm.mappo.runner import MAPPOTrainingRunner
 
 
@@ -97,7 +99,7 @@ def validate_resume_config_snapshots(
     env_config: dict,
     algorithm_config: dict,
 ) -> list[tuple[Path, dict]]:
-    """Reject changed snapshots and return legacy snapshots that are missing."""
+    """Require exact immutable environment and algorithm snapshots."""
     missing: list[tuple[Path, dict]] = []
     for name, current in (
         ("env_config.yaml", env_config),
@@ -105,12 +107,7 @@ def validate_resume_config_snapshots(
     ):
         path = output_dir / name
         if not path.exists():
-            warnings.warn(
-                f"resume run is missing {name}; creating a compatibility snapshot",
-                RuntimeWarning,
-            )
-            missing.append((path, current))
-            continue
+            raise RuntimeError(f"resume run is missing required {name} snapshot")
         stored = yaml.safe_load(path.read_text(encoding="utf-8"))
         if stored != current:
             raise RuntimeError(f"resume {name} mismatch with stored run snapshot")
@@ -119,6 +116,228 @@ def validate_resume_config_snapshots(
 
 def write_yaml_snapshot(path: Path, config: dict) -> None:
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+
+def load_run_config(run_dir: Path) -> dict | None:
+    path = run_dir / "run_config.json"
+    if not path.exists():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"invalid resume run_config.json: {path}")
+    return value
+
+
+def resolve_runtime_settings(
+    algorithm_config: dict,
+    *,
+    seed: int | None,
+    num_envs: int | None,
+    total_sampled_steps: int | None,
+    device: str | None,
+    smoke: bool | None,
+    run_config: dict | None = None,
+    checkpoint_state: dict | None = None,
+) -> dict:
+    """Resolve fresh CLI precedence or strict resume inheritance."""
+    training = algorithm_config["training"]
+    if run_config is None and checkpoint_state is None:
+        effective_smoke = bool(smoke)
+        return {
+            "seed": int(training["seed"] if seed is None else seed),
+            "num_envs": int(
+                training["num_train_envs"] if num_envs is None else num_envs
+            ),
+            "total_sampled_steps": int(
+                total_sampled_steps
+                if total_sampled_steps is not None
+                else (192 if effective_smoke else training["total_sampled_steps"])
+            ),
+            "device": str(training["device"] if device is None else device),
+            "smoke": effective_smoke,
+            "legacy_resume": False,
+            "original": None,
+            "extended_training_target": False,
+        }
+
+    state = checkpoint_state or {}
+    checkpoint_steps = int(state.get("sampled_steps", 0))
+    if run_config is None:
+        missing = [
+            name
+            for name, value in (
+                ("--seed", seed),
+                ("--num-envs", num_envs),
+                ("--total-sampled-steps", total_sampled_steps),
+            )
+            if value is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "legacy resume without run_config.json requires explicit "
+                + ", ".join(missing)
+            )
+        effective = {
+            "seed": int(seed),
+            "num_envs": int(num_envs),
+            "total_sampled_steps": int(total_sampled_steps),
+            "device": str(training["device"] if device is None else device),
+            "smoke": bool(smoke),
+            "legacy_resume": True,
+            "original": None,
+            "extended_training_target": False,
+        }
+    else:
+        required = ("seed", "num_envs", "total_sampled_steps", "smoke", "device")
+        absent = [field for field in required if field not in run_config]
+        if absent:
+            raise RuntimeError(
+                "resume run_config.json missing required fields: "
+                + ", ".join(absent)
+            )
+        original = {
+            "seed": int(run_config["seed"]),
+            "num_envs": int(run_config["num_envs"]),
+            "total_sampled_steps": int(run_config["total_sampled_steps"]),
+            "smoke": bool(run_config["smoke"]),
+            "device": str(run_config["device"]),
+        }
+        if seed is not None and int(seed) != original["seed"]:
+            raise RuntimeError("resume seed mismatch with original run_config.json")
+        if num_envs is not None and int(num_envs) != original["num_envs"]:
+            raise RuntimeError("resume num_envs mismatch with original run_config.json")
+        if smoke is not None and bool(smoke) != original["smoke"]:
+            raise RuntimeError("resume smoke mode mismatch with original run_config.json")
+        checkpoint_target = state.get("extra", {}).get(
+            "training_total_sampled_steps", original["total_sampled_steps"]
+        )
+        current_target = max(original["total_sampled_steps"], int(checkpoint_target))
+        requested_target = (
+            current_target
+            if total_sampled_steps is None
+            else int(total_sampled_steps)
+        )
+        if requested_target < current_target:
+            raise RuntimeError(
+                "resume total_sampled_steps cannot be smaller than the existing "
+                f"training target {current_target}"
+            )
+        effective = {
+            "seed": original["seed"],
+            "num_envs": original["num_envs"],
+            "total_sampled_steps": requested_target,
+            "device": original["device"] if device is None else str(device),
+            "smoke": original["smoke"],
+            "legacy_resume": False,
+            "original": original,
+            "extended_training_target": requested_target > current_target,
+        }
+    if effective["total_sampled_steps"] <= checkpoint_steps:
+        raise RuntimeError(
+            f"resume checkpoint already reached {checkpoint_steps} sampled steps; "
+            "request a larger --total-sampled-steps target"
+        )
+    return effective
+
+
+def checkpoint_sampled_steps(path: Path) -> int | None:
+    try:
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        return int(state["sampled_steps"])
+    except (OSError, KeyError, TypeError, ValueError, RuntimeError):
+        return None
+
+
+def reject_stale_resume_checkpoint(run_dir: Path, checkpoint: Path) -> None:
+    selected_steps = checkpoint_sampled_steps(checkpoint)
+    if selected_steps is None:
+        raise RuntimeError(f"resume checkpoint has no readable sampled_steps: {checkpoint}")
+    candidates = list(run_dir.glob("checkpoint_*.pt")) + [run_dir / "latest.pt"]
+    newer: list[tuple[Path, int]] = []
+    for candidate in candidates:
+        if not candidate.is_file() or candidate.resolve() == checkpoint.resolve():
+            continue
+        steps = checkpoint_sampled_steps(candidate)
+        if steps is not None and steps > selected_steps:
+            newer.append((candidate, steps))
+    if newer:
+        newest_path, newest_steps = max(newer, key=lambda item: item[1])
+        raise RuntimeError(
+            "stale resume checkpoint rejected: selected step "
+            f"{selected_steps}, but {newest_path.name} is at step {newest_steps}"
+        )
+
+
+def _backup_path(path: Path, timestamp: str) -> Path:
+    return path.with_name(f"{path.stem}.pre_resume_{timestamp}{path.suffix}")
+
+
+def prepare_resume_rollback(
+    run_dir: Path, checkpoint: Path, checkpoint_steps: int
+) -> dict:
+    """Back up and remove durable records newer than the selected checkpoint."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    actions: list[str] = []
+    maximum_logged = checkpoint_steps
+    for name in ("training_metrics.jsonl", "optimization_metrics.jsonl"):
+        path = run_dir / name
+        if not path.exists():
+            continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        records = [json.loads(line) for line in lines if line.strip()]
+        steps = [int(record["sampled_steps"]) for record in records]
+        if steps:
+            maximum_logged = max(maximum_logged, max(steps))
+        if any(step > checkpoint_steps for step in steps):
+            backup = _backup_path(path, timestamp)
+            shutil.copy2(path, backup)
+            kept = [
+                json.dumps(record)
+                for record in records
+                if int(record["sampled_steps"]) <= checkpoint_steps
+            ]
+            path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+            actions.append(f"truncated {name}; backup={backup.name}")
+    evaluation_path = run_dir / "evaluation_history.csv"
+    if evaluation_path.exists():
+        with evaluation_path.open(newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
+        if not fieldnames or "sampled_steps" not in fieldnames:
+            raise RuntimeError("evaluation_history.csv missing sampled_steps")
+        steps = [int(row["sampled_steps"]) for row in rows]
+        if steps:
+            maximum_logged = max(maximum_logged, max(steps))
+        if any(step > checkpoint_steps for step in steps):
+            backup = _backup_path(evaluation_path, timestamp)
+            shutil.copy2(evaluation_path, backup)
+            with evaluation_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(
+                    row for row in rows if int(row["sampled_steps"]) <= checkpoint_steps
+                )
+            actions.append(
+                f"truncated evaluation_history.csv; backup={backup.name}"
+            )
+    best_path = run_dir / "best_eval.pt"
+    if best_path.is_file() and best_path.resolve() != checkpoint.resolve():
+        best_steps = checkpoint_sampled_steps(best_path)
+        if best_steps is not None and best_steps > checkpoint_steps:
+            backup = _backup_path(best_path, timestamp)
+            best_path.replace(backup)
+            actions.append(f"moved future best_eval.pt; backup={backup.name}")
+    summary_path = run_dir / "run_summary.json"
+    if summary_path.exists():
+        backup = _backup_path(summary_path, timestamp)
+        shutil.copy2(summary_path, backup)
+        actions.append(f"backed up run_summary.json as {backup.name}")
+    return {
+        "rollback_performed": bool(actions),
+        "rollback_from_max_logged_steps": maximum_logged,
+        "rollback_actions": actions,
+    }
 
 
 def main() -> None:
@@ -131,20 +350,22 @@ def main() -> None:
     parser.add_argument("--resume")
     parser.add_argument("--env-config", default="configs/persistent_wave_v2_environment.yaml")
     parser.add_argument("--algorithm-config", default="configs/mappo_persistent_wave.yaml")
-    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--smoke", action="store_true", default=None)
     args = parser.parse_args()
     env_path = resolved(args.env_config)
     env_config = yaml.safe_load(env_path.read_text(encoding="utf-8"))
     algorithm_path = resolved(args.algorithm_config)
     algorithm_config = yaml.safe_load(algorithm_path.read_text(encoding="utf-8"))
     configured_seed = int(algorithm_config["training"]["seed"])
-    effective_seed = configured_seed if args.seed is None else args.seed
+    path_seed = configured_seed if args.seed is None else args.seed
     output_dir, resume_checkpoint = resolve_run_paths(
-        args.output_dir, args.resume, effective_seed
+        args.output_dir, args.resume, path_seed
     )
     missing_snapshots: list[tuple[Path, dict]] = []
     resume_state = None
+    stored_run_config = None
     if resume_checkpoint is not None:
+        reject_stale_resume_checkpoint(output_dir, resume_checkpoint)
         missing_snapshots = validate_resume_config_snapshots(
             output_dir, env_config, algorithm_config
         )
@@ -152,9 +373,43 @@ def main() -> None:
             resume_checkpoint, map_location="cpu", weights_only=False
         )
         validate_checkpoint_for_resume(resume_state, env_config, algorithm_config)
-    runner = MAPPOTrainingRunner(env_config, algorithm_config, args.num_envs,
-        args.total_sampled_steps or (192 if args.smoke else None), args.device,
-        args.seed, output_dir, args.smoke)
+        stored_run_config = load_run_config(output_dir)
+    runtime = resolve_runtime_settings(
+        algorithm_config,
+        seed=args.seed,
+        num_envs=args.num_envs,
+        total_sampled_steps=args.total_sampled_steps,
+        device=args.device,
+        smoke=args.smoke,
+        run_config=stored_run_config,
+        checkpoint_state=resume_state,
+    )
+    if resume_state is not None and stored_run_config is not None:
+        extra = resume_state.get("extra", {})
+        expected_checkpoint_protocol = {
+            "training_seed": runtime["original"]["seed"],
+            "training_num_envs": runtime["original"]["num_envs"],
+            "training_smoke": runtime["original"]["smoke"],
+            "training_gamma": float(algorithm_config["training"]["gamma"]),
+            "environment_config_sha256": config_sha256(env_config),
+            "algorithm_config_sha256": config_sha256(algorithm_config),
+        }
+        for field, expected in expected_checkpoint_protocol.items():
+            if field in extra and extra[field] != expected:
+                raise RuntimeError(
+                    f"resume checkpoint {field} mismatch with original run protocol: "
+                    f"expected {expected!r}, got {extra[field]!r}"
+                )
+    runner = MAPPOTrainingRunner(
+        env_config,
+        algorithm_config,
+        runtime["num_envs"],
+        runtime["total_sampled_steps"],
+        runtime["device"],
+        runtime["seed"],
+        output_dir,
+        runtime["smoke"],
+    )
     if resume_checkpoint is None:
         write_yaml_snapshot(runner.output_dir / "env_config.yaml", env_config)
         write_yaml_snapshot(
@@ -180,6 +435,9 @@ def main() -> None:
         "resume_checkpoint": (
             None if resume_checkpoint is None else str(resume_checkpoint)
         ),
+        "training_gamma": startup["gamma"],
+        "environment_config_sha256": config_sha256(env_config),
+        "algorithm_config_sha256": config_sha256(algorithm_config),
     }
     if resume_checkpoint is None:
         (runner.output_dir / "run_config.json").write_text(
@@ -190,16 +448,42 @@ def main() -> None:
             print(runner.start_log_line(), flush=True)
             if resume_checkpoint is not None:
                 runner.resume(resume_checkpoint)
+                rollback = prepare_resume_rollback(
+                    runner.output_dir,
+                    resume_checkpoint,
+                    int(resume_state.get("sampled_steps", 0)),
+                )
+                original = runtime["original"] or {
+                    "seed": runtime["seed"],
+                    "num_envs": runtime["num_envs"],
+                    "total_sampled_steps": runtime["total_sampled_steps"],
+                }
                 resume_record = {
                     "timestamp": datetime.now().astimezone().isoformat(),
                     "checkpoint": str(resume_checkpoint),
                     "checkpoint_sampled_steps": int(
                         resume_state.get("sampled_steps", 0)
                     ),
+                    "original_seed": original["seed"],
+                    "effective_seed": startup["seed"],
+                    "original_num_envs": original["num_envs"],
+                    "effective_num_envs": startup["num_envs_M"],
+                    "original_total_sampled_steps": original[
+                        "total_sampled_steps"
+                    ],
+                    "effective_total_sampled_steps": startup[
+                        "total_sampled_steps"
+                    ],
                     "seed": startup["seed"],
-                    "device": startup["device"],
                     "num_envs": startup["num_envs_M"],
                     "total_sampled_steps": startup["total_sampled_steps"],
+                    "device": startup["device"],
+                    "extended_training_target": runtime[
+                        "extended_training_target"
+                    ],
+                    "environment_config_sha256": config_sha256(env_config),
+                    "algorithm_config_sha256": config_sha256(algorithm_config),
+                    **rollback,
                 }
                 with (runner.output_dir / "resume_history.jsonl").open(
                     "a", encoding="utf-8"

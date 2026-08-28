@@ -6,7 +6,9 @@ from typing import Any
 from .trainer import MAPPOTrainer
 
 
-def build_mappo_trainer(config: dict[str, Any], device: str) -> MAPPOTrainer:
+def build_mappo_trainer(
+    config: dict[str, Any], device: str, hidden_dim: int | None = None
+) -> MAPPOTrainer:
     """Build a formal MAPPO trainer without changing configured parameters."""
     network = config["network"]
     training = config["training"]
@@ -15,7 +17,9 @@ def build_mappo_trainer(config: dict[str, Any], device: str) -> MAPPOTrainer:
         "observation_dim": int(network["observation_dim"]),
         "action_dim": int(network["action_dim"]),
         "num_agents": int(network["num_agents"]),
-        "hidden_dim": int(network["actor_hidden_layers"][0]),
+        "hidden_dim": int(
+            network["actor_hidden_layers"][0] if hidden_dim is None else hidden_dim
+        ),
         "attention_heads": int(network["attention_heads"]),
         "device": device,
         "actor_activation": implementation["actor_activation"],

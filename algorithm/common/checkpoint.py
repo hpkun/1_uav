@@ -5,6 +5,7 @@ from typing import Any
 
 from env.config import ENVIRONMENT_VERSION
 from env.combat_env import MultiUAVCombatEnv
+from algorithm.common.protocol import config_sha256
 
 
 def _checkpoint_extra(state: dict[str, Any]) -> dict[str, Any]:
@@ -130,6 +131,17 @@ def validate_checkpoint_for_resume(
             "checkpoint environment_variant mismatch: expected "
             f"{expected_variant!r}, got {checkpoint_variant!r}"
         )
+    extra = _checkpoint_extra(state)
+    for label, expected in (
+        ("environment_config_sha256", config_sha256(env_config)),
+        ("algorithm_config_sha256", config_sha256(algorithm_config)),
+    ):
+        recorded = extra.get(label)
+        if recorded is not None and recorded != expected:
+            raise RuntimeError(
+                f"checkpoint {label} mismatch: expected {expected!r}, "
+                f"got {recorded!r}"
+            )
 
 
 def validate_checkpoint_for_evaluation(

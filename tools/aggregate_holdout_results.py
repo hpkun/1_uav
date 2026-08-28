@@ -22,21 +22,30 @@ PROTOCOL_FIELDS = (
     "checkpoint_environment_variant",
     "evaluation_environment_version",
     "evaluation_environment_variant",
-    "evaluation_episodes",
-    "holdout_seed_base",
-    "holdout_seed_end",
-)
-NUMERIC_METADATA_FIELDS = {
-    "checkpoint_environment_version",
-    "evaluation_environment_version",
-    "holdout_seed_base",
-    "holdout_seed_end",
-    "evaluation_episodes",
+    "cross_variant_evaluation",
     "mappo_impl_version",
     "observation_dim",
     "action_dim",
     "num_agents",
-    "cross_variant_evaluation",
+    "checkpoint_training_gamma",
+    "checkpoint_training_num_envs",
+    "checkpoint_training_total_sampled_steps",
+    "checkpoint_training_smoke",
+    "checkpoint_effective_hidden_dim",
+    "checkpoint_environment_config_sha256",
+    "checkpoint_algorithm_config_sha256",
+    "evaluation_environment_config_sha256",
+    "provided_algorithm_config_sha256",
+    "evaluation_episodes",
+    "holdout_seed_base",
+    "holdout_seed_end",
+    "protocol_complete",
+)
+NUMERIC_METADATA_FIELDS = set(PROTOCOL_FIELDS) | {
+    "checkpoint_sampled_steps",
+    "checkpoint_training_seed",
+    "device",
+    "checkpoint",
 }
 
 
@@ -57,6 +66,18 @@ def aggregate_holdout_results(
     results = [
         json.loads(path.read_text(encoding="utf-8")) for path in input_paths
     ]
+    for index, result in enumerate(results, start=1):
+        if result.get("protocol_complete") is not True:
+            raise RuntimeError(
+                f"holdout result {index} has incomplete experiment protocol"
+            )
+    training_seeds = [result.get("checkpoint_training_seed") for result in results]
+    if any(seed is None for seed in training_seeds):
+        raise RuntimeError("holdout results are missing checkpoint_training_seed")
+    if len(set(training_seeds)) != len(training_seeds):
+        raise RuntimeError(
+            "holdout aggregation requires unique checkpoint_training_seed values"
+        )
     protocol = {field: results[0].get(field) for field in PROTOCOL_FIELDS}
     for field, expected in protocol.items():
         for index, result in enumerate(results[1:], start=2):
@@ -99,6 +120,10 @@ def aggregate_holdout_results(
         "aggregated_metrics": metrics,
         "ci_method": CI_METHOD,
         "protocol": protocol,
+        "checkpoint_training_seeds": training_seeds,
+        "checkpoint_sampled_steps": [
+            result.get("checkpoint_sampled_steps") for result in results
+        ],
     }
     (output_dir / "aggregation_manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
@@ -128,4 +153,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

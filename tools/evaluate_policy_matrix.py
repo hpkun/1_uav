@@ -13,7 +13,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import yaml
+import torch
 
+from algorithm.common.checkpoint import validate_checkpoint_for_evaluation
+from algorithm.common.protocol import config_sha256
 from algorithm.mappo.evaluation import evaluate_mappo_checkpoint
 
 
@@ -24,6 +27,48 @@ def resolved(path: str | Path) -> Path:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
+
+
+def validate_matrix_source(
+    role: str,
+    checkpoint: Path,
+    algorithm_config: dict[str, Any],
+    environment_config: dict[str, Any],
+) -> dict[str, Any]:
+    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    validate_checkpoint_for_evaluation(
+        state, environment_config, algorithm_config, allow_cross_variant=False
+    )
+    extra = state.get("extra", {})
+    expected_variant = str(
+        environment_config.get("environment_variant", "direct_v2_3")
+    )
+    if str(extra.get("environment_variant", "direct_v2_3")) != expected_variant:
+        raise RuntimeError(f"{role} checkpoint/source environment role mismatch")
+    required = (
+        "training_seed", "training_gamma", "training_num_envs",
+        "training_total_sampled_steps", "training_smoke",
+        "environment_config_sha256", "algorithm_config_sha256",
+    )
+    missing = [field for field in required if field not in extra]
+    if missing:
+        raise RuntimeError(
+            f"{role} checkpoint has incomplete protocol metadata: "
+            + ", ".join(missing)
+        )
+    expected_algorithm_hash = config_sha256(algorithm_config)
+    if extra["algorithm_config_sha256"] != expected_algorithm_hash:
+        raise RuntimeError(f"{role} checkpoint algorithm config fingerprint mismatch")
+    expected_environment_hash = config_sha256(environment_config)
+    if extra["environment_config_sha256"] != expected_environment_hash:
+        raise RuntimeError(f"{role} checkpoint environment config fingerprint mismatch")
+    return {
+        "training_gamma": extra["training_gamma"],
+        "algorithm_config_sha256": extra["algorithm_config_sha256"],
+        "environment_config_sha256": extra["environment_config_sha256"],
+        "sampled_steps": int(state.get("sampled_steps", 0)),
+        "protocol_complete": True,
+    }
 
 
 def evaluate_policy_matrix(
@@ -40,6 +85,16 @@ def evaluate_policy_matrix(
 ) -> dict[str, dict[str, Any]]:
     if not seeds:
         raise ValueError("seeds must not be empty")
+    if any(right != left + 1 for left, right in zip(seeds, seeds[1:])):
+        raise ValueError("seeds must be strictly increasing and contiguous by 1")
+    direct_protocol = validate_matrix_source(
+        "direct", direct_checkpoint, direct_algorithm_config,
+        direct_environment_config,
+    )
+    persistent_protocol = validate_matrix_source(
+        "persistent", persistent_checkpoint, persistent_algorithm_config,
+        persistent_environment_config,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     cells = {
         "direct_to_direct": (
@@ -58,6 +113,7 @@ def evaluate_policy_matrix(
         ),
     }
     results: dict[str, dict[str, Any]] = {}
+    cross_cells = {"direct_to_persistent", "persistent_to_direct"}
     for name, (checkpoint, algorithm_config, environment_config) in cells.items():
         result = evaluate_mappo_checkpoint(
             checkpoint,
@@ -65,7 +121,7 @@ def evaluate_policy_matrix(
             environment_config,
             device,
             seeds,
-            allow_cross_variant=True,
+            allow_cross_variant=name in cross_cells,
         )
         results[name] = result
         write_json(output_dir / f"{name}.json", result)
@@ -99,6 +155,28 @@ def evaluate_policy_matrix(
         "holdout_seed_end": seeds[-1],
         "evaluation_episodes": len(seeds),
         "device": device,
+        "direct_training_gamma": direct_protocol["training_gamma"],
+        "persistent_training_gamma": persistent_protocol["training_gamma"],
+        "direct_algorithm_config_sha256": direct_protocol[
+            "algorithm_config_sha256"
+        ],
+        "persistent_algorithm_config_sha256": persistent_protocol[
+            "algorithm_config_sha256"
+        ],
+        "direct_environment_config_sha256": direct_protocol[
+            "environment_config_sha256"
+        ],
+        "persistent_environment_config_sha256": persistent_protocol[
+            "environment_config_sha256"
+        ],
+        "direct_checkpoint_sampled_steps": direct_protocol["sampled_steps"],
+        "persistent_checkpoint_sampled_steps": persistent_protocol[
+            "sampled_steps"
+        ],
+        "direct_protocol_complete": direct_protocol["protocol_complete"],
+        "persistent_protocol_complete": persistent_protocol[
+            "protocol_complete"
+        ],
     }
     write_json(output_dir / "evaluation_manifest.json", manifest)
     return results
@@ -155,4 +233,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

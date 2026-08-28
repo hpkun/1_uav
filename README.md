@@ -95,7 +95,11 @@ python algorithm/evaluate_mappo.py \
 ```
 
 Checkpoint loading validates `environment_version`, `environment_variant`, and
-MAPPO implementation compatibility before formal use.
+MAPPO implementation compatibility before formal use. New checkpoints also
+embed the effective training seed, gamma, environment count, sampled-step
+target, smoke/formal mode, and SHA-256 fingerprints of both YAML configuration
+objects. Configuration fingerprints use canonical sorted compact JSON, so YAML
+formatting and mapping-key order do not alter experiment identity.
 
 Cross-variant policy transfer is never implicit. To evaluate a Direct-trained
 checkpoint in Persistent-Wave V2 (or the reverse), add the explicit flag:
@@ -163,6 +167,18 @@ parent directory; an explicitly different directory is rejected. Stored YAML
 snapshots must match, and every continuation is appended to
 `resume_history.jsonl` without rewriting the original `run_config.json`.
 
+Resume is a safe continuation mechanism, not a claim of bitwise-exact replay.
+The original seed, environment count, smoke/formal mode, and current training
+target are inherited when their CLI options are omitted. Conflicting seed,
+environment count, or mode is rejected; the target may only be extended, while
+the device may be changed explicitly. Selecting an older checkpoint is rejected
+when a newer regular checkpoint exists. Records written beyond a selected
+checkpoint after an interruption are timestamp-backed-up and truncated before
+continuation, and any future `best_eval.pt` is preserved under a
+`best_eval.pre_resume_*.pt` name. MAPPO/environment multiprocessing RNG and
+process state are not serialized, so resumed execution is scientifically
+traceable but not bit-for-bit identical to an uninterrupted process.
+
 ## Formal experiment workflow
 
 The following long commands are protocol examples for the user to run manually.
@@ -211,7 +227,11 @@ python tools/evaluate_policy_matrix.py \
 
 This evaluates D→D, D→PW, PW→D, and PW→PW with exactly the same holdout seeds.
 It writes four complete JSON files, `matrix_summary.csv`,
-`matrix_summary.json`, and `evaluation_manifest.json`.
+`matrix_summary.json`, and `evaluation_manifest.json`. Before any cell runs, the
+tool verifies that each checkpoint belongs to its declared Direct/Persistent
+role and matches its source algorithm/environment fingerprints. Same-variant
+cells remain strict; only the two transfer cells explicitly allow a variant
+change.
 
 ### D. Final holdout evaluation
 
@@ -237,11 +257,16 @@ python tools/aggregate_holdout_results.py \
   --output-dir outputs/pw_v2_holdout_summary
 ```
 
-The training aggregator discovers all common numeric history metrics. The
-holdout aggregator first requires matching algorithm, source/target environment,
-episode count, and seed range. Both report mean, sample standard deviation, SEM,
-and a two-sided 95% Student-t interval, using a fixed t table for df 1–30 and
-1.96 only for df greater than 30.
+The training aggregator discovers all common numeric history metrics, but first
+requires matching environment/algorithm fingerprints, gamma, environment count,
+training budget, smoke mode, and effective hidden dimension; training seeds must
+be unique. The holdout aggregator requires complete checkpoint protocol metadata,
+matching source/target protocol and seed range, plus unique checkpoint training
+seeds. Legacy checkpoints remain available for explicitly diagnostic evaluation,
+where results carry `protocol_complete=false` and a warning, but such results are
+rejected by formal holdout aggregation. Both aggregators report mean, sample
+standard deviation, SEM, and a two-sided 95% Student-t interval, using a fixed t
+table for df 1–30 and 1.96 only for df greater than 30.
 
 ## Discount/environment 2×2 protocol
 
