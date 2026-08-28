@@ -4,11 +4,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 import multiprocessing as mp
 from multiprocessing.connection import Connection
+from pathlib import Path
 from typing import Any
 import numpy as np
 
 from env.observation import OBSERVATION_DIM
 from env.process_worker import combat_environment_worker
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_COMBAT_CONFIG = PROJECT_ROOT / "configs/combat_environment.yaml"
 
 
 @dataclass
@@ -31,7 +36,7 @@ class ParallelVectorEnv:
     def __init__(
         self,
         num_envs: int,
-        config: Any = "configs/combat_environment.yaml",
+        config: Any = DEFAULT_COMBAT_CONFIG,
         base_seed: int = 0,
         forbidden_seeds=(),
     ) -> None:

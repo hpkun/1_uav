@@ -1,120 +1,156 @@
-# MAPPO UAV Combat Benchmark
+# MAPPO UAV Combat Research Project
 
-This repository implements MAPPO against public, lightweight 3D UAV combat
-environments. The current primary environment is **persistent_wave_v2**, a
-three-wave mission wrapper over **Paper-Constrained Direct 4v4 Combat
-Environment V2.3** with a ground-aware nearest-target Blue policy. Direct V2.3
-remains the base single-round environment, and `persistent_wave_v1` is retained
-as a historical variant.
+This repository contains the frozen Direct V2.3 4v4 UAV combat environment,
+the Persistent-Wave V1/V2 mission variants, and the MAPPO baseline. The current
+mainline is `persistent_wave_v2`; Direct V2.3 remains the single-round base
+environment. Observation dimension (52), action dimension (3), environment
+semantics, and MAPPO implementation version 2 are unchanged by the repository
+layout.
 
-The benchmark is a direct 4v4 engagement: four learned Red agents share an actor
-network and fight four Blue aircraft using a deterministic Blue policy. The
-observation and action dimensions remain 52 and 3. MAPPO uses a shared
-two-layer local actor and a centralized two-head attention value critic with an
-on-policy PPO/GAE update.
+## Project layout
 
-## Install and test
+```text
+algorithm/  MAPPO implementation, shared RL utilities, train/evaluate entries
+env/        Direct V2.3 and Persistent-Wave environments and all foundations
+configs/    Flat environment and algorithm YAML files
+outputs/    One direct child directory per experiment
+tools/      Validation, audit, aggregation, and plotting utilities
+tests/      Flat automated test suite
+papers/     Reference paper PDFs
+docs/       Active specifications and historical archives
+```
 
-Install the package in editable mode in a Python environment containing the
-dependencies declared by `pyproject.toml`, then run:
+## Install third-party dependencies
+
+Use Python 3.10 or newer and install only the third-party dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+The project itself does not need editable or wheel installation. `pytest` works
+from the project root, while algorithm entries and tools bootstrap the project
+root themselves and can be executed from any working directory.
 
 ```bash
 pytest -q
-python scripts/validate_combat_environment.py
+python tools/validate_combat_environment.py
 ```
 
-The validation report covers the controller grid, Eq. (8) Monte Carlo behavior,
-1000 randomized initializations and a 100-episode rule-based combat baseline.
-
-## Train Current Mainline
+## Smoke test
 
 ```bash
-python -u scripts/train_mappo.py \
-  --device cuda \
-  --seed 2023 \
-  --total-sampled-steps 8000000 \
-  --num-envs 24 \
-  --env-config configs/persistent_wave_v2_environment.yaml \
-  --algorithm-config configs/mappo_persistent_wave.yaml \
-  --output-dir outputs/mappo_persistent_wave_v2
-```
-
-Training uses one persistent spawned worker per environment. Console output stays
-compact; `training_metrics.jsonl`, evaluation history, summaries and checkpoints
-retain the complete diagnostic record.
-
-To run the base Direct V2.3 environment explicitly:
-
-```bash
-python -u scripts/train_mappo.py \
-  --device cuda \
-  --seed 2023 \
-  --total-sampled-steps 500000 \
-  --num-envs 24 \
-  --env-config configs/combat_environment.yaml \
-  --algorithm-config configs/mappo.yaml \
-  --output-dir outputs/mappo_direct_v2_3
-```
-
-Its formal hyperparameters are declared in `configs/mappo.yaml`. MAPPO
-checkpoints contain the actor, centralized critic, both optimizers and training
-counters; no partial on-policy rollout is serialized. MAPPO implementation v2
-stores both latent and squashed rollout actions, evaluates PPO ratios from the
-stored latent action, and uses Monte-Carlo squashed-policy entropy with an exact
-tanh Jacobian.
-
-V2.0-V2.2 checkpoints are intentionally incompatible with V2.3. Checkpoints
-contain an `environment_version` field, and resume fails before loading model
-weights when the field is absent or different. MAPPO checkpoints also contain
-`mappo_impl_version=2`; older MAPPO checkpoints are loadable only through the
-explicit diagnostic path and cannot resume formal training. MAPPO saves
-`best_eval.pt`, selected lexicographically by win rate, team return, then lower
-Red loss for Direct V2.3; persistent missions use the persistent mission
-selection key.
-
-## Environment contract
-
-- NED 3DOF point-mass dynamics, RK4, `dt=0.1 s`.
-- Relative action increments `[a_psi, a_theta, a_v]` with physical maxima
-  `[pi rad, pi/3 rad, 50 m/s]`.
-- Eq. (2) inverse controller with 2 s response constants and proportional
-  `nz <= 8` projection.
-- Random 8 km diameter initialization inside a hard 5 km arena.
-- A 4 km, 30-degree true 3-D off-boresight fire cone and velocity-frame Eq. (8)
-  probabilistic, entry-triggered attacks.
-- Paper R1-R4 only; ground and boundary semantics are explicitly separated.
-- A 100 s timeout is a Red mission failure, not a draw.
-
-See `docs/environment_v2_spec.md` for the normative formulas, indices, update
-order, provenance and validation criteria.
-
-## Persistent-Wave Variants
-
-`PersistentWaveCombatEnv` keeps the frozen V2.3 observation, reward, dynamics,
-weapon, and Red-side transition contract. When a non-final Blue formation is
-eliminated, a fresh four-aircraft Blue wave is spawned immediately while Red
-physical states and losses persist. Both sides receive fresh Boolean FireState
-entry triggers at a wave boundary. The default configuration contains three
-waves and does not add ammunition or new observation features.
-
-The active persistent configuration is `configs/persistent_wave_v2_environment.yaml`.
-Its MAPPO configuration is `configs/mappo_persistent_wave.yaml`.
-
-Run a MAPPO smoke test with the current mainline using:
-
-```bash
-python scripts/train_mappo.py \
+python algorithm/train_mappo.py \
   --smoke \
   --device cpu \
   --num-envs 1 \
-  --env-config configs/persistent_wave_v2_environment.yaml \
-  --algorithm-config configs/mappo_persistent_wave.yaml \
-  --output-dir outputs/mappo_persistent_wave_v2_smoke
+  --output-dir outputs/mappo_smoke
 ```
 
-Persistent algorithm configs use `gamma=0.999`; the original Direct configs
-remain at `gamma=0.99`. Checkpoint resume also requires the environment variant
-to match.
+The default smoke and formal environment is Persistent-Wave V2, using
+`configs/persistent_wave_v2_environment.yaml` and
+`configs/mappo_persistent_wave.yaml`.
 
-The implementation scope and deferred extensions are documented in
-`docs/persistent_wave_environment_design.md`.
+## Persistent-Wave V2 formal training
+
+```bash
+python -u algorithm/train_mappo.py \
+  --device cuda \
+  --seed 2023 \
+  --num-envs 24 \
+  --total-sampled-steps 8000000 \
+  --env-config configs/persistent_wave_v2_environment.yaml \
+  --algorithm-config configs/mappo_persistent_wave.yaml \
+  --output-dir outputs/mappo_pw_v2_8m_seed2023
+```
+
+Persistent MAPPO uses `gamma=0.999`.
+
+## Direct V2.3 training
+
+```bash
+python -u algorithm/train_mappo.py \
+  --device cuda \
+  --seed 2023 \
+  --num-envs 24 \
+  --total-sampled-steps 500000 \
+  --env-config configs/combat_environment.yaml \
+  --algorithm-config configs/mappo.yaml \
+  --output-dir outputs/mappo_direct_v2_3_seed2023
+```
+
+Direct MAPPO uses `gamma=0.99`.
+
+## Checkpoint evaluation
+
+```bash
+python algorithm/evaluate_mappo.py \
+  --checkpoint outputs/mappo_pw_v2_8m_seed2023/best_eval.pt \
+  --env-config configs/persistent_wave_v2_environment.yaml \
+  --algorithm-config configs/mappo_persistent_wave.yaml \
+  --seed-base 20000000 \
+  --episodes 20 \
+  --device cpu \
+  --output outputs/mappo_pw_v2_8m_seed2023/holdout_evaluation.json
+```
+
+Checkpoint loading validates `environment_version`, `environment_variant`, and
+MAPPO implementation compatibility before formal use.
+
+## Validation and tools
+
+Common direct commands include:
+
+```bash
+python tools/validate_combat_environment.py
+python tools/validate_persistent_wave_environment.py
+python tools/check_parallel_env.py --num-envs 2 --steps 10
+python tools/stress_test_ground_guard.py --output outputs/ground_guard_check.json
+```
+
+All directly executable tools resolve project-relative configs, checkpoints,
+inputs, and outputs against the repository root.
+
+## Experiment output contract
+
+One run equals one direct child directory under `outputs/`:
+
+```text
+outputs/
+└── mappo_pw_v2_8m_seed2023/
+    ├── algorithm_config.yaml
+    ├── env_config.yaml
+    ├── run_config.json
+    ├── train.log
+    ├── training_metrics.jsonl
+    ├── optimization_metrics.jsonl
+    ├── evaluation_history.csv
+    ├── best_eval.pt
+    ├── checkpoint_*.pt
+    ├── latest.pt
+    └── run_summary.json
+```
+
+The `--output-dir` value is the final run directory. No automatic
+`run_seed_*` or algorithm/environment/seed hierarchy is added. If omitted, the
+entry creates one timestamped directory directly under `outputs/`. Every run
+stores snapshots of both YAML inputs plus a JSON record of effective command-line
+settings.
+
+## Environment contract
+
+- Four homogeneous learned Red UAVs fight four deterministic Blue UAVs.
+- NED 3DOF point-mass dynamics use RK4 with `dt=0.1 s`.
+- Actions are relative heading, pitch, and speed commands.
+- The observation remains exactly 52 floats per Red agent.
+- The weapon uses the frozen V2.3 3-D firing cone and probabilistic hit model.
+- Rewards remain the frozen R1-R4 terms.
+- Persistent-Wave V2 preserves the multi-wave contract and uses the existing
+  ground-aware nearest-target Blue policy.
+
+The normative Direct formulas and update order are in
+`docs/environment_v2_spec.md`. Persistent mission behavior and variant identity
+are documented in `docs/persistent_wave_environment_design.md`. Files under
+`docs/archive/` are historical records and are not rewritten as active runtime
+instructions.
+

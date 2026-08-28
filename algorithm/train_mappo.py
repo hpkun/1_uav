@@ -41,7 +41,13 @@ class TeeOutput:
 
 def default_output_dir(seed: int) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return PROJECT_ROOT / "outputs" / f"run_{timestamp}_seed_{seed}"
+    base = PROJECT_ROOT / "outputs" / f"run_{timestamp}_seed_{seed}"
+    candidate = base
+    suffix = 1
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name}_{suffix}")
+        suffix += 1
+    return candidate
 
 
 def main() -> None:

@@ -46,6 +46,10 @@ class MAPPOTrainingRunner:
         self.total_sampled_steps = int(total_sampled_steps or training["total_sampled_steps"])
         self.device = str(device or training["device"])
         self.seed = int(training["seed"] if seed is None else seed)
+        if output_dir is None:
+            raise ValueError("output_dir must be the final run directory")
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.rollout_steps = 4 if smoke else int(training["rollout_steps"])
         hidden_dim = 64 if smoke else int(network["actor_hidden_layers"][0])
         self.effective_hidden_dim = hidden_dim
@@ -74,10 +78,6 @@ class MAPPOTrainingRunner:
                                         self.evaluation_seeds)
         self.observations = self.vector.reset()
         self.alive_masks = self.vector.current_alive_masks.copy()
-        if output_dir is None:
-            raise ValueError("output_dir must be the final run directory")
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.agent_episode_returns = np.zeros((self.num_envs, self.num_agents), dtype=float)
         self.completed_records: list[dict[str, Any]] = []
         self.last_metrics: dict[str, float] = {}

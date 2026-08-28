@@ -1,6 +1,7 @@
 """Minimal persistent-wave variant of the frozen V2.3 combat environment."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 import numpy as np
 
@@ -16,6 +17,8 @@ PERSISTENT_WAVE_V2_VARIANT = "persistent_wave_v2"
 PERSISTENT_WAVE_VARIANTS = frozenset({
     PERSISTENT_WAVE_VARIANT, PERSISTENT_WAVE_V2_VARIANT,
 })
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PERSISTENT_CONFIG = PROJECT_ROOT / "configs/persistent_wave_environment.yaml"
 
 
 class PersistentWaveCombatEnv(MultiUAVCombatEnv):
@@ -23,7 +26,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
 
     environment_variant = PERSISTENT_WAVE_VARIANT
 
-    def __init__(self, config: Any = "configs/persistent_wave_environment.yaml") -> None:
+    def __init__(self, config: Any = DEFAULT_PERSISTENT_CONFIG) -> None:
         super().__init__(config)
         variant = self.config.get("environment_variant")
         if variant not in PERSISTENT_WAVE_VARIANTS:

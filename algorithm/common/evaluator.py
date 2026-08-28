@@ -1,9 +1,14 @@
 """Deterministic evaluation on seeds disjoint from training."""
 from __future__ import annotations
 
+from pathlib import Path
 import numpy as np
 from typing import Any
 from env.factory import make_combat_environment
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_COMBAT_CONFIG = PROJECT_ROOT / "configs/combat_environment.yaml"
 
 
 def episode_return_metrics(agent_returns: np.ndarray) -> tuple[float, float]:
@@ -48,7 +53,7 @@ def persistent_mission_metrics(records: list[dict[str, Any]]) -> dict[str, float
     return result
 
 
-def evaluate(actor, config="configs/combat_environment.yaml", seeds=range(10_000_000, 10_000_020)) -> dict[str, float]:
+def evaluate(actor, config=DEFAULT_COMBAT_CONFIG, seeds=range(10_000_000, 10_000_020)) -> dict[str, float]:
     records = []
     policy_rows: list[dict[str, float]] = []
     for seed in seeds:

@@ -69,7 +69,7 @@ steps, preserving a conventional per-second discount gives
 Example:
 
 ```powershell
-python scripts/train_mappo.py --device cuda --seed 2023 --num-envs 24 `
+python algorithm/train_mappo.py --device cuda --seed 2023 --num-envs 24 `
   --total-sampled-steps 8000000 `
   --env-config configs/persistent_wave_v2_environment.yaml `
   --algorithm-config configs/mappo_persistent_wave.yaml `
@@ -94,7 +94,7 @@ Direct checkpoints retain the lexicographic selection key
 -average_red_loss)` so progress before the first full three-wave success can
 still update `best_eval.pt`.
 
-`scripts/validate_persistent_wave_environment.py` performs the pure-environment
+`tools/validate_persistent_wave_environment.py` performs the pure-environment
 100,000-case replacement stress audit across 1-4 Red survivors and center,
 boundary, spread, altitude, heading, and speed layouts. It records selected
 sectors, distance percentiles, immediate weapon windows, and the following one

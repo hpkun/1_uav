@@ -18,6 +18,10 @@ from .scenario import random_combat_states
 from .weapon import FireState, WeaponEnvelope
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_COMBAT_CONFIG = PROJECT_ROOT / "configs/combat_environment.yaml"
+
+
 class MultiUAVCombatEnv:
     """Four learned Red UAVs versus deterministic nearest-target Blue UAVs."""
 
@@ -25,7 +29,7 @@ class MultiUAVCombatEnv:
     environment_version = ENVIRONMENT_VERSION
 
     def __init__(
-        self, config: str | Path | dict[str, Any] = "configs/combat_environment.yaml"
+        self, config: str | Path | dict[str, Any] = DEFAULT_COMBAT_CONFIG
     ) -> None:
         self.config = load_config(config) if not isinstance(config, dict) else config
         if str(self.config.get("environment_version")) != ENVIRONMENT_VERSION:
