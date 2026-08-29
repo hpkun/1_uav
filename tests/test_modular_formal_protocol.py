@@ -27,8 +27,9 @@ def test_fresh_checkpoint_is_formal_v2():
 
 def test_v2_resume_allowed_and_v1_formal_resume_rejected(tmp_path):
  trainer=ModularMAPPOTrainer();path=tmp_path/"v2.pt";trainer.save(path);ModularMAPPOTrainer().load(path)
- state,env,config=formal_state();state["modular_mappo_impl_version"]=1;assert not is_formal_v2_checkpoint(state)
+ state,env,config=formal_state();state["modular_mappo_impl_version"]=1;assert not is_formal_v2_checkpoint(state);v1_path=tmp_path/"v1.pt";torch.save(state,v1_path)
  with pytest.raises(RuntimeError,match=r"checkpoint=1, current=2"):validate_modular_checkpoint(state,env,config)
+ with pytest.raises(RuntimeError,match=r"checkpoint=1, current=2"):ModularMAPPOTrainer(modules_config=config["modules"]).load(v1_path)
 
 def test_module_mismatch_and_baseline_checkpoint_rejected():
  state,env,config=formal_state();state["module_config_sha256"]="wrong"

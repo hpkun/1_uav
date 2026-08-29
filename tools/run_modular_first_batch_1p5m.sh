@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON_BIN="${PYTHON_BIN:-python}"
 ENV_CONFIG="configs/persistent_wave_v2_environment.yaml"
 DIRECT_BEST="${DIRECT_BEST:-outputs/d999_seed2023/best_eval.pt}"
 
@@ -15,7 +14,7 @@ fi
 run_one() {
   local name="$1"
   shift
-  "$PYTHON_BIN" -u algorithm/train_modular_mappo.py \
+  python -u algorithm/train_modular_mappo.py \
     --device cuda --seed 2023 --num-envs 24 --total-sampled-steps 1500000 \
     --env-config "$ENV_CONFIG" --output-dir "outputs/${name}" "$@" \
     > "outputs/${name}_nohup.log" 2>&1

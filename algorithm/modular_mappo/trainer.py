@@ -193,6 +193,9 @@ class ModularMAPPOTrainer:
  def load(self,path,strict_protocol=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
   if state.get("algorithm")!="modular_mappo":raise RuntimeError("not a modular_mappo checkpoint")
+  checkpoint_version=state.get("modular_mappo_impl_version")
+  if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
+  if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
