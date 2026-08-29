@@ -19,13 +19,25 @@ class MultiWaveRewardAdapter(CapabilityModule):
         self.scales = {int(k.replace("wave", "")): float(v) for k, v in self.config.get("round_scales", {"wave1": 1.0, "wave2": 1.0, "wave3": 1.0}).items()}
         self.survivor_scale = float(self.config.get("survivor_scale", 0.25))
 
-    def adapt(self, raw_rewards: np.ndarray, infos: list[dict[str, Any]]) -> tuple[np.ndarray, dict[str, float]]:
+    def adapt(self, raw_rewards: np.ndarray, infos: list[dict[str, Any]],
+              transition_wave_indices: np.ndarray | None = None) -> tuple[np.ndarray, dict[str, float]]:
         raw = np.asarray(raw_rewards, dtype=np.float32); training = raw.copy()
+        transition_waves = (
+            np.asarray(transition_wave_indices, dtype=np.int64)
+            if transition_wave_indices is not None else None
+        )
+        if transition_waves is not None and transition_waves.shape != (raw.shape[0],):
+            raise ValueError("transition_wave_indices must have shape [num_envs]")
         bonus_by_wave = {1: 0.0, 2: 0.0, 3: 0.0}
         if not self.enabled or self.mode == "none":
             return training, self._metrics(raw, training, bonus_by_wave)
         for env_id, info in enumerate(infos):
-            wave = int(info.get("waves_cleared", 0)) if info.get("wave_cleared_this_step", False) else int(info.get("wave_index", 1))
+            # Reward belongs to the state/action transition that started in
+            # this wave, never the post-step wave reported after a spawn.
+            wave = int(transition_waves[env_id]) if transition_waves is not None else (
+                int(info.get("waves_cleared", 0)) if info.get("wave_cleared_this_step", False)
+                else int(info.get("wave_index", 1))
+            )
             wave = max(1, wave)
             if self.mode == "round_scaled":
                 training[env_id] *= self.scales.get(wave, 1.0)

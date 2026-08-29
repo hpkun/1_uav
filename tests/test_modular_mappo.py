@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from algorithm.mappo.trainer import MAPPOTrainer,RolloutBatch
 from algorithm.modular_mappo.trainer import ModularMAPPOTrainer
-from algorithm.modular_mappo.buffer import ModularRolloutBatch,contiguous_chunks
+from algorithm.modular_mappo.buffer import ModularRolloutBatch,contiguous_chunks,recurrent_batch_plan,recurrent_alive_mean
 
 def data(seed=4):
  r=np.random.default_rng(seed);T,E,A,F=4,2,4,52;obs=r.normal(size=(T,E,A,F)).astype("f");actions=np.tanh(r.normal(size=(T,E,A,3))).astype("f");raw=np.arctanh(np.clip(actions,-.999,.999));alive=np.ones((T,E,A),"f");dones=np.zeros((T,E),"f");rew=r.normal(size=(T,E,A)).astype("f")
@@ -14,6 +14,13 @@ def test_context_critic_only_actor_invariant():
  m=ModularMAPPOTrainer(hidden_dim=16,modules_config={"wave_context":{"enabled":True,"context_target":"critic_only"}});x=np.ones((1,4,52),"f");a1=m.act(x,np.ones((1,4)),True,context=m.context_numpy([1],[3]))[0];a3=m.act(x,np.ones((1,4)),True,context=m.context_numpy([3],[3]))[0];assert np.array_equal(a1,a3)
 def test_recurrent_history_changes_output_and_chunks_contiguous():
  m=ModularMAPPOTrainer(hidden_dim=16,modules_config={"recurrent_memory":{"enabled":True,"hidden_dim":8,"sequence_length":2}});x=np.ones((1,4,52),"f");alive=np.ones((1,4),"f");h,_=m.initial_hidden(1);a1,h1=m.act(x,alive,True,hidden=h,episode_mask=np.ones(1));a2,_=m.act(x,alive,True,hidden=h1,episode_mask=np.ones(1));assert not np.allclose(a1,a2);assert contiguous_chunks(5,1,2)==[(0,0,2),(0,2,4),(0,4,5)]
+def test_recurrent_optimizer_count_matches_baseline_scale():
+ plan=recurrent_batch_plan(256,24,32,512,10);assert plan=={"sequence_chunks":192,"sequences_per_minibatch":16,"recurrent_minibatches_per_epoch":12,"optimizer_steps":120};assert int(np.ceil(256*24/512))==12
+def test_recurrent_alive_mean_uses_all_agent_time_samples():
+ values=torch.tensor([[[1.,2.,3.,4.]],[[10.,99.,99.,99.]]]);alive=torch.tensor([[[1.,1.,1.,1.]],[[1.,0.,0.,0.]]]);valid=torch.ones(2,1);assert torch.isclose(recurrent_alive_mean(values,alive,valid),torch.tensor(4.0))
+def test_recurrent_update_groups_sequences_and_keeps_partial_chunk():
+ rng=np.random.default_rng(8);T,E,A,F=5,4,4,52;obs=rng.normal(size=(T,E,A,F)).astype("f");actions=np.tanh(rng.normal(size=(T,E,A,3))).astype("f");raw=np.arctanh(np.clip(actions,-.999,.999));alive=np.ones((T,E,A),"f");rewards=rng.normal(size=(T,E,A)).astype("f");zeros=np.zeros((T,E),"f");hidden=np.zeros((T,E,A,8),"f");ctx=np.zeros((T,E,0),"f")
+ rollout=ModularRolloutBatch(obs,actions,raw,np.zeros((T,E,A),"f"),rewards,rewards.copy(),zeros,alive,obs.copy(),alive.copy(),np.ones((T,E),int),np.ones((T,E),int),ctx,ctx,hidden,hidden,np.ones((T,E),"f"));trainer=ModularMAPPOTrainer(hidden_dim=16,ppo_epochs=1,minibatch_size=4,modules_config={"recurrent_memory":{"enabled":True,"hidden_dim":8,"sequence_length":2}});metrics=trainer.update(rollout);assert metrics["sequence_chunks"]==12 and metrics["sequences_per_minibatch"]==2 and metrics["recurrent_minibatches_per_epoch"]==6 and metrics["actor_optimizer_steps_this_update"]==6
 def test_modular_update_checkpoint_protocol(tmp_path):
  d=data();m=ModularMAPPOTrainer(hidden_dim=16,ppo_epochs=1,minibatch_size=8,modules_config={});ctx=np.zeros((4,2,0),"f");r=ModularRolloutBatch(**d,raw_environment_rewards=d["rewards"].copy(),wave_indices=np.ones((4,2),int),total_waves=np.ones((4,2),int),contexts=ctx,next_contexts=ctx,episode_masks=np.ones((4,2),"f"));metrics=m.update(r);assert all(np.isfinite(list(metrics.values())));p=tmp_path/"x.pt";m.save(p);m.load(p);bad=ModularMAPPOTrainer(hidden_dim=16,modules_config={"popart":{"enabled":True}});import pytest
  with pytest.raises(RuntimeError):bad.load(p)

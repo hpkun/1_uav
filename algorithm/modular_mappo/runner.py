@@ -1,79 +1,467 @@
-"""Short/formal modular MAPPO runner with raw/training reward separation."""
+"""Formal-grade modular MAPPO runner with bounded memory and strict lineage."""
 from __future__ import annotations
+
+from collections import deque
 from copy import deepcopy
-import csv,json
+import csv
+import hashlib
+import json
+import math
 from pathlib import Path
+from typing import Any
+
 import numpy as np
+import torch
 import yaml
-from algorithm.common.vector_env import ParallelVectorEnv
+
+from env.config import ENVIRONMENT_VERSION
+from algorithm.common.checkpoint import evaluation_selection_key
 from algorithm.common.protocol import config_sha256
-from .factory import build_modular_mappo_trainer
+from algorithm.common.vector_env import ParallelVectorEnv
+from algorithm.mappo.networks import SharedMAPPOActor
 from .buffer import ModularRolloutBatch
 from .evaluation import evaluate_modular
-from .protocol import checkpoint_architecture
+from .factory import build_modular_mappo_trainer
+from .protocol import checkpoint_architecture, validate_modular_checkpoint
+
 
 class ModularMAPPOTrainingRunner:
- def __init__(self,env_config,algorithm_config,num_envs=None,total_sampled_steps=None,device=None,seed=None,output_dir=None,smoke=False,warm_start_checkpoint=None,reference_checkpoint=None):
-  self.env_config=deepcopy(env_config);self.algorithm_config=deepcopy(algorithm_config);self.output_dir=Path(output_dir);self.output_dir.mkdir(parents=True,exist_ok=True);self.smoke=bool(smoke)
-  t=algorithm_config["training"];self.num_envs=int(num_envs or t["num_train_envs"]);self.total_sampled_steps=int(total_sampled_steps or t["total_sampled_steps"]);self.seed=int(t["seed"] if seed is None else seed);self.device=str(device or t["device"])
-  cfg=deepcopy(algorithm_config);cfg["training"]["seed"]=self.seed
-  needs_compatible_width=bool(cfg.get("modules",{}).get("warm_start",{}).get("enabled",False))
-  self.trainer=build_modular_mappo_trainer(cfg,self.device,None if needs_compatible_width else (64 if smoke else None))
-  self.rollout_steps=4 if smoke else int(t["rollout_steps"]);self.eval_episodes=min(2,int(t["evaluation_episodes"])) if smoke else int(t["evaluation_episodes"]);self.eval_base=int(algorithm_config["implementation"]["evaluation_seed_base"]);self.evaluation_interval=int(t["evaluation_interval_sampled_steps"]);self.checkpoint_interval=int(algorithm_config["implementation"]["checkpoint_interval_sampled_steps"]);self.next_evaluation=self.evaluation_interval;self.next_checkpoint=self.checkpoint_interval;self.best_key=None
-  self.current_stage,self.current_waves=self.trainer.curriculum.stage(0);self.runtime_env_config=self.trainer.curriculum.runtime_config(self.env_config,0);self.vector=None;self._make_vector();self.completed_records=[];self.last_metrics={};self.optimization_history=[];self.module_metrics=[];self.wave_sample_counts=np.zeros(3,dtype=np.int64);self.curriculum_transitions=[{"sampled_steps":0,"stage":self.current_stage,"total_waves":self.current_waves}]
-  if warm_start_checkpoint:self.trainer.warm_start_provenance=self.trainer.warm_start.initialize(self.trainer,warm_start_checkpoint)
-  if self.trainer.anchor.enabled:
-   if not reference_checkpoint:raise ValueError("policy_anchor requires --reference-checkpoint")
-   import torch
-   state=torch.load(reference_checkpoint,map_location="cpu",weights_only=False);from algorithm.mappo.networks import SharedMAPPOActor
-   n=algorithm_config["network"];ref=SharedMAPPOActor(int(n["observation_dim"]),int(n["action_dim"]),int(n["actor_hidden_layers"][0])).to(self.trainer.device);ref.load_state_dict(state["actor"]);self.trainer.anchor.attach(ref,str(reference_checkpoint));self.trainer.anchor_provenance={"reference_checkpoint":str(reference_checkpoint),"source_algorithm":state.get("algorithm")}
- def _make_vector(self):
-  if self.vector is not None:self.vector.close()
-  self.vector=ParallelVectorEnv(self.num_envs,self.runtime_env_config,self.seed+self.trainer.sampled_steps,range(self.eval_base,self.eval_base+self.eval_episodes));self.observations=self.vector.reset();self.alive=self.vector.current_alive_masks.copy();self.wave=np.ones(self.num_envs,np.int64);self.total=np.full(self.num_envs,self.current_waves,np.int64);self.episode_mask=np.zeros(self.num_envs,np.float32);self.actor_hidden,self.critic_hidden=self.trainer.initial_hidden(self.num_envs);self.episode_returns=np.zeros((self.num_envs,4))
-  (self.output_dir/"runtime_env_config.yaml").write_text(yaml.safe_dump(self.runtime_env_config,sort_keys=False),encoding="utf-8")
- def _maybe_curriculum(self):
-  stage,waves=self.trainer.curriculum.stage(self.trainer.sampled_steps)
-  if (stage,waves)!=(self.current_stage,self.current_waves):self.current_stage,self.current_waves=stage,waves;self.curriculum_transitions.append({"sampled_steps":self.trainer.sampled_steps,"stage":stage,"total_waves":waves});self.runtime_env_config=self.trainer.curriculum.runtime_config(self.env_config,self.trainer.sampled_steps);self._make_vector()
- def collect_rollout(self,steps=None):
-  keys=("observations","actions","raw_actions","old_log_probs","rewards","raw_environment_rewards","dones","alive_masks","next_observations","next_alive_masks","wave_indices","total_waves","contexts","next_contexts","actor_hidden_before_step","critic_hidden_before_step","episode_masks");s={k:[] for k in keys}
-  for _ in range(int(steps or self.rollout_steps)):
-   obs=self.observations.copy();alive=self.alive.copy();ctx=self.trainer.context_numpy(self.wave,self.total);ah=None if self.actor_hidden is None else self.actor_hidden.copy();ch=None if self.critic_hidden is None else self.critic_hidden.copy()
-   actions,raw,log,newah=self.trainer.act(obs,alive,False,True,ctx,self.actor_hidden,self.episode_mask);_,newch=self.trainer.values_step(obs,alive,ctx,self.critic_hidden,self.episode_mask)
-   result=self.vector.step_batch(actions);done=result.terminated|result.truncated;training,reward_metrics=self.trainer.reward_adapter.adapt(result.rewards,result.infos);nextwave=np.asarray([int(x.get("wave_index",1)) for x in result.infos]);nexttotal=np.asarray([int(x.get("total_waves",self.current_waves)) for x in result.infos]);nextctx=self.trainer.context_numpy(nextwave,nexttotal)
-   for k in (1,2,3):self.wave_sample_counts[k-1]+=int((self.wave==k).sum())
-   values=(obs,actions,raw,log,training,result.rewards.copy(),done.astype(np.float32),alive,result.transition_next_observations,result.next_alive_masks,self.wave.copy(),self.total.copy(),ctx,nextctx,ah,ch,self.episode_mask.copy())
-   for k,v in zip(keys,values):s[k].append(v)
-   self.episode_returns+=result.rewards
-   for e,is_done in enumerate(done):
-    if is_done:self.completed_records.append({"team_episode_return":float(self.episode_returns[e].sum()),**result.infos[e]});self.episode_returns[e].fill(0)
-   self.observations=result.observations;self.alive=self.vector.current_alive_masks.copy();self.wave=np.where(done,1,nextwave);self.total=np.where(done,self.current_waves,nexttotal);self.episode_mask=(~done).astype(np.float32)
-   self.actor_hidden=self.trainer.recurrent.apply_alive(newah,self.alive);self.critic_hidden=self.trainer.recurrent.apply_alive(newch,self.alive);self.trainer.recurrent.reset_for_episode(self.actor_hidden,done);self.trainer.recurrent.reset_for_episode(self.critic_hidden,done)
-   self.module_metrics.append(reward_metrics)
-  kwargs={k:(None if not v or v[0] is None else np.asarray(v)) for k,v in s.items()};return ModularRolloutBatch(**kwargs)
- def checkpoint_extra(self):return {"training_seed":self.seed,"training_gamma":self.trainer.gamma,"training_num_envs":self.num_envs,"training_total_sampled_steps":self.total_sampled_steps,"environment_variant":self.env_config.get("environment_variant","direct_v2_3"),"environment_config":self.env_config,"algorithm_config":self.algorithm_config,"environment_config_sha256":config_sha256(self.env_config),"algorithm_config_sha256":config_sha256(self.algorithm_config),"network_architecture":checkpoint_architecture(self.trainer),"curriculum_stage":self.current_stage,"current_total_waves":self.current_waves}
- def save(self,name="final.pt"):self.trainer.save(self.output_dir/name,self.checkpoint_extra())
- def resume(self,path):
-  extra=self.trainer.load(path);self.current_stage=int(extra.get("curriculum_stage",self.current_stage));self.current_waves=int(extra.get("current_total_waves",self.current_waves));self.next_evaluation=((self.trainer.sampled_steps//self.evaluation_interval)+1)*self.evaluation_interval;self.next_checkpoint=((self.trainer.sampled_steps//self.checkpoint_interval)+1)*self.checkpoint_interval;self.runtime_env_config=self.trainer.curriculum.runtime_config(self.env_config,self.trainer.sampled_steps);self._make_vector()
- def evaluate(self):return evaluate_modular(self.trainer,self.env_config,range(self.eval_base,self.eval_base+self.eval_episodes))
- def _record_evaluation(self):
-  result={"sampled_steps":self.trainer.sampled_steps,**self.evaluate()};path=self.output_dir/"evaluation_history.csv";exists=path.exists()
-  with path.open("a",newline="",encoding="utf-8") as stream:
-   writer=csv.DictWriter(stream,fieldnames=list(result));
-   if not exists:writer.writeheader()
-   writer.writerow(result)
-  key=(result.get("clear_wave_3_probability",result.get("win_rate",0.)),result.get("average_waves_cleared",0.),result["average_return"])
-  if self.best_key is None or key>self.best_key:self.best_key=key;self.trainer.save(self.output_dir/"best_eval.pt",{**self.checkpoint_extra(),"evaluation":result})
-  return result
- def run(self):
-  try:
-   while self.trainer.sampled_steps<self.total_sampled_steps:
-    self._maybe_curriculum();remaining=self.total_sampled_steps-self.trainer.sampled_steps;vsteps=min(self.rollout_steps,max(1,int(np.ceil(remaining/self.num_envs))));batch=self.collect_rollout(vsteps);self.last_metrics=self.trainer.update(batch);inc=vsteps*self.num_envs;self.trainer.sampled_steps=min(self.total_sampled_steps,self.trainer.sampled_steps+inc);self.trainer.vector_steps+=vsteps;row={"sampled_steps":self.trainer.sampled_steps,**self.last_metrics};self.optimization_history.append(row)
-    with (self.output_dir/"optimization_metrics.jsonl").open("a",encoding="utf-8") as stream:stream.write(json.dumps(row)+"\n")
-    if self.trainer.sampled_steps>=self.next_checkpoint:
-     self.save(f"checkpoint_{self.trainer.sampled_steps}.pt");self.next_checkpoint+=self.checkpoint_interval
-    if self.trainer.sampled_steps>=self.next_evaluation:
-     self._record_evaluation();self.next_evaluation+=self.evaluation_interval
-   evaluation=self._record_evaluation();self.save();total=max(int(self.wave_sample_counts.sum()),1);reward_total={k:float(sum(row.get(k,0.) for row in self.module_metrics)) for k in ("reward_bonus_total","reward_bonus_wave1","reward_bonus_wave2","reward_bonus_wave3")};summary={"sampled_steps":self.trainer.sampled_steps,"evaluation":evaluation,"optimization":self.last_metrics,"optimization_updates":len(self.optimization_history),"module_protocol":self.trainer.module_protocol(),"curriculum_stage":self.current_stage,"current_total_waves":self.current_waves,"curriculum_transitions":self.curriculum_transitions,"wave_samples":{f"wave_{k}":int(self.wave_sample_counts[k-1]) for k in (1,2,3)},"wave_fractions":{f"wave_{k}":float(self.wave_sample_counts[k-1]/total) for k in (1,2,3)},"reward_adapter_totals":reward_total,"warm_start_provenance":self.trainer.warm_start_provenance,"anchor_provenance":self.trainer.anchor_provenance};(self.output_dir/"run_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8");return summary
-  finally:self.vector.close()
+    def __init__(self, env_config: dict, algorithm_config: dict,
+                 num_envs: int | None = None, total_sampled_steps: int | None = None,
+                 device: str | None = None, seed: int | None = None,
+                 output_dir: str | Path | None = None, smoke: bool = False,
+                 warm_start_checkpoint: str | None = None,
+                 reference_checkpoint: str | None = None,
+                 resume_mode: bool = False) -> None:
+        self.env_config = deepcopy(env_config)
+        self.algorithm_config = deepcopy(algorithm_config)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("training_metrics.jsonl", "optimization_metrics.jsonl"):
+            (self.output_dir / name).touch(exist_ok=True)
+        self.smoke = bool(smoke)
+        training = algorithm_config["training"]
+        implementation = algorithm_config["implementation"]
+        logging = algorithm_config["runtime_logging"]
+        self.num_envs = int(num_envs or training["num_train_envs"])
+        self.total_sampled_steps = int(total_sampled_steps or training["total_sampled_steps"])
+        self.seed = int(training["seed"] if seed is None else seed)
+        self.device = str(device or training["device"])
+        configured = deepcopy(algorithm_config)
+        configured["training"]["seed"] = self.seed
+        warm_enabled = bool(configured.get("modules", {}).get("warm_start", {}).get("enabled", False))
+        anchor_enabled = bool(configured.get("modules", {}).get("policy_anchor", {}).get("enabled", False))
+        self.effective_hidden_dim = int(configured["network"]["actor_hidden_layers"][0])
+        if self.smoke and not (warm_enabled or anchor_enabled):
+            self.effective_hidden_dim = 64
+        self.trainer = build_modular_mappo_trainer(configured, self.device, self.effective_hidden_dim)
+        self.rollout_steps = 4 if self.smoke else int(training["rollout_steps"])
+        self.eval_episodes = min(2, int(training["evaluation_episodes"])) if self.smoke else int(training["evaluation_episodes"])
+        self.eval_base = int(implementation["evaluation_seed_base"])
+        self.evaluation_interval = int(training["evaluation_interval_sampled_steps"])
+        self.checkpoint_interval = int(implementation["checkpoint_interval_sampled_steps"])
+        self.console_interval = int(logging["console_interval_sampled_steps"])
+        self.recent_window = int(logging["recent_episode_window"])
+        self.next_evaluation = self.evaluation_interval
+        self.next_checkpoint = self.checkpoint_interval
+        self.next_console = self.console_interval
+        self.current_stage, self.current_waves = self.trainer.curriculum.stage(0)
+        self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, 0)
+        self.vector: ParallelVectorEnv | None = None
+        self._make_vector()
+        self.recent_episodes: deque[dict[str, Any]] = deque(maxlen=self.recent_window)
+        self.completed_episode_count = 0
+        self.raw_episode_returns = np.zeros((self.num_envs, 4), dtype=np.float64)
+        self.training_episode_returns = np.zeros((self.num_envs, 4), dtype=np.float64)
+        self.transition_counts = np.zeros(3, dtype=np.int64)
+        self.alive_agent_counts = np.zeros(3, dtype=np.int64)
+        self.wave_clear_transition_counts = np.zeros(3, dtype=np.int64)
+        self.reward_bonus_totals = np.zeros(4, dtype=np.float64)
+        self.curriculum_transitions = [{"sampled_steps": 0, "stage": self.current_stage, "total_waves": self.current_waves}]
+        self.evaluation_history: list[dict[str, Any]] = []
+        self.best_evaluation: dict[str, Any] | None = None
+        self.best_sampled_steps: int | None = None
+        self.latest_evaluation: dict[str, Any] | None = None
+        self.last_metrics: dict[str, float] = {}
+        self.last_rollout_metrics: dict[str, float] = {}
+        self.resume_count = 0
+        if not resume_mode:
+            if warm_start_checkpoint:
+                self.trainer.warm_start_provenance = self.trainer.warm_start.initialize(self.trainer, warm_start_checkpoint)
+            if self.trainer.anchor.enabled:
+                if not reference_checkpoint:
+                    raise ValueError("fresh policy-anchor training requires --reference-checkpoint")
+                self._attach_reference(reference_checkpoint)
 
-__all__=["ModularMAPPOTrainingRunner"]
+    def _attach_reference(self, checkpoint: str) -> None:
+        state = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        network = self.algorithm_config["network"]
+        reference = SharedMAPPOActor(
+            int(network["observation_dim"]), int(network["action_dim"]),
+            int(network["actor_hidden_layers"][0]),
+            float(self.algorithm_config["implementation"]["log_std_min"]),
+            float(self.algorithm_config["implementation"]["log_std_max"]),
+            str(self.algorithm_config["implementation"]["actor_activation"]),
+        ).to(self.trainer.device)
+        reference.load_state_dict(state["actor"])
+        self.trainer.anchor.attach(reference, str(checkpoint))
+        extra = state.get("extra", {})
+        with open(checkpoint, "rb") as stream:
+            digest = hashlib.sha256(stream.read()).hexdigest()
+        self.trainer.anchor_provenance = {
+            "reference_checkpoint": str(checkpoint),
+            "source_algorithm": state.get("algorithm"),
+            "source_sampled_steps": int(state.get("sampled_steps", 0)),
+            "source_environment_variant": extra.get("environment_variant"),
+            "source_training_seed": extra.get("training_seed"),
+            "source_checkpoint_sha256": digest,
+        }
+
+    def _make_vector(self, episode_indices: np.ndarray | None = None) -> None:
+        if self.vector is not None:
+            self.vector.close()
+        self.vector = ParallelVectorEnv(
+            self.num_envs, self.runtime_env_config, self.seed,
+            range(self.eval_base, self.eval_base + self.eval_episodes),
+        )
+        if episode_indices is not None:
+            self.vector.episode_indices = np.asarray(episode_indices, dtype=np.int64)
+        self.observations = self.vector.reset()
+        self.alive = self.vector.current_alive_masks.copy()
+        self.wave = np.ones(self.num_envs, dtype=np.int64)
+        self.total = np.full(self.num_envs, self.current_waves, dtype=np.int64)
+        self.episode_mask = np.zeros(self.num_envs, dtype=np.float32)
+        self.actor_hidden, self.critic_hidden = self.trainer.initial_hidden(self.num_envs)
+        (self.output_dir / "runtime_env_config.yaml").write_text(
+            yaml.safe_dump(self.runtime_env_config, sort_keys=False), encoding="utf-8"
+        )
+
+    def _maybe_curriculum(self) -> None:
+        stage, waves = self.trainer.curriculum.stage(self.trainer.sampled_steps)
+        if (stage, waves) == (self.current_stage, self.current_waves):
+            return
+        previous = self.vector.episode_indices.copy() + 1
+        self.current_stage, self.current_waves = stage, waves
+        self.curriculum_transitions.append({"sampled_steps": self.trainer.sampled_steps, "stage": stage, "total_waves": waves})
+        self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, self.trainer.sampled_steps)
+        self._make_vector(previous)
+
+    @staticmethod
+    def _fractions(counts: np.ndarray) -> np.ndarray:
+        return counts.astype(np.float64) / max(float(counts.sum()), 1.0)
+
+    def _write_episode(self, info: dict[str, Any], raw_return: np.ndarray,
+                       training_return: np.ndarray, sampled_steps: int) -> None:
+        waves = int(info.get("waves_cleared", 0))
+        record = {
+            "sampled_steps": int(sampled_steps),
+            "episode_length": int(info["episode_length"]),
+            "team_raw_environment_return": float(raw_return.sum()),
+            "team_training_return": float(training_return.sum()),
+            "red_success": float(info["red_success"]),
+            "blue_win": float(info["blue_win"]),
+            "red_losses": int(info["red_losses"]),
+            "blue_losses": int(info["blue_losses"]),
+            "red_attack_kills": int(info["red_attack_kills"]),
+            "blue_attack_kills": int(info["blue_attack_kills"]),
+            "red_boundary_exits": int(info["red_boundary_exits"]),
+            "blue_boundary_exits": int(info["blue_boundary_exits"]),
+            "red_ground_losses": int(info["red_ground_losses"]),
+            "blue_ground_losses": int(info["blue_ground_losses"]),
+            "waves_cleared": waves,
+            "total_waves": int(info.get("total_waves", 1)),
+            **{f"wave_{k}_cleared": float(waves >= k) for k in (1, 2, 3)},
+        }
+        with (self.output_dir / "training_metrics.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record) + "\n")
+        self.recent_episodes.append(record)
+        self.completed_episode_count += 1
+
+    def collect_rollout(self, steps: int | None = None) -> ModularRolloutBatch:
+        keys = ("observations", "actions", "raw_actions", "old_log_probs", "rewards",
+                "raw_environment_rewards", "dones", "alive_masks", "next_observations",
+                "next_alive_masks", "wave_indices", "total_waves", "contexts",
+                "next_contexts", "actor_hidden_before_step", "critic_hidden_before_step",
+                "episode_masks")
+        storage = {key: [] for key in keys}
+        rollout_transition = np.zeros(3, dtype=np.int64)
+        rollout_alive = np.zeros(3, dtype=np.int64)
+        reward_rows: list[dict[str, float]] = []
+        hidden_norms: list[np.ndarray] = []
+        for _ in range(int(steps or self.rollout_steps)):
+            obs, alive, pre_wave = self.observations.copy(), self.alive.copy(), self.wave.copy()
+            context = self.trainer.context_numpy(pre_wave, self.total)
+            actor_before = None if self.actor_hidden is None else self.actor_hidden.copy()
+            critic_before = None if self.critic_hidden is None else self.critic_hidden.copy()
+            actions, raw, log_prob, new_actor = self.trainer.act(
+                obs, alive, False, True, context, self.actor_hidden, self.episode_mask
+            )
+            _, new_critic = self.trainer.values_step(
+                obs, alive, context, self.critic_hidden, self.episode_mask
+            )
+            result = self.vector.step_batch(actions)
+            done = result.terminated | result.truncated
+            training_reward, reward_metrics = self.trainer.reward_adapter.adapt(
+                result.rewards, result.infos, pre_wave
+            )
+            reward_rows.append(reward_metrics)
+            self.reward_bonus_totals += np.asarray([reward_metrics.get("reward_bonus_total",0.0),reward_metrics.get("reward_bonus_wave1",0.0),reward_metrics.get("reward_bonus_wave2",0.0),reward_metrics.get("reward_bonus_wave3",0.0)])
+            next_wave = np.asarray([int(row.get("wave_index", 1)) for row in result.infos])
+            next_total = np.asarray([int(row.get("total_waves", self.current_waves)) for row in result.infos])
+            next_context = self.trainer.context_numpy(next_wave, next_total)
+            for k in (1, 2, 3):
+                transition = pre_wave == k
+                rollout_transition[k - 1] += int(transition.sum())
+                rollout_alive[k - 1] += int(alive[transition].sum())
+                self.transition_counts[k - 1] += int(transition.sum())
+                self.alive_agent_counts[k - 1] += int(alive[transition].sum())
+            for env_id, info in enumerate(result.infos):
+                if info.get("wave_cleared_this_step", False):
+                    self.wave_clear_transition_counts[max(1, min(3, int(pre_wave[env_id]))) - 1] += 1
+            values = (obs, actions, raw, log_prob, training_reward, result.rewards.copy(),
+                      done.astype(np.float32), alive, result.transition_next_observations,
+                      result.next_alive_masks, pre_wave, self.total.copy(), context,
+                      next_context, actor_before, critic_before, self.episode_mask.copy())
+            for key, value in zip(keys, values):
+                storage[key].append(value)
+            self.raw_episode_returns += result.rewards
+            self.training_episode_returns += training_reward
+            step_after = self.trainer.sampled_steps + self.num_envs
+            for env_id, is_done in enumerate(done):
+                if is_done:
+                    self._write_episode(result.infos[env_id], self.raw_episode_returns[env_id],
+                                        self.training_episode_returns[env_id], step_after)
+                    self.raw_episode_returns[env_id].fill(0)
+                    self.training_episode_returns[env_id].fill(0)
+            self.observations = result.observations
+            self.alive = self.vector.current_alive_masks.copy()
+            self.wave = np.where(done, 1, next_wave)
+            self.total = np.where(done, self.current_waves, next_total)
+            self.episode_mask = (~done).astype(np.float32)
+            self.actor_hidden = self.trainer.recurrent.apply_alive(new_actor, self.alive)
+            self.critic_hidden = self.trainer.recurrent.apply_alive(new_critic, self.alive)
+            self.trainer.recurrent.reset_for_episode(self.actor_hidden, done)
+            self.trainer.recurrent.reset_for_episode(self.critic_hidden, done)
+            for hidden in (self.actor_hidden, self.critic_hidden):
+                if hidden is not None:
+                    hidden_norms.append(np.linalg.norm(hidden, axis=-1))
+            self.trainer.sampled_steps += self.num_envs
+            self.trainer.vector_steps += 1
+        transition_fraction = self._fractions(rollout_transition)
+        alive_fraction = self._fractions(rollout_alive)
+        self.last_rollout_metrics = {
+            **{f"transition_samples_wave_{k}": float(rollout_transition[k-1]) for k in (1,2,3)},
+            **{f"transition_fraction_wave_{k}": float(transition_fraction[k-1]) for k in (1,2,3)},
+            **{f"alive_agent_samples_wave_{k}": float(rollout_alive[k-1]) for k in (1,2,3)},
+            **{f"alive_agent_fraction_wave_{k}": float(alive_fraction[k-1]) for k in (1,2,3)},
+            "hidden_norm_mean": float(np.concatenate([x.ravel() for x in hidden_norms]).mean()) if hidden_norms else 0.0,
+            "hidden_norm_max": float(np.concatenate([x.ravel() for x in hidden_norms]).max()) if hidden_norms else 0.0,
+        }
+        if reward_rows:
+            for key in reward_rows[0]:
+                self.last_rollout_metrics[key] = float(np.mean([row[key] for row in reward_rows]))
+        kwargs = {key: (None if not values or values[0] is None else np.asarray(values)) for key, values in storage.items()}
+        return ModularRolloutBatch(**kwargs)
+
+    def checkpoint_extra(self, evaluation: dict[str, Any] | None = None) -> dict[str, Any]:
+        network = self.algorithm_config["network"]
+        return {
+            "environment_version": str(self.env_config.get("environment_version", ENVIRONMENT_VERSION)),
+            "environment_variant": self.env_config.get("environment_variant", "direct_v2_3"),
+            "observation_dim": int(network["observation_dim"]),
+            "action_dim": int(network["action_dim"]),
+            "num_agents": int(network["num_agents"]),
+            "training_seed": self.seed, "training_gamma": self.trainer.gamma,
+            "training_num_envs": self.num_envs,
+            "training_total_sampled_steps": self.total_sampled_steps,
+            "training_smoke": self.smoke,
+            "environment_config_sha256": config_sha256(self.env_config),
+            "algorithm_config_sha256": config_sha256(self.algorithm_config),
+            "environment_config": self.env_config,
+            "algorithm_config": self.algorithm_config,
+            "network_architecture": checkpoint_architecture(self.trainer),
+            "curriculum_stage": self.current_stage,
+            "current_total_waves": self.current_waves,
+            "curriculum_config": self.algorithm_config.get("modules", {}).get("curriculum", {}),
+            "episode_indices": self.vector.episode_indices.tolist(),
+            "evaluation_history": self.evaluation_history,
+            "best_evaluation": self.best_evaluation,
+            "best_sampled_steps": self.best_sampled_steps,
+            "transition_counts": self.transition_counts.tolist(),
+            "alive_agent_counts": self.alive_agent_counts.tolist(),
+            "wave_clear_transition_counts": self.wave_clear_transition_counts.tolist(),
+            "reward_bonus_totals": self.reward_bonus_totals.tolist(),
+            "curriculum_transitions": self.curriculum_transitions,
+            "resume_count": self.resume_count,
+            "evaluation": evaluation,
+        }
+
+    def save_checkpoint(self, path: str | Path, evaluation: dict[str, Any] | None = None) -> None:
+        self.trainer.save(path, self.checkpoint_extra(evaluation))
+
+    def _evaluation_key(self, row: dict[str, Any]) -> tuple[float, ...]:
+        return evaluation_selection_key(row, self.env_config.get("environment_variant", "direct_v2_3"))
+
+    def _record_evaluation(self) -> dict[str, Any]:
+        row = {"sampled_steps": self.trainer.sampled_steps, **evaluate_modular(
+            self.trainer, self.env_config, range(self.eval_base, self.eval_base + self.eval_episodes)
+        )}
+        self.latest_evaluation = row
+        self.evaluation_history.append(row)
+        path = self.output_dir / "evaluation_history.csv"
+        with path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(self.evaluation_history[0]))
+            writer.writeheader(); writer.writerows(self.evaluation_history)
+        print(self.evaluation_log_line(row), flush=True)
+        if self.best_evaluation is None or self._evaluation_key(row) > self._evaluation_key(self.best_evaluation):
+            old = None if self.best_evaluation is None else self._evaluation_key(self.best_evaluation)
+            self.best_evaluation = dict(row); self.best_sampled_steps = self.trainer.sampled_steps
+            self.save_checkpoint(self.output_dir / "best_eval.pt", row)
+            print(f"[BEST] old={old} | new={self._evaluation_key(row)} | sampled_steps={self.trainer.sampled_steps}", flush=True)
+        return row
+
+    def restore_best_from_disk(self, checkpoint_steps: int) -> None:
+        path = self.output_dir / "evaluation_history.csv"
+        rows: list[dict[str, Any]] = []
+        if path.exists():
+            with path.open(newline="", encoding="utf-8") as stream:
+                for row in csv.DictReader(stream):
+                    converted = {key: (float(value) if key != "sampled_steps" else int(value)) for key, value in row.items()}
+                    if converted["sampled_steps"] <= checkpoint_steps:
+                        rows.append(converted)
+        self.evaluation_history = rows
+        if rows:
+            self.best_evaluation = max(rows, key=self._evaluation_key)
+            self.best_sampled_steps = int(self.best_evaluation["sampled_steps"])
+        best_path = self.output_dir / "best_eval.pt"
+        if best_path.exists():
+            state = torch.load(best_path, map_location="cpu", weights_only=False)
+            if int(state.get("sampled_steps", -1)) <= checkpoint_steps:
+                validate_modular_checkpoint(state, self.env_config, self.algorithm_config)
+                stored = state.get("extra", {}).get("evaluation")
+                if stored is not None and (self.best_evaluation is None or self._evaluation_key(stored) >= self._evaluation_key(self.best_evaluation)):
+                    self.best_evaluation = stored; self.best_sampled_steps = int(state["sampled_steps"])
+
+    def resume(self, path: str | Path) -> None:
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        validate_modular_checkpoint(state, self.env_config, self.algorithm_config, {
+            "training_seed": self.seed, "training_num_envs": self.num_envs,
+            "training_smoke": self.smoke,
+        })
+        extra = self.trainer.load(path)
+        self.current_stage = int(extra["curriculum_stage"])
+        self.current_waves = int(extra["current_total_waves"])
+        self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, self.trainer.sampled_steps)
+        previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64) + 1
+        self._make_vector(previous)
+        self.transition_counts = np.asarray(extra.get("transition_counts", [0,0,0]), dtype=np.int64)
+        self.alive_agent_counts = np.asarray(extra.get("alive_agent_counts", [0,0,0]), dtype=np.int64)
+        self.wave_clear_transition_counts = np.asarray(extra.get("wave_clear_transition_counts", [0,0,0]), dtype=np.int64)
+        self.reward_bonus_totals = np.asarray(extra.get("reward_bonus_totals", [0,0,0,0]), dtype=np.float64)
+        self.curriculum_transitions = list(extra.get("curriculum_transitions", self.curriculum_transitions))
+        self.resume_count = int(extra.get("resume_count", 0)) + 1
+        self.restore_best_from_disk(self.trainer.sampled_steps)
+        self.next_console = (self.trainer.sampled_steps // self.console_interval + 1) * self.console_interval
+        self.next_evaluation = (self.trainer.sampled_steps // self.evaluation_interval + 1) * self.evaluation_interval
+        self.next_checkpoint = (self.trainer.sampled_steps // self.checkpoint_interval + 1) * self.checkpoint_interval
+
+    def startup_summary(self) -> dict[str, Any]:
+        return {"algorithm":"modular_mappo","mode":"smoke" if self.smoke else "formal",
+                "device":self.device,"seed":self.seed,"num_envs":self.num_envs,
+                "total_sampled_steps":self.total_sampled_steps,"rollout_steps":self.rollout_steps,
+                "gamma":self.trainer.gamma,"enabled_modules":self.trainer.module_protocol()["enabled_modules"],
+                "environment_variant":self.env_config.get("environment_variant","direct_v2_3")}
+
+    def train_log_line(self) -> str:
+        rows = list(self.recent_episodes)
+        mean = lambda key: float(np.mean([row[key] for row in rows])) if rows else float("nan")
+        module=(f"hidden={self.last_metrics.get('hidden_norm_mean',0):.3f} "
+                f"| popart={self.last_metrics.get('popart_std',1):.3f} "
+                f"| wmean={self.last_metrics.get('effective_wave_weight_mean',1):.3f} "
+                f"| bonus={self.reward_bonus_totals[0]:.2f} "
+                f"| anchor={self.last_metrics.get('anchor_kl',0):.3f} "
+                f"| stage={self.current_stage}/{self.current_waves}")
+        return (f"[TRAIN] steps={self.trainer.sampled_steps}/{self.total_sampled_steps} | episodes={self.completed_episode_count} "
+                f"| raw_return={mean('team_raw_environment_return'):.2f} | waves={mean('waves_cleared'):.2f} "
+                f"| red_loss={mean('red_losses'):.2f} | blue_loss={mean('blue_losses'):.2f} "
+                f"| transition={tuple(round(self.last_rollout_metrics.get(f'transition_fraction_wave_{k}',0),3) for k in (1,2,3))} "
+                f"| alive={tuple(round(self.last_rollout_metrics.get(f'alive_agent_fraction_wave_{k}',0),3) for k in (1,2,3))} "
+                f"| actor={self.last_metrics.get('actor_loss',float('nan')):.4f} | value={self.last_metrics.get('value_loss',float('nan')):.4f} "
+                f"| H={self.last_metrics.get('entropy',float('nan')):.3f} | KL={self.last_metrics.get('approx_kl',float('nan')):.5f} | {module}")
+
+    @staticmethod
+    def evaluation_log_line(row: dict[str, Any]) -> str:
+        return (f"[EVAL] steps={int(row['sampled_steps'])} | W1/W2/W3="
+                f"{row.get('clear_wave_1_probability',0):.2f}/{row.get('clear_wave_2_probability',0):.2f}/{row.get('clear_wave_3_probability',0):.2f} "
+                f"| waves={row.get('average_waves_cleared',0):.2f} | return={row['average_return']:.2f} "
+                f"| red_loss={row['average_red_loss']:.2f} | blue_loss={row['average_blue_loss']:.2f} "
+                f"| K/L={row.get('kill_loss_ratio',0):.2f} | boundary={row['average_red_boundary_exits']:.2f} "
+                f"| ground={row['average_red_ground_losses']:.2f}")
+
+    def summary(self) -> dict[str, Any]:
+        transition_fraction = self._fractions(self.transition_counts)
+        alive_fraction = self._fractions(self.alive_agent_counts)
+        pretraining = int(self.trainer.warm_start_provenance.get("pretraining_sampled_steps", 0))
+        return {
+            "protocol": {**self.trainer.module_protocol(), "network_architecture":checkpoint_architecture(self.trainer),
+                         "environment_config_sha256":config_sha256(self.env_config),
+                         "algorithm_config_sha256":config_sha256(self.algorithm_config)},
+            "sampled_steps": self.trainer.sampled_steps,
+            "current_pw_training_sampled_steps": self.trainer.sampled_steps,
+            "pretraining_sampled_steps": pretraining,
+            "effective_total_experience_budget": pretraining + self.trainer.sampled_steps,
+            "best_checkpoint_step": self.best_sampled_steps,
+            "best_evaluation": self.best_evaluation,
+            "latest_step": self.trainer.sampled_steps,
+            "latest_evaluation": self.latest_evaluation,
+            "completed_episodes": self.completed_episode_count,
+            "wave_transition_counts": {f"wave_{k}":int(self.transition_counts[k-1]) for k in (1,2,3)},
+            "wave_transition_fractions": {f"wave_{k}":float(transition_fraction[k-1]) for k in (1,2,3)},
+            "wave_alive_agent_sample_counts": {f"wave_{k}":int(self.alive_agent_counts[k-1]) for k in (1,2,3)},
+            "wave_alive_agent_sample_fractions": {f"wave_{k}":float(alive_fraction[k-1]) for k in (1,2,3)},
+            "wave_clear_transition_counts": {f"wave_{k}":int(self.wave_clear_transition_counts[k-1]) for k in (1,2,3)},
+            "reward_adapter_totals": {"reward_bonus_total":float(self.reward_bonus_totals[0]),**{f"reward_bonus_wave{k}":float(self.reward_bonus_totals[k]) for k in (1,2,3)}},
+            "module_protocol": self.trainer.module_protocol(),
+            "warm_start_provenance": self.trainer.warm_start_provenance,
+            "anchor_provenance": self.trainer.anchor_provenance,
+            "curriculum_transitions": self.curriculum_transitions,
+            "resume_count": self.resume_count,
+            "final_optimization_metrics": self.last_metrics,
+        }
+
+    def run(self) -> dict[str, Any]:
+        print(f"[START] {self.startup_summary()}", flush=True)
+        try:
+            while self.trainer.sampled_steps < self.total_sampled_steps:
+                self._maybe_curriculum()
+                remaining = math.ceil((self.total_sampled_steps - self.trainer.sampled_steps) / self.num_envs)
+                rollout = self.collect_rollout(min(self.rollout_steps, remaining))
+                self.last_metrics = {**self.trainer.update(rollout), **self.last_rollout_metrics,
+                                     "curriculum_stage":float(self.current_stage),
+                                     "current_total_waves":float(self.current_waves)}
+                record = {"sampled_steps":self.trainer.sampled_steps,"rollout_update":self.trainer.ppo_update_count,**self.last_metrics}
+                with (self.output_dir / "optimization_metrics.jsonl").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(record) + "\n")
+                if self.trainer.sampled_steps >= self.next_console:
+                    print(self.train_log_line(), flush=True)
+                    while self.next_console <= self.trainer.sampled_steps:self.next_console += self.console_interval
+                if self.trainer.sampled_steps >= self.next_evaluation:
+                    self._record_evaluation()
+                    while self.next_evaluation <= self.trainer.sampled_steps:self.next_evaluation += self.evaluation_interval
+                if self.trainer.sampled_steps >= self.next_checkpoint:
+                    path = self.output_dir / f"checkpoint_{self.trainer.sampled_steps}.pt";self.save_checkpoint(path)
+                    print(f"[CHECKPOINT] path={path.name} | sampled_steps={self.trainer.sampled_steps}", flush=True)
+                    while self.next_checkpoint <= self.trainer.sampled_steps:self.next_checkpoint += self.checkpoint_interval
+            if self.latest_evaluation is None or int(self.latest_evaluation["sampled_steps"]) != self.trainer.sampled_steps:
+                self._record_evaluation()
+            self.save_checkpoint(self.output_dir / "latest.pt")
+            self.save_checkpoint(self.output_dir / "final.pt")
+            result = self.summary()
+            (self.output_dir / "run_summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+            print(f"[DONE] sampled_steps={self.trainer.sampled_steps} | best={self.best_sampled_steps} | latest={self.trainer.sampled_steps}", flush=True)
+            return result
+        finally:
+            self.vector.close()
+
+
+__all__ = ["ModularMAPPOTrainingRunner"]

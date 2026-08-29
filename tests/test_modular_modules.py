@@ -13,8 +13,16 @@ def test_m3_popart_preserves_unnormalized_output():
  p=PopArtValueNormalizer({"enabled":True,"beta":.9});layer=torch.nn.Linear(3,1);x=torch.randn(20,3);before=p.denormalize_values(layer(x)).detach();p.update(torch.randn(100)*10+20,layer);after=p.denormalize_values(layer(x)).detach();assert torch.allclose(before,after,atol=2e-5)
 def test_m4_reward_raw_unchanged_and_clear_only():
  m=MultiWaveRewardAdapter({"enabled":True,"mode":"wave_clear_bonus","bonuses":{"wave1":1}});raw=np.zeros((2,4),np.float32);snapshot=raw.copy();train,metrics=m.adapt(raw,[{"wave_cleared_this_step":False,"wave_index":1},{"wave_cleared_this_step":True,"waves_cleared":1,"red_alive_mask":[1,1,0,0]}]);assert np.array_equal(raw,snapshot) and train[0].sum()==0 and train[1].sum()==2 and metrics["reward_bonus_total"]==2
+def test_m4_uses_pre_transition_wave_for_clear_and_scale():
+ raw=np.ones((1,4),np.float32);info=[{"wave_cleared_this_step":True,"waves_cleared":1,"wave_index":2,"red_alive_mask":[1,1,1,1]}]
+ bonus=MultiWaveRewardAdapter({"enabled":True,"mode":"wave_clear_bonus","bonuses":{"wave1":2,"wave2":20}});training,_=bonus.adapt(raw,info,np.array([1]));assert np.all(training==3)
+ scale=MultiWaveRewardAdapter({"enabled":True,"mode":"round_scaled","round_scales":{"wave1":3,"wave2":30}});training,_=scale.adapt(raw,info,np.array([1]));assert np.all(training==3)
 def test_m5_inverse_frequency_and_direct_degeneracy():
  m=WaveBalancingModule({"enabled":True,"max_weight":3});w,met=m.compute_numpy(np.array([1]*1000+[2]*300+[3]*50));assert met["weight_wave_3"]>met["weight_wave_2"]>met["weight_wave_1"];w,_=m.compute_numpy(np.ones(25));assert np.all(w==1)
+def test_m5_alive_agent_basis_cap_and_mean_preservation():
+ wave=np.array([1,1,2,2,2]);alive=np.array([[1,1,1,1],[1,1,1,1],[1,0,0,0],[1,0,0,0],[1,0,0,0]],np.float32)
+ m=WaveBalancingModule({"enabled":True,"frequency_basis":"alive_agent","max_weight":2});weights,metrics=m.compute_numpy(wave,alive);assert metrics["alive_agent_samples_wave_1"]==8 and metrics["alive_agent_samples_wave_2"]==3
+ assert metrics["weight_wave_2"]>metrics["weight_wave_1"] and max(metrics["weight_wave_1"],metrics["weight_wave_2"])<=2 and abs(metrics["effective_wave_weight_mean"]-1)<1e-10
 def test_m7_curriculum_does_not_mutate_source():
  m=CurriculumController({"enabled":True,"stage1_end":10,"stage2_end":20});source={"persistent_waves":{"total_waves":3}};original=copy.deepcopy(source);assert [m.runtime_config(source,s)["persistent_waves"]["total_waves"] for s in (0,10,20)]==[1,2,3] and source==original
 def test_m8_anchor_zero_then_positive_and_frozen():

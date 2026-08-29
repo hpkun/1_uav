@@ -17,6 +17,7 @@ class PolicyAnchorRegularizer(CapabilityModule):
         self.reference_actor=actor.eval(); self.reference_checkpoint=checkpoint
         for parameter in self.reference_actor.parameters():parameter.requires_grad_(False)
     def effective_coefficient(self,sampled_steps:int)->float:
+        if not self.enabled:return 0.0
         return self.coefficient if self.schedule=="constant" else self.coefficient*max(0.0,1.0-sampled_steps/max(self.decay_steps,1))
     def loss(self,current:Normal,reference:Normal,sampled_steps:int,mask:torch.Tensor)->tuple[torch.Tensor,dict[str,float]]:
         # tanh is a deterministic bijection on the open interval, so KL is

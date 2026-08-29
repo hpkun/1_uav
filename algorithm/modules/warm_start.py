@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
 import torch
+from algorithm.common.protocol import config_sha256
 from .base import CapabilityModule
 
 
@@ -27,10 +29,15 @@ class WarmStartInitializer(CapabilityModule):
             else:missing.append(key)
         target.load_state_dict(target_state);return {"loaded":loaded,"partially_loaded":partial,"not_loaded":missing}
     def initialize(self,trainer,checkpoint:str)->dict[str,Any]:
-        state=torch.load(checkpoint,map_location="cpu",weights_only=False); result={"source":str(checkpoint),"source_algorithm":state.get("algorithm"),"mode":self.mode}
+        state=torch.load(checkpoint,map_location="cpu",weights_only=False);extra=state.get("extra",{})
+        digest=hashlib.sha256(open(checkpoint,"rb").read()).hexdigest()
+        result={"source_checkpoint":str(checkpoint),"source_algorithm":state.get("algorithm"),"source_environment_variant":extra.get("environment_variant"),"source_training_seed":extra.get("training_seed"),"source_sampled_steps":int(state.get("sampled_steps",0)),"pretraining_sampled_steps":int(state.get("sampled_steps",0)),"source_config_fingerprint":extra.get("algorithm_config_sha256"),"source_checkpoint_sha256":digest,"mode":self.mode}
         if self.mode=="none":return {**result,"actor":{"loaded":[],"partially_loaded":[],"not_loaded":[]}}
         result["actor"]=self._copy(trainer.actor,state["actor"],True)
         if self.mode=="actor_critic":result["critic"]=self._copy(trainer.critic,state["critic"],False)
+        for key in ("actor","critic"):
+            if key in result:
+                result[key]["exact_loaded_count"]=len(result[key]["loaded"]);result[key]["partial_loaded_count"]=len(result[key]["partially_loaded"]);result[key]["not_loaded_count"]=len(result[key]["not_loaded"])
         return result
 
 __all__=["WarmStartInitializer"]

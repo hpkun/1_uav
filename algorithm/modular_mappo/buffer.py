@@ -16,4 +16,16 @@ class ModularRolloutBatch:
 def contiguous_chunks(time_steps:int,num_envs:int,sequence_length:int):
     return [(env,start,min(start+sequence_length,time_steps)) for env in range(num_envs) for start in range(0,time_steps,sequence_length)]
 
-__all__=["ModularRolloutBatch","contiguous_chunks"]
+def recurrent_batch_plan(time_steps:int,num_envs:int,sequence_length:int,minibatch_size:int,ppo_epochs:int=1):
+    chunks=len(contiguous_chunks(time_steps,num_envs,sequence_length))
+    sequences_per_minibatch=max(1,minibatch_size//sequence_length)
+    minibatches_per_epoch=int(np.ceil(chunks/sequences_per_minibatch))
+    return {"sequence_chunks":chunks,"sequences_per_minibatch":sequences_per_minibatch,
+            "recurrent_minibatches_per_epoch":minibatches_per_epoch,
+            "optimizer_steps":minibatches_per_epoch*ppo_epochs}
+
+def recurrent_alive_mean(values,alive_mask,valid_time_mask):
+    mask=alive_mask*valid_time_mask[...,None]
+    return (values*mask).sum()/mask.sum().clamp_min(1.0)
+
+__all__=["ModularRolloutBatch","contiguous_chunks","recurrent_batch_plan","recurrent_alive_mean"]

@@ -7,11 +7,12 @@ import hashlib,json
 import numpy as np
 import torch
 from torch import nn
+from torch.distributions import kl_divergence
 from algorithm.mappo.trainer import compute_gae,masked_mean,MAPPO_IMPL_VERSION
 from algorithm.modules import (WaveContextModule,RecurrentMemoryModule,PopArtValueNormalizer,
  MultiWaveRewardAdapter,WaveBalancingModule,WarmStartInitializer,CurriculumController,PolicyAnchorRegularizer,enabled_module_names)
 from .networks import ModularMAPPOActor,ModularCentralizedCritic
-from .buffer import ModularRolloutBatch,contiguous_chunks
+from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 
 MODULAR_MAPPO_IMPL_VERSION=1
 
@@ -80,8 +81,14 @@ class ModularMAPPOTrainer:
    if self.popart.enabled:
     self.popart.update(returns[alive>.5],self.critic.output_layer); old_values=self.popart.normalize_targets(values);target_returns=self.popart.normalize_targets(returns)
    else:old_values=values;target_returns=returns
-  wave_w,wmetrics=self.wave_balance.compute_tensor(waves)
+  # One stable set of weights is computed from the complete on-policy rollout.
+  wave_w,wmetrics=self.wave_balance.compute_tensor(waves,alive)
+  actor_before,critic_before=self.actor_update_count,self.critic_update_count
   metrics=self._update_recurrent(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx) if (self.recurrent.actor_enabled or self.recurrent.critic_enabled) else self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
+  live_mask=alive>.5;rv=returns[live_mask];vv=values[live_mask];variance=torch.var(rv,unbiased=False)
+  metrics["explained_variance"]=float((1-torch.var(rv-vv,unbiased=False)/variance.clamp_min(1e-8)).detach())
+  metrics["actor_optimizer_steps_this_update"]=float(self.actor_update_count-actor_before);metrics["critic_optimizer_steps_this_update"]=float(self.critic_update_count-critic_before)
+  metrics.update(self._policy_diagnostics(r,obs,act,alive,ctx))
   self.ppo_update_count+=1;metrics.update(wmetrics);metrics.update({"popart_mean":float(self.popart.mean),"popart_std":float(self.popart.std),"popart_count":float(self.popart.count)})
   if not np.all(np.isfinite(list(metrics.values()))):raise FloatingPointError(f"non-finite modular update: {metrics}")
   return metrics
@@ -105,7 +112,8 @@ class ModularMAPPOTrainer:
   return ag,cg
  def _row(self,losses,mask,ag,cg):
   al,vl,en,anchor,ratio,newlog,_,_,akl=losses;logratio=ratio.log()
-  return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean((ratio-1)-logratio,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach())}
+  live=ratio[mask>.5]
+  return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean((ratio-1)-logratio,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"ratio_mean":float(live.mean().detach()),"ratio_std":float(live.std(unbiased=False).detach()),"ratio_p1":float(torch.quantile(live,.01).detach()),"ratio_p50":float(torch.quantile(live,.5).detach()),"ratio_p99":float(torch.quantile(live,.99).detach()),"ratio_min":float(live.min().detach()),"ratio_max":float(live.max().detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps))}
  def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));N=arrays[0].shape[0];rows=[]
   for _ in range(self.ppo_epochs):
@@ -116,21 +124,69 @@ class ModularMAPPOTrainer:
  def _update_recurrent(self,r,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
   tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
   chunks=contiguous_chunks(obs.shape[0],obs.shape[1],self.recurrent.sequence_length);rows=[]
+  sequences_per_minibatch=max(1,self.minibatch_size//self.recurrent.sequence_length)
   for _ in range(self.ppo_epochs):
    order=self.rng.permutation(len(chunks))
-   for idx in order:
-    e,s,z=chunks[idx]; ah=None if r.actor_hidden_before_step is None else tt(r.actor_hidden_before_step[s,e:e+1]);ch=None if r.critic_hidden_before_step is None else tt(r.critic_hidden_before_step[s,e:e+1]);total=None
-    for t in range(s,z):
-     ep=tt(r.episode_masks[t,e:e+1]) if r.episode_masks is not None else None
-     loss=self._loss_step(obs[t,e:e+1],act[t,e:e+1],raw[t,e:e+1],oldlog[t,e:e+1],alive[t,e:e+1],adv[t,e:e+1],oldvalue[t,e:e+1],target[t,e:e+1],weights[t,e:e+1],ctx[t,e:e+1],ah,ch,ep)
-     ah,ch=loss[6],loss[7]
-     scalars=(loss[0],loss[1],loss[2],loss[3]);total=tuple(x if total is None else total[i]+x for i,x in enumerate(scalars))
-    n=z-s; merged=(total[0]/n,total[1]/n,total[2]/n,total[3]/n,loss[4],loss[5],ah,ch,loss[8]);ag,cg=self._opt(merged);rows.append(self._row(merged,alive[z-1,e:e+1],ag,cg))
-  out={k:float(np.mean([x[k] for x in rows])) for k in rows[0]};out["sequence_chunks"]=float(len(chunks));return out
+   for start in range(0,len(chunks),sequences_per_minibatch):
+    group=[chunks[int(i)] for i in order[start:start+sequences_per_minibatch]]
+    rows.append(self._recurrent_minibatch(r,group,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,tt))
+  out={k:float(np.mean([x[k] for x in rows])) for k in rows[0]};out.update({"sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),"recurrent_minibatches_per_epoch":float(np.ceil(len(chunks)/sequences_per_minibatch))});return out
+
+ def _recurrent_minibatch(self,r,group,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,tt):
+  length=max(z-s for _,s,z in group);batch=len(group)
+  def padded(source):
+   out=torch.zeros((length,batch,*source.shape[2:]),dtype=source.dtype,device=self.device)
+   for b,(e,s,z) in enumerate(group):out[:z-s,b]=source[s:z,e]
+   return out
+  O,A,R,L,M,ADV,OV,TG,W,C=map(padded,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx))
+  valid=torch.zeros(length,batch,device=self.device)
+  for b,(_,s,z) in enumerate(group):valid[:z-s,b]=1
+  EP=torch.zeros(length,batch,device=self.device)
+  if r.episode_masks is not None:
+   episode=tt(r.episode_masks)
+   for b,(e,s,z) in enumerate(group):EP[:z-s,b]=episode[s:z,e]
+  def initial(saved):
+   if saved is None:return None
+   return torch.stack([tt(saved[s,e]) for e,s,_ in group]).detach()
+  ah,ch=initial(r.actor_hidden_before_step),initial(r.critic_hidden_before_step)
+  surrogates=[];errors=[];entropies=[];ratios=[];logratios=[];masks=[];waveweights=[];anchor_kls=[]
+  for t in range(length):
+   mask=M[t]*valid[t,:,None]
+   dist,ah=self.actor.distribution_step(O[t],self._ctx(C[t],True),ah,EP[t],mask)
+   newlog=self.actor._squashed_log_prob(dist,R[t],A[t]);logratio=newlog-L[t];ratio=logratio.exp()
+   surrogate=torch.minimum(ratio*ADV[t],ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*ADV[t])
+   sampled=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sampled,torch.tanh(sampled))
+   value,ch=self.critic.forward_step(O[t],mask,self._ctx(C[t],False),ch,EP[t])
+   clipped=OV[t]+(value-OV[t]).clamp(-self.clip_ratio,self.clip_ratio)
+   error=torch.maximum((value-TG[t]).square(),(clipped-TG[t]).square()) if self.clip_value_loss else (value-TG[t]).square()
+   if self.anchor.enabled and self.anchor.reference_actor is not None:
+    with torch.no_grad():reference=self.anchor.reference_actor.distribution(O[t])
+    anchor_kls.append(kl_divergence(dist,reference).sum(-1))
+   surrogates.append(surrogate);errors.append(error);entropies.append(entropy);ratios.append(ratio);logratios.append(logratio);masks.append(mask);waveweights.append(W[t,:,None].expand_as(mask))
+  surrogate,error,entropy,ratio,logratio,mask,ww=map(lambda x:torch.stack(x),(surrogates,errors,entropies,ratios,logratios,masks,waveweights))
+  aw=ww if self.wave_balance.actor_enabled else torch.ones_like(ww);vw=ww if self.wave_balance.critic_enabled else torch.ones_like(ww)
+  actor_loss=-recurrent_alive_mean(surrogate*aw,M,valid);value_loss=.5*recurrent_alive_mean(error*vw,M,valid);entropy_mean=recurrent_alive_mean(entropy,M,valid)
+  anchor_mean=recurrent_alive_mean(torch.stack(anchor_kls),M,valid) if anchor_kls else torch.zeros((),device=self.device)
+  anchor_loss=anchor_mean*self.anchor.effective_coefficient(self.sampled_steps)
+  merged=(actor_loss,value_loss,entropy_mean,anchor_loss,ratio.reshape(-1,self.num_agents),logratio.reshape(-1,self.num_agents),ah,ch,float(anchor_mean.detach()))
+  ag,cg=self._opt(merged);return self._row(merged,mask.reshape(-1,self.num_agents),ag,cg)
+
+ @torch.no_grad()
+ def _policy_diagnostics(self,r,obs,actions,alive,ctx):
+  logstd=[]
+  for t in range(obs.shape[0]):
+   hidden=None if r.actor_hidden_before_step is None else torch.as_tensor(r.actor_hidden_before_step[t],dtype=torch.float32,device=self.device)
+   ep=None if r.episode_masks is None else torch.as_tensor(r.episode_masks[t],dtype=torch.float32,device=self.device)
+   dist,_=self.actor.distribution_step(obs[t],self._ctx(ctx[t],True),hidden,ep,alive[t]);logstd.append(dist.scale.log())
+  logs=torch.stack(logstd);live=alive>.5;live_actions=actions[live];live_logs=logs[live];result={}
+  for index,name in enumerate(("psi","theta","v")):
+   result[f"policy_log_std_mean_{name}"]=float(live_logs[:,index].mean())
+   for threshold,label in ((.9,"0_9"),(.99,"0_99"),(.999,"0_999")):result[f"action_abs_gt_{label}_fraction_{name}"]=float((live_actions[:,index].abs()>threshold).float().mean())
+  return result
  def module_protocol(self):
   raw=json.dumps(self.modules_config,sort_keys=True,separators=(",",":"));return {"enabled_modules":enabled_module_names(self.modules_config),"module_config":deepcopy(self.modules_config),"module_config_sha256":hashlib.sha256(raw.encode()).hexdigest()}
  def checkpoint_state(self,extra=None):
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -139,6 +195,10 @@ class ModularMAPPOTrainer:
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   self.warm_start_provenance=state.get("warm_start_provenance",{});self.anchor_provenance=state.get("anchor_provenance",{})
+  reference_state=state.get("anchor_reference_actor_state")
+  if self.anchor.enabled:
+   if reference_state is None:raise RuntimeError("policy-anchor checkpoint is not self-contained")
+   reference=deepcopy(self.actor).to(self.device);reference.load_state_dict(reference_state);self.anchor.attach(reference,self.anchor_provenance.get("reference_checkpoint"))
   for key,attr in (("ppo_updates","ppo_update_count"),("actor_updates","actor_update_count"),("critic_updates","critic_update_count"),("sampled_steps","sampled_steps"),("vector_steps","vector_steps")):setattr(self,attr,int(state.get(key,0)))
   return state.get("extra",{})
 

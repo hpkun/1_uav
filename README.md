@@ -299,3 +299,30 @@ The normative Direct formulas and update order are in
 are documented in `docs/persistent_wave_environment_design.md`. Files under
 `docs/archive/` are historical records and are not rewritten as active runtime
 instructions.
+# Modular Persistent-Wave formal experiments
+
+Modular MAPPO keeps raw environment outcomes separate from any algorithm-side
+training reward.  Wave-balance weights are computed once from the complete
+current rollout distribution, using alive-agent samples by default; they are
+not re-estimated from shuffled PPO minibatches.
+
+## Warm-start budget fairness
+
+M6 Warm Start is not automatically fair to from-scratch Persistent-Wave
+training in total data budget.  A Direct checkpoint trained with 1.505M
+samples followed by 1.5M PW fine-tuning has about 3.005M total environment
+interactions.  Every M6 report must therefore distinguish (A) equal PW
+fine-tuning budget and (B) equal total environment-interaction budget.  A
+1.5M M6 result must not be described as a fair 1.5M sample-efficiency
+comparison without this qualification.
+
+## Single-module screening after 1.5M
+
+The first screen uses seed 2023 and the same new diagnostic evaluation seeds
+for every single module.  Seeds `20000000–20000199` remain reserved for the
+formal holdout and must not be used during screening.  Compare W3 completion,
+average waves, raw return, Red/Blue loss, K/L, boundary and ground losses,
+alive-agent wave sample fractions, best-checkpoint step, best-to-final gap and
+optimization stability.  M4 is judged by raw environment outcomes, never its
+shaped training return.  Only clearly promising modules proceed to 3M and
+multi-seed experiments; module combinations are not part of the first screen.
