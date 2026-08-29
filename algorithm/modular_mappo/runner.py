@@ -389,7 +389,9 @@ class ModularMAPPOTrainingRunner:
                 f"| transition={tuple(round(self.last_rollout_metrics.get(f'transition_fraction_wave_{k}',0),3) for k in (1,2,3))} "
                 f"| alive={tuple(round(self.last_rollout_metrics.get(f'alive_agent_fraction_wave_{k}',0),3) for k in (1,2,3))} "
                 f"| actor={self.last_metrics.get('actor_loss',float('nan')):.4f} | value={self.last_metrics.get('value_loss',float('nan')):.4f} "
-                f"| H={self.last_metrics.get('entropy',float('nan')):.3f} | KL={self.last_metrics.get('approx_kl',float('nan')):.5f} | {module}")
+                f"| H={self.last_metrics.get('entropy',float('nan')):.3f} | KL={self.last_metrics.get('approx_kl',float('nan')):.5f} "
+                f"| logR=[{self.last_metrics.get('log_ratio_min',float('nan')):.2f},{self.last_metrics.get('log_ratio_max',float('nan')):.2f}] "
+                f"| underflow={self.last_metrics.get('ratio_underflow_fraction',0):.4f} | {module}")
 
     @staticmethod
     def evaluation_log_line(row: dict[str, Any]) -> str:

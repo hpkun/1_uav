@@ -1,7 +1,8 @@
 import numpy as np
+import pytest
 import torch
 from algorithm.mappo.trainer import MAPPOTrainer,RolloutBatch
-from algorithm.modular_mappo.trainer import ModularMAPPOTrainer
+from algorithm.modular_mappo.trainer import ModularMAPPOTrainer,aggregate_update_rows,stable_ratio_terms
 from algorithm.modular_mappo.buffer import ModularRolloutBatch,contiguous_chunks,recurrent_batch_plan,recurrent_alive_mean
 
 def data(seed=4):
@@ -29,6 +30,37 @@ def test_all_off_update_is_numerically_baseline_equivalent():
  d=data(9);b=MAPPOTrainer(hidden_dim=16,ppo_epochs=1,minibatch_size=8,seed=3);m=ModularMAPPOTrainer(hidden_dim=16,ppo_epochs=1,minibatch_size=8,seed=3,modules_config={});obs=torch.as_tensor(d["observations"])
  with torch.no_grad():
   dist=b.actor.distribution(obs);d["old_log_probs"]=b.actor._squashed_log_prob(dist,torch.as_tensor(d["raw_actions"]),torch.as_tensor(d["actions"])).numpy()
- rb=RolloutBatch(**d);ctx=np.zeros((4,2,0),"f");rm=ModularRolloutBatch(**d,raw_environment_rewards=d["rewards"].copy(),wave_indices=np.ones((4,2),int),total_waves=np.ones((4,2),int),contexts=ctx,next_contexts=ctx,episode_masks=np.ones((4,2),"f"));state=torch.random.get_rng_state();b.update(rb);torch.random.set_rng_state(state);m.update(rm)
+ rb=RolloutBatch(**d);ctx=np.zeros((4,2,0),"f");rm=ModularRolloutBatch(**d,raw_environment_rewards=d["rewards"].copy(),wave_indices=np.ones((4,2),int),total_waves=np.ones((4,2),int),contexts=ctx,next_contexts=ctx,episode_masks=np.ones((4,2),"f"));state=torch.random.get_rng_state();bm=b.update(rb);torch.random.set_rng_state(state);mm=m.update(rm)
+ for key in ("approx_kl","clip_fraction","ratio_mean","ratio_std","ratio_p1","ratio_p50","ratio_p99","ratio_min","ratio_max"):assert mm[key]==pytest.approx(bm[key],abs=1e-6,rel=1e-6)
  for p,q in zip(b.actor.parameters(),m.actor.parameters()):assert torch.allclose(p,q,atol=2e-6,rtol=2e-6)
  for p,q in zip(b.critic.parameters(),m.critic.parameters()):assert torch.allclose(p,q,atol=2e-6,rtol=2e-6)
+
+def test_extreme_negative_log_ratio_underflow_keeps_kl_finite():
+ new=torch.tensor([-120.0],dtype=torch.float32);old=torch.zeros_like(new);log_ratio,ratio=stable_ratio_terms(new,old)
+ trainer=ModularMAPPOTrainer(hidden_dim=16,modules_config={});zero=torch.zeros(())
+ row=trainer._row((zero,zero,zero,zero,ratio,log_ratio,new,old,None,None,0.0),torch.ones(1),torch.tensor(0.),torch.tensor(0.))
+ metrics=aggregate_update_rows([row],.2)
+ assert ratio.item()==0.0 and np.isfinite(metrics["approx_kl"])
+ assert metrics["approx_kl"]==pytest.approx(119.0) and metrics["ratio_underflow_count"]==1 and metrics["ratio_underflow_fraction"]==1
+
+def test_large_finite_positive_log_ratio_remains_finite():
+ new=torch.tensor([80.0],dtype=torch.float32);log_ratio,ratio=stable_ratio_terms(new,torch.zeros_like(new))
+ metrics=aggregate_update_rows([{"_valid_count":1,"_ratio_values":ratio.numpy(),"_log_ratio_values":log_ratio.numpy()}],.2)
+ assert torch.isfinite(ratio).all() and np.isfinite(metrics["approx_kl"])
+ assert metrics["log_ratio_max"]==80.0 and metrics["ratio_max"]>1e34
+
+def test_mixed_ratio_samples_have_exact_global_underflow_and_extrema():
+ new=torch.tensor([0.0,-120.0,1.0,-2.0],dtype=torch.float32);log_ratio,ratio=stable_ratio_terms(new,torch.zeros_like(new))
+ rows=[{"entropy":2.0,"approx_kl":0.0,"clip_fraction":0.0,"_valid_count":1,"_ratio_values":ratio[:1].numpy(),"_log_ratio_values":log_ratio[:1].numpy()},
+       {"entropy":4.0,"approx_kl":0.0,"clip_fraction":0.0,"_valid_count":3,"_ratio_values":ratio[1:].numpy(),"_log_ratio_values":log_ratio[1:].numpy()}]
+ metrics=aggregate_update_rows(rows,.2);expected=((ratio.double()-1)-log_ratio.double()).mean().item()
+ assert metrics["approx_kl"]==pytest.approx(expected) and metrics["entropy"]==pytest.approx(3.5)
+ assert metrics["ratio_underflow_count"]==1 and metrics["ratio_underflow_fraction"]==pytest.approx(.25)
+ assert metrics["ratio_min"]==0 and metrics["ratio_max"]==pytest.approx(np.exp(1.0))
+ assert metrics["log_ratio_min"]==-120 and metrics["log_ratio_max"]==1 and metrics["max_abs_log_ratio"]==120
+ assert metrics["ratio_p50"]==pytest.approx(np.quantile(ratio.numpy().astype(np.float64),.5))
+
+def test_nonfinite_log_prob_and_log_ratio_are_rejected():
+ with pytest.raises(FloatingPointError,match="new_log_prob"):stable_ratio_terms(torch.tensor([float("nan")]),torch.zeros(1))
+ maximum=torch.finfo(torch.float32).max
+ with pytest.raises(FloatingPointError,match="log_ratio"):stable_ratio_terms(torch.tensor([-maximum]),torch.tensor([maximum]))

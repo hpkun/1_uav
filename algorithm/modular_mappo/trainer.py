@@ -18,6 +18,47 @@ from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 # prototype recurrent/weighting semantics and are diagnostic-only artifacts.
 MODULAR_MAPPO_IMPL_VERSION=2
 
+def stable_ratio_terms(new_log_prob,old_log_prob):
+ """Return PPO log-ratio/ratio without reconstructing log-ratio from exp()."""
+ if not torch.all(torch.isfinite(new_log_prob)):raise FloatingPointError("non-finite new_log_prob")
+ if not torch.all(torch.isfinite(old_log_prob)):raise FloatingPointError("non-finite old_log_prob")
+ log_ratio=new_log_prob-old_log_prob
+ if not torch.all(torch.isfinite(log_ratio)):raise FloatingPointError("non-finite log_ratio")
+ ratio=log_ratio.exp()
+ if not torch.all(torch.isfinite(ratio)):raise FloatingPointError("non-finite ratio")
+ return log_ratio,ratio
+
+def aggregate_update_rows(rows,clip_ratio):
+ """Aggregate sample diagnostics over every alive sample in the PPO update."""
+ if not rows:raise RuntimeError("no modular PPO metric rows")
+ counts=np.asarray([row["_valid_count"] for row in rows],dtype=np.float64);total=float(counts.sum())
+ if total<=0:raise FloatingPointError("no valid alive PPO samples")
+ private={"_valid_count","_ratio_values","_log_ratio_values"}
+ weighted={"actor_loss","weighted_actor_loss","value_loss","weighted_value_loss","entropy","approx_kl","clip_fraction"}
+ result={}
+ for key in rows[0]:
+  if key in private or key.startswith("ratio_") or key.startswith("log_ratio_") or key=="max_abs_log_ratio":continue
+  values=np.asarray([row[key] for row in rows],dtype=np.float64)
+  result[key]=float(np.sum(values*counts)/total) if key in weighted else float(values.mean())
+ ratio=np.concatenate([row["_ratio_values"] for row in rows]).astype(np.float64,copy=False)
+ log_ratio=np.concatenate([row["_log_ratio_values"] for row in rows]).astype(np.float64,copy=False)
+ if ratio.size!=int(total) or log_ratio.size!=int(total):raise RuntimeError("ratio diagnostic sample-count mismatch")
+ if not np.all(np.isfinite(log_ratio)):raise FloatingPointError("non-finite log_ratio diagnostics")
+ if not np.all(np.isfinite(ratio)):raise FloatingPointError("non-finite ratio diagnostics")
+ kl=(ratio-1.0)-log_ratio
+ if not np.all(np.isfinite(kl)):raise FloatingPointError("non-finite approx_kl samples")
+ underflow=(ratio==0.0)&np.isfinite(log_ratio)
+ result.update({
+  "approx_kl":float(kl.mean()),
+  "clip_fraction":float((np.abs(ratio-1.0)>clip_ratio).mean()),
+  "ratio_mean":float(ratio.mean()),"ratio_std":float(ratio.std()),
+  "ratio_p1":float(np.quantile(ratio,.01)),"ratio_p50":float(np.quantile(ratio,.5)),"ratio_p99":float(np.quantile(ratio,.99)),
+  "ratio_min":float(ratio.min()),"ratio_max":float(ratio.max()),
+  "log_ratio_min":float(log_ratio.min()),"log_ratio_max":float(log_ratio.max()),"max_abs_log_ratio":float(np.abs(log_ratio).max()),
+  "ratio_underflow_count":int(underflow.sum()),"ratio_underflow_fraction":float(underflow.mean()),"ratio_sample_count":int(total),
+ })
+ return result
+
 class ModularMAPPOTrainer:
  def __init__(self,observation_dim=52,action_dim=3,num_agents=4,hidden_dim=256,attention_heads=2,
   actor_learning_rate=3e-4,critic_learning_rate=3e-4,gamma=.99,gae_lambda=.95,clip_ratio=.2,
@@ -96,7 +137,7 @@ class ModularMAPPOTrainer:
   return metrics
  def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None):
   dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask);newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
-  ratio=(newlog-oldlog).exp();sur=torch.minimum(ratio*adv,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*adv)
+  logratio,ratio=stable_ratio_terms(newlog,oldlog);sur=torch.minimum(ratio*adv,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*adv)
   weights=weights.unsqueeze(-1) if weights.ndim==mask.ndim-1 else weights
   aw=weights if self.wave_balance.actor_enabled else torch.ones_like(weights);actor_loss=-masked_mean(sur*aw,mask)
   value,newch=self.critic.forward_step(obs,mask,self._ctx(ctx,False),ch,ep)
@@ -106,23 +147,26 @@ class ModularMAPPOTrainer:
   if self.anchor.enabled and self.anchor.reference_actor is not None:
    with torch.no_grad():ref=self.anchor.reference_actor.distribution(obs)
    anchor_loss,am=self.anchor.loss(dist,ref,self.sampled_steps,mask);akl=am["anchor_kl"]
-  return actor_loss,value_loss,ent,anchor_loss,ratio,newlog,newah,newch,akl
+  return actor_loss,value_loss,ent,anchor_loss,ratio,logratio,newlog,oldlog,newah,newch,akl
  def _opt(self,losses):
-  al,vl,en,anchor,ratio,newlog,*_=losses
+  al,vl,en,anchor,*_=losses
   self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();ag=nn.utils.clip_grad_norm_(self.actor.parameters(),self.max_grad_norm);self.actor_optimizer.step()
   self.critic_optimizer.zero_grad();(self.value_loss_coefficient*vl).backward();cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.actor_update_count+=1;self.critic_update_count+=1
   return ag,cg
  def _row(self,losses,mask,ag,cg):
-  al,vl,en,anchor,ratio,newlog,_,_,akl=losses;logratio=ratio.log()
-  live=ratio[mask>.5]
-  return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean((ratio-1)-logratio,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"ratio_mean":float(live.mean().detach()),"ratio_std":float(live.std(unbiased=False).detach()),"ratio_p1":float(torch.quantile(live,.01).detach()),"ratio_p50":float(torch.quantile(live,.5).detach()),"ratio_p99":float(torch.quantile(live,.99).detach()),"ratio_min":float(live.min().detach()),"ratio_max":float(live.max().detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps))}
+  al,vl,en,anchor,ratio,logratio,newlog,oldlog,_,_,akl=losses
+  stable_ratio_terms(newlog,oldlog)
+  live_mask=mask>.5;live=ratio[live_mask];live_logratio=logratio[live_mask]
+  if live.numel()==0:raise FloatingPointError("no valid alive PPO samples")
+  kl=(ratio-1)-logratio
+  return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
  def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));N=arrays[0].shape[0];rows=[]
   for _ in range(self.ppo_epochs):
    permutation=self.rng.permutation(N)
    for start in range(0,N,self.minibatch_size):
     ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args);ag,cg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg))
-  return {k:float(np.mean([r[k] for r in rows])) for k in rows[0]}
+  return aggregate_update_rows(rows,self.clip_ratio)
  def _update_recurrent(self,r,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
   tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
   chunks=contiguous_chunks(obs.shape[0],obs.shape[1],self.recurrent.sequence_length);rows=[]
@@ -132,7 +176,7 @@ class ModularMAPPOTrainer:
    for start in range(0,len(chunks),sequences_per_minibatch):
     group=[chunks[int(i)] for i in order[start:start+sequences_per_minibatch]]
     rows.append(self._recurrent_minibatch(r,group,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,tt))
-  out={k:float(np.mean([x[k] for x in rows])) for k in rows[0]};out.update({"sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),"recurrent_minibatches_per_epoch":float(np.ceil(len(chunks)/sequences_per_minibatch))});return out
+  out=aggregate_update_rows(rows,self.clip_ratio);out.update({"sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),"recurrent_minibatches_per_epoch":float(np.ceil(len(chunks)/sequences_per_minibatch))});return out
 
  def _recurrent_minibatch(self,r,group,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,tt):
   length=max(z-s for _,s,z in group);batch=len(group)
@@ -151,11 +195,11 @@ class ModularMAPPOTrainer:
    if saved is None:return None
    return torch.stack([tt(saved[s,e]) for e,s,_ in group]).detach()
   ah,ch=initial(r.actor_hidden_before_step),initial(r.critic_hidden_before_step)
-  surrogates=[];errors=[];entropies=[];ratios=[];logratios=[];masks=[];waveweights=[];anchor_kls=[]
+  surrogates=[];errors=[];entropies=[];ratios=[];logratios=[];newlogs=[];masks=[];waveweights=[];anchor_kls=[]
   for t in range(length):
    mask=M[t]*valid[t,:,None]
    dist,ah=self.actor.distribution_step(O[t],self._ctx(C[t],True),ah,EP[t],mask)
-   newlog=self.actor._squashed_log_prob(dist,R[t],A[t]);logratio=newlog-L[t];ratio=logratio.exp()
+   newlog=self.actor._squashed_log_prob(dist,R[t],A[t]);logratio,ratio=stable_ratio_terms(newlog,L[t])
    surrogate=torch.minimum(ratio*ADV[t],ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*ADV[t])
    sampled=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sampled,torch.tanh(sampled))
    value,ch=self.critic.forward_step(O[t],mask,self._ctx(C[t],False),ch,EP[t])
@@ -164,13 +208,13 @@ class ModularMAPPOTrainer:
    if self.anchor.enabled and self.anchor.reference_actor is not None:
     with torch.no_grad():reference=self.anchor.reference_actor.distribution(O[t])
     anchor_kls.append(kl_divergence(dist,reference).sum(-1))
-   surrogates.append(surrogate);errors.append(error);entropies.append(entropy);ratios.append(ratio);logratios.append(logratio);masks.append(mask);waveweights.append(W[t,:,None].expand_as(mask))
-  surrogate,error,entropy,ratio,logratio,mask,ww=map(lambda x:torch.stack(x),(surrogates,errors,entropies,ratios,logratios,masks,waveweights))
+   surrogates.append(surrogate);errors.append(error);entropies.append(entropy);ratios.append(ratio);logratios.append(logratio);newlogs.append(newlog);masks.append(mask);waveweights.append(W[t,:,None].expand_as(mask))
+  surrogate,error,entropy,ratio,logratio,newlog,mask,ww=map(lambda x:torch.stack(x),(surrogates,errors,entropies,ratios,logratios,newlogs,masks,waveweights))
   aw=ww if self.wave_balance.actor_enabled else torch.ones_like(ww);vw=ww if self.wave_balance.critic_enabled else torch.ones_like(ww)
   actor_loss=-recurrent_alive_mean(surrogate*aw,M,valid);value_loss=.5*recurrent_alive_mean(error*vw,M,valid);entropy_mean=recurrent_alive_mean(entropy,M,valid)
   anchor_mean=recurrent_alive_mean(torch.stack(anchor_kls),M,valid) if anchor_kls else torch.zeros((),device=self.device)
   anchor_loss=anchor_mean*self.anchor.effective_coefficient(self.sampled_steps)
-  merged=(actor_loss,value_loss,entropy_mean,anchor_loss,ratio.reshape(-1,self.num_agents),logratio.reshape(-1,self.num_agents),ah,ch,float(anchor_mean.detach()))
+  merged=(actor_loss,value_loss,entropy_mean,anchor_loss,ratio.reshape(-1,self.num_agents),logratio.reshape(-1,self.num_agents),newlog.reshape(-1,self.num_agents),L.reshape(-1,self.num_agents),ah,ch,float(anchor_mean.detach()))
   ag,cg=self._opt(merged);return self._row(merged,mask.reshape(-1,self.num_agents),ag,cg)
 
  @torch.no_grad()
