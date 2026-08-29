@@ -84,9 +84,10 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=30)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--skip-trajectories", action="store_true")
     args = parser.parse_args()
-    if not 1 <= args.episodes <= 30:
-        raise ValueError("episodes must be 1..30")
+    if not 1 <= args.episodes <= 50:
+        raise ValueError("episodes must be 1..50")
     seeds = list(range(args.seed_base, args.seed_base + args.episodes))
     if any(20_000_000 <= seed <= 20_000_199 for seed in seeds):
         raise ValueError("formal holdout seed range is forbidden")
@@ -157,8 +158,11 @@ def main() -> None:
     pair_selection = select_pairs(d_pw, p_pw)
     trajectory_records = []
     trajectory_dir = output / "trajectories"; trajectory_dir.mkdir(exist_ok=True)
-    for category, seed in (("key", pair_selection["key_seed"]),
-                           ("counterexample", pair_selection["counterexample_seed"])):
+    trajectory_jobs = () if args.skip_trajectories else (
+        ("key", pair_selection["key_seed"]),
+        ("counterexample", pair_selection["counterexample_seed"]),
+    )
+    for category, seed in trajectory_jobs:
         if seed is None:
             continue
         for label, actor in (("d999_to_pw", d_actor), ("pw999_to_pw", p_actor)):
