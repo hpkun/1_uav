@@ -7,13 +7,34 @@ import yaml
 
 from env.factory import make_combat_environment
 from algorithm.common.checkpoint import evaluation_selection_key
+from algorithm.common.protocol import config_sha256
 from algorithm.train_mappo import ensure_fresh_output_directory,resolve_runtime_settings
 from algorithm.mappo.trainer import MAPPOTrainer,RolloutBatch
 from algorithm.modular_mappo.buffer import ModularRolloutBatch
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
-from algorithm.modular_mappo.trainer import ModularMAPPOTrainer
+from algorithm.modular_mappo.trainer import ModularMAPPOTrainer,MODULAR_MAPPO_IMPL_VERSION
+from algorithm.modular_mappo.protocol import validate_modular_checkpoint,is_formal_v2_checkpoint,checkpoint_architecture
 
 ROOT=Path(__file__).resolve().parents[1]
+
+def formal_state():
+ config=yaml.safe_load((ROOT/"configs/modular_mappo_persistent.yaml").read_text());env=yaml.safe_load((ROOT/"configs/persistent_wave_v2_environment.yaml").read_text());trainer=ModularMAPPOTrainer(modules_config=config["modules"])
+ extra={"environment_version":env["environment_version"],"environment_variant":env["environment_variant"],"environment_config_sha256":config_sha256(env),"algorithm_config_sha256":config_sha256(config),"network_architecture":checkpoint_architecture(trainer),"observation_dim":52,"action_dim":3,"num_agents":4,"training_seed":2023,"training_gamma":.999,"training_num_envs":24,"training_total_sampled_steps":1500000,"training_smoke":False,"algorithm_config":config}
+ return trainer.checkpoint_state(extra),env,config
+
+def test_fresh_checkpoint_is_formal_v2():
+ state,env,config=formal_state();assert MODULAR_MAPPO_IMPL_VERSION==2 and state["modular_mappo_impl_version"]==2 and is_formal_v2_checkpoint(state);assert validate_modular_checkpoint(state,env,config)
+
+def test_v2_resume_allowed_and_v1_formal_resume_rejected(tmp_path):
+ trainer=ModularMAPPOTrainer();path=tmp_path/"v2.pt";trainer.save(path);ModularMAPPOTrainer().load(path)
+ state,env,config=formal_state();state["modular_mappo_impl_version"]=1;assert not is_formal_v2_checkpoint(state)
+ with pytest.raises(RuntimeError,match=r"checkpoint=1, current=2"):validate_modular_checkpoint(state,env,config)
+
+def test_module_mismatch_and_baseline_checkpoint_rejected():
+ state,env,config=formal_state();state["module_config_sha256"]="wrong"
+ with pytest.raises(RuntimeError,match="module config mismatch"):validate_modular_checkpoint(state,env,config)
+ state["algorithm"]="MAPPO"
+ with pytest.raises(RuntimeError,match="algorithm mismatch"):validate_modular_checkpoint(state,env,config)
 
 def test_modular_fresh_output_safety_before_artifacts(tmp_path):
  missing=tmp_path/"new";ensure_fresh_output_directory(missing);assert list(missing.iterdir())==[]

@@ -301,6 +301,10 @@ are documented in `docs/persistent_wave_environment_design.md`. Files under
 instructions.
 # Modular Persistent-Wave formal experiments
 
+Version protocol: modular v1 is prototype/diagnostic only; modular v2 is the
+formal hardened implementation. A v1 checkpoint cannot resume into v2, and
+the first 1.5M v2 experiments must start as fresh runs.
+
 Modular MAPPO keeps raw environment outcomes separate from any algorithm-side
 training reward.  Wave-balance weights are computed once from the complete
 current rollout distribution, using alive-agent samples by default; they are

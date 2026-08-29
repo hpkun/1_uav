@@ -21,11 +21,11 @@ run_one() {
     > "outputs/${name}_nohup.log" 2>&1
 }
 
+run_one pw_m5_wave_balance_1p5m_seed2023 \
+  --algorithm-config configs/pw_m5_wave_balance.yaml
 run_one pw_m6_warm_start_1p5m_seed2023 \
   --algorithm-config configs/pw_m6_warm_start.yaml \
   --warm-start-checkpoint "$DIRECT_BEST"
-run_one pw_m5_wave_balance_1p5m_seed2023 \
-  --algorithm-config configs/pw_m5_wave_balance.yaml
 run_one pw_m1_wave_context_1p5m_seed2023 \
   --algorithm-config configs/pw_m1_wave_context.yaml
 run_one pw_m3_popart_1p5m_seed2023 \

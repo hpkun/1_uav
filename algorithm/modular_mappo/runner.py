@@ -19,10 +19,12 @@ from algorithm.common.checkpoint import evaluation_selection_key
 from algorithm.common.protocol import config_sha256
 from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.mappo.networks import SharedMAPPOActor
+from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from .buffer import ModularRolloutBatch
 from .evaluation import evaluate_modular
 from .factory import build_modular_mappo_trainer
 from .protocol import checkpoint_architecture, validate_modular_checkpoint
+from .trainer import MODULAR_MAPPO_IMPL_VERSION
 
 
 class ModularMAPPOTrainingRunner:
@@ -403,6 +405,9 @@ class ModularMAPPOTrainingRunner:
         alive_fraction = self._fractions(self.alive_agent_counts)
         pretraining = int(self.trainer.warm_start_provenance.get("pretraining_sampled_steps", 0))
         return {
+            "algorithm":"modular_mappo",
+            "modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,
+            "baseline_mappo_impl_version":MAPPO_IMPL_VERSION,
             "protocol": {**self.trainer.module_protocol(), "network_architecture":checkpoint_architecture(self.trainer),
                          "environment_config_sha256":config_sha256(self.env_config),
                          "algorithm_config_sha256":config_sha256(self.algorithm_config)},

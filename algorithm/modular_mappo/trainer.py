@@ -14,7 +14,9 @@ from algorithm.modules import (WaveContextModule,RecurrentMemoryModule,PopArtVal
 from .networks import ModularMAPPOActor,ModularCentralizedCritic
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 
-MODULAR_MAPPO_IMPL_VERSION=1
+# Version 2 is the formal hardened implementation. Version 1 checkpoints use
+# prototype recurrent/weighting semantics and are diagnostic-only artifacts.
+MODULAR_MAPPO_IMPL_VERSION=2
 
 class ModularMAPPOTrainer:
  def __init__(self,observation_dim=52,action_dim=3,num_agents=4,hidden_dim=256,attention_heads=2,
