@@ -120,12 +120,13 @@ def test_analysis_rejects_holdout_and_pairs_by_seed():
     with pytest.raises(ValueError,match="formal holdout"): validate_diagnostic_seeds([20_000_000])
     baseline=pd.DataFrame({"seed":[2,1],"clear_wave_1":[0,1],"clear_wave_2":[0,0],"clear_wave_3":[0,0],
         "waves_cleared":[0,1],"episode_return":[0,1],"red_losses":[4,3],"episode_kill_loss_ratio":[0,1],"red_boundary_exits":[1,0],"red_ground_losses":[0,1]})
+    baseline["blue_losses"]=[0,4]; baseline["timeout"]=[0,1]; baseline["episode_length"]=[10,20]
     candidate=baseline.copy(); candidate["episode_return"]+=2
     assert matched_episode_delta(candidate,baseline)["delta_return"]==2
 
 
 def test_pareto_labels_use_raw_metrics_without_composite_score():
-    gains={"W3":.1,"average_waves":.2,"return":0,"red_loss":0,"K_L":0}
+    gains={"W3":.1,"average_waves":.2,"return":1,"red_loss":0,"K_L":0}
     assert classify_candidate(-.11,gains)=="FORGETTING"
     assert classify_candidate(-.05,gains)=="ADAPTATION_CANDIDATE"
     assert classify_candidate(0,{key:0 for key in gains})=="PRESERVATION_ONLY"

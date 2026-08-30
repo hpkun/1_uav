@@ -12,9 +12,13 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
@@ -22,8 +26,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from algorithm.train_modular_mappo import load_config
 
 OUT = ROOT / "outputs" / "next_stage_screening"
 CACHE = OUT / "evaluation_cache"
@@ -36,8 +38,10 @@ SUMMARY_METRICS = {
     "W1": "clear_wave_1_probability", "W2": "clear_wave_2_probability",
     "W3": "clear_wave_3_probability", "average_waves": "average_waves_cleared",
     "return": "average_return", "red_loss": "average_red_loss",
+    "blue_loss": "average_blue_loss",
     "K_L": "kill_loss_ratio", "boundary": "average_red_boundary_exits",
     "ground": "average_red_ground_losses",
+    "timeout": "timeout_rate", "episode_length": "average_episode_length",
 }
 
 
@@ -110,10 +114,11 @@ def discover_runs(outputs: Path = ROOT / "outputs") -> dict[str, Any]:
         algorithm, variant = run.get("algorithm"), run.get("environment_variant")
         steps, modules = int(summary.get("sampled_steps", -1)), set(run.get("enabled_modules", []))
         snapshot = _resolved_snapshot(directory)
+        gamma = run.get("training_gamma", snapshot.get("training", {}).get("gamma"))
+        if int(run.get("num_envs", -1)) != 24 or gamma is None or not np.isclose(float(gamma), .999):
+            continue
         if algorithm == "MAPPO" and variant == "direct_v2_3" and steps == 3_000_000:
-            gamma = run.get("training_gamma", snapshot.get("training", {}).get("gamma"))
-            if float(gamma) == 0.999:
-                buckets["Direct source"].append(directory)
+            buckets["Direct source"].append(directory)
         elif algorithm == "modular_mappo" and variant == "persistent_wave_v2" and steps == 1_500_000:
             if modules == set(): buckets["All-Off"].append(directory)
             elif modules == {"wave_balancing"}: buckets["M5"].append(directory)
@@ -243,7 +248,8 @@ def matched_episode_delta(candidate: pd.DataFrame, baseline: pd.DataFrame) -> di
         raise ValueError("matched evaluation seed mismatch")
     episode_fields = {"W1":"clear_wave_1", "W2":"clear_wave_2", "W3":"clear_wave_3",
         "average_waves":"waves_cleared", "return":"episode_return", "red_loss":"red_losses",
-        "K_L":"episode_kill_loss_ratio", "boundary":"red_boundary_exits", "ground":"red_ground_losses"}
+        "blue_loss":"blue_losses", "K_L":"episode_kill_loss_ratio", "boundary":"red_boundary_exits",
+        "ground":"red_ground_losses", "timeout":"timeout", "episode_length":"episode_length"}
     return {f"delta_{label}": float((merged[f"{field}_candidate"] - merged[f"{field}_baseline"]).mean())
             for label, field in episode_fields.items()}
 
@@ -253,8 +259,10 @@ def classify_candidate(delta_direct_win: float, persistent_deltas: dict[str, flo
     if float(delta_direct_win) < -0.10:
         return "FORGETTING"
     improvements = sum(float(persistent_deltas[field]) > 0 for field in
-                       ("W3", "average_waves", "return", "red_loss", "K_L"))
-    return "ADAPTATION_CANDIDATE" if improvements >= 2 else "PRESERVATION_ONLY"
+                       ("W3", "average_waves", "return", "K_L"))
+    improvements += int(float(persistent_deltas["red_loss"]) < 0)
+    progress = float(persistent_deltas["W3"]) > 0 or float(persistent_deltas["average_waves"]) > 0
+    return "ADAPTATION_CANDIDATE" if improvements >= 3 and progress else "PRESERVATION_ONLY"
 
 
 def _optimization_at(directory: Path, step: int) -> dict[str, Any]:
@@ -263,6 +271,66 @@ def _optimization_at(directory: Path, step: int) -> dict[str, Any]:
     row = min(rows, key=lambda item: (abs(int(item["sampled_steps"]) - int(step)), int(item["sampled_steps"])))
     return {name: row.get(name) for name in ("anchor_kl", "anchor_loss", "anchor_effective_coefficient",
         "approx_kl", "log_ratio_min", "log_ratio_max", "max_abs_log_ratio")}
+
+
+def _read_optimization(directory: Path) -> pd.DataFrame:
+    rows = [json.loads(line) for line in (directory / "optimization_metrics.jsonl").read_text(
+        encoding="utf-8").splitlines() if line.strip()]
+    return pd.DataFrame(rows).sort_values("sampled_steps")
+
+
+def build_anchor_regularization_diagnostics(runs: dict[str, Any]) -> pd.DataFrame:
+    candidates = [("M6 control", 0.0, runs["M6 control"])] + [
+        (f"anchor {coefficient:g}", coefficient, directory)
+        for coefficient, directory in sorted(runs["anchors"].items())]
+    rows=[]
+    for candidate, coefficient, directory in candidates:
+        frame = _read_optimization(directory)
+        for metric in ("anchor_kl", "anchor_loss", "anchor_effective_coefficient"):
+            values = pd.to_numeric(frame[metric], errors="coerce").dropna().to_numpy(float)
+            record={"candidate":candidate,"coefficient":coefficient,"metric":metric,
+                    "mean":float(np.mean(values)),"median":float(np.median(values)),
+                    "p90":float(np.quantile(values,.90)),"p95":float(np.quantile(values,.95)),
+                    "max":float(np.max(values)),"finite":bool(np.isfinite(values).all())}
+            for requested in (100_000,200_000,300_000):
+                index=(frame.sampled_steps.astype(int)-requested).abs().idxmin()
+                record[f"requested_{requested//1000}k_step"]=int(frame.loc[index,"sampled_steps"])
+                record[f"value_near_{requested//1000}k"]=float(frame.loc[index,metric])
+            rows.append(record)
+    result=pd.DataFrame(rows)
+    result.to_csv(OUT/"anchor_regularization_diagnostics.csv",index=False)
+    return result
+
+
+def build_anchor_training_stability(runs: dict[str, Any]) -> pd.DataFrame:
+    candidates = [("M6 control", 0.0, runs["M6 control"])] + [
+        (f"anchor {coefficient:g}", coefficient, directory)
+        for coefficient, directory in sorted(runs["anchors"].items())]
+    rows=[]
+    for candidate, coefficient, directory in candidates:
+        evaluation=pd.read_csv(directory/"evaluation_history.csv").sort_values("sampled_steps")
+        optimization=_read_optimization(directory)
+        for _, item in evaluation.iterrows():
+            step=int(item.sampled_steps)
+            index=(optimization.sampled_steps.astype(int)-step).abs().idxmin()
+            opt=optimization.loc[index]
+            rows.append({"candidate":candidate,"coefficient":coefficient,"sampled_steps":step,
+                "clear_wave_1_probability":item.get("clear_wave_1_probability"),
+                "clear_wave_2_probability":item.get("clear_wave_2_probability"),
+                "clear_wave_3_probability":item.get("clear_wave_3_probability"),
+                "average_waves_cleared":item.get("average_waves_cleared"),
+                "average_return":item.get("average_return"),"average_red_loss":item.get("average_red_loss"),
+                "average_red_boundary_exits":item.get("average_red_boundary_exits"),
+                "optimization_actual_step":int(opt.sampled_steps),"anchor_kl":opt.get("anchor_kl"),
+                "anchor_loss":opt.get("anchor_loss"),"anchor_effective_coefficient":opt.get("anchor_effective_coefficient"),
+                "approx_kl":opt.get("approx_kl"),"log_ratio_min":opt.get("log_ratio_min"),
+                "log_ratio_max":opt.get("log_ratio_max"),"max_abs_log_ratio":opt.get("max_abs_log_ratio")})
+    result=pd.DataFrame(rows).sort_values(["coefficient","sampled_steps"])
+    result["best_W3_so_far"]=result.groupby("candidate")["clear_wave_3_probability"].cummax()
+    result["W3_drop_from_best"]=result["best_W3_so_far"]-result["clear_wave_3_probability"]
+    result["descriptive_collapse_from_peak"]=(result["W3_drop_from_best"]>=.20)
+    result.to_csv(OUT/"anchor_training_stability.csv",index=False)
+    return result
 
 
 def _summary_row(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -305,11 +373,9 @@ def build_anchor_tables(runs: dict[str, Any], mappings: list[dict[str, Any]]) ->
         frames[group].to_csv(OUT / filename, index=False)
     keys = ["candidate", "coefficient", "checkpoint_role", "requested_step", "actual_step"]
     pw = frames["anchor_pw"].rename(columns={column:f"PW_{column}" for column in SUMMARY_METRICS})
-    direct = frames["anchor_direct"].rename(columns={
-        "win_rate":"Direct_win",
-        "W1":"Direct_W1", "W2":"Direct_W2", "W3":"Direct_W3", "average_waves":"Direct_average_waves",
-        "return":"Direct_return", "red_loss":"Direct_red_loss", "K_L":"Direct_K_L",
-        "boundary":"Direct_boundary", "ground":"Direct_ground"})
+    direct_names={column:f"Direct_{column}" for column in ("win_rate",*SUMMARY_METRICS.keys())}
+    direct_names["win_rate"]="Direct_win"
+    direct = frames["anchor_direct"].rename(columns=direct_names)
     diagnostic = [c for c in ("anchor_kl","anchor_loss","anchor_effective_coefficient","approx_kl",
                                "log_ratio_min","log_ratio_max","max_abs_log_ratio") if c in direct]
     direct = direct.drop(columns=diagnostic)
@@ -318,22 +384,17 @@ def build_anchor_tables(runs: dict[str, Any], mappings: list[dict[str, Any]]) ->
     joint["delta_Direct_win"] = joint["Direct_win"] - source["Direct_win"]
     joint["delta_Direct_return"] = joint["Direct_return"] - source["Direct_return"]
     for field in ("W3", "average_waves", "return", "red_loss", "K_L"):
-        sign = -1 if field == "red_loss" else 1
-        joint[f"delta_PW_{field}"] = sign * (joint[f"PW_{field}"] - source[f"PW_{field}"])
+        joint[f"delta_PW_{field}"] = joint[f"PW_{field}"] - source[f"PW_{field}"]
     def label(row):
         if row.candidate == "Direct source": return "SOURCE"
         return classify_candidate(row.delta_Direct_win, {
             field:row[f"delta_PW_{field}"] for field in ("W3","average_waves","return","red_loss","K_L")})
     joint["classification"] = joint.apply(label, axis=1)
     joint.to_csv(OUT / "anchor_screen_joint.csv", index=False)
-    _plot_pareto(joint)
     return joint
 
 
 def _plot_pareto(joint: pd.DataFrame) -> None:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     plot = joint[(joint.candidate != "Direct source") & (joint.checkpoint_role.isin(["300k","best","latest"]))]
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
     for _, row in plot.iterrows():
@@ -354,10 +415,19 @@ def write_manifest(runs: dict[str, Any], tasks: list[dict[str, Any]], joint: pd.
                "fresh_seed_ranges": {"matched":"35000000-35000049", "persistent":"35100000-35100029",
                                      "direct":"35200000-35200029"},
                "formal_holdout_used": False, "composite_score_used": False,
+               "direct_source": source_identity(runs["Direct source"] / "best_eval.pt"),
+               "evaluation_task_count": len(tasks),
                "tasks": tasks}
     if joint is not None:
         payload["classifications"] = joint[["candidate","coefficient","checkpoint_role","actual_step","classification"]].to_dict("records")
-    (OUT / "analysis_manifest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    def safe(value):
+        if isinstance(value,dict): return {str(key):safe(item) for key,item in value.items()}
+        if isinstance(value,list): return [safe(item) for item in value]
+        if isinstance(value,np.generic): value=value.item()
+        if isinstance(value,float) and not np.isfinite(value): return None
+        return value
+    (OUT / "analysis_manifest.json").write_text(
+        json.dumps(safe(payload), indent=2, allow_nan=False), encoding="utf-8")
 
 
 def main() -> None:
@@ -365,7 +435,10 @@ def main() -> None:
     parser.add_argument("--mode", choices=("evaluate","report","all"), default="all")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--preflight-sources", nargs=2, metavar=("WARM_START", "REFERENCE"))
+    parser.add_argument("--plot-only", action="store_true")
     args = parser.parse_args()
+    if args.plot_only:
+        _plot_pareto(pd.read_csv(OUT / "anchor_screen_joint.csv")); return
     if args.preflight_sources:
         print(json.dumps(validate_same_source_checkpoints(*args.preflight_sources), indent=2)); return
     runs = discover_runs(); validate_run_provenance(runs)
@@ -376,7 +449,10 @@ def main() -> None:
         if missing: raise RuntimeError(f"missing evaluation caches: {missing}; run --mode evaluate first")
         OUT.mkdir(parents=True, exist_ok=True)
         build_matched_tables(mappings); joint = build_anchor_tables(runs, mappings)
+        build_anchor_regularization_diagnostics(runs)
+        build_anchor_training_stability(runs)
         write_manifest(runs, tasks, joint)
+        subprocess.run([sys.executable, str(Path(__file__).resolve()), "--plot-only"], check=True)
     else: write_manifest(runs, tasks)
 
 
