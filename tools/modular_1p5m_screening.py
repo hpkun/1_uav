@@ -27,16 +27,84 @@ from env.factory import make_combat_environment
 
 OUT = ROOT / "outputs" / "modular_1p5m_screening"
 CACHE = OUT / "evaluation_cache"
-RUNS = {
-    "PW baseline": ROOT / "outputs" / "pw999_seed2023",
-    "Direct baseline": ROOT / "outputs" / "d999_seed2023",
-    "M5": ROOT / "outputs" / "pw_m5_wave_balance_1p5m_seed2023",
-    "M6": ROOT / "outputs" / "pw_m6_warm_start_1p5m_seed2023",
-    "M1": ROOT / "outputs" / "pw_m1_wave_context_1p5m_seed2023",
-    "M3": ROOT / "outputs" / "pw_m3_popart_1p5m_seed2023",
-}
 PW_ENV = ROOT / "configs" / "persistent_wave_v2_environment.yaml"
 DIRECT_ENV = ROOT / "configs" / "combat_environment.yaml"
+
+
+def discover_runs(outputs: Path = ROOT / "outputs") -> dict[str, Path]:
+    """Identify formal study runs from protocol metadata, never directory names."""
+    candidates: dict[str, list[Path]] = {name: [] for name in ("PW baseline","Direct baseline","M5","M6","M1","M3")}
+    module_labels = {"wave_balancing":"M5","warm_start":"M6","wave_context":"M1","popart":"M3"}
+    for directory in outputs.iterdir():
+        config_path, summary_path = directory / "run_config.json", directory / "run_summary.json"
+        if not directory.is_dir() or not config_path.is_file() or not summary_path.is_file():
+            continue
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if int(config.get("seed", -1)) != 2023 or int(summary.get("sampled_steps", -1)) < 1_500_000:
+            continue
+        algorithm = str(config.get("algorithm", ""))
+        variant = str(config.get("environment_variant", ""))
+        modules = tuple(config.get("enabled_modules", []))
+        if algorithm == "MAPPO" and variant == "persistent_wave_v2" and int(summary["sampled_steps"]) == 3_000_000:
+            candidates["PW baseline"].append(directory)
+        elif algorithm == "MAPPO" and variant == "direct_v2_3" and int(summary["sampled_steps"]) == 3_000_000:
+            candidates["Direct baseline"].append(directory)
+        elif algorithm == "modular_mappo" and variant == "persistent_wave_v2" and len(modules) == 1:
+            label = module_labels.get(modules[0])
+            if label and int(summary["sampled_steps"]) == 1_500_000:
+                candidates[label].append(directory)
+    ambiguous = {name: paths for name, paths in candidates.items() if len(paths) != 1}
+    if ambiguous:
+        raise RuntimeError(f"formal run discovery failed or ambiguous: {ambiguous}")
+    return {name: paths[0] for name, paths in candidates.items()}
+
+
+RUNS = discover_runs()
+
+
+def validate_diagnostic_seeds(seeds) -> list[int]:
+    values = [int(seed) for seed in seeds]
+    if not values or len(values) != len(set(values)):
+        raise ValueError("evaluation seeds must be non-empty and unique")
+    if any(20_000_000 <= seed <= 20_000_199 for seed in values):
+        raise ValueError("20M formal holdout seeds are forbidden for screening")
+    return values
+
+
+def select_near_budget_checkpoints(records: list[tuple[int, str]], budget: int) -> dict[str, tuple[int, str]]:
+    if not records:
+        raise ValueError("checkpoint records must not be empty")
+    ordered = sorted((int(step), path) for step, path in records)
+    eligible = [record for record in ordered if record[0] <= budget]
+    if not eligible:
+        raise ValueError("no checkpoint at or below budget")
+    return {"at_or_below": eligible[-1], "nearest_overall": min(ordered,key=lambda record:(abs(record[0]-budget),record[0]))}
+
+
+def nearest_checkpoint_step(requested: int, available: list[int]) -> int:
+    if not available:
+        raise ValueError("available checkpoint steps must not be empty")
+    return min(map(int,available),key=lambda step:(abs(step-int(requested)),step))
+
+
+def require_cross_variant_permission(source: str, target: str, allowed: bool) -> bool:
+    cross = str(source) != str(target)
+    if cross and not allowed:
+        raise RuntimeError("cross-variant evaluation requires explicit permission")
+    return cross
+
+
+def pw_budget_selection() -> dict[str, tuple[int, str]]:
+    records=[]
+    for path in RUNS["PW baseline"].glob("checkpoint_*.pt"):
+        try:step=int(path.stem.split("_")[-1])
+        except ValueError:continue
+        records.append((step,str(path)))
+    return select_near_budget_checkpoints(records,1_500_000)
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -88,6 +156,7 @@ def checkpoint_record(path: Path) -> dict[str, Any]:
 
 def task(name: str, method: str, checkpoint: Path, env: Path, seed_base: int,
          episodes: int, allow_cross_variant: bool = False) -> dict[str, Any]:
+    validate_diagnostic_seeds(range(seed_base,seed_base+episodes))
     return {
         "name": name,
         "method": method,
@@ -101,9 +170,10 @@ def task(name: str, method: str, checkpoint: Path, env: Path, seed_base: int,
 
 def evaluation_tasks() -> list[dict[str, Any]]:
     pw = RUNS["PW baseline"]
+    selection=pw_budget_selection();below_step,below_path=selection["at_or_below"];near_step,near_path=selection["nearest_overall"]
     fresh = [
-        task("PW_below_1001472", "PW baseline", pw / "checkpoint_1001472.pt", PW_ENV, 34_000_000, 50),
-        task("PW_above_1505280", "PW baseline", pw / "checkpoint_1505280.pt", PW_ENV, 34_000_000, 50),
+        task(f"PW_below_{below_step}", "PW baseline", Path(below_path), PW_ENV, 34_000_000, 50),
+        task(f"PW_above_{near_step}", "PW baseline", Path(near_path), PW_ENV, 34_000_000, 50),
         task("M5_best", "M5", RUNS["M5"] / "best_eval.pt", PW_ENV, 34_000_000, 50),
         task("M5_latest", "M5", RUNS["M5"] / "latest.pt", PW_ENV, 34_000_000, 50),
         task("M1_best", "M1", RUNS["M1"] / "best_eval.pt", PW_ENV, 34_000_000, 50),
@@ -140,9 +210,7 @@ def load_policy(task_spec: dict[str, Any]):
     extra = state.get("extra", {})
     source_variant = str(extra.get("environment_variant", "direct_v2_3"))
     target_variant = str(env_config.get("environment_variant", "direct_v2_3"))
-    cross_variant = source_variant != target_variant
-    if cross_variant and not task_spec["allow_cross_variant"]:
-        raise RuntimeError(f"{task_spec['name']}: cross-variant evaluation was not explicitly allowed")
+    cross_variant = require_cross_variant_permission(source_variant,target_variant,task_spec["allow_cross_variant"])
     if state.get("algorithm") == "MAPPO":
         algorithm_config = load_yaml(checkpoint.parent / "algorithm_config.yaml")
         validate_checkpoint_for_evaluation(
@@ -294,7 +362,7 @@ def evaluate_task(task_spec: dict[str, Any]) -> str:
         if existing.get("task") == task_spec:
             return f"cached {task_spec['name']}"
     trainer, kind, env_config, metadata = load_policy(task_spec)
-    seeds = range(task_spec["seed_base"], task_spec["seed_base"] + task_spec["episodes"])
+    seeds = validate_diagnostic_seeds(range(task_spec["seed_base"], task_spec["seed_base"] + task_spec["episodes"]))
     records = [run_episode(trainer, kind, env_config, seed) for seed in seeds]
     payload = {"task": task_spec, "metadata": metadata, "summary": summarize_episodes(records), "episodes": records}
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -362,14 +430,15 @@ def training_history(integrity: list[dict[str, Any]]) -> pd.DataFrame:
         for _, row in frame.iterrows():
             rows.append({
                 "method": item["method"], "module": ",".join(item["enabled_modules"]) or "none",
+                "training_seed": item["training_seed"],
                 "sampled_steps": int(row.sampled_steps),
-                "W1": row.get("clear_wave_1_probability", np.nan),
-                "W2": row.get("clear_wave_2_probability", np.nan),
-                "W3": row.get("clear_wave_3_probability", np.nan),
-                "average_waves": row.get("average_waves_cleared", np.nan),
-                "return": row.average_return, "red_loss": row.average_red_loss, "blue_loss": row.average_blue_loss,
-                "K/L": row.get("kill_loss_ratio", np.nan), "boundary": row.average_red_boundary_exits,
-                "ground": row.average_red_ground_losses, "timeout": row.get("timeout_rate", np.nan),
+                "W1_clear_rate": row.get("clear_wave_1_probability", np.nan),
+                "W2_clear_rate": row.get("clear_wave_2_probability", np.nan),
+                "W3_clear_rate": row.get("clear_wave_3_probability", np.nan),
+                "average_waves_cleared": row.get("average_waves_cleared", np.nan),
+                "average_return": row.average_return, "average_red_loss": row.average_red_loss, "average_blue_loss": row.average_blue_loss,
+                "K_L": row.get("kill_loss_ratio", np.nan), "average_red_boundary_exits": row.average_red_boundary_exits,
+                "average_red_ground_losses": row.average_red_ground_losses, "timeout_rate": row.get("timeout_rate", np.nan),
                 "best_flag": int(int(row.sampled_steps) == int(item["best_step"])),
             })
     return pd.DataFrame(rows)
@@ -378,10 +447,10 @@ def training_history(integrity: list[dict[str, Any]]) -> pd.DataFrame:
 def plot_training_history(frame: pd.DataFrame) -> None:
     frame = frame[frame.sampled_steps <= 1_505_280]
     for column, filename, ylabel in (
-        ("W3", "training_W3.png", "P(clear wave 3)"),
-        ("average_waves", "training_average_waves.png", "Average waves cleared"),
-        ("return", "training_return.png", "Average return"),
-        ("red_loss", "training_red_loss.png", "Average red loss"),
+        ("W3_clear_rate", "training_W3_curve.png", "P(clear wave 3)"),
+        ("average_waves_cleared", "training_avg_waves_curve.png", "Average waves cleared"),
+        ("average_return", "training_return_curve.png", "Average return"),
+        ("average_red_loss", "training_red_loss_curve.png", "Average red loss"),
     ):
         fig, ax = plt.subplots(figsize=(9, 5.2))
         for method, group in frame.groupby("method"):
@@ -414,6 +483,14 @@ DELTA_METRICS = {
 }
 
 
+def matched_episode_delta(candidate: pd.DataFrame,baseline: pd.DataFrame,metrics: dict[str,str]=DELTA_METRICS) -> dict[str,float]:
+    for name,frame in (("candidate",candidate),("baseline",baseline)):
+        if frame.seed.duplicated().any():raise ValueError(f"duplicate seed in {name} episodes")
+    candidate=candidate.set_index("seed");baseline=baseline.set_index("seed");common=baseline.index.intersection(candidate.index)
+    if len(common)!=len(baseline) or len(common)!=len(candidate):raise ValueError("paired evaluation seed sets do not match")
+    return {f"delta_{label}":float((candidate.loc[common,column]-baseline.loc[common,column]).mean()) for label,column in metrics.items()}
+
+
 def paired_delta(episodes: pd.DataFrame) -> pd.DataFrame:
     baseline_name = "PW_above_1505280"
     baseline = episodes[episodes.evaluation == baseline_name].set_index("seed")
@@ -422,22 +499,24 @@ def paired_delta(episodes: pd.DataFrame) -> pd.DataFrame:
     for name in ("M5_best", "M5_latest", "M1_best", "M1_latest", "M3_best", "M3_latest", "M6_best", "M6_latest", "Direct_source_to_PW"):
         if name not in available:
             continue
-        candidate = episodes[episodes.evaluation == name].set_index("seed")
-        common = baseline.index.intersection(candidate.index)
-        row = {"comparison": f"{name} - {baseline_name}", "candidate": name, "baseline": baseline_name, "paired_episodes": len(common)}
-        for label, column in DELTA_METRICS.items():
-            row[f"delta_{label}"] = float((candidate.loc[common, column] - baseline.loc[common, column]).mean())
+        candidate_frame=episodes[episodes.evaluation==name]
+        row = {"comparison": f"{name} - {baseline_name}", "candidate": name, "baseline": baseline_name, "paired_episodes": len(candidate_frame)}
+        row.update(matched_episode_delta(candidate_frame,episodes[episodes.evaluation==baseline_name]))
         rows.append(row)
     return pd.DataFrame(rows)
 
 
 def requested_m6_mapping() -> dict[int, int]:
     periodic = np.asarray([503808, 1001472, 1500000])
-    requested = [104448, 202752, 301056, 503808, 700416, 804864, 1001472, 1204224, 1400832, 1500000]
+    requested = [104448,202752,301056,405504,503808,602112,700416,804864,903168,1001472,1105920,1204224,1302528,1400832,1500000]
     return {
         step: 104448 if step == 104448 else int(periodic[np.argmin(np.abs(periodic-step))])
         for step in requested
     }
+
+
+def sweep_mapping_rows(mapping: dict[int,int]) -> list[dict[str,int]]:
+    return [{"requested_step":int(requested),"actual_step":int(actual)} for requested,actual in mapping.items()]
 
 
 def sweep_table(target: str) -> pd.DataFrame:
@@ -445,7 +524,8 @@ def sweep_table(target: str) -> pd.DataFrame:
     source = evaluation_payload(f"M6_source_{suffix}")
     rows = [{"requested_step": 0, "actual_step": source["metadata"]["sampled_steps"], "checkpoint_role": "Direct source", **source["summary"]}]
     mapping = requested_m6_mapping()
-    for requested, actual in mapping.items():
+    for mapped in sweep_mapping_rows(mapping):
+        requested,actual=mapped["requested_step"],mapped["actual_step"]
         payload = evaluation_payload(f"M6_{actual}_{suffix}")
         rows.append({"requested_step": requested, "actual_step": actual, "checkpoint_role": "M6", **payload["summary"]})
     return pd.DataFrame(rows)
@@ -466,6 +546,25 @@ def plot_m6_sweeps(pw: pd.DataFrame, direct: pd.DataFrame) -> None:
     axes[1].legend(win_line+return_line,[line.get_label() for line in win_line+return_line],loc="upper right")
     axes[1].grid(alpha=.25);axes[1].set_xlabel("M6 sampled steps")
     fig.tight_layout();fig.savefig(OUT / "m6_persistent_vs_direct_trajectory.png", dpi=170);plt.close(fig)
+    for column,filename,ylabel in (
+        ("clear_wave_3_probability","m6_pw_W3_vs_step.png","P(clear wave 3)"),
+        ("average_waves_cleared","m6_pw_avg_waves_vs_step.png","Average waves cleared"),
+        ("average_return","m6_pw_return_vs_step.png","Average return"),
+        ("average_red_loss","m6_pw_red_loss_vs_step.png","Average red loss"),
+    ):
+        fig,ax=plt.subplots(figsize=(8,4.8));ax.plot(pw_unique.actual_step,pw_unique[column],"o-");ax.set_xlabel("M6 sampled steps");ax.set_ylabel(ylabel);ax.grid(alpha=.25);fig.tight_layout();fig.savefig(OUT/filename,dpi=170);plt.close(fig)
+    for column,filename,ylabel in (
+        ("win_rate","m6_direct_win_vs_step.png","Direct win rate"),
+        ("average_return","m6_direct_return_vs_step.png","Direct return"),
+    ):
+        fig,ax=plt.subplots(figsize=(8,4.8));ax.plot(direct_unique.actual_step,direct_unique[column],"o-");ax.set_xlabel("M6 sampled steps");ax.set_ylabel(ylabel);ax.grid(alpha=.25);fig.tight_layout();fig.savefig(OUT/filename,dpi=170);plt.close(fig)
+
+
+def cross_environment_trajectory(pw: pd.DataFrame,direct: pd.DataFrame) -> pd.DataFrame:
+    keys=["checkpoint_role","actual_step"]
+    left=pw.drop_duplicates(keys)[keys+["clear_wave_3_probability","average_waves_cleared","average_return"]].rename(columns={"average_return":"persistent_return"})
+    right=direct.drop_duplicates(keys)[keys+["win_rate","average_return"]].rename(columns={"win_rate":"direct_win_rate","average_return":"direct_return"})
+    return left.merge(right,on=keys,how="inner").sort_values(["checkpoint_role","actual_step"])
 
 
 def stage_label(step: int) -> str:
@@ -498,6 +597,41 @@ def exposure_table() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def m5_weight_table() -> pd.DataFrame:
+    frame=read_jsonl(RUNS["M5"]/"optimization_metrics.jsonl");frame["stage"]=frame.sampled_steps.map(stage_label);rows=[]
+    for stage,group in frame.groupby("stage",sort=False):
+        row={"stage":stage,"updates":len(group)}
+        for index in (1,2,3):
+            row.update(wave_weight_stats(group,index))
+        effective=group.effective_wave_weight_mean.astype(float)
+        for stat,value in (("mean",effective.mean()),("median",effective.median()),("p10",effective.quantile(.1)),("p90",effective.quantile(.9))):row[f"effective_weight_{stat}"]=float(value)
+        row["configured_max_respected"]=bool(max(row[f"weight_W{i}_max"] or 0 for i in (1,2,3))<=3.0+1e-9)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def wave_weight_stats(group: pd.DataFrame,index: int) -> dict[str,Any]:
+    present=group[group[f"alive_agent_samples_wave_{index}"]>0][f"weight_wave_{index}"].astype(float)
+    result={f"W{index}_present_updates":len(present),f"W{index}_absent":bool(present.empty)}
+    for stat,value in (("mean",present.mean()),("median",present.median()),("p10",present.quantile(.1)),("p90",present.quantile(.9)),("max",present.max())):
+        result[f"weight_W{index}_{stat}"]=None if present.empty else float(value)
+    return result
+
+
+def m1_mechanism_table(exposure: pd.DataFrame) -> pd.DataFrame:
+    opt=read_jsonl(RUNS["M1"]/"optimization_metrics.jsonl");opt["stage"]=opt.sampled_steps.map(stage_label)
+    history=pd.read_csv(RUNS["M1"]/"evaluation_history.csv");history["stage"]=history.sampled_steps.map(stage_label)
+    rows=[]
+    for stage in ("0-0.5M","0.5-1.0M","1.0-1.5M"):
+        o=opt[opt.stage==stage];e=history[history.stage==stage];x=exposure[(exposure.method=="M1")&(exposure.stage==stage)].iloc[0]
+        rows.append({"stage":stage,"alive_W2":x.alive_agent_fraction_W2,"alive_W3":x.alive_agent_fraction_W3,
+            "critic_value_loss_mean":float(o.value_loss.mean()),"explained_variance_mean":float(o.explained_variance.mean()),
+            "evaluation_return_mean":float(e.average_return.mean()),"evaluation_W3_mean":float(e.clear_wave_3_probability.mean()),
+            "evaluation_average_waves_mean":float(e.average_waves_cleared.mean()),"evaluation_red_loss_mean":float(e.average_red_loss.mean()),
+            "stage_last_step":int(e.sampled_steps.max()),"stage_last_W3":float(e.iloc[-1].clear_wave_3_probability),"stage_last_return":float(e.iloc[-1].average_return)})
+    return pd.DataFrame(rows)
+
+
 def stability_table(integrity: list[dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for item in integrity:
@@ -519,8 +653,12 @@ def stability_table(integrity: list[dict[str, Any]]) -> pd.DataFrame:
             "best_W3": best.clear_wave_3_probability, "latest_W3": latest.clear_wave_3_probability,
             "best_final_W3_gap": best.clear_wave_3_probability-latest.clear_wave_3_probability,
             "best_average_waves": best.average_waves_cleared, "latest_average_waves": latest.average_waves_cleared,
+            "best_final_average_waves_gap":best.average_waves_cleared-latest.average_waves_cleared,
             "best_return": best.average_return, "latest_return": latest.average_return,
+            "best_final_return_gap":best.average_return-latest.average_return,
             "best_red_loss": best.average_red_loss, "latest_red_loss": latest.average_red_loss,
+            "best_final_red_loss_change":latest.average_red_loss-best.average_red_loss,
+            "no_best_final_regression":bool(int(best.sampled_steps)==int(latest.sampled_steps)),
         })
     return pd.DataFrame(rows)
 
@@ -557,7 +695,7 @@ def plot_popart() -> None:
     fig.tight_layout();fig.savefig(OUT / "m3_popart_diagnostics.png", dpi=170);plt.close(fig)
 
 
-def write_report_stub(integrity, fresh, delta, pw_sweep, direct_sweep, exposure, stability, diagnostics) -> None:
+def write_report_stub(integrity,fresh,delta,pw_sweep,direct_sweep,cross,exposure,weights,m1,stability,diagnostics) -> None:
     by_eval = fresh.set_index("evaluation")
     m6_post = diagnostics[(diagnostics.method == "M6") & (diagnostics.phase == "post_resume")].set_index("metric")
     lines = [
@@ -571,6 +709,9 @@ def write_report_stub(integrity, fresh, delta, pw_sweep, direct_sweep, exposure,
         "## M6 Persistent trajectory", "", pw_sweep[["requested_step","actual_step","checkpoint_role","clear_wave_3_probability","average_waves_cleared","average_return","average_red_loss","kill_loss_ratio"]].to_markdown(index=False), "",
         "## M6 Direct trajectory", "", direct_sweep[["requested_step","actual_step","checkpoint_role","win_rate","average_return","average_red_loss","kill_loss_ratio"]].to_markdown(index=False), "",
         "## Wave sample exposure", "", exposure.to_markdown(index=False), "",
+        "## M5 wave weights", "", weights.to_markdown(index=False), "",
+        "## M1 mechanism stages", "", m1.to_markdown(index=False), "",
+        "## M6 cross-environment trajectory", "", cross.to_markdown(index=False), "",
         "## Best-final stability", "", stability.to_markdown(index=False), "",
         "## Optimization diagnostics", "", diagnostics.to_markdown(index=False), "",
         "## Evidence-calibrated interpretation", "",
@@ -585,7 +726,10 @@ def write_report_stub(integrity, fresh, delta, pw_sweep, direct_sweep, exposure,
         "On the 20-seed PW sweep, M6 falls from W3=0.35 at 104,448 to 0.05 at 503,808/1,001,472 and 0.00 at 1,500,000. On the matched 30-seed Direct sweep, win rate falls from 0.933 to 0.733, 0.700, and 0.267. PW and Direct capability therefore degrade together, supporting tactical forgetting/policy destruction rather than a purely persistent-specific adaptation failure.", "",
         f"The M6 post-resume KL is fully finite across {int(m6_post.loc['approx_kl','count'])} updates (mean={m6_post.loc['approx_kl','mean']:.4f}, p99={m6_post.loc['approx_kl','p99']:.4f}, max={m6_post.loc['approx_kl','global_max']:.4f}). Only one update contains ratio underflow (4 samples; maximum fraction 2.55e-5). Major performance collapse also occurs in windows with ordinary KL around 0.02–0.03, so the evidence does not support a simple KL-spike explanation.", "",
         "### Wave exposure and M5 weighting", "",
-        "From-scratch W3 alive-agent exposure is initially scarce: M5 3.3%, M1 4.3%, M3 2.3%. M6 starts at 15.7% because the Direct source immediately reaches later waves. M5 W3 exposure rises to 8.4% and then 19.5%; its W3 mean weight is 1.88, 2.77, and 1.90 across the three stages while the effective alive-sample mean remains normalized to 1.0. The weighting mechanism is active and behaves as configured.", "",
+        "From-scratch W3 alive-agent exposure is initially scarce: M5 3.3%, M1 4.3%, M3 2.3%. M6 starts at 15.7% because the Direct source immediately reaches later waves. M6 W3 exposure remains 15.6–17.0% after collapse, so loss of later-wave sample share alone does not explain its degradation. M5 W3 exposure rises to 8.4% and then 19.5%; present-sample W2/W3 weights exceed W1 and never exceed the configured cap of 3, while effective mean remains normalized to 1.0.", "",
+        "M5 has W3 samples in 52/81 early updates, 80/81 middle updates, and 83/83 late updates. When present, W3 mean weights are 2.94, 2.80, and 1.90; W2 means are 1.94, 1.29, and 1.08 versus W1 means 0.69, 0.68, and 0.73. Thus absent W3 updates are excluded rather than assigned a fictitious weight interpretation.", "",
+        "### M1 mechanism evidence", "",
+        "M1 W2/W3 alive-agent exposure rises from 23.4%/4.3% to 34.7%/16.7%. Mean explained variance rises from 0.281 to 0.629, mean evaluation return from -27.15 to 11.69, mean waves from 0.10 to 1.03, and mean red loss falls slightly from 3.96 to 3.83. Critic value loss does not monotonically decrease (1.60 to 2.08), so smaller value loss is not the explanation. The data are consistent with late Persistent learning accompanied by more later-wave samples and better value predictiveness, but do not establish that context solved state aliasing.", "",
         "### Next decision", "",
         "Do not launch a module combination yet. First replicate M5 across independent training seeds. M1+M5 is not yet justified because M1 did not beat baseline on W3. M6+M8 Policy Anchor is a well-motivated forgetting diagnostic, but not yet a primary performance candidate because M6 best did not exceed the untouched Direct source. Defer PopArt until its best/latest instability is resolved.", "",
         "### Limitations", "",
@@ -610,7 +754,10 @@ def build_report() -> None:
     pw_sweep.to_csv(OUT / "m6_pw_checkpoint_sweep.csv", index=False)
     direct_sweep.to_csv(OUT / "m6_direct_checkpoint_sweep.csv", index=False)
     plot_m6_sweeps(pw_sweep, direct_sweep)
+    cross=cross_environment_trajectory(pw_sweep,direct_sweep);cross.to_csv(OUT/"m6_cross_environment_trajectory.csv",index=False)
     exposure = exposure_table();exposure.to_csv(OUT / "wave_sample_exposure_by_stage.csv", index=False)
+    weights=m5_weight_table();weights.to_csv(OUT/"m5_wave_weight_by_stage.csv",index=False)
+    m1=m1_mechanism_table(exposure);m1.to_csv(OUT/"m1_mechanism_by_stage.csv",index=False)
     stability = stability_table(integrity);stability.to_csv(OUT / "best_final_stability.csv", index=False)
     diagnostics = diagnostic_table();diagnostics.to_csv(OUT / "optimization_diagnostics.csv", index=False)
     plot_popart()
@@ -628,23 +775,35 @@ def build_report() -> None:
         for label,column in DELTA_METRICS.items():
             row[f"delta_{label}"] = float((candidate_rows.loc[common,column]-source_rows.loc[common,column]).mean())
         m6_source_deltas.append(row)
+    m6_only=cross[cross.checkpoint_role=="M6"]
+    correlations={
+        "pearson_direct_win_vs_persistent_W3":float(m6_only.direct_win_rate.corr(m6_only.clear_wave_3_probability,method="pearson")),
+        "spearman_direct_win_vs_persistent_W3":float(m6_only.direct_win_rate.corr(m6_only.clear_wave_3_probability,method="spearman")),
+        "pearson_direct_return_vs_persistent_avg_waves":float(m6_only.direct_return.corr(m6_only.average_waves_cleared,method="pearson")),
+        "spearman_direct_return_vs_persistent_avg_waves":float(m6_only.direct_return.corr(m6_only.average_waves_cleared,method="spearman")),
+        "checkpoint_count":len(m6_only),"descriptive_only":True,
+    }
+    budget_selection=pw_budget_selection()
     summary = {
         "protocol": {"fresh_seed_base":34000000,"fresh_seed_end":34000049,"m6_pw_seed_base":34100000,"m6_pw_seed_end":34100019,"m6_direct_seed_base":34200000,"m6_direct_seed_end":34200029,"final_holdout_used":False,"training_performed":False},
         "run_integrity": integrity,
-        "pw_baseline_budget": {"nearest_at_or_below":1001472,"nearest_overall":1505280,"primary_fresh_comparator":1505280,
+        "pw_baseline_budget": {"nearest_at_or_below":budget_selection["at_or_below"][0],"nearest_overall":budget_selection["nearest_overall"][0],"primary_fresh_comparator":budget_selection["nearest_overall"][0],
             "best_training_evaluation_at_or_below_1p5m":pw_best_row.to_dict(),
             "best_training_evaluation_has_checkpoint":bool((RUNS["PW baseline"] / f"checkpoint_{int(pw_best_row.sampled_steps)}.pt").exists())},
         "m6_requested_to_actual_checkpoint": requested_m6_mapping(),
+        "m6_cross_environment_correlations":correlations,
         "fresh_summary": fresh.to_dict("records"),
         "paired_delta": delta.to_dict("records"),
         "m6_vs_direct_source_paired_delta": m6_source_deltas,
         "wave_exposure": exposure.to_dict("records"),
+        "m5_wave_weights":weights.to_dict("records"),
+        "m1_mechanism_stages":m1.to_dict("records"),
         "stability": stability.to_dict("records"),
         "diagnostics": diagnostics.to_dict("records"),
         "ratings": {
             "M1":"MIXED", "M3":"MIXED", "M5":"PROMISING", "M6":"NOT_PROMISING",
             "M6_warm_start_mechanism":"MIXED: strong inherited initialization but no gain over source",
-            "M6_unconstrained_pw_finetuning":"UNSTABLE",
+            "M6_unconstrained_pw_finetuning":"NOT_PROMISING",
         },
         "mechanism_conclusions": {
             "m6_tactical_forgetting_supported":True,
@@ -657,7 +816,7 @@ def build_report() -> None:
     (OUT / "screening_summary.json").write_text(
         json.dumps(json_ready(summary), indent=2, allow_nan=False), encoding="utf-8"
     )
-    write_report_stub(integrity, fresh, delta, pw_sweep, direct_sweep, exposure, stability, diagnostics)
+    write_report_stub(integrity,fresh,delta,pw_sweep,direct_sweep,cross,exposure,weights,m1,stability,diagnostics)
     print(f"report written to {OUT}", flush=True)
 
 
