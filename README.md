@@ -352,3 +352,19 @@ All-Off versus M5, 35,100,000–35,100,029 for Persistent screening, and
 untouched formal holdout seeds.  Anchor selection is based on the raw Pareto
 table, with a descriptive Direct-win-drop reference line of 0.10; no composite
 score is used.
+
+## Three-training-seed confirmation
+
+The frozen confirmation stage evaluates only M5 Wave Balance and M6+M8 with
+constant policy-anchor coefficient 0.03.  `tools/run_multiseed_confirmation.sh`
+adds training seeds 2024 and 2025; each warm-start pipeline automatically
+discovers and validates the Direct source with the matching training seed.
+No seed-specific YAML copies are used.
+
+After the eight additional runs finish, use
+`python -u tools/analyze_multiseed_confirmation.py --mode all --workers 4`.
+M5 uses diagnostic seeds 36,000,000–36,000,099; M8 Persistent and Direct use
+36,100,000–36,100,099 and 36,200,000–36,200,099.  The statistical unit is the
+training seed (`n=3`), not the 100 evaluation episodes.  The 20M formal holdout
+remains untouched, and M8 confirmation treats the 300k/latest checkpoint as
+primary while reporting best only as a secondary stability diagnostic.
