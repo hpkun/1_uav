@@ -330,3 +330,25 @@ alive-agent wave sample fractions, best-checkpoint step, best-to-final gap and
 optimization stability.  M4 is judged by raw environment outcomes, never its
 shaped training return.  Only clearly promising modules proceed to 3M and
 multi-seed experiments; module combinations are not part of the first screen.
+
+## Matched all-off and M6+M8 coefficient screen
+
+`pw_alloff_matched_1p5m.yaml` is the strict modular-v2 all-modules-off control
+for the existing seed-2023 M5 run.  The two resolved configurations are equal
+in every training-affecting field except `modules.wave_balancing`.
+
+The 300k M6+M8 diagnostic uses actor-only Direct warm start and a constant
+policy anchor tied to the same Direct checkpoint.  The coefficient labels are:
+`c0001 = 0.001`, `c0003 = 0.003`, `c001 = 0.01`, `c003 = 0.03`, and
+`c01 = 0.10`.  `pw_m6_screen_control_300k.yaml` is the matched coefficient-zero
+control.  Run the complete single-GPU sequence with
+`tools/run_next_stage_screening.sh`; the script performs all output-directory
+and source-checkpoint checks before starting any training.
+
+After all runs finish, `tools/analyze_next_stage_screening.py --mode all`
+performs fresh paired evaluation.  It reserves seeds 35,000,000–35,000,049 for
+All-Off versus M5, 35,100,000–35,100,029 for Persistent screening, and
+35,200,000–35,200,029 for Direct screening.  Seeds 20,000,000–20,000,199 remain
+untouched formal holdout seeds.  Anchor selection is based on the raw Pareto
+table, with a descriptive Direct-win-drop reference line of 0.10; no composite
+score is used.
