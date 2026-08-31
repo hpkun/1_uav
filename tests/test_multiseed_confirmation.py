@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +8,7 @@ from algorithm.mappo.trainer import MAPPOTrainer
 from algorithm.train_modular_mappo import load_config
 from tools.analyze_multiseed_confirmation import (
     M5_SEED_BASE,M8_PW_SEED_BASE,M8_DIRECT_SEED_BASE,conditional_timeout_metrics,
-    is_m8_primary_checkpoint,resolved_configs_matched,seed_level_summary,
+    _json_default,classify_m8_confirmation,is_m8_primary_checkpoint,resolved_configs_matched,seed_level_summary,
     validate_confirmation_seeds,validate_same_source,
 )
 
@@ -63,6 +64,19 @@ def test_conditional_timeout_missing_wave_is_none_not_zero():
 def test_m8_primary_is_latest_not_best():
     assert is_m8_primary_checkpoint("latest")
     assert not is_m8_primary_checkpoint("best")
+
+
+def test_summary_json_supports_numpy_scalars():
+    payload={"seed":np.int64(2023),"supported":np.bool_(True),"score":np.float64(.5)}
+    assert json.loads(json.dumps(payload,default=_json_default))=={
+        "seed":2023,"supported":True,"score":.5,
+    }
+
+
+def test_m8_rating_requires_consistent_three_seed_preservation():
+    assert classify_m8_confirmation([True,True,False],[False,False,False])=="MIXED"
+    assert classify_m8_confirmation([True,True,True],[False,False,False])=="PRESERVATION_ONLY"
+    assert classify_m8_confirmation([True,True,True],[True,True,False])=="MULTISEED_SUPPORTED"
 
 
 def test_serial_script_contains_all_eight_runs_in_protocol_order():

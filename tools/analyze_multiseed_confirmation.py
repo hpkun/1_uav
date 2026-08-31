@@ -59,6 +59,28 @@ def _json(path:Path)->dict[str,Any]: return json.loads(path.read_text(encoding="
 def _yaml(path:Path)->dict[str,Any]: return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def _json_default(value: Any) -> Any:
+    """Convert scalar values produced by NumPy/pandas to JSON primitives."""
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def classify_m8_confirmation(
+    better_than_control: list[bool], adaptation_supported: list[bool]
+) -> str:
+    """Apply the preregistered strict three-seed M8 success rules."""
+    preservation_consistent = all(better_than_control)
+    adaptation_count = sum(adaptation_supported)
+    if preservation_consistent and adaptation_count >= 2:
+        return "MULTISEED_SUPPORTED"
+    if preservation_consistent:
+        return "PRESERVATION_ONLY"
+    if adaptation_count == 1 and adaptation_supported[0]:
+        return "NOT_REPLICATED"
+    return "MIXED"
+
+
 def file_sha256(path:str|Path)->str:
     digest=hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -364,14 +386,18 @@ def build_outputs(runs,mapping)->dict[str,Any]:
         adaptation=bool(preservation and control_improvement and improvements>=3 and (pa.W3>ps.W3 or pa.average_waves>ps.average_waves))
         per_seed_m8.append({"training_seed":seed,"direct_preserved":preservation,"better_than_control":control_improvement,
                             "persistent_improvement_count":improvements,"adaptation_supported":adaptation})
-    supported=sum(row["adaptation_supported"] for row in per_seed_m8);preserved=sum(row["direct_preserved"] for row in per_seed_m8)
-    m8_rating="MULTISEED_SUPPORTED" if supported>=2 else ("PRESERVATION_ONLY" if preserved>=2 else "MIXED/NOT_REPLICATED")
+    m8_rating=classify_m8_confirmation(
+        [row["better_than_control"] for row in per_seed_m8],
+        [row["adaptation_supported"] for row in per_seed_m8],
+    )
     summary={"training_seeds":list(TRAINING_SEEDS),"statistical_unit":"training_seed","n_training_seeds":3,
         "evaluation_episodes_per_policy":100,"formal_holdout_used":False,"development_seeds_reused":False,
         "m8_primary_checkpoint":"latest/300k","anchor_coefficient":.03,"m5_rating":m5_rating,
         "m5_best_delta_means":m5_means,"m5_per_seed_decisions":per_seed_m5,
         "m8_rating":m8_rating,"m8_per_seed_decisions":per_seed_m8}
-    (OUT/"multiseed_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
+    (OUT/"multiseed_summary.json").write_text(
+        json.dumps(summary, indent=2, default=_json_default), encoding="utf-8"
+    )
     write_report(m5,pd.DataFrame(delta),tables,pd.DataFrame(mechanism));return summary
 
 

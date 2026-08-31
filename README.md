@@ -368,3 +368,42 @@ M5 uses diagnostic seeds 36,000,000–36,000,099; M8 Persistent and Direct use
 training seed (`n=3`), not the 100 evaluation episodes.  The 20M formal holdout
 remains untouched, and M8 confirmation treats the 300k/latest checkpoint as
 primary while reporting best only as a secondary stability diagnostic.
+
+## Frozen M5 formal holdout
+
+The final holdout compares only matched All-Off Modular MAPPO with M5 Wave
+Balance for training seeds 2023, 2024, and 2025. Primary evaluation is locked
+to `best_eval.pt`; `latest.pt` is a predeclared secondary best/final robustness
+check. The only permitted formal episode seeds are
+`20,000,000–20,000,199` (200 paired episodes per policy).
+
+Create or verify the immutable protocol lock before evaluation:
+
+```bash
+python -u tools/prepare_formal_holdout.py
+python -u tools/prepare_formal_holdout.py --verify
+```
+
+The lock is stored in `outputs/formal_holdout_protocol.json` with a companion
+SHA-256 file. The CUDA-only evaluator rejects a missing or changed manifest,
+changed run/config/checkpoint hashes, altered methods/seeds/checkpoint roles,
+and any non-empty prior formal output. `--resume-exact` is only for continuing
+an interrupted run whose manifest, task fingerprints, episode seeds, and
+checkpoint hashes are identical. It cannot select individual methods or
+checkpoints.
+
+Use non-holdout seed 99,000,000 for a one-episode-per-policy CUDA smoke:
+
+```bash
+python -u tools/run_formal_holdout.py --smoke --workers 1
+```
+
+The actual formal command must be run exactly once after the smoke and final
+protocol verification:
+
+```bash
+python -u tools/run_formal_holdout.py --workers 4
+```
+
+Never delete or selectively rerun formal episode caches. If an interrupted run
+must be recovered, use the same command with `--resume-exact` appended.
