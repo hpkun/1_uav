@@ -29,7 +29,8 @@ Nothing in `env/` is changed by this reproduction.
 | Action space | Paper: 2-D `[v, omega]`. | Frozen 3-D tanh-Gaussian `[delta_psi, delta_theta, delta_v]`. | Algorithm transfer to the current environment; changing environment/action semantics is forbidden. |
 | Scenario | Paper: 3v3 planar rounds and Hungarian-controlled Blue team. | Frozen homogeneous 4v4 3-D `persistent_wave_v2`, three waves, nearest-target Blue pursuit. | This evaluates transfer on the project's task and is not an exact simulator reproduction. |
 | Training budget | Not a paper parameter for this comparison. | 1,500,000 sampled steps, seed 2023. | **PAPER_UNSPECIFIED_ADAPTATION**, matched sample budget versus All-Off/M5. |
-| Development evaluation | Not specified by the paper. | Deterministic seeds 37,000,000–37,000,099 (100 episodes). | **PAPER_UNSPECIFIED_ADAPTATION**; disjoint from the 20M formal holdout and old 35M/36M development ranges. |
+| Training validation | Not specified by the paper. | Deterministic seeds 10,000,000–10,000,019 (20 episodes), every 100k sampled steps. | **PAPER_UNSPECIFIED_ADAPTATION**; exactly matches the existing All-Off/M5 checkpoint-selection information budget. |
+| Fresh comparison | Not specified by the paper. | Deterministic seeds 38,000,000–38,000,099 (100 episodes), used only after both Jiao runs finish. | **PAPER_UNSPECIFIED_ADAPTATION**. The originally planned 37M range is permanently excluded because two of its seeds were consumed by an earlier development smoke. |
 
 ## Two preregistered variants
 

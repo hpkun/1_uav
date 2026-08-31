@@ -83,6 +83,17 @@ class ModularMAPPOTrainingRunner:
         self.wave_clear_transition_counts = np.zeros(3, dtype=np.int64)
         self.reward_bonus_totals = np.zeros(4, dtype=np.float64)
         self.paper_reward_totals = np.zeros(5, dtype=np.float64)
+        self.death_index_totals = np.zeros((2, self.alive.shape[1]), dtype=np.int64)
+        self.death_cause_names = (
+            "red_weapon_deaths", "red_boundary_deaths", "red_ground_deaths",
+            "blue_weapon_deaths", "blue_boundary_deaths", "blue_ground_deaths",
+        )
+        self.death_cause_info_keys = (
+            "blue_attack_kills", "red_boundary_exits", "red_ground_losses",
+            "red_attack_kills", "blue_boundary_exits", "blue_ground_losses",
+        )
+        self.previous_cause_counts = np.zeros((self.num_envs, len(self.death_cause_names)), dtype=np.int64)
+        self.death_cause_totals = np.zeros(len(self.death_cause_names), dtype=np.int64)
         self.hidden_reset_count = 0
         self.curriculum_transitions = [{"sampled_steps": 0, "stage": self.current_stage, "total_waves": self.current_waves}]
         self.evaluation_history: list[dict[str, Any]] = []
@@ -184,6 +195,12 @@ class ModularMAPPOTrainingRunner:
             "blue_boundary_exits": int(info["blue_boundary_exits"]),
             "red_ground_losses": int(info["red_ground_losses"]),
             "blue_ground_losses": int(info["blue_ground_losses"]),
+            "red_weapon_deaths": int(info["blue_attack_kills"]),
+            "red_boundary_deaths": int(info["red_boundary_exits"]),
+            "red_ground_deaths": int(info["red_ground_losses"]),
+            "blue_weapon_deaths": int(info["red_attack_kills"]),
+            "blue_boundary_deaths": int(info["blue_boundary_exits"]),
+            "blue_ground_deaths": int(info["blue_ground_losses"]),
             "waves_cleared": waves,
             "total_waves": int(info.get("total_waves", 1)),
             **{f"wave_{k}_cleared": float(waves >= k) for k in (1, 2, 3)},
@@ -206,6 +223,8 @@ class ModularMAPPOTrainingRunner:
         actor_hidden_norms: list[np.ndarray] = []
         critic_hidden_norms: list[np.ndarray] = []
         rollout_hidden_resets = 0
+        rollout_causes = np.zeros(len(self.death_cause_names), dtype=np.int64)
+        rollout_death_indices = np.zeros_like(self.death_index_totals)
         for _ in range(int(steps or self.rollout_steps)):
             obs, alive, pre_wave = self.observations.copy(), self.alive.copy(), self.wave.copy()
             blue_alive = self.blue_alive.copy()
@@ -224,6 +243,23 @@ class ModularMAPPOTrainingRunner:
                 result.rewards, result.infos, pre_wave, alive, blue_alive
             )
             paper = self.trainer.reward_adapter.last_transition
+            blue_deaths = np.asarray(paper["blue_death_mask"], dtype=bool)
+            red_deaths = np.asarray(paper["red_death_mask"], dtype=bool)
+            step_indices = np.stack((blue_deaths.sum(0), red_deaths.sum(0)))
+            rollout_death_indices += step_indices
+            self.death_index_totals += step_indices
+            current_causes = np.asarray([
+                [int(info.get(key, 0)) for key in self.death_cause_info_keys]
+                for info in result.infos
+            ], dtype=np.int64)
+            cause_delta = current_causes - self.previous_cause_counts
+            # Counters are cumulative within an episode; auto-reset happens
+            # after terminal info is returned, so the next baseline is zero.
+            cause_delta = np.maximum(cause_delta, 0)
+            step_causes = cause_delta.sum(0)
+            rollout_causes += step_causes
+            self.death_cause_totals += step_causes
+            self.previous_cause_counts = np.where(done[:, None], 0, current_causes)
             self.paper_episode_blue += paper["blue_component"]
             self.paper_episode_red += paper["red_component"]
             self.paper_episode_by_wave += paper["per_wave"]
@@ -303,6 +339,11 @@ class ModularMAPPOTrainingRunner:
             ])) if (actor_hidden_norms or critic_hidden_norms) else 0.0,
             "hidden_reset_count": float(rollout_hidden_resets),
             "hidden_reset_count_total": float(self.hidden_reset_count),
+            **{f"blue_deaths_index_{index}": float(rollout_death_indices[0, index]) for index in range(self.death_index_totals.shape[1])},
+            **{f"red_deaths_index_{index}": float(rollout_death_indices[1, index]) for index in range(self.death_index_totals.shape[1])},
+            **{name: float(rollout_causes[index]) for index, name in enumerate(self.death_cause_names)},
+            "red_death_cause_unattributed": float(rollout_death_indices[1].sum() - rollout_causes[:3].sum()),
+            "blue_death_cause_unattributed": float(rollout_death_indices[0].sum() - rollout_causes[3:].sum()),
         }
         if reward_rows:
             for key in reward_rows[0]:
@@ -339,6 +380,8 @@ class ModularMAPPOTrainingRunner:
             "wave_clear_transition_counts": self.wave_clear_transition_counts.tolist(),
             "reward_bonus_totals": self.reward_bonus_totals.tolist(),
             "paper_reward_totals": self.paper_reward_totals.tolist(),
+            "death_index_totals": self.death_index_totals.tolist(),
+            "death_cause_totals": self.death_cause_totals.tolist(),
             "hidden_reset_count": self.hidden_reset_count,
             "curriculum_transitions": self.curriculum_transitions,
             "resume_count": self.resume_count,
@@ -352,7 +395,10 @@ class ModularMAPPOTrainingRunner:
         return evaluation_selection_key(row, self.env_config.get("environment_variant", "direct_v2_3"))
 
     def _record_evaluation(self) -> dict[str, Any]:
-        row = {"sampled_steps": self.trainer.sampled_steps, **evaluate_modular(
+        row = {"sampled_steps": self.trainer.sampled_steps,
+               "evaluation_seed_base": self.eval_base,
+               "evaluation_seed_end": self.eval_base + self.eval_episodes - 1,
+               **evaluate_modular(
             self.trainer, self.env_config, range(self.eval_base, self.eval_base + self.eval_episodes)
         )}
         self.latest_evaluation = row
@@ -408,6 +454,8 @@ class ModularMAPPOTrainingRunner:
         self.wave_clear_transition_counts = np.asarray(extra.get("wave_clear_transition_counts", [0,0,0]), dtype=np.int64)
         self.reward_bonus_totals = np.asarray(extra.get("reward_bonus_totals", [0,0,0,0]), dtype=np.float64)
         self.paper_reward_totals = np.asarray(extra.get("paper_reward_totals", [0,0,0,0,0]), dtype=np.float64)
+        self.death_index_totals = np.asarray(extra.get("death_index_totals", np.zeros((2,self.alive.shape[1])).tolist()), dtype=np.int64)
+        self.death_cause_totals = np.asarray(extra.get("death_cause_totals", [0]*len(self.death_cause_names)), dtype=np.int64)
         self.hidden_reset_count = int(extra.get("hidden_reset_count", 0))
         self.curriculum_transitions = list(extra.get("curriculum_transitions", self.curriculum_transitions))
         self.resume_count = int(extra.get("resume_count", 0)) + 1
@@ -484,6 +532,11 @@ class ModularMAPPOTrainingRunner:
             "paper_R2_totals": {"blue_kill_component":float(self.paper_reward_totals[0]),
                                 "red_loss_component":float(self.paper_reward_totals[1]),
                                 **{f"wave_{k}":float(self.paper_reward_totals[k+1]) for k in (1,2,3)}},
+            "death_index_totals": {
+                **{f"blue_deaths_index_{index}":int(self.death_index_totals[0,index]) for index in range(self.death_index_totals.shape[1])},
+                **{f"red_deaths_index_{index}":int(self.death_index_totals[1,index]) for index in range(self.death_index_totals.shape[1])},
+            },
+            "death_cause_totals": {name:int(self.death_cause_totals[index]) for index,name in enumerate(self.death_cause_names)},
             "hidden_reset_count": self.hidden_reset_count,
             "module_protocol": self.trainer.module_protocol(),
             "warm_start_provenance": self.trainer.warm_start_provenance,
