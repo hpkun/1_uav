@@ -131,6 +131,8 @@ class ModularMAPPOTrainer:
   live_mask=alive>.5;rv=returns[live_mask];vv=values[live_mask];variance=torch.var(rv,unbiased=False)
   metrics["explained_variance"]=float((1-torch.var(rv-vv,unbiased=False)/variance.clamp_min(1e-8)).detach())
   metrics["actor_optimizer_steps_this_update"]=float(self.actor_update_count-actor_before);metrics["critic_optimizer_steps_this_update"]=float(self.critic_update_count-critic_before)
+  recurrent_steps=(self.actor_update_count-actor_before) if (self.recurrent.actor_enabled or self.recurrent.critic_enabled) else 0
+  metrics["recurrent_optimizer_steps_this_update"]=float(recurrent_steps)
   metrics.update(self._policy_diagnostics(r,obs,act,alive,ctx))
   self.ppo_update_count+=1;metrics.update(wmetrics);metrics.update({"popart_mean":float(self.popart.mean),"popart_std":float(self.popart.std),"popart_count":float(self.popart.count)})
   if not np.all(np.isfinite(list(metrics.values()))):raise FloatingPointError(f"non-finite modular update: {metrics}")
@@ -148,24 +150,30 @@ class ModularMAPPOTrainer:
    with torch.no_grad():ref=self.anchor.reference_actor.distribution(obs)
    anchor_loss,am=self.anchor.loss(dist,ref,self.sampled_steps,mask);akl=am["anchor_kl"]
   return actor_loss,value_loss,ent,anchor_loss,ratio,logratio,newlog,oldlog,newah,newch,akl
+ @staticmethod
+ def _gradient_norm(parameters):
+  total=torch.zeros((),dtype=torch.float64)
+  for parameter in parameters:
+   if parameter.grad is not None:total+=parameter.grad.detach().double().square().sum().cpu()
+  return float(total.sqrt())
  def _opt(self,losses):
   al,vl,en,anchor,*_=losses
-  self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();ag=nn.utils.clip_grad_norm_(self.actor.parameters(),self.max_grad_norm);self.actor_optimizer.step()
-  self.critic_optimizer.zero_grad();(self.value_loss_coefficient*vl).backward();cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.actor_update_count+=1;self.critic_update_count+=1
-  return ag,cg
- def _row(self,losses,mask,ag,cg):
+  self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();arg=self._gradient_norm(self.actor.gru.parameters()) if self.recurrent.actor_enabled else 0.;ag=nn.utils.clip_grad_norm_(self.actor.parameters(),self.max_grad_norm);self.actor_optimizer.step()
+  self.critic_optimizer.zero_grad();(self.value_loss_coefficient*vl).backward();crg=self._gradient_norm(self.critic.gru.parameters()) if self.recurrent.critic_enabled else 0.;cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.actor_update_count+=1;self.critic_update_count+=1
+  return ag,cg,arg,crg
+ def _row(self,losses,mask,ag,cg,arg=0.,crg=0.):
   al,vl,en,anchor,ratio,logratio,newlog,oldlog,_,_,akl=losses
   stable_ratio_terms(newlog,oldlog)
   live_mask=mask>.5;live=ratio[live_mask];live_logratio=logratio[live_mask]
   if live.numel()==0:raise FloatingPointError("no valid alive PPO samples")
   kl=(ratio-1)-logratio
-  return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
+  return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"actor_gru_grad_norm":float(arg),"critic_gru_grad_norm":float(crg),"gru_gradient_norm":float(np.hypot(arg,crg)),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
  def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));N=arrays[0].shape[0];rows=[]
   for _ in range(self.ppo_epochs):
    permutation=self.rng.permutation(N)
    for start in range(0,N,self.minibatch_size):
-    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args);ag,cg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg))
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
   return aggregate_update_rows(rows,self.clip_ratio)
  def _update_recurrent(self,r,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
   tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
@@ -215,7 +223,7 @@ class ModularMAPPOTrainer:
   anchor_mean=recurrent_alive_mean(torch.stack(anchor_kls),M,valid) if anchor_kls else torch.zeros((),device=self.device)
   anchor_loss=anchor_mean*self.anchor.effective_coefficient(self.sampled_steps)
   merged=(actor_loss,value_loss,entropy_mean,anchor_loss,ratio.reshape(-1,self.num_agents),logratio.reshape(-1,self.num_agents),newlog.reshape(-1,self.num_agents),L.reshape(-1,self.num_agents),ah,ch,float(anchor_mean.detach()))
-  ag,cg=self._opt(merged);return self._row(merged,mask.reshape(-1,self.num_agents),ag,cg)
+  ag,cg,arg,crg=self._opt(merged);return self._row(merged,mask.reshape(-1,self.num_agents),ag,cg,arg,crg)
 
  @torch.no_grad()
  def _policy_diagnostics(self,r,obs,actions,alive,ctx):

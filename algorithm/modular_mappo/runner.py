@@ -75,10 +75,15 @@ class ModularMAPPOTrainingRunner:
         self.completed_episode_count = 0
         self.raw_episode_returns = np.zeros((self.num_envs, 4), dtype=np.float64)
         self.training_episode_returns = np.zeros((self.num_envs, 4), dtype=np.float64)
+        self.paper_episode_blue = np.zeros(self.num_envs, dtype=np.float64)
+        self.paper_episode_red = np.zeros(self.num_envs, dtype=np.float64)
+        self.paper_episode_by_wave = np.zeros((self.num_envs, 3), dtype=np.float64)
         self.transition_counts = np.zeros(3, dtype=np.int64)
         self.alive_agent_counts = np.zeros(3, dtype=np.int64)
         self.wave_clear_transition_counts = np.zeros(3, dtype=np.int64)
         self.reward_bonus_totals = np.zeros(4, dtype=np.float64)
+        self.paper_reward_totals = np.zeros(5, dtype=np.float64)
+        self.hidden_reset_count = 0
         self.curriculum_transitions = [{"sampled_steps": 0, "stage": self.current_stage, "total_waves": self.current_waves}]
         self.evaluation_history: list[dict[str, Any]] = []
         self.best_evaluation: dict[str, Any] | None = None
@@ -130,6 +135,7 @@ class ModularMAPPOTrainingRunner:
             self.vector.episode_indices = np.asarray(episode_indices, dtype=np.int64)
         self.observations = self.vector.reset()
         self.alive = self.vector.current_alive_masks.copy()
+        self.blue_alive = np.ones_like(self.alive, dtype=np.float32)
         self.wave = np.ones(self.num_envs, dtype=np.int64)
         self.total = np.full(self.num_envs, self.current_waves, dtype=np.int64)
         self.episode_mask = np.zeros(self.num_envs, dtype=np.float32)
@@ -153,13 +159,21 @@ class ModularMAPPOTrainingRunner:
         return counts.astype(np.float64) / max(float(counts.sum()), 1.0)
 
     def _write_episode(self, info: dict[str, Any], raw_return: np.ndarray,
-                       training_return: np.ndarray, sampled_steps: int) -> None:
+                       training_return: np.ndarray, sampled_steps: int,
+                       paper_blue: float = 0.0, paper_red: float = 0.0,
+                       paper_by_wave: np.ndarray | None = None) -> None:
         waves = int(info.get("waves_cleared", 0))
+        paper_wave = np.zeros(3, dtype=np.float64) if paper_by_wave is None else np.asarray(paper_by_wave)
         record = {
             "sampled_steps": int(sampled_steps),
             "episode_length": int(info["episode_length"]),
             "team_raw_environment_return": float(raw_return.sum()),
             "team_training_return": float(training_return.sum()),
+            "raw_environment_reward": float(raw_return.sum()),
+            "jiao_training_reward": float(training_return.sum()),
+            "paper_R2_blue_kill_component": float(paper_blue),
+            "paper_R2_red_loss_component": float(paper_red),
+            **{f"paper_R2_wave{k}": float(paper_wave[k - 1]) for k in (1, 2, 3)},
             "red_success": float(info["red_success"]),
             "blue_win": float(info["blue_win"]),
             "red_losses": int(info["red_losses"]),
@@ -189,9 +203,12 @@ class ModularMAPPOTrainingRunner:
         rollout_transition = np.zeros(3, dtype=np.int64)
         rollout_alive = np.zeros(3, dtype=np.int64)
         reward_rows: list[dict[str, float]] = []
-        hidden_norms: list[np.ndarray] = []
+        actor_hidden_norms: list[np.ndarray] = []
+        critic_hidden_norms: list[np.ndarray] = []
+        rollout_hidden_resets = 0
         for _ in range(int(steps or self.rollout_steps)):
             obs, alive, pre_wave = self.observations.copy(), self.alive.copy(), self.wave.copy()
+            blue_alive = self.blue_alive.copy()
             context = self.trainer.context_numpy(pre_wave, self.total)
             actor_before = None if self.actor_hidden is None else self.actor_hidden.copy()
             critic_before = None if self.critic_hidden is None else self.critic_hidden.copy()
@@ -204,8 +221,17 @@ class ModularMAPPOTrainingRunner:
             result = self.vector.step_batch(actions)
             done = result.terminated | result.truncated
             training_reward, reward_metrics = self.trainer.reward_adapter.adapt(
-                result.rewards, result.infos, pre_wave
+                result.rewards, result.infos, pre_wave, alive, blue_alive
             )
+            paper = self.trainer.reward_adapter.last_transition
+            self.paper_episode_blue += paper["blue_component"]
+            self.paper_episode_red += paper["red_component"]
+            self.paper_episode_by_wave += paper["per_wave"]
+            self.paper_reward_totals += np.asarray([
+                paper["blue_component"].sum(), paper["red_component"].sum(),
+                paper["per_wave"][:, 0].sum(), paper["per_wave"][:, 1].sum(),
+                paper["per_wave"][:, 2].sum(),
+            ])
             reward_rows.append(reward_metrics)
             self.reward_bonus_totals += np.asarray([reward_metrics.get("reward_bonus_total",0.0),reward_metrics.get("reward_bonus_wave1",0.0),reward_metrics.get("reward_bonus_wave2",0.0),reward_metrics.get("reward_bonus_wave3",0.0)])
             next_wave = np.asarray([int(row.get("wave_index", 1)) for row in result.infos])
@@ -232,11 +258,18 @@ class ModularMAPPOTrainingRunner:
             for env_id, is_done in enumerate(done):
                 if is_done:
                     self._write_episode(result.infos[env_id], self.raw_episode_returns[env_id],
-                                        self.training_episode_returns[env_id], step_after)
+                                        self.training_episode_returns[env_id], step_after,
+                                        self.paper_episode_blue[env_id], self.paper_episode_red[env_id],
+                                        self.paper_episode_by_wave[env_id])
                     self.raw_episode_returns[env_id].fill(0)
                     self.training_episode_returns[env_id].fill(0)
+                    self.paper_episode_blue[env_id] = 0.0
+                    self.paper_episode_red[env_id] = 0.0
+                    self.paper_episode_by_wave[env_id].fill(0.0)
             self.observations = result.observations
             self.alive = self.vector.current_alive_masks.copy()
+            post_blue = np.stack([np.asarray(row["blue_alive_mask"], dtype=np.float32) for row in result.infos])
+            self.blue_alive = np.where(done[:, None], np.ones_like(post_blue), post_blue)
             self.wave = np.where(done, 1, next_wave)
             self.total = np.where(done, self.current_waves, next_total)
             self.episode_mask = (~done).astype(np.float32)
@@ -244,9 +277,13 @@ class ModularMAPPOTrainingRunner:
             self.critic_hidden = self.trainer.recurrent.apply_alive(new_critic, self.alive)
             self.trainer.recurrent.reset_for_episode(self.actor_hidden, done)
             self.trainer.recurrent.reset_for_episode(self.critic_hidden, done)
-            for hidden in (self.actor_hidden, self.critic_hidden):
-                if hidden is not None:
-                    hidden_norms.append(np.linalg.norm(hidden, axis=-1))
+            resets = int(done.sum())
+            rollout_hidden_resets += resets
+            self.hidden_reset_count += resets
+            if self.actor_hidden is not None:
+                actor_hidden_norms.append(np.linalg.norm(self.actor_hidden, axis=-1))
+            if self.critic_hidden is not None:
+                critic_hidden_norms.append(np.linalg.norm(self.critic_hidden, axis=-1))
             self.trainer.sampled_steps += self.num_envs
             self.trainer.vector_steps += 1
         transition_fraction = self._fractions(rollout_transition)
@@ -256,8 +293,16 @@ class ModularMAPPOTrainingRunner:
             **{f"transition_fraction_wave_{k}": float(transition_fraction[k-1]) for k in (1,2,3)},
             **{f"alive_agent_samples_wave_{k}": float(rollout_alive[k-1]) for k in (1,2,3)},
             **{f"alive_agent_fraction_wave_{k}": float(alive_fraction[k-1]) for k in (1,2,3)},
-            "hidden_norm_mean": float(np.concatenate([x.ravel() for x in hidden_norms]).mean()) if hidden_norms else 0.0,
-            "hidden_norm_max": float(np.concatenate([x.ravel() for x in hidden_norms]).max()) if hidden_norms else 0.0,
+            "actor_hidden_norm": float(np.concatenate([x.ravel() for x in actor_hidden_norms]).mean()) if actor_hidden_norms else 0.0,
+            "critic_hidden_norm": float(np.concatenate([x.ravel() for x in critic_hidden_norms]).mean()) if critic_hidden_norms else 0.0,
+            "actor_hidden_norm_max": float(np.concatenate([x.ravel() for x in actor_hidden_norms]).max()) if actor_hidden_norms else 0.0,
+            "critic_hidden_norm_max": float(np.concatenate([x.ravel() for x in critic_hidden_norms]).max()) if critic_hidden_norms else 0.0,
+            "hidden_norm_mean": float(np.mean([
+                value for rows in (actor_hidden_norms, critic_hidden_norms)
+                for array in rows for value in array.ravel()
+            ])) if (actor_hidden_norms or critic_hidden_norms) else 0.0,
+            "hidden_reset_count": float(rollout_hidden_resets),
+            "hidden_reset_count_total": float(self.hidden_reset_count),
         }
         if reward_rows:
             for key in reward_rows[0]:
@@ -293,6 +338,8 @@ class ModularMAPPOTrainingRunner:
             "alive_agent_counts": self.alive_agent_counts.tolist(),
             "wave_clear_transition_counts": self.wave_clear_transition_counts.tolist(),
             "reward_bonus_totals": self.reward_bonus_totals.tolist(),
+            "paper_reward_totals": self.paper_reward_totals.tolist(),
+            "hidden_reset_count": self.hidden_reset_count,
             "curriculum_transitions": self.curriculum_transitions,
             "resume_count": self.resume_count,
             "evaluation": evaluation,
@@ -360,6 +407,8 @@ class ModularMAPPOTrainingRunner:
         self.alive_agent_counts = np.asarray(extra.get("alive_agent_counts", [0,0,0]), dtype=np.int64)
         self.wave_clear_transition_counts = np.asarray(extra.get("wave_clear_transition_counts", [0,0,0]), dtype=np.int64)
         self.reward_bonus_totals = np.asarray(extra.get("reward_bonus_totals", [0,0,0,0]), dtype=np.float64)
+        self.paper_reward_totals = np.asarray(extra.get("paper_reward_totals", [0,0,0,0,0]), dtype=np.float64)
+        self.hidden_reset_count = int(extra.get("hidden_reset_count", 0))
         self.curriculum_transitions = list(extra.get("curriculum_transitions", self.curriculum_transitions))
         self.resume_count = int(extra.get("resume_count", 0)) + 1
         self.restore_best_from_disk(self.trainer.sampled_steps)
@@ -377,7 +426,11 @@ class ModularMAPPOTrainingRunner:
     def train_log_line(self) -> str:
         rows = list(self.recent_episodes)
         mean = lambda key: float(np.mean([row[key] for row in rows])) if rows else float("nan")
-        module=(f"hidden={self.last_metrics.get('hidden_norm_mean',0):.3f} "
+        module=(f"hiddenA/C={self.last_metrics.get('actor_hidden_norm',0):.3f}/{self.last_metrics.get('critic_hidden_norm',0):.3f} "
+                f"| resets={self.last_metrics.get('hidden_reset_count',0):.0f} "
+                f"| chunks={self.last_metrics.get('sequence_chunks',0):.0f} "
+                f"| rsteps={self.last_metrics.get('recurrent_optimizer_steps_this_update',0):.0f} "
+                f"| gru_grad={self.last_metrics.get('gru_gradient_norm',0):.3f} "
                 f"| popart={self.last_metrics.get('popart_std',1):.3f} "
                 f"| wmean={self.last_metrics.get('effective_wave_weight_mean',1):.3f} "
                 f"| bonus={self.reward_bonus_totals[0]:.2f} "
@@ -428,6 +481,10 @@ class ModularMAPPOTrainingRunner:
             "wave_alive_agent_sample_fractions": {f"wave_{k}":float(alive_fraction[k-1]) for k in (1,2,3)},
             "wave_clear_transition_counts": {f"wave_{k}":int(self.wave_clear_transition_counts[k-1]) for k in (1,2,3)},
             "reward_adapter_totals": {"reward_bonus_total":float(self.reward_bonus_totals[0]),**{f"reward_bonus_wave{k}":float(self.reward_bonus_totals[k]) for k in (1,2,3)}},
+            "paper_R2_totals": {"blue_kill_component":float(self.paper_reward_totals[0]),
+                                "red_loss_component":float(self.paper_reward_totals[1]),
+                                **{f"wave_{k}":float(self.paper_reward_totals[k+1]) for k in (1,2,3)}},
+            "hidden_reset_count": self.hidden_reset_count,
             "module_protocol": self.trainer.module_protocol(),
             "warm_start_provenance": self.trainer.warm_start_provenance,
             "anchor_provenance": self.trainer.anchor_provenance,

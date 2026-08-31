@@ -18,10 +18,15 @@ class WaveContextModule(CapabilityModule):
             raise ValueError(f"invalid wave context target: {self.target}")
         self.max_waves = int(self.config.get("max_waves", 3))
         if self.max_waves < 1: raise ValueError("max_waves must be positive")
+        self.encoding = str(self.config.get("encoding", "rich"))
+        if self.encoding not in {"rich", "scalar_round"}:
+            raise ValueError(f"invalid wave context encoding: {self.encoding}")
 
     @property
     def context_dim(self) -> int:
-        return self.max_waves + 2 if self.enabled else 0
+        if not self.enabled:
+            return 0
+        return 1 if self.encoding == "scalar_round" else self.max_waves + 2
 
     @property
     def actor_enabled(self) -> bool:
@@ -35,6 +40,8 @@ class WaveContextModule(CapabilityModule):
         wave = np.asarray(wave_index, dtype=np.int64)
         total = np.asarray(total_waves, dtype=np.int64)
         wave, total = np.broadcast_arrays(wave, total)
+        if self.encoding == "scalar_round":
+            return wave.astype(np.float32)[..., None]
         clipped = np.clip(wave, 1, self.max_waves)
         one_hot = np.eye(self.max_waves, dtype=np.float32)[clipped - 1]
         denom = np.maximum(total - 1, 1)
@@ -44,6 +51,8 @@ class WaveContextModule(CapabilityModule):
 
     def encode_tensor(self, wave_index: torch.Tensor, total_waves: torch.Tensor) -> torch.Tensor:
         wave = wave_index.long(); total = total_waves.long()
+        if self.encoding == "scalar_round":
+            return wave.to(dtype=torch.float32).unsqueeze(-1)
         one_hot = torch.nn.functional.one_hot(
             wave.clamp(1, self.max_waves) - 1, self.max_waves
         ).to(dtype=torch.float32)
