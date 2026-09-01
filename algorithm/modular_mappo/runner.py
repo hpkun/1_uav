@@ -53,10 +53,11 @@ class ModularMAPPOTrainingRunner:
         configured["training"]["seed"] = self.seed
         warm_enabled = bool(configured.get("modules", {}).get("warm_start", {}).get("enabled", False))
         anchor_enabled = bool(configured.get("modules", {}).get("policy_anchor", {}).get("enabled", False))
+        entity_enabled = bool(configured.get("modules", {}).get("entity_attention", {}).get("enabled", False))
         self.effective_hidden_dim = int(configured["network"]["actor_hidden_layers"][0])
-        if self.smoke and not (warm_enabled or anchor_enabled):
+        if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled):
             self.effective_hidden_dim = 64
-        self.trainer = build_modular_mappo_trainer(configured, self.device, self.effective_hidden_dim)
+        self.trainer = build_modular_mappo_trainer(configured, self.device, self.effective_hidden_dim,self.total_sampled_steps)
         self.rollout_steps = 4 if self.smoke else int(training["rollout_steps"])
         self.eval_episodes = min(2, int(training["evaluation_episodes"])) if self.smoke else int(training["evaluation_episodes"])
         self.eval_base = int(implementation["evaluation_seed_base"])

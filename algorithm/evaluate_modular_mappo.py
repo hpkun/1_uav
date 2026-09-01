@@ -16,6 +16,13 @@ from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
 def resolved(value):
  p=Path(value);return p if p.is_absolute() else ROOT/p
 
+def checkpoint_hidden_dim(state,extra):
+ arch=extra.get("network_architecture",{})
+ if "hidden_dim" in arch:return int(arch["hidden_dim"])
+ legacy=state.get("actor",{}).get("backbone.0.weight")
+ if legacy is None:raise RuntimeError("checkpoint lacks actor hidden-dimension metadata")
+ return int(legacy.shape[0])
+
 def main():
  p=argparse.ArgumentParser();p.add_argument("--checkpoint",required=True);p.add_argument("--env-config",required=True);p.add_argument("--episodes",type=int,default=50);p.add_argument("--seed-base",type=int,default=10000000);p.add_argument("--device",default="cpu",choices=("cpu","cuda"));p.add_argument("--output");p.add_argument("--allow-cross-variant",action="store_true");a=p.parse_args()
  if a.episodes<=0:raise ValueError("episodes must be positive")
@@ -32,7 +39,7 @@ def main():
  dimensions=(int(config["network"]["observation_dim"]),int(config["network"]["action_dim"]),int(config["network"]["num_agents"]));expected=(MultiUAVCombatEnv.observation_dim,MultiUAVCombatEnv.action_dim,MultiUAVCombatEnv.team_size)
  if dimensions!=expected:raise RuntimeError("checkpoint static dimensions mismatch")
  if protocol_complete and not cross:validate_modular_checkpoint(state,env,config)
- arch=extra.get("network_architecture",{});hidden=int(arch.get("hidden_dim",state["actor"]["backbone.0.weight"].shape[0]));trainer=build_modular_mappo_trainer(config,a.device,hidden)
+ hidden=checkpoint_hidden_dim(state,extra);trainer=build_modular_mappo_trainer(config,a.device,hidden,int(extra.get("training_total_sampled_steps",config["training"]["total_sampled_steps"])))
  if not protocol_complete:raise RuntimeError("v2 checkpoint metadata is incomplete; formal evaluation refused")
  trainer.load(checkpoint)
  seeds=list(range(a.seed_base,a.seed_base+a.episodes));assert seeds and all(b==a+1 for a,b in zip(seeds,seeds[1:]));metrics=evaluate_modular(trainer,env,seeds)
