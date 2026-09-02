@@ -422,7 +422,19 @@ class ModularMAPPOTrainingRunner:
         if path.exists():
             with path.open(newline="", encoding="utf-8") as stream:
                 for row in csv.DictReader(stream):
-                    converted = {key: (float(value) if key != "sampled_steps" else int(value)) for key, value in row.items()}
+                    converted: dict[str, Any] = {}
+                    for key, value in row.items():
+                        if key is None:
+                            continue
+                        text = "" if value is None else value.strip()
+                        if not text:
+                            if key == "sampled_steps":
+                                raise RuntimeError(
+                                    "evaluation_history.csv contains an empty sampled_steps value"
+                                )
+                            converted[key] = None
+                        else:
+                            converted[key] = int(text) if key == "sampled_steps" else float(text)
                     if converted["sampled_steps"] <= checkpoint_steps:
                         rows.append(converted)
         self.evaluation_history = rows

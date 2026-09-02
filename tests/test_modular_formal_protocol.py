@@ -67,6 +67,19 @@ def test_resume_best_restored_from_history(tmp_path):
  worse={"clear_wave_3_probability":.2,"average_waves_cleared":3,"average_return":99,"average_red_loss":0};assert runner._evaluation_key(worse)<runner._evaluation_key(runner.best_evaluation)
  better={"clear_wave_3_probability":.7,"average_waves_cleared":0,"average_return":-99,"average_red_loss":4};assert runner._evaluation_key(better)>runner._evaluation_key(runner.best_evaluation)
 
+def test_resume_best_restores_history_with_empty_optional_wave_fields(tmp_path):
+ rows=[
+  {"sampled_steps":20,"clear_wave_3_probability":0.,"average_waves_cleared":0.,"average_return":-10.,"average_red_loss":4.,"wave_2_entry_step":""},
+  {"sampled_steps":40,"clear_wave_3_probability":.1,"average_waves_cleared":1.,"average_return":-5.,"average_red_loss":3.,"wave_2_entry_step":123.},
+ ]
+ path=tmp_path/"evaluation_history.csv"
+ with path.open("w",newline="") as f:w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
+ runner=object.__new__(ModularMAPPOTrainingRunner);runner.output_dir=tmp_path;runner.env_config={"environment_variant":"persistent_wave_v2"};runner.algorithm_config={};runner.evaluation_history=[];runner.best_evaluation=None;runner.best_sampled_steps=None
+ runner.restore_best_from_disk(60)
+ assert runner.best_sampled_steps==40
+ assert runner.evaluation_history[0]["wave_2_entry_step"] is None
+ assert runner.evaluation_history[1]["wave_2_entry_step"]==123.
+
 def test_policy_anchor_checkpoint_is_self_contained(tmp_path):
  cfg={"policy_anchor":{"enabled":True,"coefficient":.01}}
  source=ModularMAPPOTrainer(hidden_dim=16,modules_config=cfg);reference=copy.deepcopy(source.actor);source.anchor.attach(reference,"deleted-source.pt");source.anchor_provenance={"reference_checkpoint":"deleted-source.pt"};path=tmp_path/"anchor.pt";source.save(path)
