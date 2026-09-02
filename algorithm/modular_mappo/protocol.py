@@ -1,4 +1,5 @@
 """Canonical fingerprints and strict formal-checkpoint validation."""
+from copy import deepcopy
 import hashlib,json
 from env.config import ENVIRONMENT_VERSION
 from algorithm.common.protocol import config_sha256
@@ -34,6 +35,33 @@ def validate_modular_checkpoint(state,env_config,algorithm_config,expected_runti
  if pop_enabled != bool(state.get("module_config",{}).get("popart",{}).get("enabled",False)):raise RuntimeError("checkpoint PopArt protocol mismatch")
  return True
 
+def _branch_comparable_config(config):
+ value=deepcopy(config);value.get("training",{}).pop("total_sampled_steps",None)
+ value.get("modules",{}).pop("actor_lr_decay",None)
+ return value
+
+def validate_modular_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Allow only an explicit actor_lr_decay intervention at a branch boundary."""
+ if state.get("algorithm")!="modular_mappo":raise RuntimeError("branch checkpoint algorithm mismatch")
+ if state.get("modular_mappo_impl_version")!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError("branch modular implementation version mismatch")
+ if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("branch baseline MAPPO implementation version mismatch")
+ extra=state.get("extra",{});source_env=extra.get("environment_config");source_algorithm=extra.get("algorithm_config")
+ if not isinstance(source_env,dict) or not isinstance(source_algorithm,dict):raise RuntimeError("branch checkpoint lacks self-describing source configs")
+ if source_env!=env_config:raise RuntimeError("branch environment config differs from source checkpoint")
+ if extra.get("environment_config_sha256")!=config_sha256(env_config):raise RuntimeError("branch environment hash mismatch")
+ if _branch_comparable_config(source_algorithm)!=_branch_comparable_config(algorithm_config):raise RuntimeError("branch config differs outside the actor_lr_decay/total_sampled_steps whitelist")
+ source_decay=source_algorithm.get("modules",{}).get("actor_lr_decay",{})
+ destination_decay=algorithm_config.get("modules",{}).get("actor_lr_decay",{})
+ if bool(source_decay.get("enabled",False)) and source_decay!=destination_decay:raise RuntimeError("branch cannot alter an already-enabled actor_lr_decay protocol")
+ if expected_runtime:
+  for key,expected in expected_runtime.items():
+   if extra.get(key)!=expected:raise RuntimeError(f"branch checkpoint {key} mismatch: expected {expected!r}, got {extra.get(key)!r}")
+ if extra.get("network_architecture") is None:raise RuntimeError("branch checkpoint lacks network architecture")
+ required=("actor","critic","actor_optimizer","critic_optimizer","sampled_steps","vector_steps","module_config_sha256")
+ missing=[key for key in required if key not in state]
+ if missing:raise RuntimeError("branch checkpoint lacks required state: "+", ".join(missing))
+ return {"intervention":"actor_lr_decay" if source_decay!=destination_decay else "fixed_lr_control","source_actor_lr_decay":deepcopy(source_decay),"destination_actor_lr_decay":deepcopy(destination_decay)}
+
 def is_formal_v2_checkpoint(state):
  extra=state.get("extra",{}) if isinstance(state.get("extra",{}),dict) else {}
  required=("environment_version","environment_variant","environment_config_sha256",
@@ -45,4 +73,4 @@ def is_formal_v2_checkpoint(state):
          state.get("baseline_mappo_impl_version")==MAPPO_IMPL_VERSION and
          all(key in extra for key in required))
 
-__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","is_formal_v2_checkpoint"]
+__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","is_formal_v2_checkpoint"]

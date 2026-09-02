@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-import hashlib,json
+import hashlib,json,random
 import numpy as np
 import torch
 from torch import nn
@@ -13,6 +13,7 @@ from algorithm.modules import (WaveContextModule,RecurrentMemoryModule,PopArtVal
  MultiWaveRewardAdapter,WaveBalancingModule,WarmStartInitializer,CurriculumController,PolicyAnchorRegularizer,enabled_module_names)
 from algorithm.modules import (AdvantagePriorityModule,PPOStabilizationModule,
  ADVANTAGE_PRIORITY_VERSION,PPO_STABILIZATION_VERSION)
+from algorithm.modules import ActorLRDecayModule,ACTOR_LR_DECAY_VERSION
 from .networks import ModularMAPPOActor,ModularCentralizedCritic
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 
@@ -82,20 +83,25 @@ class ModularMAPPOTrainer:
   self.curriculum=CurriculumController(self.modules_config.get("curriculum"));self.anchor=PolicyAnchorRegularizer(self.modules_config.get("policy_anchor"))
   self.advantage_priority=AdvantagePriorityModule(self.modules_config.get("advantage_priority"))
   self.ppo_stabilization=PPOStabilizationModule(self.modules_config.get("ppo_stabilization"))
+  self.actor_lr_decay=ActorLRDecayModule(self.modules_config.get("actor_lr_decay"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.total_sampled_steps=int(total_sampled_steps)
   if self.total_sampled_steps<=0:raise ValueError("total_sampled_steps must be positive")
   if self.entity_attention_enabled and (self.recurrent.enabled or self.wave_context.enabled):raise ValueError("entity attention v1 is incompatible with recurrent memory and wave context")
   if self.ppo_stabilization.enabled and self.recurrent.enabled:raise ValueError("PPO stabilization v1 requires the feed-forward update path")
+  if self.actor_lr_decay.enabled and self.ppo_stabilization.enabled:raise ValueError("actor_lr_decay and ppo_stabilization are mutually exclusive")
+  if self.actor_lr_decay.enabled and abs(self.actor_lr_decay.start_lr-float(actor_learning_rate))>1e-15:raise ValueError("actor_lr_decay start_lr must match the configured base actor learning rate")
   ac=self.wave_context.context_dim if self.wave_context.actor_enabled else 0;cc=self.wave_context.context_dim if self.wave_context.critic_enabled else 0
   ar=self.recurrent.hidden_dim if self.recurrent.actor_enabled else 0;cr=self.recurrent.hidden_dim if self.recurrent.critic_enabled else 0
   self.actor=ModularMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation,ac,ar,self.entity_attention_config).to(self.device)
   self.critic=ModularCentralizedCritic(observation_dim,hidden_dim,attention_heads,critic_activation,cc,cr).to(self.device)
   self.actor_optimizer=torch.optim.Adam(self.actor.parameters(),lr=actor_learning_rate);self.critic_optimizer=torch.optim.Adam(self.critic.parameters(),lr=critic_learning_rate)
+  self.base_actor_learning_rate=float(actor_learning_rate);self.base_critic_learning_rate=float(critic_learning_rate)
   self.ppo_update_count=self.actor_update_count=self.critic_update_count=self.sampled_steps=self.vector_steps=0
   self.kl_hard_stop_count=0
   self.warm_start_provenance={};self.anchor_provenance={}
+  self.rng_restore_metadata={"rng_state_available":False,"rng_state_restored":False,"cuda_rng_state_restored":False}
 
  def context_numpy(self,wave,total):return self.wave_context.encode_numpy(wave,total) if self.wave_context.enabled else np.zeros((*np.asarray(wave).shape,0),np.float32)
  def initial_hidden(self,num_envs):return self.recurrent.zeros(num_envs,self.num_agents,True),self.recurrent.zeros(num_envs,self.num_agents,False)
@@ -139,7 +145,9 @@ class ModularMAPPOTrainer:
     self.popart.update(returns[alive>.5],self.critic.output_layer); old_values=self.popart.normalize_targets(values);target_returns=self.popart.normalize_targets(returns)
    else:old_values=values;target_returns=returns
   # All actor priorities are frozen from the complete raw-GAE rollout.
-  if self.ppo_stabilization.enabled:
+  if self.actor_lr_decay.enabled:
+   self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+  elif self.ppo_stabilization.enabled:
    lr=self.ppo_stabilization.actor_learning_rate(self.sampled_steps,self.total_sampled_steps)
    for group in self.actor_optimizer.param_groups:group["lr"]=lr
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
@@ -311,19 +319,37 @@ class ModularMAPPOTrainer:
   return result
  def module_protocol(self):
   raw=json.dumps(self.modules_config,sort_keys=True,separators=(",",":"));return {"enabled_modules":enabled_module_names(self.modules_config),"module_config":deepcopy(self.modules_config),"module_config_sha256":hashlib.sha256(raw.encode()).hexdigest()}
+ def capture_rng_state(self):
+  cuda_states=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []
+  return {"python_random_state":random.getstate(),"numpy_random_state":np.random.get_state(),"torch_cpu_rng_state":torch.get_rng_state(),"torch_cuda_rng_state_all":cuda_states,"trainer_permutation_rng_state":deepcopy(self.rng.bit_generator.state)}
+ def restore_rng_state(self,state):
+  saved=state.get("rng_state") if isinstance(state,dict) else None
+  if not isinstance(saved,dict):
+   self.rng_restore_metadata={"rng_state_available":False,"rng_state_restored":False,"cuda_rng_state_restored":False};return False
+  required=("python_random_state","numpy_random_state","torch_cpu_rng_state","trainer_permutation_rng_state")
+  if any(key not in saved for key in required):
+   self.rng_restore_metadata={"rng_state_available":False,"rng_state_restored":False,"cuda_rng_state_restored":False};return False
+  random.setstate(saved["python_random_state"]);np.random.set_state(saved["numpy_random_state"])
+  torch.set_rng_state(saved["torch_cpu_rng_state"].cpu());self.rng.bit_generator.state=deepcopy(saved["trainer_permutation_rng_state"])
+  cuda_saved=saved.get("torch_cuda_rng_state_all",[]);cuda_restored=False
+  if torch.cuda.is_available() and cuda_saved:
+   torch.cuda.set_rng_state_all([value.cpu() for value in cuda_saved]);cuda_restored=True
+  self.rng_restore_metadata={"rng_state_available":True,"rng_state_restored":True,"cuda_rng_state_restored":cuda_restored}
+  return True
  def checkpoint_state(self,extra=None):
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
- def load(self,path,strict_protocol=True):
+ def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
   if state.get("algorithm")!="modular_mappo":raise RuntimeError("not a modular_mappo checkpoint")
   checkpoint_version=state.get("modular_mappo_impl_version")
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled):
-   expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
-   if state.get("development_feature_versions")!=expected:raise RuntimeError("checkpoint development feature version mismatch")
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled):
+   versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
+   if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
+   if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   self.warm_start_provenance=state.get("warm_start_provenance",{});self.anchor_provenance=state.get("anchor_provenance",{})
@@ -333,9 +359,13 @@ class ModularMAPPOTrainer:
    reference=deepcopy(self.actor).to(self.device);reference.load_state_dict(reference_state);self.anchor.attach(reference,self.anchor_provenance.get("reference_checkpoint"))
   for key,attr in (("ppo_updates","ppo_update_count"),("actor_updates","actor_update_count"),("critic_updates","critic_update_count"),("sampled_steps","sampled_steps"),("vector_steps","vector_steps")):setattr(self,attr,int(state.get(key,0)))
   self.kl_hard_stop_count=int(state.get("kl_hard_stop_count",0))
-  if self.ppo_stabilization.enabled:
+  if self.actor_lr_decay.enabled:
+   self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+  elif self.ppo_stabilization.enabled:
    lr=self.ppo_stabilization.actor_learning_rate(self.sampled_steps,self.total_sampled_steps)
    for group in self.actor_optimizer.param_groups:group["lr"]=lr
+  if restore_rng:self.restore_rng_state(state)
+  else:self.rng_restore_metadata={"rng_state_available":isinstance(state.get("rng_state"),dict),"rng_state_restored":False,"cuda_rng_state_restored":False}
   return state.get("extra",{})
 
 __all__=["MODULAR_MAPPO_IMPL_VERSION","ModularMAPPOTrainer"]

@@ -34,10 +34,12 @@ class ModularMAPPOTrainingRunner:
                  output_dir: str | Path | None = None, smoke: bool = False,
                  warm_start_checkpoint: str | None = None,
                  reference_checkpoint: str | None = None,
-                 resume_mode: bool = False) -> None:
+                 resume_mode: bool = False,
+                 branch_provenance: dict[str, Any] | None = None) -> None:
         self.env_config = deepcopy(env_config)
         self.algorithm_config = deepcopy(algorithm_config)
         self.output_dir = Path(output_dir)
+        self.branch_provenance = deepcopy(branch_provenance or {})
         self.output_dir.mkdir(parents=True, exist_ok=True)
         for name in ("training_metrics.jsonl", "optimization_metrics.jsonl"):
             (self.output_dir / name).touch(exist_ok=True)
@@ -386,6 +388,8 @@ class ModularMAPPOTrainingRunner:
             "hidden_reset_count": self.hidden_reset_count,
             "curriculum_transitions": self.curriculum_transitions,
             "resume_count": self.resume_count,
+            "branch_provenance": self.branch_provenance,
+            "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
             "evaluation": evaluation,
         }
 
@@ -450,18 +454,20 @@ class ModularMAPPOTrainingRunner:
                 if stored is not None and (self.best_evaluation is None or self._evaluation_key(stored) >= self._evaluation_key(self.best_evaluation)):
                     self.best_evaluation = stored; self.best_sampled_steps = int(state["sampled_steps"])
 
-    def resume(self, path: str | Path) -> None:
+    def _restore_checkpoint(self, path: str | Path, *, branch: bool) -> None:
         state = torch.load(path, map_location="cpu", weights_only=False)
-        validate_modular_checkpoint(state, self.env_config, self.algorithm_config, {
-            "training_seed": self.seed, "training_num_envs": self.num_envs,
-            "training_smoke": self.smoke,
-        })
-        extra = self.trainer.load(path)
+        if not branch:
+            validate_modular_checkpoint(state, self.env_config, self.algorithm_config, {
+                "training_seed": self.seed, "training_num_envs": self.num_envs,
+                "training_smoke": self.smoke,
+            })
+        extra = self.trainer.load(path, strict_protocol=not branch, restore_rng=False)
         self.current_stage = int(extra["curriculum_stage"])
         self.current_waves = int(extra["current_total_waves"])
         self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, self.trainer.sampled_steps)
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64) + 1
         self._make_vector(previous)
+        self.trainer.restore_rng_state(state)
         self.transition_counts = np.asarray(extra.get("transition_counts", [0,0,0]), dtype=np.int64)
         self.alive_agent_counts = np.asarray(extra.get("alive_agent_counts", [0,0,0]), dtype=np.int64)
         self.wave_clear_transition_counts = np.asarray(extra.get("wave_clear_transition_counts", [0,0,0]), dtype=np.int64)
@@ -471,18 +477,25 @@ class ModularMAPPOTrainingRunner:
         self.death_cause_totals = np.asarray(extra.get("death_cause_totals", [0]*len(self.death_cause_names)), dtype=np.int64)
         self.hidden_reset_count = int(extra.get("hidden_reset_count", 0))
         self.curriculum_transitions = list(extra.get("curriculum_transitions", self.curriculum_transitions))
-        self.resume_count = int(extra.get("resume_count", 0)) + 1
-        self.restore_best_from_disk(self.trainer.sampled_steps)
+        self.resume_count = 0 if branch else int(extra.get("resume_count", 0)) + 1
+        if not branch:self.restore_best_from_disk(self.trainer.sampled_steps)
         self.next_console = (self.trainer.sampled_steps // self.console_interval + 1) * self.console_interval
         self.next_evaluation = (self.trainer.sampled_steps // self.evaluation_interval + 1) * self.evaluation_interval
         self.next_checkpoint = (self.trainer.sampled_steps // self.checkpoint_interval + 1) * self.checkpoint_interval
+
+    def resume(self, path: str | Path) -> None:
+        self._restore_checkpoint(path, branch=False)
+
+    def branch_from(self, path: str | Path) -> None:
+        self._restore_checkpoint(path, branch=True)
 
     def startup_summary(self) -> dict[str, Any]:
         return {"algorithm":"modular_mappo","mode":"smoke" if self.smoke else "formal",
                 "device":self.device,"seed":self.seed,"num_envs":self.num_envs,
                 "total_sampled_steps":self.total_sampled_steps,"rollout_steps":self.rollout_steps,
                 "gamma":self.trainer.gamma,"enabled_modules":self.trainer.module_protocol()["enabled_modules"],
-                "environment_variant":self.env_config.get("environment_variant","direct_v2_3")}
+                "environment_variant":self.env_config.get("environment_variant","direct_v2_3"),
+                "branch_mode":bool(self.branch_provenance)}
 
     def train_log_line(self) -> str:
         rows = list(self.recent_episodes)
@@ -556,6 +569,8 @@ class ModularMAPPOTrainingRunner:
             "anchor_provenance": self.trainer.anchor_provenance,
             "curriculum_transitions": self.curriculum_transitions,
             "resume_count": self.resume_count,
+            "branch_provenance": self.branch_provenance,
+            "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
             "final_optimization_metrics": self.last_metrics,
         }
 

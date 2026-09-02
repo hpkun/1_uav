@@ -9,5 +9,6 @@ from .curriculum import CurriculumController
 from .policy_anchor import PolicyAnchorRegularizer
 from .advantage_priority import ADVANTAGE_PRIORITY_VERSION,AdvantagePriorityModule,capped_mean_preserving
 from .ppo_stabilization import PPO_STABILIZATION_VERSION,PPOStabilizationModule
+from .actor_lr_decay import ACTOR_LR_DECAY_VERSION,ActorLRDecayModule
 
-__all__=["CapabilityModule","enabled_module_names","WaveContextModule","RecurrentMemoryModule","PopArtValueNormalizer","MultiWaveRewardAdapter","WaveBalancingModule","WarmStartInitializer","CurriculumController","PolicyAnchorRegularizer","ADVANTAGE_PRIORITY_VERSION","AdvantagePriorityModule","capped_mean_preserving","PPO_STABILIZATION_VERSION","PPOStabilizationModule"]
+__all__=["CapabilityModule","enabled_module_names","WaveContextModule","RecurrentMemoryModule","PopArtValueNormalizer","MultiWaveRewardAdapter","WaveBalancingModule","WarmStartInitializer","CurriculumController","PolicyAnchorRegularizer","ADVANTAGE_PRIORITY_VERSION","AdvantagePriorityModule","capped_mean_preserving","PPO_STABILIZATION_VERSION","PPOStabilizationModule","ACTOR_LR_DECAY_VERSION","ActorLRDecayModule"]
