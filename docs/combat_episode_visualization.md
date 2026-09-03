@@ -24,6 +24,16 @@ Output is `episode_trace.npz` plus `metadata.json` with `trace_schema_version=1`
 
 The renderer is headless Matplotlib Agg, fixed-camera 1280x720 at 30 fps and stride 4 by default. Preview PNG generation does not require ffmpeg. MP4 generation explicitly reports `ffmpeg is required for MP4 rendering` when the system writer is unavailable; it never installs packages or runs an environment.
 
+For an offline, mouse-driven replay, generate a standalone Plotly HTML from the same trace (no checkpoint, environment, or CUDA is loaded):
+
+```bash
+python -u tools/render_combat_episode_interactive.py \
+  --input-dir outputs/visualization/ea_wb_seed40000000 \
+  --output outputs/visualization/ea_wb_seed40000000/episode_interactive.html
+```
+
+The HTML embeds Plotly JS and supports rotate, zoom, pan, Play/Pause, Previous/Next/Restart, a time slider, 0.25x-4x speed, trail windows, heading/label/death-marker toggles, Recent Events, a final result panel, and Reset Camera. It is intended to be opened directly from disk and does not use a CDN. MP4 remains fixed-camera and cannot be mouse-rotated.
+
 The renderer infers the method name from enabled modules (with optional metadata override), keeps persistent trajectory/marker/heading artists and updates them incrementally, and displays Red/Blue labels, real-trace death markers, structured hit/kill/loss/wave events, and a final result card. `--event-hold-seconds` defaults to 1.0, `--final-hold-seconds` to 2.0, and `--preview-frame` defaults deterministically to the midpoint. `--trail-length 0` means full trace history; a positive value is a trace-frame window. The recorder's `--wall-timeout-s` defaults to 0 (disabled), so environment termination remains authoritative.
 
 For a faster quick video use `--fps 30 --frame-stride 4 --no-heading`. For a detailed reference-like render use `--fps 20 --frame-stride 1 --event-hold-seconds 1.0 --final-hold-seconds 2.0`. No attacker-target kill identity is fabricated because the environment does not expose an unambiguous mapping.

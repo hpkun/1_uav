@@ -11,7 +11,9 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
-from tools.combat_visualization import extract_death_frames, extract_events, infer_method_display_name, read_trace
+from tools.combat_visualization import (blue_losses_at_frame, extract_death_frames, extract_events,
+    infer_method_display_name, read_trace, recent_events, trace_frame_to_render_index,
+    trajectory_slice, heading_endpoint)
 
 def set_line(line, xyz):
     line.set_data(xyz[:, 0], xyz[:, 1]); line.set_3d_properties(xyz[:, 2])
@@ -26,6 +28,7 @@ def render(trace_path: Path, metadata_path: Path, preview_path: Path, mp4_path: 
     n = len(trace["steps"]); stride = max(1, int(stride)); fps = max(1, int(fps))
     rendered = list(range(0, n, stride)); rendered += [] if rendered[-1] == n - 1 else [n - 1]
     events = metadata.get("events") or extract_events(trace); deaths = extract_death_frames(trace)
+    event_render_frames = [trace_frame_to_render_index(rendered, int(e.get("trace_frame", 0))) for e in events]
     fig = plt.figure(figsize=(12.8, 7.2), dpi=dpi); ax = fig.add_subplot(111, projection="3d")
     radius=float(metadata.get("arena_radius",5000)); ax.set_xlim(-radius,radius); ax.set_ylim(-radius,radius)
     h=np.concatenate([(-trace["red_kinematics"][...,2]).ravel(),(-trace["blue_kinematics"][...,2]).ravel()]); h=h[np.isfinite(h)]
@@ -45,23 +48,23 @@ def render(trace_path: Path, metadata_path: Path, preview_path: Path, mp4_path: 
     def update(index):
         frame=animation_frames[index]; start=max(0,frame-int(trail_length)) if trail_length else 0
         for a,line in enumerate(red_lines):
-            data=trace["red_kinematics"][start:frame+1,a]; valid=np.isfinite(data[:,0]); set_line(line,data[valid][:,[0,1,2]]*np.array([1,1,-1])) if valid.any() else set_line(line,np.empty((0,3)))
+            data=trajectory_slice(trace["red_kinematics"][:,a],frame,trail_length); valid=np.isfinite(data[:,0]); set_line(line,data[valid][:,[0,1,2]]*np.array([1,1,-1])) if valid.any() else set_line(line,np.empty((0,3)))
             alive=bool(trace["red_alive"][frame,a]); state=trace["red_kinematics"][frame,a]; red_markers[a].set_visible(alive); red_labels[a].set_visible(alive)
             if alive: set_line(red_markers[a],state[[0,1,2]][None]*np.array([1,1,-1])); red_labels[a].set_position((state[0],state[1])); red_labels[a].set_3d_properties(-state[2])
-            if heading: red_heads[a].set_visible(alive); set_line(red_heads[a],np.array([[state[0],state[1],-state[2]],[state[0]+250*np.cos(state[4])*np.cos(state[5]),state[1]+250*np.cos(state[4])*np.sin(state[5]),-state[2]+250*np.sin(state[4])]])) if alive else None
+            if heading: red_heads[a].set_visible(alive); set_line(red_heads[a],np.array([[state[0],state[1],-state[2]],heading_endpoint(state)*np.array([1,1,-1])])) if alive else None
         active=max(0,min(len(blue_lines)-1,int(trace["active_wave"][frame])-1))
         for w in range(len(blue_lines)):
             for a,line in enumerate(blue_lines[w]):
-                data=trace["blue_kinematics"][start:frame+1,w,a]; valid=np.isfinite(data[:,0]); set_line(line,data[valid][:,[0,1,2]]*np.array([1,1,-1])) if valid.any() else set_line(line,np.empty((0,3)))
+                data=trajectory_slice(trace["blue_kinematics"][:,w,a],frame,trail_length); valid=np.isfinite(data[:,0]); set_line(line,data[valid][:,[0,1,2]]*np.array([1,1,-1])) if valid.any() else set_line(line,np.empty((0,3)))
         for a,marker in enumerate(blue_markers):
             alive=bool(trace["blue_alive"][frame,active,a]); state=trace["blue_kinematics"][frame,active,a]; marker.set_visible(alive); blue_labels[a].set_visible(alive)
             if alive: set_line(marker,state[[0,1,2]][None]*np.array([1,1,-1])); blue_labels[a].set_position((state[0],state[1])); blue_labels[a].set_3d_properties(-state[2])
-            if heading: blue_heads[a].set_visible(alive); set_line(blue_heads[a],np.array([[state[0],state[1],-state[2]],[state[0]+250*np.cos(state[4])*np.cos(state[5]),state[1]+250*np.cos(state[4])*np.sin(state[5]),-state[2]+250*np.sin(state[4])]])) if alive else None
+            if heading: blue_heads[a].set_visible(alive); set_line(blue_heads[a],np.array([[state[0],state[1],-state[2]],heading_endpoint(state)*np.array([1,1,-1])])) if alive else None
         for death,artist in death_artists: artist.set_visible(frame>=death["frame"])
-        final=index>=len(rendered); total=int(metadata.get("total_waves",3)); overlay.set_text(f"{infer_method_display_name(metadata)}\nCheckpoint: {metadata.get('checkpoint_sampled_steps','?')}\nEpisode seed: {metadata.get('episode_seed','?')}\n\nSim Time: {trace['time_s'][frame]:.1f} s\nWave: {int(trace['active_wave'][frame])} / {total}\nWaves Cleared: {int(trace['waves_cleared'][frame])}\nRed Alive: {int(trace['red_alive'][frame].sum())} / 4\nBlue Alive: {int(trace['blue_alive'][frame,active].sum())} / 4\nTotal Blue Losses: {metadata.get('total_blue_losses',0)}")
+        final=index>=len(rendered); total=int(metadata.get("total_waves",3)); overlay.set_text(f"{infer_method_display_name(metadata)}\nCheckpoint: {metadata.get('checkpoint_sampled_steps','?')}\nEpisode seed: {metadata.get('episode_seed','?')}\n\nSim Time: {trace['time_s'][frame]:.1f} s\nWave: {int(trace['active_wave'][frame])} / {total}\nWaves Cleared: {int(trace['waves_cleared'][frame])}\nRed Alive: {int(trace['red_alive'][frame].sum())} / 4\nBlue Alive: {int(trace['blue_alive'][frame,active].sum())} / 4\nTotal Blue Losses: {blue_losses_at_frame(deaths, frame)}")
         if final: event_text.set_text(f"{'MISSION SUCCESS' if metadata.get('red_success') or metadata.get('waves_cleared',0)==total else 'TIMEOUT' if metadata.get('termination_reason')=='red_failure_timeout' else 'DRAW' if 'draw' in str(metadata.get('termination_reason','')) else 'RED FAILURE'}\nWaves Cleared: {metadata.get('waves_cleared',0)} / {total}\nRed Survivors: {metadata.get('final_red_survivors',0)} / 4\nTotal Blue Losses: {metadata.get('total_blue_losses',0)}\nEpisode Return: {metadata.get('episode_return',0):.2f}\nSimulation Time: {metadata.get('simulation_time_s',0):.1f} s")
         else:
-            active_events=[e for e in events if int(e['trace_frame'])<=frame and frame-int(e['trace_frame'])<=max(1,round(fps*event_hold_seconds))]
+            active_events=[e for e, rendered_frame in zip(events, event_render_frames) if rendered_frame<=index and index-rendered_frame<max(1,round(fps*event_hold_seconds))]
             labels=[f"WAVE {e['wave']} CLEARED" if e['type']=='wave_cleared' else f"WAVE {e['wave']} SPAWNED" if e['type']=='wave_spawned' else e['type'].upper().replace('_',' ')+f" +{e.get('count',1)}" for e in active_events[-5:]]
             event_text.set_text("\n".join(labels))
         if index==0 or index==len(animation_frames)-1 or index%25==0: print(f"[RENDER] frame {index+1}/{len(animation_frames)} step={int(frame)}",flush=True)

@@ -158,8 +158,39 @@ def extract_events(trace: dict[str, np.ndarray]) -> list[dict[str, Any]]:
     return sorted(events, key=lambda event: (event["trace_frame"], event["type"]))
 
 
+def blue_losses_at_frame(deaths: list[dict[str, Any]], frame: int) -> int:
+    """Count Blue deaths visible at a trace frame (no future leakage)."""
+    return sum(1 for death in deaths if death.get("side") == "blue" and int(death.get("frame", 0)) <= int(frame))
+
+
+def events_up_to_frame(events: list[dict[str, Any]], frame: int) -> list[dict[str, Any]]:
+    return [event for event in events if int(event.get("trace_frame", 0)) <= int(frame)]
+
+
+def recent_events(events: list[dict[str, Any]], frame: int, limit: int = 5) -> list[dict[str, Any]]:
+    return events_up_to_frame(events, frame)[-max(0, int(limit)):]
+
+
+def trace_frame_to_render_index(rendered_frames: list[int], trace_frame: int) -> int:
+    """Return first rendered index whose trace frame is at or after the event."""
+    for index, frame in enumerate(rendered_frames):
+        if int(frame) >= int(trace_frame):
+            return index
+    return max(0, len(rendered_frames) - 1)
+
+
+def trajectory_slice(data: np.ndarray, frame: int, trail_length: int = 0) -> np.ndarray:
+    start = max(0, int(frame) - int(trail_length)) if trail_length else 0
+    return data[start:int(frame) + 1]
+
+
+def heading_endpoint(state: np.ndarray, length: float = 250.0) -> np.ndarray:
+    x, y, z, _v, theta, psi = state
+    return np.asarray([x + length * np.cos(theta) * np.cos(psi), y + length * np.cos(theta) * np.sin(psi), z + length * np.sin(theta)])
+
+
 def dump_metadata(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-__all__ = ["TRACE_SCHEMA_VERSION", "FEATURE_NAMES", "RecordingPersistentWaveCombatEnv", "assert_episode_seed_allowed", "ensure_fresh_output", "state_array", "states_array", "append_frame", "write_trace", "read_trace", "checkpoint_sha256", "dump_metadata", "infer_method_display_name", "extract_events", "extract_death_frames"]
+__all__ = ["TRACE_SCHEMA_VERSION", "FEATURE_NAMES", "RecordingPersistentWaveCombatEnv", "assert_episode_seed_allowed", "ensure_fresh_output", "state_array", "states_array", "append_frame", "write_trace", "read_trace", "checkpoint_sha256", "dump_metadata", "infer_method_display_name", "extract_events", "extract_death_frames", "blue_losses_at_frame", "events_up_to_frame", "recent_events", "trace_frame_to_render_index", "trajectory_slice", "heading_endpoint"]
