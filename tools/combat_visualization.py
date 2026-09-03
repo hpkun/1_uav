@@ -186,7 +186,8 @@ def trajectory_slice(data: np.ndarray, frame: int, trail_length: int = 0) -> np.
 
 def heading_endpoint(state: np.ndarray, length: float = 250.0) -> np.ndarray:
     x, y, z, _v, theta, psi = state
-    return np.asarray([x + length * np.cos(theta) * np.cos(psi), y + length * np.cos(theta) * np.sin(psi), z + length * np.sin(theta)])
+    # Aircraft state uses NED z: positive pitch is a climb, so z decreases.
+    return np.asarray([x + length * np.cos(theta) * np.cos(psi), y + length * np.cos(theta) * np.sin(psi), z - length * np.sin(theta)])
 
 
 def dump_metadata(path: Path, value: dict[str, Any]) -> None:

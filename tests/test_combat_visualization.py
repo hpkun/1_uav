@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import shutil
+import subprocess
 import numpy as np
 import pytest
 
@@ -7,7 +9,7 @@ from env.models import AircraftState
 from env.persistent_env import PersistentWaveCombatEnv
 from tools.combat_visualization import (TRACE_SCHEMA_VERSION, RecordingPersistentWaveCombatEnv,
     append_frame, assert_episode_seed_allowed, blue_losses_at_frame, ensure_fresh_output,
-    read_trace, recent_events, states_array, trace_frame_to_render_index, write_trace)
+    heading_endpoint, read_trace, recent_events, states_array, trace_frame_to_render_index, write_trace)
 from tools.render_combat_episode_interactive import render as render_interactive
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +82,13 @@ def test_altitude_rule_is_ned_negation():
     assert -state.z == 123
 
 
+def test_heading_endpoint_pitch_uses_ned_sign():
+    climbing = np.array([0, 0, -100, 100, 0.2, 0], dtype=float)
+    descending = np.array([0, 0, -100, 100, -0.2, 0], dtype=float)
+    assert -heading_endpoint(climbing)[2] > -climbing[2]
+    assert -heading_endpoint(descending)[2] < -descending[2]
+
+
 def test_blue_loss_timeline_has_no_future_leakage():
     deaths = [
         {"side": "blue", "frame": 3},
@@ -128,6 +137,14 @@ def test_interactive_html_is_standalone_and_accepts_old_metadata(tmp_path):
     assert output.stat().st_size > 1_000_000
     assert "<script src=" not in html.lower()
     assert all(token in html for token in ("Play", "Reset Camera", "slider", "uirevision", "scatter3d"))
-    payload = html.split("<script type='application/json' id='payload'>", 1)[1].split("</script>", 1)[0]
+    payload = html.split('<script type="application/json" id="payload">', 1)[1].split("</script>", 1)[0]
     json.loads(payload)
     assert "NaN" not in payload
+    application = html.split("// APP_JS_START", 1)[1].split("// APP_JS_END", 1)[0]
+    assert "\nFINAL" not in application
+    node = shutil.which("node")
+    if node:
+        script = tmp_path / "application.js"
+        script.write_text(application, encoding="utf-8")
+        checked = subprocess.run([node, "--check", str(script)], capture_output=True, text=True)
+        assert checked.returncode == 0, checked.stderr
