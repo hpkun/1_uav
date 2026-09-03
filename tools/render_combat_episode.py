@@ -72,6 +72,8 @@ def render(trace_path: Path, metadata_path: Path, preview_path: Path, mp4_path: 
             try: artist.remove()
             except (NotImplementedError, ValueError): pass
         frame = frames[index]; artists = _frame_artists(ax, trace, frame, trail_length, heading)
+        if index == 0 or index == len(frames) - 1 or index % 25 == 0:
+            print(f"[RENDER] frame {index + 1}/{len(frames)} (trace step {int(frame)})", flush=True)
         overlay.set_text(f"EA-WB-MAPPO | seed={metadata['episode_seed']}\nSim Time: {trace['time_s'][frame]:.1f} s   Wave: {trace['active_wave'][frame]} / {metadata['total_waves']}\nWaves Cleared: {trace['waves_cleared'][frame]}   Red Alive: {int(trace['red_alive'][frame].sum())} / 4   Blue Alive: {int(trace['blue_alive'][frame, trace['active_wave'][frame]-1].sum())} / 4")
         return artists + [overlay]
     target = frames.index(preview_frame) if preview_frame in frames else (len(frames)-1 if preview_frame is None else min(range(len(frames)), key=lambda i: abs(frames[i]-preview_frame)))
