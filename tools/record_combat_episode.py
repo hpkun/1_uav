@@ -45,6 +45,12 @@ def main() -> None:
     checkpoint = resolved(args.checkpoint)
     env_path = resolved(args.env_config)
     output_dir = resolved(args.output_dir)
+    if "<" in str(args.checkpoint) or ">" in str(args.checkpoint):
+        raise ValueError("--checkpoint still contains a placeholder; replace <chosen_run> with a real run directory")
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"checkpoint not found: {checkpoint}; replace <chosen_run> with an existing run directory")
+    if not env_path.is_file():
+        raise FileNotFoundError(f"environment config not found: {env_path}")
     ensure_fresh_output(output_dir)
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
     extra = state.get("extra", {})

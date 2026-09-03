@@ -51,6 +51,10 @@ def _frame_artists(ax, trace, frame, trail_length, heading):
 
 
 def render(trace_path: Path, metadata_path: Path, preview_path: Path, mp4_path: Path | None, fps=30, stride=4, dpi=100, elev=25, azim=-55, trail_length=0, heading=True, preview_frame=None):
+    if not trace_path.is_file():
+        raise FileNotFoundError(f"trace not found: {trace_path}; run record_combat_episode.py successfully first")
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"metadata not found: {metadata_path}; run record_combat_episode.py successfully first")
     trace = read_trace(trace_path); metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if int(metadata.get("trace_schema_version", -1)) != 1: raise ValueError("unsupported trace schema")
     fig = plt.figure(figsize=(12.8, 7.2), dpi=dpi); ax = fig.add_subplot(111, projection="3d")
