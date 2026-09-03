@@ -4,10 +4,19 @@ import numpy as np
 import pytest
 
 from env.models import AircraftState
+from env.persistent_env import PersistentWaveCombatEnv
 from tools.combat_visualization import (TRACE_SCHEMA_VERSION, RecordingPersistentWaveCombatEnv,
     append_frame, assert_episode_seed_allowed, ensure_fresh_output, read_trace, states_array, write_trace)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def same_state(left, right):
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_state(left[key], right[key]) for key in left)
+    if isinstance(left, np.ndarray):
+        return np.array_equal(left, right)
+    return left == right
 
 
 def test_aircraft_state_and_trace_shapes():
@@ -47,6 +56,21 @@ def test_visualization_subclass_captures_pre_spawn_terminal_state():
     snapshot = env.visualization_spawn_snapshot
     assert snapshot["step"] == env.steps and snapshot["old_wave_index"] == 1
     assert np.array_equal(states_array(snapshot["old_blue"]), states_array(old))
+
+
+def test_visualization_observer_is_spawn_semantics_neutral():
+    base = PersistentWaveCombatEnv(ROOT / "configs/persistent_wave_v2_environment.yaml")
+    observed = RecordingPersistentWaveCombatEnv(ROOT / "configs/persistent_wave_v2_environment.yaml")
+    base.reset(40000000); observed.reset(40000000)
+    assert np.array_equal(states_array(base.red), states_array(observed.red))
+    assert np.array_equal(states_array(base.blue), states_array(observed.blue))
+    base_angle = base._spawn_next_wave(); observed_angle = observed._spawn_next_wave()
+    assert base_angle == observed_angle
+    assert base.last_spawn_candidate_index == observed.last_spawn_candidate_index
+    assert base.last_minimum_spawn_distance == observed.last_minimum_spawn_distance
+    assert np.array_equal(states_array(base.red), states_array(observed.red))
+    assert np.array_equal(states_array(base.blue), states_array(observed.blue))
+    assert same_state(base.rng.bit_generator.state, observed.rng.bit_generator.state)
 
 
 def test_altitude_rule_is_ned_negation():

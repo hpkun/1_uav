@@ -21,7 +21,7 @@ from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
 from algorithm.train_modular_mappo import load_config
 from tools.combat_visualization import (FEATURE_NAMES, TRACE_SCHEMA_VERSION,
     RecordingPersistentWaveCombatEnv, append_frame, assert_episode_seed_allowed,
-    checkpoint_sha256, dump_metadata, ensure_fresh_output, write_trace)
+    checkpoint_sha256, dump_metadata, ensure_fresh_output, write_trace, extract_events)
 
 
 def resolved(value: str | Path) -> Path:
@@ -36,6 +36,7 @@ def main() -> None:
     parser.add_argument("--episode-seed", required=True, type=int)
     parser.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--wall-timeout-s", type=float, default=0.0)
     args = parser.parse_args()
     if args.device != "cuda":
         raise RuntimeError("CUDA is required for deterministic recording")
@@ -104,8 +105,8 @@ def main() -> None:
         observation = next_observation
         if terminated or truncated:
             break
-        if time.time() - start > 120:
-            raise RuntimeError("recording exceeded 120 seconds")
+        if args.wall_timeout_s > 0 and time.time() - start > args.wall_timeout_s:
+            raise RuntimeError(f"recording exceeded configured wall timeout: {args.wall_timeout_s}s")
     arrays = write_trace(output_dir / "episode_trace.npz", frames, transitions)
     metadata = {
         "trace_schema_version": TRACE_SCHEMA_VERSION,
@@ -126,6 +127,8 @@ def main() -> None:
         "episode_return": float(np.sum([sum(x) for x in transitions["local_rewards"]])), "reserved_formal_seed": False,
         "feature_names": FEATURE_NAMES, "trace_shapes": arrays,
     }
+    # Keep event metadata optional and derive it from the exact transition arrays.
+    metadata["events"] = extract_events({key: np.asarray(value) for key, value in {**frames, **transitions}.items()})
     dump_metadata(output_dir / "metadata.json", metadata)
     print(metadata)
 

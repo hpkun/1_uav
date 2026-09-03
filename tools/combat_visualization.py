@@ -16,6 +16,16 @@ FEATURE_NAMES = ["x", "y", "z", "v", "theta", "psi"]
 RESERVED_SEED_RANGES = ((29_000_000, 29_000_019), (30_000_000, 30_000_199))
 
 
+def infer_method_display_name(metadata: dict[str, Any]) -> str:
+    explicit = metadata.get("method_display_name")
+    if explicit:
+        return str(explicit)
+    modules = set(metadata.get("enabled_modules", []))
+    ea = "entity_attention" in modules
+    wb = "wave_balancing" in modules
+    return "EA-WB-MAPPO" if ea and wb else "EA-MAPPO" if ea else "WB-MAPPO" if wb else "MAPPO"
+
+
 def state_array(state: AircraftState) -> np.ndarray:
     return np.asarray(state.as_array(), dtype=np.float32)
 
@@ -112,8 +122,44 @@ def read_trace(path: Path) -> dict[str, np.ndarray]:
     return result
 
 
+def extract_death_frames(trace: dict[str, np.ndarray]) -> list[dict[str, Any]]:
+    result = []
+    red_alive = trace["red_alive"]
+    for agent in range(red_alive.shape[1]):
+        for frame in range(1, red_alive.shape[0]):
+            if red_alive[frame - 1, agent] and not red_alive[frame, agent]:
+                result.append({"side":"red", "agent":agent + 1, "wave":None, "frame":frame, "position":trace["red_kinematics"][frame, agent, [0,1,2]].tolist()})
+                break
+    blue_alive = trace["blue_alive"]
+    for wave in range(blue_alive.shape[1]):
+        for agent in range(blue_alive.shape[2]):
+            for frame in range(1, blue_alive.shape[0]):
+                if blue_alive[frame - 1, wave, agent] and not blue_alive[frame, wave, agent]:
+                    result.append({"side":"blue", "agent":agent + 1, "wave":wave + 1, "frame":frame, "position":trace["blue_kinematics"][frame, wave, agent, [0,1,2]].tolist()})
+                    break
+    return result
+
+
+def extract_events(trace: dict[str, np.ndarray]) -> list[dict[str, Any]]:
+    events = []
+    mappings = (("red_step_attack_kills", "red_kill"), ("blue_step_attack_kills", "blue_kill"), ("red_step_weapon_hits", "red_hit"), ("blue_step_weapon_hits", "blue_hit"), ("red_ground_loss_delta", "red_ground_loss"), ("blue_ground_loss_delta", "blue_ground_loss"), ("red_boundary_exit_delta", "red_boundary_exit"), ("blue_boundary_exit_delta", "blue_boundary_exit"))
+    for key, kind in mappings:
+        for index, count in enumerate(trace.get(key, np.zeros(max(0, len(trace["steps"]) - 1), dtype=int))):
+            if int(count) > 0:
+                events.append({"trace_frame":index + 1, "type":kind, "count":int(count)})
+    clears = trace.get("wave_cleared_this_step", np.zeros(max(0, len(trace["steps"]) - 1), dtype=bool))
+    spawns = trace.get("spawned_next_wave", np.zeros(max(0, len(trace["steps"]) - 1), dtype=bool))
+    for index, flag in enumerate(clears):
+        if flag:
+            events.append({"trace_frame":index + 1, "type":"wave_cleared", "wave":int(trace["active_wave"][index])})
+    for index, flag in enumerate(spawns):
+        if flag:
+            events.append({"trace_frame":index + 1, "type":"wave_spawned", "wave":int(trace["active_wave"][index + 1])})
+    return sorted(events, key=lambda event: (event["trace_frame"], event["type"]))
+
+
 def dump_metadata(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-__all__ = ["TRACE_SCHEMA_VERSION", "FEATURE_NAMES", "RecordingPersistentWaveCombatEnv", "assert_episode_seed_allowed", "ensure_fresh_output", "state_array", "states_array", "append_frame", "write_trace", "read_trace", "checkpoint_sha256", "dump_metadata"]
+__all__ = ["TRACE_SCHEMA_VERSION", "FEATURE_NAMES", "RecordingPersistentWaveCombatEnv", "assert_episode_seed_allowed", "ensure_fresh_output", "state_array", "states_array", "append_frame", "write_trace", "read_trace", "checkpoint_sha256", "dump_metadata", "infer_method_display_name", "extract_events", "extract_death_frames"]
