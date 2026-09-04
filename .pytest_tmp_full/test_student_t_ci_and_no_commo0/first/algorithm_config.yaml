@@ -1,0 +1,43 @@
+algorithm: MAPPO
+implementation:
+  actor_activation: relu
+  checkpoint_interval_sampled_steps: 500000
+  clip_value_loss: true
+  critic_activation: relu
+  evaluation_seed_base: 10000000
+  log_std_max: 2.0
+  log_std_min: -5.0
+  normalize_advantages: true
+network:
+  action_dim: 3
+  actor_hidden_layers:
+  - 256
+  - 256
+  attention_heads: 2
+  critic_hidden_layers:
+  - 256
+  - 256
+  num_agents: 4
+  observation_dim: 52
+runtime_logging:
+  console_interval_sampled_steps: 20000
+  recent_episode_window: 100
+training:
+  actor_learning_rate: 0.0003
+  clip_ratio: 0.2
+  critic_learning_rate: 0.0003
+  device: cpu
+  entropy_coefficient: 0.01
+  evaluation_episodes: 20
+  evaluation_interval_sampled_steps: 100000
+  gae_lambda: 0.95
+  gamma: 0.99
+  max_grad_norm: 0.5
+  minibatch_size: 512
+  num_train_envs: 24
+  optimizer: Adam
+  ppo_epochs: 10
+  rollout_steps: 256
+  seed: 0
+  total_sampled_steps: 8000000
+  value_loss_coefficient: 0.5

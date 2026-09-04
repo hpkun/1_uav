@@ -9,8 +9,9 @@ from env.models import AircraftState
 from env.persistent_env import PersistentWaveCombatEnv
 from tools.combat_visualization import (TRACE_SCHEMA_VERSION, RecordingPersistentWaveCombatEnv,
     append_frame, assert_episode_seed_allowed, blue_losses_at_frame, ensure_fresh_output,
-    heading_endpoint, read_trace, recent_events, states_array, trace_frame_to_render_index, write_trace)
-from tools.render_combat_episode_interactive import render as render_interactive
+    extract_death_frames, heading_endpoint, read_trace, recent_events, states_array,
+    trace_frame_to_render_index, write_trace)
+from tools.render_combat_episode_interactive import _derive_attack_links, render as render_interactive
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -106,6 +107,33 @@ def test_recent_events_excludes_future_events():
     assert recent_events(events, 0) == []
 
 
+def test_schema_v1_attack_pair_reconstruction_and_death_cause():
+    red = np.full((2, 4, 6), np.nan, dtype=np.float32)
+    blue = np.full((2, 1, 4, 6), np.nan, dtype=np.float32)
+    red[:, 0] = [0, 0, -1000, 200, 0, 0]
+    blue[:, 0, 0] = [1000, 0, -1000, 200, 0, np.pi]
+    trace = {
+        "red_kinematics": red, "blue_kinematics": blue,
+        "red_alive": np.asarray([[True, False, False, False], [True, False, False, False]]),
+        "blue_alive": np.asarray([[[True, False, False, False]], [[False, False, False, False]]]),
+        "steps": np.asarray([0, 1]), "time_s": np.asarray([0.0, 0.1]),
+        "active_wave": np.asarray([1, 1]), "waves_cleared": np.asarray([0, 1]),
+        "red_step_fire_attempts": np.asarray([1]), "blue_step_fire_attempts": np.asarray([1]),
+        "red_step_attack_kills": np.asarray([1]), "blue_step_attack_kills": np.asarray([0]),
+        "red_boundary_exit_delta": np.asarray([0]), "blue_boundary_exit_delta": np.asarray([0]),
+        "red_ground_loss_delta": np.asarray([0]), "blue_ground_loss_delta": np.asarray([0]),
+        "spawned_next_wave": np.asarray([False]), "arena_radius": np.asarray(5000.0),
+    }
+    links = _derive_attack_links(trace, {"environment_variant": "persistent_wave_v2"})
+    assert {(link["side"], link["attacker"], link["target"]) for link in links} == {
+        ("red", 1, 1), ("blue", 1, 1),
+    }
+    deaths = extract_death_frames(trace)
+    assert [(death["side"], death["agent"], death["cause"]) for death in deaths] == [
+        ("blue", 1, "attack_kill"),
+    ]
+
+
 def test_event_hold_mapping_uses_rendered_frame_units_with_stride_four():
     rendered = [0, 4, 8, 12, 16]
     assert trace_frame_to_render_index(rendered, 1) == 1
@@ -142,6 +170,36 @@ def test_interactive_html_is_standalone_and_accepts_old_metadata(tmp_path):
     assert "NaN" not in payload
     application = html.split("// APP_JS_START", 1)[1].split("// APP_JS_END", 1)[0]
     assert "\nFINAL" not in application
+    assert all(token in application for token in (
+        "cameraInteracting", "beginCameraInteraction", "endCameraInteraction",
+        "renderBusy", "renderPending", "requestAnimationFrame(playbackLoop)",
+        "pointerdown", "pointerup", "pointercancel", "wheelEndTimer",
+        "setTimeout", "arenaTrace", "scrollZoom:true",
+        "aspectmode:'cube'", "dragmode:'orbit'", "autorange:false",
+    ))
+    assert "setInterval(" not in application
+    assert "clearInterval(" not in application
+    assert "aspectmode:'data'" not in application
+    assert "if(cameraInteracting||renderBusy)return" in application
+    assert "dynamicTraceIndices" not in application
+    assert "hideDynamicTraces" not in application
+    render_frame = application.split("async function renderFrame", 1)[1].split("async function drainRenderQueue", 1)[0]
+    assert "Plotly.relayout" not in render_frame
+    assert "scene.camera" not in render_frame
+    assert render_frame.count("Plotly.restyle") == 6
+    assert "P.attack_links.filter" in render_frame
+    assert "color:'#20c75a'" in application
+    assert "Cause: %{customdata[3]}" in application
+    begin_interaction = application.split("function beginCameraInteraction", 1)[1].split("function endCameraInteraction", 1)[0]
+    assert "Plotly." not in begin_interaction
+    assert "requestRender" not in begin_interaction
+    assert "renderPending" not in begin_interaction
+    end_interaction = application.split("function endCameraInteraction", 1)[1].split("function syncLogicalFrame", 1)[0]
+    assert "if(renderPending||logicalFrame!==renderedFrame)requestRender()" in end_interaction
+    assert html.count("Adjusting camera…") == 1
+    assert "Combat traces are frozen while the camera moves." in html
+    assert "uirevision:'combat-replay'" in application
+    assert "'scene.camera':DEFAULT_CAMERA" in application
     node = shutil.which("node")
     if node:
         script = tmp_path / "application.js"

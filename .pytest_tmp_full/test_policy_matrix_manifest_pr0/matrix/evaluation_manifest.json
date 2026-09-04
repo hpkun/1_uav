@@ -1,0 +1,18 @@
+{
+  "direct_checkpoint": "C:\\Users\\HPK\\Desktop\\1_uav\\.pytest_tmp_full\\test_policy_matrix_manifest_pr0\\direct.pt",
+  "persistent_checkpoint": "C:\\Users\\HPK\\Desktop\\1_uav\\.pytest_tmp_full\\test_policy_matrix_manifest_pr0\\persistent.pt",
+  "holdout_seed_base": 101,
+  "holdout_seed_end": 101,
+  "evaluation_episodes": 1,
+  "device": "cpu",
+  "direct_training_gamma": 0.99,
+  "persistent_training_gamma": 0.999,
+  "direct_algorithm_config_sha256": "f564a4c542a99f1998eab94549653cb9b4756f936c68145a3bd00d42e7bd32d2",
+  "persistent_algorithm_config_sha256": "c6bac32a84a9290111117226ed517ba86e713f5311134ff72d04551a119f842e",
+  "direct_environment_config_sha256": "e6d4b7d4421a6935db30035c3da2a59ea2fa955408ffe1a3de6025520a4c8ae9",
+  "persistent_environment_config_sha256": "ca2108c449065f17a3ad8ea287c94e8aa94dadac8b1e20a7b063afbfd22333ee",
+  "direct_checkpoint_sampled_steps": 4,
+  "persistent_checkpoint_sampled_steps": 4,
+  "direct_protocol_complete": true,
+  "persistent_protocol_complete": true
+}

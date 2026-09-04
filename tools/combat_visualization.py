@@ -128,16 +128,43 @@ def extract_death_frames(trace: dict[str, np.ndarray]) -> list[dict[str, Any]]:
     for agent in range(red_alive.shape[1]):
         for frame in range(1, red_alive.shape[0]):
             if red_alive[frame - 1, agent] and not red_alive[frame, agent]:
-                result.append({"side":"red", "agent":agent + 1, "wave":None, "frame":frame, "position":trace["red_kinematics"][frame, agent, [0,1,2]].tolist()})
+                result.append({"side":"red", "agent":agent + 1, "wave":None, "frame":frame, "position":trace["red_kinematics"][frame, agent, [0,1,2]].tolist(), "cause":_death_cause(trace, "red", frame, agent)})
                 break
     blue_alive = trace["blue_alive"]
     for wave in range(blue_alive.shape[1]):
         for agent in range(blue_alive.shape[2]):
             for frame in range(1, blue_alive.shape[0]):
                 if blue_alive[frame - 1, wave, agent] and not blue_alive[frame, wave, agent]:
-                    result.append({"side":"blue", "agent":agent + 1, "wave":wave + 1, "frame":frame, "position":trace["blue_kinematics"][frame, wave, agent, [0,1,2]].tolist()})
+                    result.append({"side":"blue", "agent":agent + 1, "wave":wave + 1, "frame":frame, "position":trace["blue_kinematics"][frame, wave, agent, [0,1,2]].tolist(), "cause":_death_cause(trace, "blue", frame, agent, wave)})
                     break
     return result
+
+
+def _death_cause(
+    trace: dict[str, np.ndarray], side: str, frame: int, agent: int,
+    wave: int | None = None,
+) -> str:
+    """Classify a recorded death without inventing attacker identity."""
+    transition = frame - 1
+    states = trace[f"{side}_kinematics"]
+    state = states[frame, agent] if side == "red" else states[frame, wave, agent]
+    if np.all(np.isfinite(state[:3])):
+        radius = float(trace.get("arena_radius", np.asarray(np.inf)))
+        if float(np.hypot(state[0], state[1])) > radius:
+            return "boundary_exit"
+        if float(-state[2]) <= 0.0:
+            return "ground_impact"
+    def count(key: str) -> int:
+        values = trace.get(key)
+        return int(values[transition]) if values is not None and transition < len(values) else 0
+    if count(f"{side}_boundary_exit_delta") > 0:
+        return "boundary_exit"
+    if count(f"{side}_ground_loss_delta") > 0:
+        return "ground_impact"
+    attacker = "blue" if side == "red" else "red"
+    if count(f"{attacker}_step_attack_kills") > 0:
+        return "attack_kill"
+    return "unknown"
 
 
 def extract_events(trace: dict[str, np.ndarray]) -> list[dict[str, Any]]:
