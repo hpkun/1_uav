@@ -1,1 +1,0 @@
-{"algorithm": "MAPPO", "seed": 2, "device": "cpu", "num_envs": 1, "total_sampled_steps": 200, "smoke": true, "effective_hidden_dim": 64}

@@ -1,5 +1,0 @@
-cell,source_training_variant,target_evaluation_variant,cross_variant,checkpoint,episodes,seed_base,algorithm,checkpoint_environment_variant,evaluation_environment_variant,cross_variant_evaluation,evaluation_episodes,holdout_seed_base,holdout_seed_end,average_return
-direct_to_direct,direct_v2_3,direct_v2_3,False,C:\Users\HPK\Desktop\1_uav\.pytest_tmp_full\test_policy_matrix_manifest_pr0\direct.pt,1,101,MAPPO,direct_v2_3,direct_v2_3,False,1,101,101,0.0
-direct_to_persistent,direct_v2_3,persistent_wave_v2,True,C:\Users\HPK\Desktop\1_uav\.pytest_tmp_full\test_policy_matrix_manifest_pr0\direct.pt,1,101,MAPPO,direct_v2_3,persistent_wave_v2,True,1,101,101,0.0
-persistent_to_direct,persistent_wave_v2,direct_v2_3,True,C:\Users\HPK\Desktop\1_uav\.pytest_tmp_full\test_policy_matrix_manifest_pr0\persistent.pt,1,101,MAPPO,persistent_wave_v2,direct_v2_3,True,1,101,101,0.0
-persistent_to_persistent,persistent_wave_v2,persistent_wave_v2,False,C:\Users\HPK\Desktop\1_uav\.pytest_tmp_full\test_policy_matrix_manifest_pr0\persistent.pt,1,101,MAPPO,persistent_wave_v2,persistent_wave_v2,False,1,101,101,0.0

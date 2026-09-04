@@ -8,9 +8,10 @@ import pytest
 from env.models import AircraftState
 from env.persistent_env import PersistentWaveCombatEnv
 from tools.combat_visualization import (TRACE_SCHEMA_VERSION, RecordingPersistentWaveCombatEnv,
-    append_frame, assert_episode_seed_allowed, blue_losses_at_frame, ensure_fresh_output,
-    extract_death_frames, heading_endpoint, read_trace, recent_events, states_array,
-    trace_frame_to_render_index, write_trace)
+    annotate_death_attack_sources, append_frame, assert_episode_seed_allowed,
+    attack_totals, blue_losses_at_frame, ensure_fresh_output, extract_death_frames,
+    heading_endpoint, read_trace, recent_events, states_array, trace_frame_to_render_index,
+    write_trace)
 from tools.render_combat_episode_interactive import _derive_attack_links, render as render_interactive
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +25,7 @@ def same_state(left, right):
     return left == right
 
 
-def test_aircraft_state_and_trace_shapes():
+def test_aircraft_state_and_trace_shapes(tmp_path):
     state = AircraftState(1, 2, -3, 4, 5, 6, True)
     result = states_array([state])
     assert np.array_equal(result[0], [1, 2, -3, 4, 5, 6])
@@ -33,15 +34,13 @@ def test_aircraft_state_and_trace_shapes():
     env.reset(40000000)
     frames = {key: [] for key in ("red_kinematics", "red_alive", "blue_kinematics", "blue_alive", "steps", "time_s", "active_wave", "waves_cleared")}
     append_frame(frames, env, 1, 0, 0.0)
-    arrays = write_trace(ROOT / "tests" / "_temporary_trace.npz", frames, {})
-    try:
-        trace = read_trace(ROOT / "tests" / "_temporary_trace.npz")
-        assert trace["red_kinematics"].shape == (1, 4, 6)
-        assert trace["blue_kinematics"].shape == (1, 3, 4, 6)
-        assert np.all(np.isnan(trace["blue_kinematics"][0, 1:]))
-        assert np.all(~trace["blue_alive"][0, 1:])
-    finally:
-        (ROOT / "tests" / "_temporary_trace.npz").unlink(missing_ok=True)
+    trace_path = tmp_path / "trace.npz"
+    arrays = write_trace(trace_path, frames, {})
+    trace = read_trace(trace_path)
+    assert trace["red_kinematics"].shape == (1, 4, 6)
+    assert trace["blue_kinematics"].shape == (1, 3, 4, 6)
+    assert np.all(np.isnan(trace["blue_kinematics"][0, 1:]))
+    assert np.all(~trace["blue_alive"][0, 1:])
 
 
 def test_reserved_seed_guard_and_fresh_output(tmp_path):
@@ -132,6 +131,58 @@ def test_schema_v1_attack_pair_reconstruction_and_death_cause():
     assert [(death["side"], death["agent"], death["cause"]) for death in deaths] == [
         ("blue", 1, "attack_kill"),
     ]
+    assert all("hit" not in link and "kill" not in link for link in links)
+
+
+def test_attack_totals_use_hits_not_kills_for_misses():
+    totals = attack_totals({
+        "red_step_fire_attempts": np.asarray([2, 1]),
+        "blue_step_fire_attempts": np.asarray([2]),
+        "red_step_weapon_hits": np.asarray([2]),
+        "blue_step_weapon_hits": np.asarray([1]),
+        "red_step_attack_kills": np.asarray([1]),
+        "blue_step_attack_kills": np.asarray([1]),
+    })
+    assert totals == {"attempts": 5, "hits": 3, "misses": 2, "kills": 2}
+
+
+def test_attack_reconstruction_resets_fire_state_after_wave_spawn():
+    red = np.full((3, 4, 6), np.nan, dtype=np.float32)
+    blue = np.full((3, 2, 4, 6), np.nan, dtype=np.float32)
+    red[:, 0] = [0, 0, -1000, 200, 0, 0]
+    blue[0:2, 0, 0] = [1000, 0, -1000, 200, 0, np.pi]
+    blue[1:3, 1, 0] = [1000, 0, -1000, 200, 0, np.pi]
+    red_alive = np.zeros((3, 4), dtype=bool); red_alive[:, 0] = True
+    blue_alive = np.zeros((3, 2, 4), dtype=bool)
+    blue_alive[0, 0, 0] = True; blue_alive[1:, 1, 0] = True
+    trace = {
+        "red_kinematics": red, "blue_kinematics": blue,
+        "red_alive": red_alive, "blue_alive": blue_alive,
+        "steps": np.arange(3), "time_s": np.arange(3) * 0.1,
+        "active_wave": np.asarray([1, 2, 2]), "waves_cleared": np.asarray([0, 1, 1]),
+        "red_step_fire_attempts": np.asarray([1, 1]),
+        "blue_step_fire_attempts": np.asarray([1, 1]),
+        "spawned_next_wave": np.asarray([True, False]),
+    }
+    links = _derive_attack_links(trace, {"environment_variant": "persistent_wave_v2"})
+    assert [(link["frame"], link["side"], link["wave"]) for link in links] == [
+        (1, "red", 1), (1, "blue", 1), (2, "red", 2), (2, "blue", 2),
+    ]
+
+
+def test_schema_v1_attack_source_evidence_is_conservative():
+    death = {"side": "blue", "wave": 2, "agent": 3, "frame": 10,
+             "cause": "attack_kill"}
+    single = annotate_death_attack_sources([death], [
+        {"side": "red", "wave": 2, "attacker": 4, "target": 3, "frame": 10},
+    ])[0]
+    assert single["attack_source_evidence"] == "Single reconstructed attacker: R4"
+    multiple = annotate_death_attack_sources([death], [
+        {"side": "red", "wave": 2, "attacker": 2, "target": 3, "frame": 10},
+        {"side": "red", "wave": 2, "attacker": 4, "target": 3, "frame": 10},
+    ])[0]
+    assert multiple["attack_sources"] == ["R2", "R4"]
+    assert "unique killer unavailable" in multiple["attack_source_evidence"]
 
 
 def test_event_hold_mapping_uses_rendered_frame_units_with_stride_four():
@@ -172,7 +223,7 @@ def test_interactive_html_is_standalone_and_accepts_old_metadata(tmp_path):
     assert "\nFINAL" not in application
     assert all(token in application for token in (
         "cameraInteracting", "beginCameraInteraction", "endCameraInteraction",
-        "renderBusy", "renderPending", "requestAnimationFrame(playbackLoop)",
+        "renderBusy", "renderPending", "renderEpoch", "requestAnimationFrame(playbackLoop)",
         "pointerdown", "pointerup", "pointercancel", "wheelEndTimer",
         "setTimeout", "arenaTrace", "scrollZoom:true",
         "aspectmode:'cube'", "dragmode:'orbit'", "autorange:false",
@@ -182,22 +233,33 @@ def test_interactive_html_is_standalone_and_accepts_old_metadata(tmp_path):
     assert "aspectmode:'data'" not in application
     assert "if(cameraInteracting||renderBusy)return" in application
     assert "dynamicTraceIndices" not in application
-    assert "hideDynamicTraces" not in application
+    assert "staticTraceIndices" not in application
+    assert "hideDynamicCombatTraces" not in application
+    assert "scheduleHideDynamic" not in application
+    assert "interactionHidePending" not in application
     render_frame = application.split("async function renderFrame", 1)[1].split("async function drainRenderQueue", 1)[0]
     assert "Plotly.relayout" not in render_frame
     assert "scene.camera" not in render_frame
     assert render_frame.count("Plotly.restyle") == 6
+    assert render_frame.count("if(renderAborted(epoch))return false") >= 7
+    assert "return true" in render_frame
     assert "P.attack_links.filter" in render_frame
     assert "color:'#20c75a'" in application
+    assert "name:'Fire Attempt'" in application
     assert "Cause: %{customdata[3]}" in application
     begin_interaction = application.split("function beginCameraInteraction", 1)[1].split("function endCameraInteraction", 1)[0]
     assert "Plotly." not in begin_interaction
+    assert "renderEpoch+=1" in begin_interaction
     assert "requestRender" not in begin_interaction
     assert "renderPending" not in begin_interaction
     end_interaction = application.split("function endCameraInteraction", 1)[1].split("function syncLogicalFrame", 1)[0]
     assert "if(renderPending||logicalFrame!==renderedFrame)requestRender()" in end_interaction
-    assert html.count("Adjusting camera…") == 1
-    assert "Combat traces are frozen while the camera moves." in html
+    scheduler = application.split("async function drainRenderQueue", 1)[1].split("function requestRender", 1)[0]
+    assert "if(completed)renderedFrame=target" in scheduler
+    assert "else{renderPending=true;break}" in scheduler
+    assert "Adjusting camera" not in html
+    assert "camera-interaction" not in html
+    assert "combat traces are hidden" not in html
     assert "uirevision:'combat-replay'" in application
     assert "'scene.camera':DEFAULT_CAMERA" in application
     node = shutil.which("node")

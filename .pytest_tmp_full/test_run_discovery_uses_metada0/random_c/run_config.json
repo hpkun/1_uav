@@ -1,1 +1,0 @@
-{"algorithm": "modular_mappo", "seed": 2023, "environment_variant": "persistent_wave_v2", "enabled_modules": ["wave_balancing"]}

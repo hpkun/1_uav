@@ -1,8 +1,0 @@
-{
-  "source_checkpoint": "C:\\Users\\HPK\\Desktop\\1_uav\\.pytest_tmp_full\\test_pre_resume_checkpoint_is_0\\latest.pt",
-  "source_checkpoint_sha256": "ca8864a41cb6d5019fa239d2bcba5154d422caa978cdae863dc4d9fd0ff49126",
-  "source_sampled_steps": 600000,
-  "preserved_checkpoint": "C:\\Users\\HPK\\Desktop\\1_uav\\.pytest_tmp_full\\test_pre_resume_checkpoint_is_0\\resume_points\\resume_start_600000_ca8864a41cb6.pt",
-  "created": true,
-  "timestamp": "2026-09-04T12:11:31.922161+08:00"
-}

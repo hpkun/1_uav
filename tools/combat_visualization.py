@@ -140,6 +140,69 @@ def extract_death_frames(trace: dict[str, np.ndarray]) -> list[dict[str, Any]]:
     return result
 
 
+def attack_totals(trace: dict[str, np.ndarray]) -> dict[str, int]:
+    """Return schema-v1 aggregate fire statistics without per-attempt inference."""
+    def total(side: str, event: str) -> int:
+        return int(np.asarray(trace.get(
+            f"{side}_step_{event}", np.zeros(0, dtype=np.int64)
+        )).sum())
+    attempts = total("red", "fire_attempts") + total("blue", "fire_attempts")
+    hits = total("red", "weapon_hits") + total("blue", "weapon_hits")
+    kills = total("red", "attack_kills") + total("blue", "attack_kills")
+    return {
+        "attempts": attempts,
+        "hits": hits,
+        "misses": attempts - hits,
+        "kills": kills,
+    }
+
+
+def annotate_death_attack_sources(
+    deaths: list[dict[str, Any]], attack_links: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach conservative fire-attempt evidence, never schema-v1 kill credit."""
+    result = []
+    for original in deaths:
+        death = dict(original)
+        sources: list[str] = []
+        if death.get("cause") == "attack_kill":
+            for link in attack_links:
+                if int(link.get("frame", -1)) != int(death["frame"]):
+                    continue
+                if death["side"] == "blue":
+                    matches = (
+                        link.get("side") == "red"
+                        and int(link.get("target", -1)) == int(death["agent"])
+                        and int(link.get("wave", -1)) == int(death["wave"])
+                    )
+                    label = f"R{int(link['attacker'])}" if matches else ""
+                else:
+                    matches = (
+                        link.get("side") == "blue"
+                        and int(link.get("target", -1)) == int(death["agent"])
+                    )
+                    label = (
+                        f"Wave {int(link['wave'])} B{int(link['attacker'])}"
+                        if matches else ""
+                    )
+                if matches and label not in sources:
+                    sources.append(label)
+        death["attack_sources"] = sources
+        if len(sources) == 1:
+            death["attack_source_evidence"] = (
+                f"Single reconstructed attacker: {sources[0]}"
+            )
+        elif len(sources) > 1:
+            death["attack_source_evidence"] = (
+                f"Multiple reconstructed attackers: {', '.join(sources)}; "
+                "unique killer unavailable"
+            )
+        else:
+            death["attack_source_evidence"] = "Unknown"
+        result.append(death)
+    return result
+
+
 def _death_cause(
     trace: dict[str, np.ndarray], side: str, frame: int, agent: int,
     wave: int | None = None,
@@ -222,4 +285,4 @@ def dump_metadata(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-__all__ = ["TRACE_SCHEMA_VERSION", "FEATURE_NAMES", "RecordingPersistentWaveCombatEnv", "assert_episode_seed_allowed", "ensure_fresh_output", "state_array", "states_array", "append_frame", "write_trace", "read_trace", "checkpoint_sha256", "dump_metadata", "infer_method_display_name", "extract_events", "extract_death_frames", "blue_losses_at_frame", "events_up_to_frame", "recent_events", "trace_frame_to_render_index", "trajectory_slice", "heading_endpoint"]
+__all__ = ["TRACE_SCHEMA_VERSION", "FEATURE_NAMES", "RecordingPersistentWaveCombatEnv", "assert_episode_seed_allowed", "ensure_fresh_output", "state_array", "states_array", "append_frame", "write_trace", "read_trace", "checkpoint_sha256", "dump_metadata", "infer_method_display_name", "extract_events", "extract_death_frames", "attack_totals", "annotate_death_attack_sources", "blue_losses_at_frame", "events_up_to_frame", "recent_events", "trace_frame_to_render_index", "trajectory_slice", "heading_endpoint"]
