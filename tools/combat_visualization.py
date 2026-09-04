@@ -148,7 +148,8 @@ def _death_cause(
     transition = frame - 1
     states = trace[f"{side}_kinematics"]
     state = states[frame, agent] if side == "red" else states[frame, wave, agent]
-    if np.all(np.isfinite(state[:3])):
+    finite_position = bool(np.all(np.isfinite(state[:3])))
+    if finite_position:
         radius = float(trace.get("arena_radius", np.asarray(np.inf)))
         if float(np.hypot(state[0], state[1])) > radius:
             return "boundary_exit"
@@ -157,9 +158,9 @@ def _death_cause(
     def count(key: str) -> int:
         values = trace.get(key)
         return int(values[transition]) if values is not None and transition < len(values) else 0
-    if count(f"{side}_boundary_exit_delta") > 0:
+    if not finite_position and count(f"{side}_boundary_exit_delta") > 0:
         return "boundary_exit"
-    if count(f"{side}_ground_loss_delta") > 0:
+    if not finite_position and count(f"{side}_ground_loss_delta") > 0:
         return "ground_impact"
     attacker = "blue" if side == "red" else "red"
     if count(f"{attacker}_step_attack_kills") > 0:
