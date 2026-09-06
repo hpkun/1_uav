@@ -1,0 +1,26 @@
+{
+  "protocol_name": "gated_residual_entity_aware_actor_development_v1",
+  "protocol_role": "development_only",
+  "research_question": "Can a stable legacy MLP base plus a zero-initialized entity residual reduce cross-training-seed collapse and dependence on policy noise?",
+  "budget_sampled_steps": 400000,
+  "training_seeds": [4101, 4102, 4103],
+  "validation": {"role": "NEW_ARCHITECTURE_DEVELOPMENT_VALIDATION", "seed_start": 32000000, "seed_end": 32000019, "episodes": 20},
+  "reserved_untouched_future_final_test": {"role": "RESERVED_UNTOUCHED_FUTURE_FINAL_TEST", "seed_start": 33000000, "seed_end": 33000199, "episodes": 200, "executed": false},
+  "forbidden_for_architecture_selection": ["29000000..29000019", "30000000..30000199", "31000000..31000019"],
+  "primary_checkpoint_rule": "latest_at_400000",
+  "methods": ["MAPPO", "Full EA", "Residual EA", "Gated Residual EA"],
+  "runs": [
+    {"method":"MAPPO","training_seed":4101,"config_path":"configs/dev_grea_mappo_400k.yaml","output_dir":"outputs/dev_grea/mappo_seed4101"},
+    {"method":"MAPPO","training_seed":4102,"config_path":"configs/dev_grea_mappo_400k.yaml","output_dir":"outputs/dev_grea/mappo_seed4102"},
+    {"method":"MAPPO","training_seed":4103,"config_path":"configs/dev_grea_mappo_400k.yaml","output_dir":"outputs/dev_grea/mappo_seed4103"},
+    {"method":"Full EA","training_seed":4101,"config_path":"configs/dev_grea_full_ea_400k.yaml","output_dir":"outputs/dev_grea/full_ea_seed4101"},
+    {"method":"Full EA","training_seed":4102,"config_path":"configs/dev_grea_full_ea_400k.yaml","output_dir":"outputs/dev_grea/full_ea_seed4102"},
+    {"method":"Full EA","training_seed":4103,"config_path":"configs/dev_grea_full_ea_400k.yaml","output_dir":"outputs/dev_grea/full_ea_seed4103"},
+    {"method":"Residual EA","training_seed":4101,"config_path":"configs/dev_grea_residual_ea_400k.yaml","output_dir":"outputs/dev_grea/residual_ea_seed4101"},
+    {"method":"Residual EA","training_seed":4102,"config_path":"configs/dev_grea_residual_ea_400k.yaml","output_dir":"outputs/dev_grea/residual_ea_seed4102"},
+    {"method":"Residual EA","training_seed":4103,"config_path":"configs/dev_grea_residual_ea_400k.yaml","output_dir":"outputs/dev_grea/residual_ea_seed4103"},
+    {"method":"Gated Residual EA","training_seed":4101,"config_path":"configs/dev_grea_gated_ea_400k.yaml","output_dir":"outputs/dev_grea/gated_ea_seed4101"},
+    {"method":"Gated Residual EA","training_seed":4102,"config_path":"configs/dev_grea_gated_ea_400k.yaml","output_dir":"outputs/dev_grea/gated_ea_seed4102"},
+    {"method":"Gated Residual EA","training_seed":4103,"config_path":"configs/dev_grea_gated_ea_400k.yaml","output_dir":"outputs/dev_grea/gated_ea_seed4103"}
+  ]
+}

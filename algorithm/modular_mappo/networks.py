@@ -18,8 +18,11 @@ class ModularMAPPOActor(SharedMAPPOActor):
                          log_std_min, log_std_max, activation)
         config=dict(entity_attention_config or {})
         self.entity_attention_enabled=bool(config.get("enabled",False))
+        self.entity_attention_mode=str(config.get("mode","replacement"))
         self.entity_dim=int(config.get("entity_dim",32));self.entity_attention_heads=int(config.get("attention_heads",2))
         if self.entity_attention_enabled:
+            if self.entity_attention_mode not in {"replacement","residual","gated_residual"}:
+                raise ValueError("entity attention mode must be replacement, residual, or gated_residual")
             if self.base_observation_dim!=52:raise ValueError("entity attention requires the fixed 52D observation layout")
             if self.context_dim:raise ValueError("entity attention cannot be combined with wave context")
             if self.recurrent_hidden_dim:raise ValueError("entity attention cannot be combined with recurrent memory")
@@ -32,9 +35,22 @@ class ModularMAPPOActor(SharedMAPPOActor):
             self.ally_attention=nn.MultiheadAttention(32,2,batch_first=True)
             self.enemy_attention=nn.MultiheadAttention(32,2,batch_first=True)
             self.entity_fusion=nn.Sequential(nn.Linear(96,256),nn.ReLU(),nn.Linear(256,256),nn.ReLU())
-            # The legacy MLP is not part of the entity-aware architecture.  It is
-            # retained only when the module is disabled for exact compatibility.
-            del self.backbone
+            if self.entity_attention_mode=="replacement":
+                # Preserve the V1 topology exactly: no legacy backbone, adapter,
+                # or gate parameters are present in replacement checkpoints.
+                del self.backbone
+            else:
+                self.entity_residual_adapter=nn.Linear(256,256)
+                nn.init.zeros_(self.entity_residual_adapter.weight)
+                nn.init.zeros_(self.entity_residual_adapter.bias)
+                if self.entity_attention_mode=="gated_residual":
+                    initial_gate=float(config.get("initial_gate",.05))
+                    if not 0.<initial_gate<1.:
+                        raise ValueError("gated_residual initial_gate must be in (0, 1)")
+                    self.initial_entity_gate=initial_gate
+                    self.entity_gate=nn.Linear(512,1)
+                    nn.init.zeros_(self.entity_gate.weight)
+                    nn.init.constant_(self.entity_gate.bias,math.log(initial_gate/(1.-initial_gate)))
         if self.recurrent_hidden_dim:
             self.gru=nn.GRUCell(hidden_dim, self.recurrent_hidden_dim)
             self.mean=nn.Linear(self.recurrent_hidden_dim, action_dim)
@@ -85,7 +101,25 @@ class ModularMAPPOActor(SharedMAPPOActor):
 
     def distribution_step(self, observations, context=None, hidden=None, episode_mask=None, alive_mask=None,return_attention=False):
         diagnostics=None
-        if self.entity_attention_enabled:encoded,diagnostics=self._entity_encode(observations)
+        if self.entity_attention_enabled:
+            h_entity,diagnostics=self._entity_encode(observations)
+            diagnostics["entity_mode"]=self.entity_attention_mode
+            diagnostics["entity_feature_norm"]=torch.linalg.vector_norm(h_entity,dim=-1)
+            if self.entity_attention_mode=="replacement":
+                encoded=h_entity
+            else:
+                h_base=self.backbone(self._input(observations,context))
+                delta=self.entity_residual_adapter(h_entity)
+                base_norm=torch.linalg.vector_norm(h_base,dim=-1)
+                delta_norm=torch.linalg.vector_norm(delta,dim=-1)
+                diagnostics.update({"entity_base_feature_norm":base_norm,"entity_delta_norm":delta_norm,
+                                    "entity_delta_to_base_ratio":delta_norm/base_norm.clamp_min(1e-12)})
+                if self.entity_attention_mode=="gated_residual":
+                    gate=torch.sigmoid(self.entity_gate(torch.cat((h_base,h_entity),-1)))
+                    diagnostics["entity_gate"]=gate.squeeze(-1)
+                    encoded=h_base+gate*delta
+                else:
+                    encoded=h_base+delta
         else:encoded=self.backbone(self._input(observations,context))
         new_hidden=hidden
         if self.recurrent_hidden_dim:

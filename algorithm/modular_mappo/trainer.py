@@ -305,6 +305,11 @@ class ModularMAPPOTrainer:
   result["entity_attention_enabled"]=float(self.entity_attention_enabled)
   if attention:
    query_alive=alive>.5
+   def live_values(key):
+    values=torch.stack([item[key] for item in attention])[query_alive]
+    if values.numel()==0:raise FloatingPointError(f"no live samples for {key} diagnostics")
+    if not torch.all(torch.isfinite(values)):raise FloatingPointError(f"non-finite {key} diagnostics")
+    return values
    for group in ("ally","enemy"):
     weights=torch.stack([item[f"{group}_attention_weights"] for item in attention])
     entities=torch.stack([item[f"{group}_entity_alive"] for item in attention])
@@ -316,6 +321,16 @@ class ModularMAPPOTrainer:
     result[f"{group}_alive_entity_count"]=float(entities[query_alive].sum(-1).float().mean())
     result[f"{group}_attention_dead_mass"]=float(dead_mass[query_alive].mean())
    result["attention_dead_mass"]=max(result["ally_attention_dead_mass"],result["enemy_attention_dead_mass"])
+   result["entity_feature_norm"]=float(live_values("entity_feature_norm").mean())
+   if self.actor.entity_attention_mode in {"residual","gated_residual"}:
+    for key in ("entity_base_feature_norm","entity_delta_norm","entity_delta_to_base_ratio"):
+     result[key]=float(live_values(key).mean())
+   if self.actor.entity_attention_mode=="gated_residual":
+    gate=live_values("entity_gate")
+    result.update({"entity_gate_mean":float(gate.mean()),"entity_gate_std":float(gate.std(unbiased=False)),
+                   "entity_gate_min":float(gate.min()),"entity_gate_max":float(gate.max()),
+                   "entity_gate_p10":float(torch.quantile(gate,.1)),"entity_gate_p50":float(torch.quantile(gate,.5)),
+                   "entity_gate_p90":float(torch.quantile(gate,.9))})
   return result
  def module_protocol(self):
   raw=json.dumps(self.modules_config,sort_keys=True,separators=(",",":"));return {"enabled_modules":enabled_module_names(self.modules_config),"module_config":deepcopy(self.modules_config),"module_config_sha256":hashlib.sha256(raw.encode()).hexdigest()}
