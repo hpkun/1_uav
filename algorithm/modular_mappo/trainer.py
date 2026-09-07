@@ -14,6 +14,7 @@ from algorithm.modules import (WaveContextModule,RecurrentMemoryModule,PopArtVal
 from algorithm.modules import (AdvantagePriorityModule,PPOStabilizationModule,
  ADVANTAGE_PRIORITY_VERSION,PPO_STABILIZATION_VERSION)
 from algorithm.modules import ActorLRDecayModule,ACTOR_LR_DECAY_VERSION
+from algorithm.modules import WaveSurvivalPotentialShapingModule
 from .networks import ModularMAPPOActor,ModularCentralizedCritic
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 
@@ -79,6 +80,7 @@ class ModularMAPPOTrainer:
   self.modules_config=deepcopy(modules_config or {})
   self.wave_context=WaveContextModule(self.modules_config.get("wave_context"));self.recurrent=RecurrentMemoryModule(self.modules_config.get("recurrent_memory"))
   self.popart=PopArtValueNormalizer(self.modules_config.get("popart")).to(self.device);self.reward_adapter=MultiWaveRewardAdapter(self.modules_config.get("multi_wave_reward"))
+  self.wave_survival_pbrs=WaveSurvivalPotentialShapingModule(self.modules_config.get("wave_survival_pbrs"),self.gamma)
   self.wave_balance=WaveBalancingModule(self.modules_config.get("wave_balancing"));self.warm_start=WarmStartInitializer(self.modules_config.get("warm_start"))
   self.curriculum=CurriculumController(self.modules_config.get("curriculum"));self.anchor=PolicyAnchorRegularizer(self.modules_config.get("policy_anchor"))
   self.advantage_priority=AdvantagePriorityModule(self.modules_config.get("advantage_priority"))

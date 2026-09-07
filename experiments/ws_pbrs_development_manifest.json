@@ -1,0 +1,22 @@
+{
+  "protocol_name": "wave_survival_pbrs_development_v1",
+  "protocol_role": "development_only",
+  "training_seeds": [5101, 5102, 5103],
+  "budget_sampled_steps": 900000,
+  "methods": ["MAPPO Baseline", "MAPPO + WS-PBRS"],
+  "evaluation": {"seed_start": 39000000, "seed_end": 39000049, "episodes": 50, "role": "development_only", "is_holdout": false, "common_deterministic_scenarios": true},
+  "freshness_audit": {"training_seeds_fresh": true, "evaluation_range_fresh": true, "known_consumed_or_reserved_millions": [20, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]},
+  "intervention": {"scope": "training_reward_only", "coefficient": 1.0, "gamma": 0.999, "potential": "progress_times_survival", "terminal_zero": true},
+  "checkpoint_selection": {"primary": "latest_at_900000", "best_eval_role": "secondary_diagnostic_only"},
+  "existing_historical_result_reuse": false,
+  "reserved_untouched_future_final_test": {"seed_start": 33000000, "seed_end": 33000199, "executed": false},
+  "runs": [
+    {"method":"MAPPO Baseline","training_seed":5101,"config_path":"configs/dev_ws_pbrs_mappo_baseline_900k.yaml","output_dir":"outputs/dev_ws_pbrs/baseline_seed5101"},
+    {"method":"MAPPO + WS-PBRS","training_seed":5101,"config_path":"configs/dev_ws_pbrs_proposed_900k.yaml","output_dir":"outputs/dev_ws_pbrs/pbrs_seed5101"},
+    {"method":"MAPPO Baseline","training_seed":5102,"config_path":"configs/dev_ws_pbrs_mappo_baseline_900k.yaml","output_dir":"outputs/dev_ws_pbrs/baseline_seed5102"},
+    {"method":"MAPPO + WS-PBRS","training_seed":5102,"config_path":"configs/dev_ws_pbrs_proposed_900k.yaml","output_dir":"outputs/dev_ws_pbrs/pbrs_seed5102"},
+    {"method":"MAPPO Baseline","training_seed":5103,"config_path":"configs/dev_ws_pbrs_mappo_baseline_900k.yaml","output_dir":"outputs/dev_ws_pbrs/baseline_seed5103"},
+    {"method":"MAPPO + WS-PBRS","training_seed":5103,"config_path":"configs/dev_ws_pbrs_proposed_900k.yaml","output_dir":"outputs/dev_ws_pbrs/pbrs_seed5103"}
+  ],
+  "frozen_gate": {"complete_pairs":3,"paired_waves_wins_min":2,"pbrs_waves_mean_gt_baseline":true,"pbrs_mean_w2_not_below_baseline":true,"pbrs_mean_w3_not_below_baseline":true,"report_ground_boundary_systematic_degradation":true}
+}

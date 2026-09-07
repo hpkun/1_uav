@@ -81,6 +81,13 @@ class ModularMAPPOTrainingRunner:
         self.paper_episode_blue = np.zeros(self.num_envs, dtype=np.float64)
         self.paper_episode_red = np.zeros(self.num_envs, dtype=np.float64)
         self.paper_episode_by_wave = np.zeros((self.num_envs, 3), dtype=np.float64)
+        self.pbrs_episode_sum = np.zeros(self.num_envs, dtype=np.float64)
+        self.pbrs_episode_abs_sum = np.zeros(self.num_envs, dtype=np.float64)
+        self.pbrs_episode_by_wave = np.zeros((self.num_envs, 3), dtype=np.float64)
+        self.pbrs_episode_phi_pre = np.zeros(self.num_envs, dtype=np.float64)
+        self.pbrs_episode_phi_next = np.zeros(self.num_envs, dtype=np.float64)
+        self.pbrs_episode_samples = np.zeros(self.num_envs, dtype=np.int64)
+        self.pbrs_totals = np.zeros(5, dtype=np.float64)
         self.transition_counts = np.zeros(3, dtype=np.int64)
         self.alive_agent_counts = np.zeros(3, dtype=np.int64)
         self.wave_clear_transition_counts = np.zeros(3, dtype=np.int64)
@@ -175,14 +182,21 @@ class ModularMAPPOTrainingRunner:
     def _write_episode(self, info: dict[str, Any], raw_return: np.ndarray,
                        training_return: np.ndarray, sampled_steps: int,
                        paper_blue: float = 0.0, paper_red: float = 0.0,
-                       paper_by_wave: np.ndarray | None = None) -> None:
+                       paper_by_wave: np.ndarray | None = None,
+                       pbrs_sum: float = 0.0, pbrs_abs_sum: float = 0.0,
+                       pbrs_by_wave: np.ndarray | None = None,
+                       pbrs_phi_pre: float = 0.0, pbrs_phi_next: float = 0.0,
+                       pbrs_samples: int = 0) -> None:
         waves = int(info.get("waves_cleared", 0))
         paper_wave = np.zeros(3, dtype=np.float64) if paper_by_wave is None else np.asarray(paper_by_wave)
+        shaped_wave = np.zeros(3, dtype=np.float64) if pbrs_by_wave is None else np.asarray(pbrs_by_wave)
+        wave_records = {int(row["wave_index"]): row for row in info.get("per_wave_metrics", [])}
         record = {
             "sampled_steps": int(sampled_steps),
             "episode_length": int(info["episode_length"]),
             "team_raw_environment_return": float(raw_return.sum()),
             "team_training_return": float(training_return.sum()),
+            "training_reward": float(training_return.sum()),
             "raw_environment_reward": float(raw_return.sum()),
             "jiao_training_reward": float(training_return.sum()),
             "paper_R2_blue_kill_component": float(paper_blue),
@@ -207,6 +221,16 @@ class ModularMAPPOTrainingRunner:
             "waves_cleared": waves,
             "total_waves": int(info.get("total_waves", 1)),
             **{f"wave_{k}_cleared": float(waves >= k) for k in (1, 2, 3)},
+            "red_survivors_enter_wave2": float(wave_records[2]["red_survivors_start"]) if 2 in wave_records else None,
+            "red_survivors_enter_wave3": float(wave_records[3]["red_survivors_start"]) if 3 in wave_records else None,
+            **{f"wave{k}_clear_step": (int(wave_records[k]["end_step"]) if k in wave_records and wave_records[k]["wave_cleared"] else None) for k in (1,2,3)},
+            **{f"time_to_clear_wave{k}": (int(wave_records[k]["duration_steps"]) if k in wave_records and wave_records[k]["wave_cleared"] else None) for k in (1,2,3)},
+            "pbrs_shaping_sum": float(pbrs_sum), "pbrs_shaping_abs_sum": float(pbrs_abs_sum),
+            "pbrs_phi_pre_mean": float(pbrs_phi_pre / max(1, pbrs_samples)),
+            "pbrs_phi_next_mean": float(pbrs_phi_next / max(1, pbrs_samples)),
+            **{f"pbrs_shaping_wave{k}": float(shaped_wave[k-1]) for k in (1,2,3)},
+            "mission_progress": float(info.get("blue_losses", 0) / max(1, int(info.get("total_waves", 1)) * self.alive.shape[1])),
+            "red_survival_ratio": float(info.get("red_survivors", 0) / self.alive.shape[1]),
         }
         with (self.output_dir / "training_metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record) + "\n")
@@ -245,6 +269,24 @@ class ModularMAPPOTrainingRunner:
             training_reward, reward_metrics = self.trainer.reward_adapter.adapt(
                 result.rewards, result.infos, pre_wave, alive, blue_alive
             )
+            training_reward, pbrs_metrics = self.trainer.wave_survival_pbrs.adapt(
+                training_reward, result.infos, pre_wave, alive, blue_alive,
+                result.next_alive_masks, done
+            )
+            reward_metrics.update(pbrs_metrics)
+            pbrs = self.trainer.wave_survival_pbrs.last_transition
+            shaping = np.asarray(pbrs["shaping"], dtype=np.float64)
+            phi_pre = np.asarray(pbrs["phi_pre"], dtype=np.float64)
+            phi_next = np.asarray(pbrs["phi_next"], dtype=np.float64)
+            self.pbrs_episode_sum += shaping.sum(axis=1)
+            self.pbrs_episode_abs_sum += np.abs(shaping).sum(axis=1)
+            self.pbrs_episode_phi_pre += phi_pre.sum(axis=1)
+            self.pbrs_episode_phi_next += phi_next.sum(axis=1)
+            self.pbrs_episode_samples += shaping.shape[1]
+            for k in (1, 2, 3):
+                self.pbrs_episode_by_wave[:, k-1] += np.where(pre_wave == k, shaping.sum(axis=1), 0.0)
+            self.pbrs_totals += np.asarray([shaping.sum(), np.abs(shaping).sum(),
+                *[shaping[pre_wave == k].sum() for k in (1,2,3)]])
             paper = self.trainer.reward_adapter.last_transition
             blue_deaths = np.asarray(paper["blue_death_mask"], dtype=bool)
             red_deaths = np.asarray(paper["red_death_mask"], dtype=bool)
@@ -299,12 +341,21 @@ class ModularMAPPOTrainingRunner:
                     self._write_episode(result.infos[env_id], self.raw_episode_returns[env_id],
                                         self.training_episode_returns[env_id], step_after,
                                         self.paper_episode_blue[env_id], self.paper_episode_red[env_id],
-                                        self.paper_episode_by_wave[env_id])
+                                        self.paper_episode_by_wave[env_id], self.pbrs_episode_sum[env_id],
+                                        self.pbrs_episode_abs_sum[env_id], self.pbrs_episode_by_wave[env_id],
+                                        self.pbrs_episode_phi_pre[env_id], self.pbrs_episode_phi_next[env_id],
+                                        int(self.pbrs_episode_samples[env_id]))
                     self.raw_episode_returns[env_id].fill(0)
                     self.training_episode_returns[env_id].fill(0)
                     self.paper_episode_blue[env_id] = 0.0
                     self.paper_episode_red[env_id] = 0.0
                     self.paper_episode_by_wave[env_id].fill(0.0)
+                    self.pbrs_episode_sum[env_id] = 0.0
+                    self.pbrs_episode_abs_sum[env_id] = 0.0
+                    self.pbrs_episode_by_wave[env_id].fill(0.0)
+                    self.pbrs_episode_phi_pre[env_id] = 0.0
+                    self.pbrs_episode_phi_next[env_id] = 0.0
+                    self.pbrs_episode_samples[env_id] = 0
             self.observations = result.observations
             self.alive = self.vector.current_alive_masks.copy()
             post_blue = np.stack([np.asarray(row["blue_alive_mask"], dtype=np.float32) for row in result.infos])
@@ -382,6 +433,7 @@ class ModularMAPPOTrainingRunner:
             "alive_agent_counts": self.alive_agent_counts.tolist(),
             "wave_clear_transition_counts": self.wave_clear_transition_counts.tolist(),
             "reward_bonus_totals": self.reward_bonus_totals.tolist(),
+            "wave_survival_pbrs_totals": self.pbrs_totals.tolist(),
             "paper_reward_totals": self.paper_reward_totals.tolist(),
             "death_index_totals": self.death_index_totals.tolist(),
             "death_cause_totals": self.death_cause_totals.tolist(),
@@ -490,6 +542,7 @@ class ModularMAPPOTrainingRunner:
         self.alive_agent_counts = np.asarray(extra.get("alive_agent_counts", [0,0,0]), dtype=np.int64)
         self.wave_clear_transition_counts = np.asarray(extra.get("wave_clear_transition_counts", [0,0,0]), dtype=np.int64)
         self.reward_bonus_totals = np.asarray(extra.get("reward_bonus_totals", [0,0,0,0]), dtype=np.float64)
+        self.pbrs_totals = np.asarray(extra.get("wave_survival_pbrs_totals", [0,0,0,0,0]), dtype=np.float64)
         self.paper_reward_totals = np.asarray(extra.get("paper_reward_totals", [0,0,0,0,0]), dtype=np.float64)
         self.death_index_totals = np.asarray(extra.get("death_index_totals", np.zeros((2,self.alive.shape[1])).tolist()), dtype=np.int64)
         self.death_cause_totals = np.asarray(extra.get("death_cause_totals", [0]*len(self.death_cause_names)), dtype=np.int64)
@@ -575,6 +628,7 @@ class ModularMAPPOTrainingRunner:
             "wave_alive_agent_sample_fractions": {f"wave_{k}":float(alive_fraction[k-1]) for k in (1,2,3)},
             "wave_clear_transition_counts": {f"wave_{k}":int(self.wave_clear_transition_counts[k-1]) for k in (1,2,3)},
             "reward_adapter_totals": {"reward_bonus_total":float(self.reward_bonus_totals[0]),**{f"reward_bonus_wave{k}":float(self.reward_bonus_totals[k]) for k in (1,2,3)}},
+            "wave_survival_pbrs_totals": {"shaping_sum":float(self.pbrs_totals[0]),"shaping_abs_sum":float(self.pbrs_totals[1]),**{f"shaping_wave{k}":float(self.pbrs_totals[k+1]) for k in (1,2,3)}},
             "paper_R2_totals": {"blue_kill_component":float(self.paper_reward_totals[0]),
                                 "red_loss_component":float(self.paper_reward_totals[1]),
                                 **{f"wave_{k}":float(self.paper_reward_totals[k+1]) for k in (1,2,3)}},
