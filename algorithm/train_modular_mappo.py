@@ -25,7 +25,8 @@ from algorithm.train_mappo import (
 from algorithm.common.protocol import config_sha256
 from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from algorithm.modular_mappo.protocol import (
-    checkpoint_architecture, validate_modular_branch, validate_modular_checkpoint,
+    checkpoint_architecture, validate_modular_branch, validate_fbmr_stage2_branch,
+    validate_modular_checkpoint,
 )
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
@@ -83,6 +84,7 @@ def write_run_config(path: Path, runner: ModularMAPPOTrainingRunner,
         "baseline_mappo_impl_version":MAPPO_IMPL_VERSION,
         "modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,
         "branch_provenance":runner.branch_provenance,
+        "development_branch":deepcopy(runner.algorithm_config.get("development_branch",{})),
     }
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
     return value
@@ -154,6 +156,8 @@ def main() -> None:
     branch_path=resolved(args.branch_from).resolve() if args.branch_from else None
     state=None;run_config=None;rollback={};branch_validation=None;branch_provenance={};resume_point={}
     if resume_path is None and branch_path is None:
+        if algorithm_config.get("development_branch",{}).get("intervention"):
+            raise RuntimeError("Stage-2 development config requires explicit --branch-from")
         seed=int(algorithm_config["training"]["seed"] if args.seed is None else args.seed)
         output_dir=default_output_dir(seed) if args.output_dir is None else resolved(args.output_dir)
         # This is deliberately the first write-capable operation.
@@ -173,10 +177,15 @@ def main() -> None:
         if args.warm_start_checkpoint or args.reference_checkpoint:raise RuntimeError("branch mode does not accept warm-start/reference checkpoints")
         state=torch.load(branch_path,map_location="cpu",weights_only=False)
         runtime=resolve_branch_runtime(algorithm_config,state,seed=args.seed,num_envs=args.num_envs,total_sampled_steps=args.total_sampled_steps,device=args.device,smoke=args.smoke)
-        branch_validation=validate_modular_branch(state,env_config,algorithm_config,{"training_seed":runtime["seed"],"training_num_envs":runtime["num_envs"],"training_smoke":runtime["smoke"]})
+        intervention=algorithm_config.get("development_branch",{}).get("intervention")
+        if intervention and (runtime["total_sampled_steps"]!=int(algorithm_config["training"]["total_sampled_steps"]) or runtime["device"]!="cuda"):
+            raise RuntimeError("FBMR Stage-2 branch requires the configured 1.2M target and CUDA runtime")
+        validator=validate_fbmr_stage2_branch if intervention else validate_modular_branch
+        branch_validation=validator(state,env_config,algorithm_config,{"training_seed":runtime["seed"],"training_num_envs":runtime["num_envs"],"training_smoke":runtime["smoke"]})
         parent_digest=file_sha256(branch_path)
         output_dir=resolved(args.output_dir).resolve();ensure_fresh_output_directory(output_dir)
-        branch_provenance={"branch_creation_mode":"explicit_branch_from","parent_checkpoint_path":str(branch_path),"parent_checkpoint_sha256":parent_digest,"parent_sampled_steps":int(state["sampled_steps"]),"destination_algorithm_config_sha256":config_sha256(algorithm_config),"source_algorithm_config_sha256":state.get("extra",{}).get("algorithm_config_sha256"),"source_module_config_sha256":state.get("module_config_sha256"),"allowed_differences":["actor_lr_decay","total_sampled_steps","output_directory","branch_metadata"],**branch_validation}
+        allowed=["actor_lr_decay","total_sampled_steps","output_directory","branch_metadata"] if not intervention else ["total_sampled_steps","development_branch","entity_attention","actor_trainable_parameter_set","actor_optimizer_reset","actor_effective_lr","evaluation_seed_base","development_protocol"]
+        branch_provenance={"branch_creation_mode":"explicit_branch_from","parent_checkpoint_path":str(branch_path),"parent_checkpoint_sha256":parent_digest,"parent_sampled_steps":int(state["sampled_steps"]),"source_training_seed":int(state.get("extra",{}).get("training_seed")),"destination_algorithm_config_sha256":config_sha256(algorithm_config),"source_algorithm_config_sha256":state.get("extra",{}).get("algorithm_config_sha256"),"source_module_config_sha256":state.get("module_config_sha256"),"allowed_differences":allowed,**branch_validation}
     if branch_path is None:
         runtime=resolve_runtime_settings(algorithm_config,seed=args.seed,num_envs=args.num_envs,
             total_sampled_steps=args.total_sampled_steps,device=args.device,smoke=args.smoke,
@@ -207,7 +216,7 @@ def main() -> None:
             "enabled_modules":runner.trainer.module_protocol()["enabled_modules"],"resume_point_backup":resume_point}
         with (output_dir/"resume_history.jsonl").open("a",encoding="utf-8") as stream:stream.write(json.dumps(resume_record)+"\n")
     elif branch_path is not None:
-        runner.branch_from(branch_path)
+        runner.branch_from(branch_path,branch_validation.get("intervention"),branch_provenance["parent_checkpoint_sha256"])
         source_digest_after=file_sha256(branch_path)
         if source_digest_after!=branch_provenance["parent_checkpoint_sha256"]:raise RuntimeError("source checkpoint changed during branch creation")
         branch_record={**branch_provenance,"source_checkpoint_sha256_after_load":source_digest_after,"source_checkpoint_unchanged":True,"rng_resume_metadata":runner.trainer.rng_restore_metadata,"created_at":datetime.now().astimezone().isoformat()}

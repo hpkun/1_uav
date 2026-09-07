@@ -86,6 +86,7 @@ class ModularMAPPOTrainer:
   self.actor_lr_decay=ActorLRDecayModule(self.modules_config.get("actor_lr_decay"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
+  self.fbmr_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement")=="frozen_base_mean_residual"
   self.total_sampled_steps=int(total_sampled_steps)
   if self.total_sampled_steps<=0:raise ValueError("total_sampled_steps must be positive")
   if self.entity_attention_enabled and (self.recurrent.enabled or self.wave_context.enabled):raise ValueError("entity attention v1 is incompatible with recurrent memory and wave context")
@@ -96,11 +97,14 @@ class ModularMAPPOTrainer:
   ar=self.recurrent.hidden_dim if self.recurrent.actor_enabled else 0;cr=self.recurrent.hidden_dim if self.recurrent.critic_enabled else 0
   self.actor=ModularMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation,ac,ar,self.entity_attention_config).to(self.device)
   self.critic=ModularCentralizedCritic(observation_dim,hidden_dim,attention_heads,critic_activation,cc,cr).to(self.device)
-  self.actor_optimizer=torch.optim.Adam(self.actor.parameters(),lr=actor_learning_rate);self.critic_optimizer=torch.optim.Adam(self.critic.parameters(),lr=critic_learning_rate)
+  trainable_actor_parameters=self.actor.trainable_policy_parameters()
+  if not trainable_actor_parameters:raise RuntimeError("actor has no trainable policy parameters")
+  self.actor_optimizer=torch.optim.Adam(trainable_actor_parameters,lr=actor_learning_rate);self.critic_optimizer=torch.optim.Adam(self.critic.parameters(),lr=critic_learning_rate)
   self.base_actor_learning_rate=float(actor_learning_rate);self.base_critic_learning_rate=float(critic_learning_rate)
   self.ppo_update_count=self.actor_update_count=self.critic_update_count=self.sampled_steps=self.vector_steps=0
   self.kl_hard_stop_count=0
   self.warm_start_provenance={};self.anchor_provenance={}
+  self.fbmr_branch_metadata={};self._frozen_actor_reference=None
   self.rng_restore_metadata={"rng_state_available":False,"rng_state_restored":False,"cuda_rng_state_restored":False}
 
  def context_numpy(self,wave,total):return self.wave_context.encode_numpy(wave,total) if self.wave_context.enabled else np.zeros((*np.asarray(wave).shape,0),np.float32)
@@ -189,7 +193,7 @@ class ModularMAPPOTrainer:
   return float(total.sqrt())
  def _opt(self,losses):
   al,vl,en,anchor,*_=losses
-  self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();arg=self._gradient_norm(self.actor.gru.parameters()) if self.recurrent.actor_enabled else 0.;ag=nn.utils.clip_grad_norm_(self.actor.parameters(),self.max_grad_norm);self.actor_optimizer.step()
+  self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();arg=self._gradient_norm(self.actor.gru.parameters()) if self.recurrent.actor_enabled else 0.;ag=nn.utils.clip_grad_norm_(self.actor.trainable_policy_parameters(),self.max_grad_norm);self.actor_optimizer.step()
   self.critic_optimizer.zero_grad();(self.value_loss_coefficient*vl).backward();crg=self._gradient_norm(self.critic.gru.parameters()) if self.recurrent.critic_enabled else 0.;cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.actor_update_count+=1;self.critic_update_count+=1
   return ag,cg,arg,crg
  def _row(self,losses,mask,ag,cg,arg=0.,crg=0.):
@@ -217,7 +221,7 @@ class ModularMAPPOTrainer:
    for start in range(0,N,self.minibatch_size):
     ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device);args=[x[ix] for x in arrays[:10]]
     loss=self._loss_step(*args,actor_weights=arrays[10][ix]);al,_,en,anchor,*_=loss
-    self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();ag=nn.utils.clip_grad_norm_(self.actor.parameters(),self.max_grad_norm);self.actor_optimizer.step();self.actor_update_count+=1
+    self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();ag=nn.utils.clip_grad_norm_(self.actor.trainable_policy_parameters(),self.max_grad_norm);self.actor_optimizer.step();self.actor_update_count+=1
     actor_rows.append(self._row(loss,args[4],ag,0.))
    actor_epochs+=1;epoch_kl=self._full_rollout_kl(arrays[0],arrays[2],arrays[3],arrays[4],arrays[9]);epoch_kls.append(epoch_kl)
    if self.ppo_stabilization.should_stop_actor(epoch_kl):hard_stop=True;self.kl_hard_stop_count+=1;break
@@ -331,7 +335,44 @@ class ModularMAPPOTrainer:
                    "entity_gate_min":float(gate.min()),"entity_gate_max":float(gate.max()),
                    "entity_gate_p10":float(torch.quantile(gate,.1)),"entity_gate_p50":float(torch.quantile(gate,.5)),
                    "entity_gate_p90":float(torch.quantile(gate,.9))})
+   if self.actor.entity_attention_mode=="frozen_base_mean_residual":
+    delta=live_values("entity_delta_mu");base_mean=live_values("base_mean");base_logstd=live_values("base_log_std")
+    absolute=delta.abs();result.update({
+     "entity_delta_mu_abs_mean":float(absolute.mean()),"entity_delta_mu_rms":float(delta.square().mean().sqrt()),
+     "entity_delta_mu_abs_max":float(absolute.max()),
+     "entity_delta_mu_heading_abs_mean":float(absolute[:,0].mean()),
+     "entity_delta_mu_pitch_abs_mean":float(absolute[:,1].mean()),
+     "entity_delta_mu_speed_abs_mean":float(absolute[:,2].mean()),
+     "entity_delta_mu_bound_fraction":float((absolute>.9*self.actor.max_mean_correction).float().mean()),
+     "base_mean_abs_mean":float(base_mean.abs().mean()),"final_mean_abs_mean":float((base_mean+delta).abs().mean()),
+     "base_std_mean":float(base_logstd.exp().mean()),"final_std_mean":float(base_logstd.exp().mean()),
+     "entity_delta_logstd_abs_max":float(live_values("entity_delta_logstd_abs_max").max()),
+    })
+    result.update(self.frozen_actor_drift_metrics())
   return result
+
+ def capture_frozen_actor_reference(self):
+  if not self.fbmr_enabled:return
+  self._frozen_actor_reference={name:parameter.detach().clone() for name,parameter in self.actor.frozen_baseline_named_parameters()}
+
+ def frozen_actor_drift_metrics(self):
+  if not self.fbmr_enabled:return {}
+  if self._frozen_actor_reference is None:raise RuntimeError("FBMR frozen actor reference is unavailable")
+  maxima={"backbone":0.,"mean":0.,"log_std":0.}
+  for name,parameter in self.actor.frozen_baseline_named_parameters():
+   family=name.split(".",1)[0];maximum=float((parameter.detach()-self._frozen_actor_reference[name]).abs().max())
+   maxima[family]=max(maxima[family],maximum)
+  return {"frozen_base_parameter_drift_max":max(maxima.values()),
+          "frozen_backbone_parameter_drift_max":maxima["backbone"],
+          "frozen_mean_head_parameter_drift_max":maxima["mean"],
+          "frozen_logstd_head_parameter_drift_max":maxima["log_std"]}
+
+ def frozen_actor_sha256(self):
+  if not self.fbmr_enabled:return None
+  digest=hashlib.sha256()
+  for name,parameter in self.actor.frozen_baseline_named_parameters():
+   digest.update(name.encode());digest.update(parameter.detach().cpu().contiguous().numpy().tobytes())
+  return digest.hexdigest()
  def module_protocol(self):
   raw=json.dumps(self.modules_config,sort_keys=True,separators=(",",":"));return {"enabled_modules":enabled_module_names(self.modules_config),"module_config":deepcopy(self.modules_config),"module_config_sha256":hashlib.sha256(raw.encode()).hexdigest()}
  def capture_rng_state(self):
@@ -352,7 +393,8 @@ class ModularMAPPOTrainer:
   self.rng_restore_metadata={"rng_state_available":True,"rng_state_restored":True,"cuda_rng_state_restored":cuda_restored}
   return True
  def checkpoint_state(self,extra=None):
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"extra":extra or {}}
+  if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -368,6 +410,13 @@ class ModularMAPPOTrainer:
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   self.warm_start_provenance=state.get("warm_start_provenance",{});self.anchor_provenance=state.get("anchor_provenance",{})
+  self.fbmr_branch_metadata=deepcopy(state.get("fbmr_branch_metadata",{}))
+  if self.fbmr_enabled:
+   if versions.get("fbmr_ea")!=1:raise RuntimeError("checkpoint FBMR-EA feature version mismatch")
+   reference=state.get("frozen_base_actor_state")
+   if not isinstance(reference,dict):raise RuntimeError("FBMR checkpoint lacks frozen baseline actor reference")
+   self._frozen_actor_reference={name:value.to(self.device) for name,value in reference.items()}
+   if self.frozen_actor_sha256()!=state.get("frozen_base_actor_sha256"):raise RuntimeError("FBMR frozen baseline actor hash mismatch")
   reference_state=state.get("anchor_reference_actor_state")
   if self.anchor.enabled:
    if reference_state is None:raise RuntimeError("policy-anchor checkpoint is not self-contained")
@@ -382,5 +431,36 @@ class ModularMAPPOTrainer:
   if restore_rng:self.restore_rng_state(state)
   else:self.rng_restore_metadata={"rng_state_available":isinstance(state.get("rng_state"),dict),"rng_state_restored":False,"cuda_rng_state_restored":False}
   return state.get("extra",{})
+
+ def load_fbmr_branch(self,path,source_checkpoint_sha256,restore_rng=True):
+  """Create an FBMR Stage-2 continuation without loading the source actor optimizer."""
+  if not self.fbmr_enabled:raise RuntimeError("load_fbmr_branch requires frozen_base_mean_residual mode")
+  digest=hashlib.sha256()
+  with Path(path).open("rb") as stream:
+   for block in iter(lambda:stream.read(1024*1024),b""):digest.update(block)
+  if digest.hexdigest()!=source_checkpoint_sha256:raise RuntimeError("FBMR source checkpoint hash changed before load")
+  state=torch.load(path,map_location=self.device,weights_only=False)
+  source_actor=state.get("actor",{});expected={name for name,_ in self.actor.frozen_baseline_named_parameters()}
+  if set(source_actor)!=expected:raise RuntimeError("FBMR source actor is not the exact baseline topology")
+  current=self.actor.state_dict()
+  for name in expected:current[name]=source_actor[name]
+  self.actor.load_state_dict(current,strict=True);self.actor.freeze_baseline_policy();self.capture_frozen_actor_reference()
+  self.critic.load_state_dict(state["critic"],strict=True);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
+  self.popart.load_state_dict(state.get("popart",{}),strict=False)
+  self.warm_start_provenance=state.get("warm_start_provenance",{});self.anchor_provenance=state.get("anchor_provenance",{})
+  for key,attr in (("ppo_updates","ppo_update_count"),("actor_updates","actor_update_count"),("critic_updates","critic_update_count"),("sampled_steps","sampled_steps"),("vector_steps","vector_steps")):setattr(self,attr,int(state.get(key,0)))
+  self.kl_hard_stop_count=int(state.get("kl_hard_stop_count",0))
+  extra=state.get("extra",{});self.fbmr_branch_metadata={
+   "branch_intervention":"frozen_base_mean_residual","actor_optimizer_restore":False,
+   "actor_optimizer_reason":"new_trainable_parameter_set","critic_optimizer_restore":True,
+   "critic_optimizer_restored":True,"source_rng_restored":False,"RNG_restored_from_source":False,
+   "base_actor_loaded_exact":True,
+   "source_checkpoint_sha256":source_checkpoint_sha256,"source_sampled_steps":int(state["sampled_steps"]),
+   "source_training_seed":int(extra["training_seed"]),"actor_optimizer_reset_for_new_params":True,
+  }
+  if restore_rng:
+   restored=self.restore_rng_state(state);self.fbmr_branch_metadata["source_rng_restored"]=bool(restored);self.fbmr_branch_metadata["RNG_restored_from_source"]=bool(restored)
+  else:self.rng_restore_metadata={"rng_state_available":isinstance(state.get("rng_state"),dict),"rng_state_restored":False,"cuda_rng_state_restored":False}
+  return extra
 
 __all__=["MODULAR_MAPPO_IMPL_VERSION","ModularMAPPOTrainer"]

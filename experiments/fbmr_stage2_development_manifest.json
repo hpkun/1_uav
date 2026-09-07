@@ -1,0 +1,37 @@
+{
+  "protocol_name": "fbmr_ea_stage2_development_v1",
+  "protocol_role": "development_only",
+  "research_status": "mechanism-supported architecture hypothesis; not performance validated",
+  "source_checkpoint_rule": "latest.pt at exact sampled_steps=900000",
+  "source_sampled_steps": 900000,
+  "additional_sampled_steps": 300000,
+  "target_total_sampled_steps": 1200000,
+  "source_training_seeds": [3101, 3102, 3103],
+  "methods": ["MAPPO Continuation", "FBMR-EA"],
+  "source_checkpoints": [
+    {"source_training_seed": 3101, "path": "outputs/formal_eawb/mappo_seed3101/latest.pt", "sha256": "6884448dae6c14a2b37c25b7a438f50dfa6eb84267528ee3d4de693cd0c0d6d0"},
+    {"source_training_seed": 3102, "path": "outputs/formal_eawb/mappo_seed3102/latest.pt", "sha256": "4c26422b273b5e0802cad820711efedc3f54811cafaa3cfa7fd292bf0bb0e098"},
+    {"source_training_seed": 3103, "path": "outputs/formal_eawb/mappo_seed3103/latest.pt", "sha256": "076bb4f1065d6da23bdf2cfdf8db951bacd93878f452c56a582fec4019ea091f"}
+  ],
+  "source_reference_evaluations": {
+    "role": "SOURCE_REFERENCE",
+    "count": 3,
+    "once_per_source": true,
+    "output_dir": "outputs/dev_fbmr_stage2/source_reference"
+  },
+  "validation": {"role": "FBMR_STAGE2_DEVELOPMENT_VALIDATION", "seed_start": 34000000, "seed_end": 34000019, "episodes": 20, "common_deterministic_scenarios": true},
+  "reserved_untouched_future_final_test": {"role": "RESERVED_UNTOUCHED_FUTURE_FINAL_TEST", "seed_start": 33000000, "seed_end": 33000199, "episodes": 200, "executed": false},
+  "forbidden_for_stage2_selection": ["29000000..29000019", "30000000..30000199", "31000000..31000019", "32000000..32000019"],
+  "primary_checkpoint_rule": "latest_at_total_1200000_boundary",
+  "best_eval_role": "secondary_diagnostic_only",
+  "runs": [
+    {"method":"MAPPO Continuation","source_training_seed":3101,"source_checkpoint":"outputs/formal_eawb/mappo_seed3101/latest.pt","config_path":"configs/dev_fbmr_mappo_continuation_1200k.yaml","output_dir":"outputs/dev_fbmr_stage2/mappo_cont_seed3101"},
+    {"method":"FBMR-EA","source_training_seed":3101,"source_checkpoint":"outputs/formal_eawb/mappo_seed3101/latest.pt","config_path":"configs/dev_fbmr_mean_residual_1200k.yaml","output_dir":"outputs/dev_fbmr_stage2/fbmr_seed3101"},
+    {"method":"MAPPO Continuation","source_training_seed":3102,"source_checkpoint":"outputs/formal_eawb/mappo_seed3102/latest.pt","config_path":"configs/dev_fbmr_mappo_continuation_1200k.yaml","output_dir":"outputs/dev_fbmr_stage2/mappo_cont_seed3102"},
+    {"method":"FBMR-EA","source_training_seed":3102,"source_checkpoint":"outputs/formal_eawb/mappo_seed3102/latest.pt","config_path":"configs/dev_fbmr_mean_residual_1200k.yaml","output_dir":"outputs/dev_fbmr_stage2/fbmr_seed3102"},
+    {"method":"MAPPO Continuation","source_training_seed":3103,"source_checkpoint":"outputs/formal_eawb/mappo_seed3103/latest.pt","config_path":"configs/dev_fbmr_mappo_continuation_1200k.yaml","output_dir":"outputs/dev_fbmr_stage2/mappo_cont_seed3103"},
+    {"method":"FBMR-EA","source_training_seed":3103,"source_checkpoint":"outputs/formal_eawb/mappo_seed3103/latest.pt","config_path":"configs/dev_fbmr_mean_residual_1200k.yaml","output_dir":"outputs/dev_fbmr_stage2/fbmr_seed3103"}
+  ],
+  "screening_priority": ["catastrophic_collapse_count", "cross_seed_dispersion", "deterministic_stochastic_gap", "safety", "average_waves", "wave3"],
+  "fbmr_entry_criteria": {"catastrophic_collapse_count": 0, "paired_avg_waves_wins_min": 2, "dispersion_not_above_control": true, "safety_same_order": true, "deterministic_gap_severe": false, "delta_mu_learned_without_persistent_bound_saturation": true}
+}

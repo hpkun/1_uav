@@ -7,7 +7,8 @@ from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from .trainer import MODULAR_MAPPO_IMPL_VERSION
 def canonical_sha256(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
 def checkpoint_architecture(trainer):
- return {"actor_class":type(trainer.actor).__name__,"critic_class":type(trainer.critic).__name__,"actor_input_dim":trainer.actor.base_observation_dim+trainer.actor.context_dim,"critic_input_dim":trainer.critic.base_observation_dim+trainer.critic.context_dim,"hidden_dim":256 if trainer.actor.entity_attention_enabled else trainer.actor.backbone[0].out_features,"actor_gru_hidden_dim":trainer.actor.recurrent_hidden_dim,"critic_gru_hidden_dim":trainer.critic.recurrent_hidden_dim,"entity_attention_enabled":trainer.actor.entity_attention_enabled,"entity_attention_mode":trainer.actor.entity_attention_mode if trainer.actor.entity_attention_enabled else "disabled","entity_dim":trainer.actor.entity_dim if trainer.actor.entity_attention_enabled else 0,"entity_attention_heads":trainer.actor.entity_attention_heads if trainer.actor.entity_attention_enabled else 0}
+ fbmr=trainer.actor.entity_attention_enabled and trainer.actor.entity_attention_mode=="frozen_base_mean_residual"
+ return {"actor_class":type(trainer.actor).__name__,"critic_class":type(trainer.critic).__name__,"actor_input_dim":trainer.actor.base_observation_dim+trainer.actor.context_dim,"critic_input_dim":trainer.critic.base_observation_dim+trainer.critic.context_dim,"hidden_dim":256 if trainer.actor.entity_attention_enabled else trainer.actor.backbone[0].out_features,"actor_gru_hidden_dim":trainer.actor.recurrent_hidden_dim,"critic_gru_hidden_dim":trainer.critic.recurrent_hidden_dim,"entity_attention_enabled":trainer.actor.entity_attention_enabled,"entity_attention_mode":trainer.actor.entity_attention_mode if trainer.actor.entity_attention_enabled else "disabled","entity_dim":trainer.actor.entity_dim if trainer.actor.entity_attention_enabled else 0,"entity_attention_heads":trainer.actor.entity_attention_heads if trainer.actor.entity_attention_enabled else 0,"base_actor_frozen":fbmr,"entity_mean_residual_enabled":fbmr,"max_mean_correction":trainer.actor.max_mean_correction if fbmr else 0.,"log_std_source":"frozen_baseline" if fbmr else "actor_head"}
 
 def validate_modular_checkpoint(state,env_config,algorithm_config,expected_runtime=None):
  if state.get("algorithm")!="modular_mappo":raise RuntimeError("checkpoint algorithm mismatch")
@@ -62,6 +63,59 @@ def validate_modular_branch(state,env_config,algorithm_config,expected_runtime=N
  if missing:raise RuntimeError("branch checkpoint lacks required state: "+", ".join(missing))
  return {"intervention":"actor_lr_decay" if source_decay!=destination_decay else "fixed_lr_control","source_actor_lr_decay":deepcopy(source_decay),"destination_actor_lr_decay":deepcopy(destination_decay)}
 
+def _fbmr_comparable_config(config):
+ value=deepcopy(config)
+ for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)
+ value.get("training",{}).pop("total_sampled_steps",None);value.get("training",{}).pop("actor_learning_rate",None)
+ value.get("implementation",{}).pop("evaluation_seed_base",None)
+ value.get("modules",{}).pop("actor_lr_decay",None);value.get("modules",{}).pop("entity_attention",None)
+ return value
+
+def validate_fbmr_stage2_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Strictly validate one 900k Formal MAPPO source and its Stage-2 intervention."""
+ if state.get("algorithm")!="modular_mappo":raise RuntimeError("FBMR source algorithm must be modular_mappo")
+ if state.get("modular_mappo_impl_version")!=MODULAR_MAPPO_IMPL_VERSION or state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("FBMR source implementation version mismatch")
+ extra=state.get("extra",{});source_env=extra.get("environment_config");source=extra.get("algorithm_config")
+ if not isinstance(source_env,dict) or not isinstance(source,dict):raise RuntimeError("FBMR source lacks embedded configs")
+ if source_env!=env_config or extra.get("environment_config_sha256")!=config_sha256(env_config):raise RuntimeError("FBMR source environment mismatch")
+ if extra.get("algorithm_config_sha256")!=config_sha256(source) or state.get("module_config_sha256")!=canonical_sha256(source.get("modules",{})):raise RuntimeError("FBMR source self-description hash mismatch")
+ if extra.get("environment_variant")!="persistent_wave_v2":raise RuntimeError("FBMR source must be persistent_wave_v2")
+ if int(state.get("sampled_steps",-1))!=900000:raise RuntimeError("FBMR source sampled_steps must be exactly 900000")
+ if int(extra.get("training_num_envs",-1))!=24 or float(extra.get("training_gamma",0))!=.999:raise RuntimeError("FBMR source runtime mismatch")
+ if bool(source.get("modules",{}).get("entity_attention",{}).get("enabled",False)):raise RuntimeError("FBMR source must be baseline MAPPO")
+ decay=source.get("modules",{}).get("actor_lr_decay",{})
+ expected_decay={"enabled":True,"schedule":"delayed_linear","start_step":600000,"end_step":900000,"start_lr":.0003,"end_lr":.0001}
+ if decay!=expected_decay:raise RuntimeError("FBMR source actor LR schedule mismatch")
+ if abs(float(state["actor_optimizer"]["param_groups"][0]["lr"])-1e-4)>1e-15:raise RuntimeError("FBMR source terminal actor LR is not 1e-4")
+ if abs(float(source["training"]["critic_learning_rate"])-3e-4)>1e-15:raise RuntimeError("FBMR source critic LR mismatch")
+ required=("actor","critic","actor_optimizer","critic_optimizer","rng_state","sampled_steps","vector_steps","ppo_updates","actor_updates","critic_updates")
+ missing=[key for key in required if key not in state]
+ if missing:raise RuntimeError("FBMR source lacks continuation state: "+", ".join(missing))
+ rng=state.get("rng_state",{});rng_required=("python_random_state","numpy_random_state","torch_cpu_rng_state","torch_cuda_rng_state_all","trainer_permutation_rng_state")
+ if state.get("rng_state_available") is not True or any(key not in rng for key in rng_required):raise RuntimeError("FBMR source RNG state is incomplete")
+ if not state["actor_optimizer"].get("state") or not state["critic_optimizer"].get("state"):raise RuntimeError("FBMR source optimizer state is incomplete")
+ architecture=extra.get("network_architecture",{})
+ if architecture.get("entity_attention_enabled") is not False or architecture.get("entity_attention_mode","disabled")!="disabled":raise RuntimeError("FBMR source architecture metadata is not baseline MAPPO")
+ if set(state["actor"])!={"backbone.0.weight","backbone.0.bias","backbone.2.weight","backbone.2.bias","mean.weight","mean.bias","log_std.weight","log_std.bias"}:raise RuntimeError("FBMR source actor topology is not baseline MAPPO")
+ if _fbmr_comparable_config(source)!=_fbmr_comparable_config(algorithm_config):raise RuntimeError("FBMR Stage-2 config differs outside its strict whitelist")
+ branch=algorithm_config.get("development_branch",{});intervention=branch.get("intervention")
+ if intervention not in {"mappo_continuation","frozen_base_mean_residual"}:raise RuntimeError("unknown FBMR Stage-2 intervention")
+ training=algorithm_config["training"]
+ if int(training["total_sampled_steps"])!=1200000 or int(training["num_train_envs"])!=24 or float(training["critic_learning_rate"])!=3e-4:raise RuntimeError("FBMR Stage-2 budget/runtime mismatch")
+ if int(algorithm_config["implementation"]["evaluation_seed_base"])!=34000000 or int(training["evaluation_episodes"])!=20 or int(training["evaluation_interval_sampled_steps"])!=100000:raise RuntimeError("FBMR Stage-2 validation protocol mismatch")
+ entity=algorithm_config.get("modules",{}).get("entity_attention",{});destination_decay=algorithm_config.get("modules",{}).get("actor_lr_decay",{})
+ if intervention=="mappo_continuation":
+  if entity.get("enabled",False) or destination_decay!=expected_decay or float(training["actor_learning_rate"])!=3e-4:raise RuntimeError("MAPPO continuation intervention mismatch")
+  actor_optimizer_restore=True
+ else:
+  expected_entity={"enabled":True,"mode":"frozen_base_mean_residual","entity_dim":32,"attention_heads":2,"max_mean_correction":.25}
+  if entity!=expected_entity or destination_decay.get("enabled",False) or float(training["actor_learning_rate"])!=1e-4:raise RuntimeError("FBMR intervention mismatch")
+  actor_optimizer_restore=False
+ if expected_runtime:
+  for key,expected in expected_runtime.items():
+   if extra.get(key)!=expected:raise RuntimeError(f"FBMR source {key} mismatch")
+ return {"intervention":intervention,"source_actor_lr_decay":deepcopy(decay),"destination_actor_lr_decay":deepcopy(destination_decay),"source_sampled_steps":900000,"target_sampled_steps":1200000,"actor_effective_lr":1e-4,"critic_lr":3e-4,"actor_optimizer_restore":actor_optimizer_restore,"critic_optimizer_restore":True,"rng_restore":True}
+
 def is_formal_v2_checkpoint(state):
  extra=state.get("extra",{}) if isinstance(state.get("extra",{}),dict) else {}
  required=("environment_version","environment_variant","environment_config_sha256",
@@ -73,4 +127,4 @@ def is_formal_v2_checkpoint(state):
          state.get("baseline_mappo_impl_version")==MAPPO_IMPL_VERSION and
          all(key in extra for key in required))
 
-__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","is_formal_v2_checkpoint"]
+__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_fbmr_stage2_branch","is_formal_v2_checkpoint"]

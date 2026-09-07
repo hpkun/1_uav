@@ -21,8 +21,8 @@ class ModularMAPPOActor(SharedMAPPOActor):
         self.entity_attention_mode=str(config.get("mode","replacement"))
         self.entity_dim=int(config.get("entity_dim",32));self.entity_attention_heads=int(config.get("attention_heads",2))
         if self.entity_attention_enabled:
-            if self.entity_attention_mode not in {"replacement","residual","gated_residual"}:
-                raise ValueError("entity attention mode must be replacement, residual, or gated_residual")
+            if self.entity_attention_mode not in {"replacement","residual","gated_residual","frozen_base_mean_residual"}:
+                raise ValueError("entity attention mode must be replacement, residual, gated_residual, or frozen_base_mean_residual")
             if self.base_observation_dim!=52:raise ValueError("entity attention requires the fixed 52D observation layout")
             if self.context_dim:raise ValueError("entity attention cannot be combined with wave context")
             if self.recurrent_hidden_dim:raise ValueError("entity attention cannot be combined with recurrent memory")
@@ -39,7 +39,7 @@ class ModularMAPPOActor(SharedMAPPOActor):
                 # Preserve the V1 topology exactly: no legacy backbone, adapter,
                 # or gate parameters are present in replacement checkpoints.
                 del self.backbone
-            else:
+            elif self.entity_attention_mode in {"residual","gated_residual"}:
                 self.entity_residual_adapter=nn.Linear(256,256)
                 nn.init.zeros_(self.entity_residual_adapter.weight)
                 nn.init.zeros_(self.entity_residual_adapter.bias)
@@ -51,6 +51,14 @@ class ModularMAPPOActor(SharedMAPPOActor):
                     self.entity_gate=nn.Linear(512,1)
                     nn.init.zeros_(self.entity_gate.weight)
                     nn.init.constant_(self.entity_gate.bias,math.log(initial_gate/(1.-initial_gate)))
+            else:
+                self.max_mean_correction=float(config.get("max_mean_correction",.25))
+                if not 0.<self.max_mean_correction<=1.:
+                    raise ValueError("frozen_base_mean_residual max_mean_correction must be in (0, 1]")
+                self.entity_mean_adapter=nn.Linear(256,action_dim)
+                nn.init.zeros_(self.entity_mean_adapter.weight)
+                nn.init.zeros_(self.entity_mean_adapter.bias)
+                self.freeze_baseline_policy()
         if self.recurrent_hidden_dim:
             self.gru=nn.GRUCell(hidden_dim, self.recurrent_hidden_dim)
             self.mean=nn.Linear(self.recurrent_hidden_dim, action_dim)
@@ -99,6 +107,21 @@ class ModularMAPPOActor(SharedMAPPOActor):
         if context.ndim==obs.ndim-1: context=context.unsqueeze(-2).expand(*obs.shape[:-1],-1)
         return torch.cat((obs,context),-1)
 
+    def freeze_baseline_policy(self):
+        """Freeze the complete legacy policy function used by FBMR-EA."""
+        for module in (self.backbone,self.mean,self.log_std):
+            for parameter in module.parameters():parameter.requires_grad_(False)
+
+    def trainable_policy_parameters(self):
+        """Return exactly the actor parameters eligible for optimization."""
+        return [parameter for parameter in self.parameters() if parameter.requires_grad]
+
+    def frozen_baseline_named_parameters(self):
+        if not (self.entity_attention_enabled and self.entity_attention_mode=="frozen_base_mean_residual"):
+            return []
+        return [(name,parameter) for name,parameter in self.named_parameters()
+                if name.startswith(("backbone.","mean.","log_std."))]
+
     def distribution_step(self, observations, context=None, hidden=None, episode_mask=None, alive_mask=None,return_attention=False):
         diagnostics=None
         if self.entity_attention_enabled:
@@ -107,6 +130,19 @@ class ModularMAPPOActor(SharedMAPPOActor):
             diagnostics["entity_feature_norm"]=torch.linalg.vector_norm(h_entity,dim=-1)
             if self.entity_attention_mode=="replacement":
                 encoded=h_entity
+            elif self.entity_attention_mode=="frozen_base_mean_residual":
+                h_base=self.backbone(self._input(observations,context))
+                base_mean=self.mean(h_base)
+                base_log_std=self.log_std(h_base).clamp(self.log_std_min,self.log_std_max)
+                raw_delta_mu=self.entity_mean_adapter(h_entity)
+                delta_mu=self.max_mean_correction*torch.tanh(raw_delta_mu)
+                final_mean=base_mean+delta_mu
+                diagnostics.update({"entity_base_feature_norm":torch.linalg.vector_norm(h_base,dim=-1),
+                                    "base_mean":base_mean,"base_log_std":base_log_std,
+                                    "entity_raw_delta_mu":raw_delta_mu,"entity_delta_mu":delta_mu,
+                                    "entity_delta_logstd_abs_max":torch.zeros_like(base_log_std[...,0])})
+                result=(Normal(final_mean,base_log_std.exp()),hidden)
+                return (*result,diagnostics) if return_attention else result
             else:
                 h_base=self.backbone(self._input(observations,context))
                 delta=self.entity_residual_adapter(h_entity)

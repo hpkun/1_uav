@@ -356,7 +356,7 @@ class ModularMAPPOTrainingRunner:
 
     def checkpoint_extra(self, evaluation: dict[str, Any] | None = None) -> dict[str, Any]:
         network = self.algorithm_config["network"]
-        return {
+        value = {
             "environment_version": str(self.env_config.get("environment_version", ENVIRONMENT_VERSION)),
             "environment_variant": self.env_config.get("environment_variant", "direct_v2_3"),
             "observation_dim": int(network["observation_dim"]),
@@ -392,6 +392,12 @@ class ModularMAPPOTrainingRunner:
             "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
             "evaluation": evaluation,
         }
+        if self.trainer.fbmr_enabled:
+            value.update({"entity_attention_mode":"frozen_base_mean_residual","base_actor_frozen":True,
+                          "entity_mean_residual_enabled":True,"max_mean_correction":self.trainer.actor.max_mean_correction,
+                          "log_std_source":"frozen_baseline",**deepcopy(self.trainer.fbmr_branch_metadata),
+                          "frozen_base_actor_sha256":self.trainer.frozen_actor_sha256()})
+        return value
 
     def save_checkpoint(self, path: str | Path, evaluation: dict[str, Any] | None = None) -> None:
         self.trainer.save(path, self.checkpoint_extra(evaluation))
@@ -454,20 +460,29 @@ class ModularMAPPOTrainingRunner:
                 if stored is not None and (self.best_evaluation is None or self._evaluation_key(stored) >= self._evaluation_key(self.best_evaluation)):
                     self.best_evaluation = stored; self.best_sampled_steps = int(state["sampled_steps"])
 
-    def _restore_checkpoint(self, path: str | Path, *, branch: bool) -> None:
+    def _restore_checkpoint(self, path: str | Path, *, branch: bool,
+                            branch_intervention: str | None = None,
+                            source_checkpoint_sha256: str | None = None) -> None:
         state = torch.load(path, map_location="cpu", weights_only=False)
         if not branch:
             validate_modular_checkpoint(state, self.env_config, self.algorithm_config, {
                 "training_seed": self.seed, "training_num_envs": self.num_envs,
                 "training_smoke": self.smoke,
             })
-        extra = self.trainer.load(path, strict_protocol=not branch, restore_rng=False)
+        if branch_intervention=="frozen_base_mean_residual":
+            extra=self.trainer.load_fbmr_branch(path,source_checkpoint_sha256,restore_rng=False)
+        else:
+            extra = self.trainer.load(path, strict_protocol=not branch, restore_rng=False)
         self.current_stage = int(extra["curriculum_stage"])
         self.current_waves = int(extra["current_total_waves"])
         self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, self.trainer.sampled_steps)
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64) + 1
         self._make_vector(previous)
         self.trainer.restore_rng_state(state)
+        if branch_intervention=="frozen_base_mean_residual":
+            restored=bool(self.trainer.rng_restore_metadata["rng_state_restored"])
+            self.trainer.fbmr_branch_metadata["source_rng_restored"]=restored
+            self.trainer.fbmr_branch_metadata["RNG_restored_from_source"]=restored
         self.transition_counts = np.asarray(extra.get("transition_counts", [0,0,0]), dtype=np.int64)
         self.alive_agent_counts = np.asarray(extra.get("alive_agent_counts", [0,0,0]), dtype=np.int64)
         self.wave_clear_transition_counts = np.asarray(extra.get("wave_clear_transition_counts", [0,0,0]), dtype=np.int64)
@@ -486,8 +501,10 @@ class ModularMAPPOTrainingRunner:
     def resume(self, path: str | Path) -> None:
         self._restore_checkpoint(path, branch=False)
 
-    def branch_from(self, path: str | Path) -> None:
-        self._restore_checkpoint(path, branch=True)
+    def branch_from(self, path: str | Path, intervention: str | None = None,
+                    source_checkpoint_sha256: str | None = None) -> None:
+        self._restore_checkpoint(path, branch=True,branch_intervention=intervention,
+                                 source_checkpoint_sha256=source_checkpoint_sha256)
 
     def startup_summary(self) -> dict[str, Any]:
         return {"algorithm":"modular_mappo","mode":"smoke" if self.smoke else "formal",
