@@ -26,6 +26,7 @@ from algorithm.common.protocol import config_sha256
 from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from algorithm.modular_mappo.protocol import (
     checkpoint_architecture, validate_modular_branch, validate_fbmr_stage2_branch,
+    validate_fbmr_v2_stage2_branch,
     validate_modular_checkpoint,
 )
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
@@ -180,7 +181,8 @@ def main() -> None:
         intervention=algorithm_config.get("development_branch",{}).get("intervention")
         if intervention and (runtime["total_sampled_steps"]!=int(algorithm_config["training"]["total_sampled_steps"]) or runtime["device"]!="cuda"):
             raise RuntimeError("FBMR Stage-2 branch requires the configured 1.2M target and CUDA runtime")
-        validator=validate_fbmr_stage2_branch if intervention else validate_modular_branch
+        validator=(validate_fbmr_v2_stage2_branch if intervention=="frozen_base_dual_bounded_mean_residual"
+                   else validate_fbmr_stage2_branch if intervention else validate_modular_branch)
         branch_validation=validator(state,env_config,algorithm_config,{"training_seed":runtime["seed"],"training_num_envs":runtime["num_envs"],"training_smoke":runtime["smoke"]})
         parent_digest=file_sha256(branch_path)
         output_dir=resolved(args.output_dir).resolve();ensure_fresh_output_directory(output_dir)

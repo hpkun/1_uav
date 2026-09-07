@@ -393,8 +393,11 @@ class ModularMAPPOTrainingRunner:
             "evaluation": evaluation,
         }
         if self.trainer.fbmr_enabled:
-            value.update({"entity_attention_mode":"frozen_base_mean_residual","base_actor_frozen":True,
-                          "entity_mean_residual_enabled":True,"max_mean_correction":self.trainer.actor.max_mean_correction,
+            mode=self.trainer.actor.entity_attention_mode;dual=mode=="frozen_base_dual_bounded_mean_residual"
+            value.update({"entity_attention_mode":mode,"base_actor_frozen":True,
+                          "entity_mean_residual_enabled":True,"max_mean_correction":self.trainer.actor.max_mean_correction if not dual else None,
+                          "dual_bound_enabled":dual,"alpha_abs":self.trainer.actor.alpha_abs if dual else None,
+                          "alpha_rel":self.trainer.actor.alpha_rel if dual else None,
                           "log_std_source":"frozen_baseline",**deepcopy(self.trainer.fbmr_branch_metadata),
                           "frozen_base_actor_sha256":self.trainer.frozen_actor_sha256()})
         return value
@@ -469,7 +472,7 @@ class ModularMAPPOTrainingRunner:
                 "training_seed": self.seed, "training_num_envs": self.num_envs,
                 "training_smoke": self.smoke,
             })
-        if branch_intervention=="frozen_base_mean_residual":
+        if branch_intervention in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
             extra=self.trainer.load_fbmr_branch(path,source_checkpoint_sha256,restore_rng=False)
         else:
             extra = self.trainer.load(path, strict_protocol=not branch, restore_rng=False)
@@ -479,7 +482,7 @@ class ModularMAPPOTrainingRunner:
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64) + 1
         self._make_vector(previous)
         self.trainer.restore_rng_state(state)
-        if branch_intervention=="frozen_base_mean_residual":
+        if branch_intervention in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
             restored=bool(self.trainer.rng_restore_metadata["rng_state_restored"])
             self.trainer.fbmr_branch_metadata["source_rng_restored"]=restored
             self.trainer.fbmr_branch_metadata["RNG_restored_from_source"]=restored

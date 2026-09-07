@@ -21,8 +21,8 @@ class ModularMAPPOActor(SharedMAPPOActor):
         self.entity_attention_mode=str(config.get("mode","replacement"))
         self.entity_dim=int(config.get("entity_dim",32));self.entity_attention_heads=int(config.get("attention_heads",2))
         if self.entity_attention_enabled:
-            if self.entity_attention_mode not in {"replacement","residual","gated_residual","frozen_base_mean_residual"}:
-                raise ValueError("entity attention mode must be replacement, residual, gated_residual, or frozen_base_mean_residual")
+            if self.entity_attention_mode not in {"replacement","residual","gated_residual","frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
+                raise ValueError("unsupported entity attention mode")
             if self.base_observation_dim!=52:raise ValueError("entity attention requires the fixed 52D observation layout")
             if self.context_dim:raise ValueError("entity attention cannot be combined with wave context")
             if self.recurrent_hidden_dim:raise ValueError("entity attention cannot be combined with recurrent memory")
@@ -53,8 +53,15 @@ class ModularMAPPOActor(SharedMAPPOActor):
                     nn.init.constant_(self.entity_gate.bias,math.log(initial_gate/(1.-initial_gate)))
             else:
                 self.max_mean_correction=float(config.get("max_mean_correction",.25))
-                if not 0.<self.max_mean_correction<=1.:
+                if self.entity_attention_mode=="frozen_base_mean_residual" and not 0.<self.max_mean_correction<=1.:
                     raise ValueError("frozen_base_mean_residual max_mean_correction must be in (0, 1]")
+                if self.entity_attention_mode=="frozen_base_dual_bounded_mean_residual":
+                    if "max_mean_correction" in config:
+                        raise ValueError("dual-bounded mode does not accept max_mean_correction")
+                    self.alpha_abs=float(config.get("alpha_abs",.25))
+                    self.alpha_rel=float(config.get("alpha_rel",.25))
+                    if not 0.<self.alpha_abs<=1.:raise ValueError("alpha_abs must be in (0, 1]")
+                    if not 0.<self.alpha_rel<=1.:raise ValueError("alpha_rel must be in (0, 1]")
                 self.entity_mean_adapter=nn.Linear(256,action_dim)
                 nn.init.zeros_(self.entity_mean_adapter.weight)
                 nn.init.zeros_(self.entity_mean_adapter.bias)
@@ -117,7 +124,7 @@ class ModularMAPPOActor(SharedMAPPOActor):
         return [parameter for parameter in self.parameters() if parameter.requires_grad]
 
     def frozen_baseline_named_parameters(self):
-        if not (self.entity_attention_enabled and self.entity_attention_mode=="frozen_base_mean_residual"):
+        if not (self.entity_attention_enabled and self.entity_attention_mode in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}):
             return []
         return [(name,parameter) for name,parameter in self.named_parameters()
                 if name.startswith(("backbone.","mean.","log_std."))]
@@ -130,17 +137,31 @@ class ModularMAPPOActor(SharedMAPPOActor):
             diagnostics["entity_feature_norm"]=torch.linalg.vector_norm(h_entity,dim=-1)
             if self.entity_attention_mode=="replacement":
                 encoded=h_entity
-            elif self.entity_attention_mode=="frozen_base_mean_residual":
+            elif self.entity_attention_mode in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
                 h_base=self.backbone(self._input(observations,context))
                 base_mean=self.mean(h_base)
                 base_log_std=self.log_std(h_base).clamp(self.log_std_min,self.log_std_max)
                 raw_delta_mu=self.entity_mean_adapter(h_entity)
-                delta_mu=self.max_mean_correction*torch.tanh(raw_delta_mu)
+                if self.entity_attention_mode=="frozen_base_mean_residual":
+                    # FBMR V1 compatibility: preserve the original formula exactly.
+                    delta_mu=self.max_mean_correction*torch.tanh(raw_delta_mu)
+                else:
+                    base_std=base_log_std.exp()
+                    sigma_scale=base_std.detach()
+                    absolute_limit=torch.full_like(sigma_scale,self.alpha_abs)
+                    relative_limit=self.alpha_rel*sigma_scale
+                    dual_scale=torch.minimum(absolute_limit,relative_limit)
+                    delta_v1=self.alpha_abs*torch.tanh(raw_delta_mu)
+                    delta_mu=dual_scale*torch.tanh(raw_delta_mu)
                 final_mean=base_mean+delta_mu
                 diagnostics.update({"entity_base_feature_norm":torch.linalg.vector_norm(h_base,dim=-1),
                                     "base_mean":base_mean,"base_log_std":base_log_std,
                                     "entity_raw_delta_mu":raw_delta_mu,"entity_delta_mu":delta_mu,
                                     "entity_delta_logstd_abs_max":torch.zeros_like(base_log_std[...,0])})
+                if self.entity_attention_mode=="frozen_base_dual_bounded_mean_residual":
+                    diagnostics.update({"entity_dual_scale":dual_scale,
+                                        "entity_relative_scale_active":relative_limit<absolute_limit,
+                                        "entity_dual_bound_effective":(delta_v1-delta_mu).abs()>1e-12})
                 result=(Normal(final_mean,base_log_std.exp()),hidden)
                 return (*result,diagnostics) if return_attention else result
             else:

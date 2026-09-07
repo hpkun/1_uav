@@ -86,7 +86,9 @@ class ModularMAPPOTrainer:
   self.actor_lr_decay=ActorLRDecayModule(self.modules_config.get("actor_lr_decay"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
-  self.fbmr_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement")=="frozen_base_mean_residual"
+  self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
+  # Backward-compatible public flag used by existing FBMR V1 code and audits.
+  self.fbmr_enabled=self.frozen_base_policy_entity_enabled
   self.total_sampled_steps=int(total_sampled_steps)
   if self.total_sampled_steps<=0:raise ValueError("total_sampled_steps must be positive")
   if self.entity_attention_enabled and (self.recurrent.enabled or self.wave_context.enabled):raise ValueError("entity attention v1 is incompatible with recurrent memory and wave context")
@@ -335,7 +337,7 @@ class ModularMAPPOTrainer:
                    "entity_gate_min":float(gate.min()),"entity_gate_max":float(gate.max()),
                    "entity_gate_p10":float(torch.quantile(gate,.1)),"entity_gate_p50":float(torch.quantile(gate,.5)),
                    "entity_gate_p90":float(torch.quantile(gate,.9))})
-   if self.actor.entity_attention_mode=="frozen_base_mean_residual":
+   if self.actor.entity_attention_mode in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
     delta=live_values("entity_delta_mu");base_mean=live_values("base_mean");base_logstd=live_values("base_log_std")
     absolute=delta.abs();result.update({
      "entity_delta_mu_abs_mean":float(absolute.mean()),"entity_delta_mu_rms":float(delta.square().mean().sqrt()),
@@ -348,6 +350,25 @@ class ModularMAPPOTrainer:
      "base_std_mean":float(base_logstd.exp().mean()),"final_std_mean":float(base_logstd.exp().mean()),
      "entity_delta_logstd_abs_max":float(live_values("entity_delta_logstd_abs_max").max()),
     })
+    if self.actor.entity_attention_mode=="frozen_base_dual_bounded_mean_residual":
+     sigma=base_logstd.exp();ratio=absolute/sigma;dual_scale=live_values("entity_dual_scale")
+     relative_active=live_values("entity_relative_scale_active").float();effective=live_values("entity_dual_bound_effective").float()
+     saturation=(absolute>.9*dual_scale).float();kl=.5*ratio.square().sum(-1)
+     result.update({
+      "entity_dual_scale_mean":float(dual_scale.mean()),"entity_dual_scale_min":float(dual_scale.min()),"entity_dual_scale_max":float(dual_scale.max()),
+      "entity_dual_scale_heading_mean":float(dual_scale[:,0].mean()),"entity_dual_scale_pitch_mean":float(dual_scale[:,1].mean()),"entity_dual_scale_speed_mean":float(dual_scale[:,2].mean()),
+      "entity_delta_mu_over_sigma_abs_mean":float(ratio.mean()),"entity_delta_mu_over_sigma_abs_max":float(ratio.max()),
+      "entity_delta_mu_over_sigma_heading_abs_mean":float(ratio[:,0].mean()),"entity_delta_mu_over_sigma_heading_abs_max":float(ratio[:,0].max()),
+      "entity_delta_mu_over_sigma_pitch_abs_mean":float(ratio[:,1].mean()),"entity_delta_mu_over_sigma_pitch_abs_max":float(ratio[:,1].max()),
+      "entity_delta_mu_over_sigma_speed_abs_mean":float(ratio[:,2].mean()),"entity_delta_mu_over_sigma_speed_abs_max":float(ratio[:,2].max()),
+      "entity_source_relative_kl_mean":float(kl.mean()),"entity_source_relative_kl_max":float(kl.max()),
+      "relative_scale_active_fraction":float(relative_active.mean()),"relative_scale_active_heading_fraction":float(relative_active[:,0].mean()),
+      "relative_scale_active_pitch_fraction":float(relative_active[:,1].mean()),"relative_scale_active_speed_fraction":float(relative_active[:,2].mean()),
+      "dual_bound_effective_fraction":float(effective.mean()),"dual_bound_effective_heading_fraction":float(effective[:,0].mean()),
+      "dual_bound_effective_pitch_fraction":float(effective[:,1].mean()),"dual_bound_effective_speed_fraction":float(effective[:,2].mean()),
+      "relative_saturation_fraction":float(saturation.mean()),"relative_saturation_heading_fraction":float(saturation[:,0].mean()),
+      "relative_saturation_pitch_fraction":float(saturation[:,1].mean()),"relative_saturation_speed_fraction":float(saturation[:,2].mean()),
+     })
     result.update(self.frozen_actor_drift_metrics())
   return result
 
@@ -394,7 +415,7 @@ class ModularMAPPOTrainer:
   return True
  def checkpoint_state(self,extra=None):
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -413,6 +434,7 @@ class ModularMAPPOTrainer:
   self.fbmr_branch_metadata=deepcopy(state.get("fbmr_branch_metadata",{}))
   if self.fbmr_enabled:
    if versions.get("fbmr_ea")!=1:raise RuntimeError("checkpoint FBMR-EA feature version mismatch")
+   if self.actor.entity_attention_mode=="frozen_base_dual_bounded_mean_residual" and versions.get("fbmr_dual_bound")!=1:raise RuntimeError("checkpoint FBMR dual-bound feature version mismatch")
    reference=state.get("frozen_base_actor_state")
    if not isinstance(reference,dict):raise RuntimeError("FBMR checkpoint lacks frozen baseline actor reference")
    self._frozen_actor_reference={name:value.to(self.device) for name,value in reference.items()}
@@ -434,7 +456,7 @@ class ModularMAPPOTrainer:
 
  def load_fbmr_branch(self,path,source_checkpoint_sha256,restore_rng=True):
   """Create an FBMR Stage-2 continuation without loading the source actor optimizer."""
-  if not self.fbmr_enabled:raise RuntimeError("load_fbmr_branch requires frozen_base_mean_residual mode")
+  if not self.fbmr_enabled:raise RuntimeError("load_fbmr_branch requires a frozen-base mean-residual mode")
   digest=hashlib.sha256()
   with Path(path).open("rb") as stream:
    for block in iter(lambda:stream.read(1024*1024),b""):digest.update(block)
@@ -450,14 +472,16 @@ class ModularMAPPOTrainer:
   self.warm_start_provenance=state.get("warm_start_provenance",{});self.anchor_provenance=state.get("anchor_provenance",{})
   for key,attr in (("ppo_updates","ppo_update_count"),("actor_updates","actor_update_count"),("critic_updates","critic_update_count"),("sampled_steps","sampled_steps"),("vector_steps","vector_steps")):setattr(self,attr,int(state.get(key,0)))
   self.kl_hard_stop_count=int(state.get("kl_hard_stop_count",0))
-  extra=state.get("extra",{});self.fbmr_branch_metadata={
-   "branch_intervention":"frozen_base_mean_residual","actor_optimizer_restore":False,
+  extra=state.get("extra",{});intervention=self.actor.entity_attention_mode;self.fbmr_branch_metadata={
+   "branch_intervention":intervention,"actor_optimizer_restore":False,
    "actor_optimizer_reason":"new_trainable_parameter_set","critic_optimizer_restore":True,
    "critic_optimizer_restored":True,"source_rng_restored":False,"RNG_restored_from_source":False,
    "base_actor_loaded_exact":True,
    "source_checkpoint_sha256":source_checkpoint_sha256,"source_sampled_steps":int(state["sampled_steps"]),
    "source_training_seed":int(extra["training_seed"]),"actor_optimizer_reset_for_new_params":True,
   }
+  if intervention=="frozen_base_dual_bounded_mean_residual":
+   self.fbmr_branch_metadata.update({"dual_bound_enabled":True,"alpha_abs":self.actor.alpha_abs,"alpha_rel":self.actor.alpha_rel})
   if restore_rng:
    restored=self.restore_rng_state(state);self.fbmr_branch_metadata["source_rng_restored"]=bool(restored);self.fbmr_branch_metadata["RNG_restored_from_source"]=bool(restored)
   else:self.rng_restore_metadata={"rng_state_available":isinstance(state.get("rng_state"),dict),"rng_state_restored":False,"cuda_rng_state_restored":False}

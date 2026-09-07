@@ -1,0 +1,77 @@
+{
+  "protocol_name": "fbmr_v2_dual_bound_stage2_development_v1",
+  "protocol_role": "development_only",
+  "research_status": "final_entity_actor_architecture_development_cycle",
+  "hypothesis_status": "mechanism-supported final development hypothesis; not performance validated",
+  "method": "FBMR-V2 Dual Bound",
+  "existing_comparators": ["MAPPO Continuation", "FBMR-V1"],
+  "existing_comparators_are_not_rerun": true,
+  "source_checkpoint_rule": "original MAPPO latest.pt at exact sampled_steps=900000",
+  "source_sampled_steps": 900000,
+  "additional_sampled_steps": 300000,
+  "target_total_sampled_steps": 1200000,
+  "source_training_seeds": [3101, 3102, 3103],
+  "source_checkpoints": [
+    {"source_training_seed": 3101, "path": "outputs/formal_eawb/mappo_seed3101/latest.pt", "sha256": "6884448dae6c14a2b37c25b7a438f50dfa6eb84267528ee3d4de693cd0c0d6d0"},
+    {"source_training_seed": 3102, "path": "outputs/formal_eawb/mappo_seed3102/latest.pt", "sha256": "4c26422b273b5e0802cad820711efedc3f54811cafaa3cfa7fd292bf0bb0e098"},
+    {"source_training_seed": 3103, "path": "outputs/formal_eawb/mappo_seed3103/latest.pt", "sha256": "076bb4f1065d6da23bdf2cfdf8db951bacd93878f452c56a582fec4019ea091f"}
+  ],
+  "v2_runs": 3,
+  "runs": [
+    {"method": "FBMR-V2 Dual Bound", "source_training_seed": 3101, "source_checkpoint": "outputs/formal_eawb/mappo_seed3101/latest.pt", "config_path": "configs/dev_fbmr_v2_dual_bound_1200k.yaml", "output_dir": "outputs/dev_fbmr_v2/fbmr_v2_seed3101"},
+    {"method": "FBMR-V2 Dual Bound", "source_training_seed": 3102, "source_checkpoint": "outputs/formal_eawb/mappo_seed3102/latest.pt", "config_path": "configs/dev_fbmr_v2_dual_bound_1200k.yaml", "output_dir": "outputs/dev_fbmr_v2/fbmr_v2_seed3102"},
+    {"method": "FBMR-V2 Dual Bound", "source_training_seed": 3103, "source_checkpoint": "outputs/formal_eawb/mappo_seed3103/latest.pt", "config_path": "configs/dev_fbmr_v2_dual_bound_1200k.yaml", "output_dir": "outputs/dev_fbmr_v2/fbmr_v2_seed3103"}
+  ],
+  "validation": {
+    "role": "FBMR_V2_DEVELOPMENT_VALIDATION",
+    "seed_start": 34000000,
+    "seed_end": 34000019,
+    "episodes": 20,
+    "common_deterministic_scenarios": true,
+    "seed_range_reused_from_fbmr_v1_development": true,
+    "validation_already_exposed_in_prior_development": true,
+    "is_holdout": false
+  },
+  "reserved_untouched_future_final_test": {
+    "role": "RESERVED_UNTOUCHED_FUTURE_FINAL_TEST",
+    "seed_start": 33000000,
+    "seed_end": 33000199,
+    "episodes": 200,
+    "executed": false
+  },
+  "checkpoint_selection": {
+    "primary": "latest_at_total_1200000_boundary",
+    "best_eval_role": "secondary_diagnostic_only",
+    "evaluation_interval_sampled_steps": 100000,
+    "expected_evaluations_near": [1000000, 1100000, 1200000]
+  },
+  "fixed_intervention": {
+    "entity_attention_mode": "frozen_base_dual_bounded_mean_residual",
+    "alpha_abs": 0.25,
+    "alpha_rel": 0.25,
+    "formula": "min(alpha_abs, alpha_rel * frozen_base_std.detach()) * tanh(raw_delta_mu)",
+    "alpha_sweep_allowed": false
+  },
+  "frozen_primary_development_gate": {
+    "catastrophic_collapse_count": 0,
+    "paired_average_waves_wins_vs_existing_mappo_continuation_min": 2,
+    "mappo_continuation_waves_sample_sd_exact_reference": 0.4163331998932266,
+    "cross_lineage_waves_sample_sd_must_not_exceed_control": true,
+    "no_new_systematic_ground_or_boundary_degradation": true,
+    "no_severe_deterministic_stochastic_deployment_gap": true,
+    "frozen_base_drift_exact": 0.0,
+    "entity_delta_logstd_exact": 0.0,
+    "normalized_correction_max": 0.25,
+    "no_persistent_severe_dual_bound_saturation": true
+  },
+  "preferred_not_primary_target": {
+    "fbmr_v1_waves_sample_sd_exact_reference": 0.11547005383792512,
+    "v2_sample_sd_at_or_below_v1_preferred": true
+  },
+  "failure_rule": {
+    "condition": "not (catastrophic_collapse_count == 0 and paired_average_waves_wins_vs_existing_mappo_continuation >= 2)",
+    "decision": "STOP_ENTITY_ACTOR_ARCHITECTURE_SEARCH",
+    "forbidden_followups": ["new gate", "alpha change", "alpha sweep", "KL loss", "adaptive alpha", "per-dimension learned bound", "new attention module", "reward change", "learning-rate change"]
+  },
+  "reward_conclusions": ["REWARD_IMPLEMENTATION_BUG_NOT_FOUND", "REWARD_IS_SECONDARY_LIMITATION", "KEEP_REWARD_FROZEN"]
+}
