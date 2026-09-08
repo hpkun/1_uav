@@ -10,6 +10,13 @@
   "checkpoint_selection": {"primary": "latest_at_900000", "best_eval_role": "secondary_diagnostic_only"},
   "existing_historical_result_reuse": false,
   "reserved_untouched_future_final_test": {"seed_start": 33000000, "seed_end": 33000199, "executed": false},
+  "execution_plan": {
+    "parallelization_unit": "training_seed_pipeline",
+    "max_parallel_training_seeds": 2,
+    "within_seed_order": ["MAPPO Baseline", "MAPPO + WS-PBRS"],
+    "seed_batches": [[5101, 5102], [5103]],
+    "shared_cuda_device": 0
+  },
   "runs": [
     {"method":"MAPPO Baseline","training_seed":5101,"config_path":"configs/dev_ws_pbrs_mappo_baseline_900k.yaml","output_dir":"outputs/dev_ws_pbrs/baseline_seed5101"},
     {"method":"MAPPO + WS-PBRS","training_seed":5101,"config_path":"configs/dev_ws_pbrs_proposed_900k.yaml","output_dir":"outputs/dev_ws_pbrs/pbrs_seed5101"},

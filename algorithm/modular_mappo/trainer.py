@@ -111,7 +111,7 @@ class ModularMAPPOTrainer:
   self.fbmr_branch_metadata={};self._frozen_actor_reference=None
   self.rng_restore_metadata={"rng_state_available":False,"rng_state_restored":False,"cuda_rng_state_restored":False}
 
- def context_numpy(self,wave,total):return self.wave_context.encode_numpy(wave,total) if self.wave_context.enabled else np.zeros((*np.asarray(wave).shape,0),np.float32)
+ def context_numpy(self,wave,total,**state):return self.wave_context.encode_numpy(wave,total,**state) if self.wave_context.enabled else np.zeros((*np.asarray(wave).shape,0),np.float32)
  def initial_hidden(self,num_envs):return self.recurrent.zeros(num_envs,self.num_agents,True),self.recurrent.zeros(num_envs,self.num_agents,False)
  def _ctx(self,c,actor):
   active=self.wave_context.actor_enabled if actor else self.wave_context.critic_enabled

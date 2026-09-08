@@ -25,6 +25,9 @@ from .evaluation import evaluate_modular
 from .factory import build_modular_mappo_trainer
 from .protocol import checkpoint_architecture, validate_modular_checkpoint
 from .trainer import MODULAR_MAPPO_IMPL_VERSION
+from algorithm.modules.wave_survival_pbrs import (
+    mission_progress_from_blue_losses, mission_progress_from_wave_state,
+)
 
 
 class ModularMAPPOTrainingRunner:
@@ -159,6 +162,7 @@ class ModularMAPPOTrainingRunner:
         self.blue_alive = np.ones_like(self.alive, dtype=np.float32)
         self.wave = np.ones(self.num_envs, dtype=np.int64)
         self.total = np.full(self.num_envs, self.current_waves, dtype=np.int64)
+        self.episode_steps = np.zeros(self.num_envs, dtype=np.int64)
         self.episode_mask = np.zeros(self.num_envs, dtype=np.float32)
         self.actor_hidden, self.critic_hidden = self.trainer.initial_hidden(self.num_envs)
         (self.output_dir / "runtime_env_config.yaml").write_text(
@@ -249,13 +253,26 @@ class ModularMAPPOTrainingRunner:
         reward_rows: list[dict[str, float]] = []
         actor_hidden_norms: list[np.ndarray] = []
         critic_hidden_norms: list[np.ndarray] = []
+        context_progress_rows: list[np.ndarray] = []
+        context_horizon_rows: list[np.ndarray] = []
         rollout_hidden_resets = 0
         rollout_causes = np.zeros(len(self.death_cause_names), dtype=np.int64)
         rollout_death_indices = np.zeros_like(self.death_index_totals)
         for _ in range(int(steps or self.rollout_steps)):
             obs, alive, pre_wave = self.observations.copy(), self.alive.copy(), self.wave.copy()
             blue_alive = self.blue_alive.copy()
-            context = self.trainer.context_numpy(pre_wave, self.total)
+            progress = mission_progress_from_wave_state(pre_wave, blue_alive, self.total)
+            remaining_horizon = np.clip(
+                (float(self.runtime_env_config["simulation"]["max_steps"]) - self.episode_steps)
+                / float(self.runtime_env_config["simulation"]["max_steps"]), 0.0, 1.0,
+            ).astype(np.float32)
+            context_progress_rows.append(progress.copy())
+            context_horizon_rows.append(remaining_horizon.copy())
+            context = self.trainer.context_numpy(
+                pre_wave, self.total, mission_progress=progress,
+                episode_step=self.episode_steps,
+                max_steps=self.runtime_env_config["simulation"]["max_steps"],
+            )
             actor_before = None if self.actor_hidden is None else self.actor_hidden.copy()
             critic_before = None if self.critic_hidden is None else self.critic_hidden.copy()
             actions, raw, log_prob, new_actor = self.trainer.act(
@@ -317,7 +334,14 @@ class ModularMAPPOTrainingRunner:
             self.reward_bonus_totals += np.asarray([reward_metrics.get("reward_bonus_total",0.0),reward_metrics.get("reward_bonus_wave1",0.0),reward_metrics.get("reward_bonus_wave2",0.0),reward_metrics.get("reward_bonus_wave3",0.0)])
             next_wave = np.asarray([int(row.get("wave_index", 1)) for row in result.infos])
             next_total = np.asarray([int(row.get("total_waves", self.current_waves)) for row in result.infos])
-            next_context = self.trainer.context_numpy(next_wave, next_total)
+            next_steps = np.asarray([int(row.get("episode_length", 0)) for row in result.infos], dtype=np.int64)
+            next_losses = np.asarray([int(row.get("blue_losses", 0)) for row in result.infos], dtype=np.int64)
+            next_progress = mission_progress_from_blue_losses(next_losses, next_total, self.alive.shape[1])
+            next_context = self.trainer.context_numpy(
+                next_wave, next_total, mission_progress=next_progress,
+                episode_step=next_steps,
+                max_steps=self.runtime_env_config["simulation"]["max_steps"],
+            )
             for k in (1, 2, 3):
                 transition = pre_wave == k
                 rollout_transition[k - 1] += int(transition.sum())
@@ -362,6 +386,7 @@ class ModularMAPPOTrainingRunner:
             self.blue_alive = np.where(done[:, None], np.ones_like(post_blue), post_blue)
             self.wave = np.where(done, 1, next_wave)
             self.total = np.where(done, self.current_waves, next_total)
+            self.episode_steps = np.where(done, 0, next_steps)
             self.episode_mask = (~done).astype(np.float32)
             self.actor_hidden = self.trainer.recurrent.apply_alive(new_actor, self.alive)
             self.critic_hidden = self.trainer.recurrent.apply_alive(new_critic, self.alive)
@@ -393,6 +418,11 @@ class ModularMAPPOTrainingRunner:
             ])) if (actor_hidden_norms or critic_hidden_norms) else 0.0,
             "hidden_reset_count": float(rollout_hidden_resets),
             "hidden_reset_count_total": float(self.hidden_reset_count),
+            "context_progress_mean": float(np.concatenate(context_progress_rows).mean()),
+            "context_remaining_horizon_mean": float(np.concatenate(context_horizon_rows).mean()),
+            **{f"context_wave_{k}_fraction": float(transition_fraction[k-1]) for k in (1,2,3)},
+            "critic_context_dim": float(self.trainer.critic.context_dim),
+            "critic_parameter_count": float(sum(parameter.numel() for parameter in self.trainer.critic.parameters())),
             **{f"blue_deaths_index_{index}": float(rollout_death_indices[0, index]) for index in range(self.death_index_totals.shape[1])},
             **{f"red_deaths_index_{index}": float(rollout_death_indices[1, index]) for index in range(self.death_index_totals.shape[1])},
             **{name: float(rollout_causes[index]) for index, name in enumerate(self.death_cause_names)},

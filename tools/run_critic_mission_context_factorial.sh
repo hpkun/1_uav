@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 [[ "${CONDA_DEFAULT_ENV:-}" == "uav" ]] || { echo "Activate conda environment uav first" >&2; exit 1; }
 python -c 'import torch; assert torch.cuda.is_available(), "CUDA required"'
-python -u tools/preflight_ws_pbrs_development.py
-mkdir -p outputs/dev_ws_pbrs
+python -u tools/preflight_critic_mission_context_factorial.py
+
+mkdir -p outputs/dev_critic_mission_context
 MAX_PARALLEL_SEEDS=2
+
 run_one() {
-  local method="$1"
-  local seed="$2"
-  local config="$3"
-  local dir="outputs/dev_ws_pbrs/${method}_seed${seed}"
+  local cell
+  local seed
+  local config
+  local dir
+  cell="$1"
+  seed="$2"
+  config="$3"
+  dir="outputs/dev_critic_mission_context/${cell}_seed${seed}"
 
   [[ ! -e "$dir" ]] || {
     echo "Refusing non-fresh $dir" >&2
@@ -28,15 +35,25 @@ run_one() {
 }
 
 run_seed() {
-  local seed="$1"
-  run_one baseline "$seed" configs/dev_ws_pbrs_mappo_baseline_900k.yaml
-  run_one pbrs "$seed" configs/dev_ws_pbrs_proposed_900k.yaml
+  local seed
+  seed="$1"
+  run_one c0r0 "$seed" configs/dev_c0r0_plain_mappo_900k.yaml
+  run_one c0r1 "$seed" configs/dev_c0r1_pbrs_900k.yaml
+  run_one c1r0 "$seed" configs/dev_c1r0_critic_context_900k.yaml
+  run_one c1r1 "$seed" configs/dev_c1r1_critic_context_pbrs_900k.yaml
 }
 
 run_seed_pair() {
-  local first_seed="$1"
-  local second_seed="$2"
-  local first_pid second_pid first_status=0 second_status=0
+  local first_seed
+  local second_seed
+  local first_pid
+  local second_pid
+  local first_status
+  local second_status
+  first_seed="$1"
+  second_seed="$2"
+  first_status=0
+  second_status=0
 
   run_seed "$first_seed" &
   first_pid=$!
@@ -52,7 +69,5 @@ run_seed_pair() {
   fi
 }
 
-# At most two seed pipelines execute concurrently. Within each seed, the matched
-# baseline always completes before PBRS starts.
-run_seed_pair 5101 5102
-run_seed 5103
+run_seed_pair 5201 5202
+run_seed 5203

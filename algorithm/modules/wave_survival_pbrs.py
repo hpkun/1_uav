@@ -7,6 +7,33 @@ import numpy as np
 from .base import CapabilityModule
 
 
+def mission_progress_from_blue_losses(
+    blue_losses: np.ndarray, total_waves: np.ndarray, team_size: int
+) -> np.ndarray:
+    """Canonical cumulative mission progress used by PBRS and critic context."""
+    losses = np.asarray(blue_losses, dtype=np.float32)
+    waves = np.asarray(total_waves, dtype=np.float32)
+    losses, waves = np.broadcast_arrays(losses, waves)
+    denominator = np.maximum(waves * int(team_size), 1.0)
+    progress = np.clip(losses / denominator, 0.0, 1.0).astype(np.float32)
+    if not np.all(np.isfinite(progress)):
+        raise FloatingPointError("mission progress is non-finite")
+    return progress
+
+
+def mission_progress_from_wave_state(
+    wave_index: np.ndarray, blue_alive: np.ndarray, total_waves: np.ndarray
+) -> np.ndarray:
+    """Convert current wave/alive state to the same cumulative PBRS progress."""
+    blue = np.asarray(blue_alive, dtype=np.float32)
+    if blue.ndim < 1:
+        raise ValueError("blue_alive must include an agent dimension")
+    team_size = int(blue.shape[-1])
+    wave = np.asarray(wave_index, dtype=np.float32)
+    losses = (wave - 1.0) * team_size + (team_size - blue.sum(axis=-1))
+    return mission_progress_from_blue_losses(losses, total_waves, team_size)
+
+
 class WaveSurvivalPotentialShapingModule(CapabilityModule):
     name = "wave_survival_pbrs"
 
@@ -41,11 +68,11 @@ class WaveSurvivalPotentialShapingModule(CapabilityModule):
         if raw.shape != red_pre.shape or raw.shape != blue_pre.shape or raw.shape != red_next.shape:
             raise ValueError("WS-PBRS alive masks must match reward shape")
         team_size = raw.shape[1]
-        total_blue = np.asarray([max(1, int(info.get("total_waves", 1)) * team_size) for info in infos], dtype=np.float32)
+        total_waves = np.asarray([max(1, int(info.get("total_waves", 1))) for info in infos], dtype=np.float32)
         removed_pre = (np.asarray(pre_wave, dtype=np.float32) - 1.0) * team_size + (team_size - blue_pre.sum(axis=1))
         removed_next = np.asarray([int(info.get("blue_losses", 0)) for info in infos], dtype=np.float32)
-        progress_pre = removed_pre / total_blue
-        progress_next = removed_next / total_blue
+        progress_pre = mission_progress_from_blue_losses(removed_pre, total_waves, team_size)
+        progress_next = mission_progress_from_blue_losses(removed_next, total_waves, team_size)
         global_pre = self.global_potential(progress_pre, red_pre)
         global_next = self.global_potential(progress_next, red_next)
         phi_pre = red_pre * global_pre[:, None]
@@ -75,4 +102,7 @@ class WaveSurvivalPotentialShapingModule(CapabilityModule):
                 **{f"pbrs_shaping_wave{k}": float(shaping[wave == k].sum()) for k in (1, 2, 3)}}
 
 
-__all__ = ["WaveSurvivalPotentialShapingModule"]
+__all__ = [
+    "WaveSurvivalPotentialShapingModule", "mission_progress_from_blue_losses",
+    "mission_progress_from_wave_state",
+]

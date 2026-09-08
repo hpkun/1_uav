@@ -11,6 +11,7 @@ from algorithm.train_modular_mappo import load_config
 from algorithm.modular_mappo.factory import build_modular_mappo_trainer
 
 MANIFEST=ROOT/'experiments/ws_pbrs_development_manifest.json';SEEDS=(5101,5102,5103);EVAL=(39000000,39000049)
+LAUNCHER=ROOT/'tools/run_ws_pbrs_development.sh'
 OFF=('wave_context','recurrent_memory','popart','multi_wave_reward','wave_balancing','warm_start','curriculum','policy_anchor','entity_attention','advantage_priority','ppo_stabilization')
 
 def validate_ws_pbrs_only_reward_shaping_diff(baseline, proposed):
@@ -22,6 +23,8 @@ def validate_ws_pbrs_only_reward_shaping_diff(baseline, proposed):
 def validate(check_outputs=True,check_cuda=True):
     manifest=json.loads(MANIFEST.read_text(encoding='utf-8'));runs=manifest['runs']
     if manifest['protocol_role']!='development_only' or len(runs)!=6:raise RuntimeError('manifest must define exactly six development runs')
+    execution=manifest.get('execution_plan',{})
+    if execution!={"parallelization_unit":"training_seed_pipeline","max_parallel_training_seeds":2,"within_seed_order":["MAPPO Baseline","MAPPO + WS-PBRS"],"seed_batches":[[5101,5102],[5103]],"shared_cuda_device":0}:raise RuntimeError('two-seed execution plan mismatch')
     expected={(m,s) for m in manifest['methods'] for s in SEEDS}
     if {(r['method'],r['training_seed']) for r in runs}!=expected:raise RuntimeError('matrix is not two methods x three paired seeds')
     if check_cuda and not torch.cuda.is_available():raise RuntimeError('CUDA is required')
@@ -47,6 +50,9 @@ def validate(check_outputs=True,check_cuda=True):
     for run in runs:
         output=ROOT/run['output_dir']
         if check_outputs and output.exists() and any(output.iterdir()):raise FileExistsError(f'development output contains results: {output}')
-    return {'status':'READY_FOR_WS_PBRS_DEVELOPMENT','runs':6,'training_seeds':list(SEEDS),'evaluation_range':list(EVAL),'future_final_33m_executed':False,'evaluation_reward':'raw_environment_reward','primary_checkpoint':'latest.pt@900000'}
+    launcher=LAUNCHER.read_text(encoding='utf-8')
+    required=('MAX_PARALLEL_SEEDS=2','run_seed_pair 5101 5102','run_seed 5103','run_one baseline "$seed"','run_one pbrs "$seed"')
+    if any(token not in launcher for token in required):raise RuntimeError('launcher is not the frozen two-seed pipeline plan')
+    return {'status':'READY_FOR_WS_PBRS_DEVELOPMENT','runs':6,'training_seeds':list(SEEDS),'max_parallel_training_seeds':2,'parallelization_unit':'training_seed_pipeline','within_seed_order':['MAPPO Baseline','MAPPO + WS-PBRS'],'evaluation_range':list(EVAL),'future_final_33m_executed':False,'evaluation_reward':'raw_environment_reward','primary_checkpoint':'latest.pt@900000'}
 
 if __name__=='__main__':print(json.dumps(validate(),indent=2))

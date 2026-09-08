@@ -2,6 +2,7 @@
 import numpy as np
 from env.factory import make_combat_environment
 from algorithm.common.evaluator import episode_return_metrics,persistent_mission_metrics
+from algorithm.modules.wave_survival_pbrs import mission_progress_from_wave_state
 
 def per_wave_episode_diagnostics(info,total_waves=3):
  """Flatten only terminal fields recorded by the environment (no inference)."""
@@ -19,7 +20,11 @@ def evaluate_modular_episode(trainer, env_config, seed, include_trace=False):
  ah,ch=trainer.initial_hidden(1);wave=1;total=int(env_config.get("persistent_waves",{}).get("total_waves",1));ret=np.zeros(4);ep=np.zeros(1,np.float32)
  actions_trace=[];wave_trace=[]
  while True:
-  ctx=trainer.context_numpy(np.asarray([wave]),np.asarray([total]))
+  progress=mission_progress_from_wave_state(
+   np.asarray([wave]),env.blue_alive_mask[None],np.asarray([total]))
+  ctx=trainer.context_numpy(
+   np.asarray([wave]),np.asarray([total]),mission_progress=progress,
+   episode_step=np.asarray([env.steps]),max_steps=env.max_steps)
   actions,ah=trainer.act(obs[None],alive[None],True,False,ctx,ah,ep)
   _,ch=trainer.values_step(obs[None],alive[None],ctx,ch,ep)
   if include_trace:actions_trace.append(actions[0].copy());wave_trace.append(wave)

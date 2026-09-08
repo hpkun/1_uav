@@ -1,6 +1,7 @@
 from copy import deepcopy
 import numpy as np
 import torch
+from pathlib import Path
 
 from algorithm.modules.wave_survival_pbrs import WaveSurvivalPotentialShapingModule
 from algorithm.modular_mappo.factory import build_modular_mappo_trainer
@@ -53,3 +54,13 @@ def test_configs_only_differ_by_shaping_and_initial_models_match():
     obs=np.zeros((1,4,52),np.float32);alive=np.ones((1,4),np.float32)
     da=a.actor.distribution(torch.as_tensor(obs));db=b.actor.distribution(torch.as_tensor(obs))
     assert torch.equal(da.mean,db.mean) and torch.equal(da.stddev,db.stddev)
+
+
+def test_launcher_runs_two_seed_pipelines_in_parallel_but_methods_in_order():
+    text=Path('tools/run_ws_pbrs_development.sh').read_text(encoding='utf-8')
+    assert 'MAX_PARALLEL_SEEDS=2' in text
+    assert 'run_seed_pair 5101 5102' in text and 'run_seed 5103' in text
+    start=text.index('run_seed()')
+    end=text.index('run_seed_pair()')
+    seed_function=text[start:end]
+    assert seed_function.index('run_one baseline') < seed_function.index('run_one pbrs')

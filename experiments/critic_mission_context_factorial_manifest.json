@@ -1,0 +1,37 @@
+{
+  "protocol_role": "development_only",
+  "design": "2x2 factorial",
+  "research_question": "Does critic mission-state completion reverse the negative effect of WS-PBRS V1?",
+  "factor_C": {"name": "critic_mission_context", "levels": ["OFF", "ON"]},
+  "factor_R": {"name": "wave_survival_pbrs", "levels": ["OFF", "ON"]},
+  "cells": {
+    "C0R0": {"critic_mission_context": false, "wave_survival_pbrs": false, "config": "configs/dev_c0r0_plain_mappo_900k.yaml"},
+    "C0R1": {"critic_mission_context": false, "wave_survival_pbrs": true, "config": "configs/dev_c0r1_pbrs_900k.yaml"},
+    "C1R0": {"critic_mission_context": true, "wave_survival_pbrs": false, "config": "configs/dev_c1r0_critic_context_900k.yaml"},
+    "C1R1": {"critic_mission_context": true, "wave_survival_pbrs": true, "config": "configs/dev_c1r1_critic_context_pbrs_900k.yaml"}
+  },
+  "training_seeds": [5201, 5202, 5203],
+  "evaluation": {"seed_start": 41000000, "seed_end": 41000049, "episodes": 50, "deterministic": true, "common_scenarios": true},
+  "budget": {"sampled_steps": 900000, "num_envs": 24, "rollout_steps": 256},
+  "checkpoint_selection": {"primary": "latest_at_budget", "best": "diagnostic_only"},
+  "historical_exposed_not_primary": {"training_seeds": [5101, 5102, 5103], "evaluation_seed_start": 39000000, "evaluation_seed_end": 39000049},
+  "rejected_candidate_evaluation": {"seed_start": 40000000, "seed_end": 40000049, "reason": "40000000 already appears in existing visualization tests"},
+  "reserved_untouched_future_final_test": {"seed_start": 33000000, "seed_end": 33000199, "executed": false},
+  "execution_plan": {"parallelization_unit": "training_seed_pipeline", "max_parallel_training_seeds": 2, "within_seed_order": ["C0R0", "C0R1", "C1R0", "C1R1"], "seed_batches": [[5201, 5202], [5203]], "shared_cuda_device": 0},
+  "mechanism_gate": {"c1r1_vs_c1r0_paired_waves_wins_min": 2, "mean_waves_positive": true, "mean_w2_nonnegative": true, "mean_w3_nonnegative": true, "mean_interaction_positive": true, "positive_interaction_seeds_min": 2},
+  "practical_gate": {"c1r1_vs_c0r0_paired_waves_wins_min": 2, "mean_waves_positive": true, "mean_w2_nonnegative": true, "mean_w3_nonnegative": true},
+  "runs": [
+    {"cell": "C0R0", "training_seed": 5201, "output_dir": "outputs/dev_critic_mission_context/c0r0_seed5201"},
+    {"cell": "C0R1", "training_seed": 5201, "output_dir": "outputs/dev_critic_mission_context/c0r1_seed5201"},
+    {"cell": "C1R0", "training_seed": 5201, "output_dir": "outputs/dev_critic_mission_context/c1r0_seed5201"},
+    {"cell": "C1R1", "training_seed": 5201, "output_dir": "outputs/dev_critic_mission_context/c1r1_seed5201"},
+    {"cell": "C0R0", "training_seed": 5202, "output_dir": "outputs/dev_critic_mission_context/c0r0_seed5202"},
+    {"cell": "C0R1", "training_seed": 5202, "output_dir": "outputs/dev_critic_mission_context/c0r1_seed5202"},
+    {"cell": "C1R0", "training_seed": 5202, "output_dir": "outputs/dev_critic_mission_context/c1r0_seed5202"},
+    {"cell": "C1R1", "training_seed": 5202, "output_dir": "outputs/dev_critic_mission_context/c1r1_seed5202"},
+    {"cell": "C0R0", "training_seed": 5203, "output_dir": "outputs/dev_critic_mission_context/c0r0_seed5203"},
+    {"cell": "C0R1", "training_seed": 5203, "output_dir": "outputs/dev_critic_mission_context/c0r1_seed5203"},
+    {"cell": "C1R0", "training_seed": 5203, "output_dir": "outputs/dev_critic_mission_context/c1r0_seed5203"},
+    {"cell": "C1R1", "training_seed": 5203, "output_dir": "outputs/dev_critic_mission_context/c1r1_seed5203"}
+  ]
+}
