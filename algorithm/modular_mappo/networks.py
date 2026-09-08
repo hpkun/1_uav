@@ -199,10 +199,23 @@ class ModularMAPPOActor(SharedMAPPOActor):
 
 class ModularCentralizedCritic(CentralizedValueCritic):
     def __init__(self, observation_dim=52, hidden_dim=256, attention_heads=2,
-                 activation="relu", context_dim=0, recurrent_hidden_dim=0):
+                 activation="relu", context_dim=0, recurrent_hidden_dim=0,
+                 context_injection="concat"):
         self.base_observation_dim=int(observation_dim); self.context_dim=int(context_dim)
         self.recurrent_hidden_dim=int(recurrent_hidden_dim)
-        super().__init__(observation_dim+self.context_dim,hidden_dim,attention_heads,activation)
+        self.context_injection=str(context_injection)
+        if self.context_injection not in {"concat","additive_zero"}:
+            raise ValueError("unsupported critic context injection")
+        if self.context_injection=="additive_zero" and not self.context_dim:
+            raise ValueError("additive_zero requires a nonzero critic context dimension")
+        input_dim=observation_dim if self.context_injection=="additive_zero" else observation_dim+self.context_dim
+        super().__init__(input_dim,hidden_dim,attention_heads,activation)
+        if self.context_injection=="additive_zero":
+            # Creating an explicit zeros tensor consumes no RNG.  Consequently
+            # every shared C0/C1 parameter and the post-init RNG state remain
+            # bit-identical, while mission state has a learnable information-only
+            # route into the first critic preactivation.
+            self.mission_context_projection=nn.Parameter(torch.zeros(hidden_dim,self.context_dim))
         if self.recurrent_hidden_dim:
             act={"relu":nn.ReLU,"leaky_relu":nn.LeakyReLU}[activation]
             self.value_network=nn.Sequential(nn.Linear(hidden_dim*2,hidden_dim),act())
@@ -217,11 +230,21 @@ class ModularCentralizedCritic(CentralizedValueCritic):
         if not self.context_dim:return obs
         if context is None:raise ValueError("critic wave context is required")
         if context.ndim==obs.ndim-1:context=context.unsqueeze(-2).expand(*obs.shape[:-1],-1)
+        if self.context_injection=="additive_zero":return obs
         return torch.cat((obs,context),-1)
 
+    def _embedding(self,observations,context):
+        if self.context_injection!="additive_zero":return self.embedding(self._input(observations,context))
+        if context is None:raise ValueError("critic wave context is required")
+        if context.ndim==observations.ndim-1:
+            context=context.unsqueeze(-2).expand(*observations.shape[:-1],-1)
+        preactivation=self.embedding[0](observations)+torch.nn.functional.linear(context,self.mission_context_projection)
+        value=self.embedding[1](preactivation)
+        for layer in list(self.embedding)[2:]:value=layer(value)
+        return value
+
     def forward_step(self,observations,alive_mask=None,context=None,hidden=None,episode_mask=None,return_attention=False):
-        observations=self._input(observations,context)
-        embedding=self.embedding(observations); batch,agents,_=embedding.shape
+        embedding=self._embedding(observations,context); batch,agents,_=embedding.shape
         def heads(x):return x.view(batch,agents,self.attention_heads,self.head_dim).transpose(1,2)
         q,k,v=heads(self.wq(embedding)),heads(self.wk(embedding)),heads(self.wv(embedding))
         logits=q@k.transpose(-2,-1)/math.sqrt(self.head_dim)

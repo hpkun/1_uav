@@ -3,10 +3,9 @@ set -euo pipefail
 
 [[ "${CONDA_DEFAULT_ENV:-}" == "uav" ]] || { echo "Activate conda environment uav first" >&2; exit 1; }
 python -c 'import torch; assert torch.cuda.is_available(), "CUDA required"'
-python -u tools/preflight_critic_mission_context_factorial.py
+python -u tools/preflight_critic_mission_context_factorial.py --launch-check
 
 mkdir -p outputs/dev_critic_mission_context
-MAX_PARALLEL_SEEDS=2
 
 run_one() {
   local cell
@@ -43,31 +42,6 @@ run_seed() {
   run_one c1r1 "$seed" configs/dev_c1r1_critic_context_pbrs_900k.yaml
 }
 
-run_seed_pair() {
-  local first_seed
-  local second_seed
-  local first_pid
-  local second_pid
-  local first_status
-  local second_status
-  first_seed="$1"
-  second_seed="$2"
-  first_status=0
-  second_status=0
-
-  run_seed "$first_seed" &
-  first_pid=$!
-  run_seed "$second_seed" &
-  second_pid=$!
-  echo "Started seed pipelines ${first_seed} (PID ${first_pid}) and ${second_seed} (PID ${second_pid}); max parallel seeds=${MAX_PARALLEL_SEEDS}"
-
-  wait "$first_pid" || first_status=$?
-  wait "$second_pid" || second_status=$?
-  if (( first_status != 0 || second_status != 0 )); then
-    echo "Parallel seed batch failed: seed ${first_seed} status=${first_status}, seed ${second_seed} status=${second_status}" >&2
-    return 1
-  fi
-}
-
-run_seed_pair 5201 5202
-run_seed 5203
+for seed in 5201 5202 5203; do
+  run_seed "$seed"
+done

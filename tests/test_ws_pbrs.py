@@ -56,11 +56,11 @@ def test_configs_only_differ_by_shaping_and_initial_models_match():
     assert torch.equal(da.mean,db.mean) and torch.equal(da.stddev,db.stddev)
 
 
-def test_launcher_runs_two_seed_pipelines_in_parallel_but_methods_in_order():
+def test_launcher_restored_to_historical_strict_serial_order():
     text=Path('tools/run_ws_pbrs_development.sh').read_text(encoding='utf-8')
-    assert 'MAX_PARALLEL_SEEDS=2' in text
-    assert 'run_seed_pair 5101 5102' in text and 'run_seed 5103' in text
+    assert 'for seed in 5101 5102 5103' in text
+    assert 'MAX_PARALLEL' not in text and 'run_seed_pair' not in text
     start=text.index('run_seed()')
-    end=text.index('run_seed_pair()')
+    end=text.index('for seed in 5101 5102 5103')
     seed_function=text[start:end]
     assert seed_function.index('run_one baseline') < seed_function.index('run_one pbrs')

@@ -4,7 +4,6 @@ set -euo pipefail
 python -c 'import torch; assert torch.cuda.is_available(), "CUDA required"'
 python -u tools/preflight_ws_pbrs_development.py
 mkdir -p outputs/dev_ws_pbrs
-MAX_PARALLEL_SEEDS=2
 run_one() {
   local method="$1"
   local seed="$2"
@@ -33,26 +32,6 @@ run_seed() {
   run_one pbrs "$seed" configs/dev_ws_pbrs_proposed_900k.yaml
 }
 
-run_seed_pair() {
-  local first_seed="$1"
-  local second_seed="$2"
-  local first_pid second_pid first_status=0 second_status=0
-
-  run_seed "$first_seed" &
-  first_pid=$!
-  run_seed "$second_seed" &
-  second_pid=$!
-  echo "Started seed pipelines ${first_seed} (PID ${first_pid}) and ${second_seed} (PID ${second_pid}); max parallel seeds=${MAX_PARALLEL_SEEDS}"
-
-  wait "$first_pid" || first_status=$?
-  wait "$second_pid" || second_status=$?
-  if (( first_status != 0 || second_status != 0 )); then
-    echo "Parallel seed batch failed: seed ${first_seed} status=${first_status}, seed ${second_seed} status=${second_status}" >&2
-    return 1
-  fi
-}
-
-# At most two seed pipelines execute concurrently. Within each seed, the matched
-# baseline always completes before PBRS starts.
-run_seed_pair 5101 5102
-run_seed 5103
+for seed in 5101 5102 5103; do
+  run_seed "$seed"
+done

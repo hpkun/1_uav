@@ -101,17 +101,23 @@ def test_actor_exact_initialization_and_critic_pairing_all_cells():
     assert exact_state(trainers["C1R0"].critic.state_dict(),trainers["C1R1"].critic.state_dict())
     assert trainers["C0R0"].critic.context_dim==0 and trainers["C1R0"].critic.context_dim==5
     assert trainers["C1R0"].actor.context_dim==0
+    assert trainers["C0R0"].critic.embedding[0].in_features==52
+    assert trainers["C1R0"].critic.embedding[0].in_features==52
+    assert trainers["C1R0"].critic.context_injection=="additive_zero"
+    common=set(trainers["C0R0"].critic.state_dict())
+    assert all(torch.equal(trainers["C0R0"].critic.state_dict()[key],trainers["C1R0"].critic.state_dict()[key]) for key in common)
+    assert torch.count_nonzero(trainers["C1R0"].critic.mission_context_projection)==0
     assert sum(p.numel() for p in trainers["C1R0"].critic.parameters())-sum(p.numel() for p in trainers["C0R0"].critic.parameters())==5*256
 
 
-def test_actor_distribution_actions_and_fixed_rng_sample_exact():
+def test_actor_distribution_actions_and_post_init_rng_sample_exact_without_reseed():
     resolved=configs();obs=np.random.default_rng(2).normal(size=(1,4,52)).astype("f");alive=np.ones((1,4),"f")
     outputs=[]
     for cell,cfg in resolved.items():
         value=deepcopy(cfg);value["training"]["seed"]=5202
         trainer=build_modular_mappo_trainer(value,"cpu")
         dist=trainer.actor.distribution(torch.as_tensor(obs));det=trainer.act(obs,alive,True)[0]
-        torch.manual_seed(88);sample=trainer.act(obs,alive,False)[0]
+        sample=trainer.act(obs,alive,False)[0]
         outputs.append((dist.mean.detach(),dist.stddev.detach(),det,sample))
     assert all(torch.equal(outputs[0][0],x[0]) and torch.equal(outputs[0][1],x[1]) and np.array_equal(outputs[0][2],x[2]) and np.array_equal(outputs[0][3],x[3]) for x in outputs[1:])
 
@@ -120,8 +126,15 @@ def test_same_observation_different_context_reaches_critic_graph_only():
     cfg=configs()["C1R0"];trainer=build_modular_mappo_trainer(cfg,"cpu",hidden_dim=16)
     obs=torch.zeros((1,4,52));alive=torch.ones((1,4));context=torch.tensor([[1.,0,0,0,.9]],requires_grad=True)
     value,_=trainer.critic.forward_step(obs,alive,context)
+    baseline=trainer.values_step(np.zeros((1,4,52),np.float32),np.ones((1,4),np.float32),np.array([[1,0,0,0,.9]],np.float32))[0]
+    initial_other=trainer.values_step(np.zeros((1,4,52),np.float32),np.ones((1,4),np.float32),np.array([[0,1,0,.5,.5]],np.float32))[0]
+    assert np.array_equal(baseline,initial_other)
     value.sum().backward()
-    assert context.grad is not None and torch.count_nonzero(context.grad)>0
+    projection=trainer.critic.mission_context_projection
+    assert projection.grad is not None and torch.count_nonzero(projection.grad)>0
+    trainer.critic_optimizer.step()
+    changed=trainer.values_step(np.zeros((1,4,52),np.float32),np.ones((1,4),np.float32),np.array([[0,1,0,.5,.5]],np.float32))[0]
+    assert not np.array_equal(baseline,changed)
     contexts=np.array([[1,0,0,0,.9],[0,1,0,1/3,.6],[0,0,1,2/3,.3]],np.float32)
     actor_outputs=[trainer.act(np.zeros((1,4,52),np.float32),np.ones((1,4),np.float32),True,context=row[None])[0] for row in contexts]
     assert all(np.array_equal(actor_outputs[0],row) for row in actor_outputs[1:])
@@ -167,6 +180,6 @@ def test_reserved_and_historical_seeds_not_reused():
     for cfg in configs().values():
         protocol=cfg["development_protocol"]
         assert cfg["training"]["seed"] not in (5101,5102,5103)
-        assert cfg["implementation"]["evaluation_seed_base"]==41000000
+        assert cfg["implementation"]["evaluation_seed_base"]==42000000
         assert protocol["historical_exposed"]["evaluation_seed_start"]==39000000
         assert protocol["reserved_future_final_test"]=={"seed_start":33000000,"seed_end":33000199,"executed":False}

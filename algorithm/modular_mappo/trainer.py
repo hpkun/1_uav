@@ -99,8 +99,11 @@ class ModularMAPPOTrainer:
   if self.actor_lr_decay.enabled and abs(self.actor_lr_decay.start_lr-float(actor_learning_rate))>1e-15:raise ValueError("actor_lr_decay start_lr must match the configured base actor learning rate")
   ac=self.wave_context.context_dim if self.wave_context.actor_enabled else 0;cc=self.wave_context.context_dim if self.wave_context.critic_enabled else 0
   ar=self.recurrent.hidden_dim if self.recurrent.actor_enabled else 0;cr=self.recurrent.hidden_dim if self.recurrent.critic_enabled else 0
+  critic_context_injection=("additive_zero" if self.wave_context.enabled and
+   self.wave_context.encoding=="mission_markov" and self.wave_context.critic_enabled and
+   not self.wave_context.actor_enabled else "concat")
   self.actor=ModularMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation,ac,ar,self.entity_attention_config).to(self.device)
-  self.critic=ModularCentralizedCritic(observation_dim,hidden_dim,attention_heads,critic_activation,cc,cr).to(self.device)
+  self.critic=ModularCentralizedCritic(observation_dim,hidden_dim,attention_heads,critic_activation,cc,cr,critic_context_injection).to(self.device)
   trainable_actor_parameters=self.actor.trainable_policy_parameters()
   if not trainable_actor_parameters:raise RuntimeError("actor has no trainable policy parameters")
   self.actor_optimizer=torch.optim.Adam(trainable_actor_parameters,lr=actor_learning_rate);self.critic_optimizer=torch.optim.Adam(self.critic.parameters(),lr=critic_learning_rate)

@@ -11,10 +11,10 @@
   "existing_historical_result_reuse": false,
   "reserved_untouched_future_final_test": {"seed_start": 33000000, "seed_end": 33000199, "executed": false},
   "execution_plan": {
-    "parallelization_unit": "training_seed_pipeline",
-    "max_parallel_training_seeds": 2,
+    "mode": "strict_serial",
+    "max_parallel_processes": 1,
     "within_seed_order": ["MAPPO Baseline", "MAPPO + WS-PBRS"],
-    "seed_batches": [[5101, 5102], [5103]],
+    "seed_order": [5101, 5102, 5103],
     "shared_cuda_device": 0
   },
   "runs": [

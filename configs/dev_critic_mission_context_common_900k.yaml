@@ -20,7 +20,7 @@ training:
   device: cuda
   seed: 5201
 runtime_logging: {console_interval_sampled_steps: 20000, recent_episode_window: 100}
-implementation: {actor_activation: relu, critic_activation: relu, log_std_min: -5.0, log_std_max: 2.0, normalize_advantages: true, clip_value_loss: true, evaluation_seed_base: 41000000, checkpoint_interval_sampled_steps: 500000}
+implementation: {actor_activation: relu, critic_activation: relu, log_std_min: -5.0, log_std_max: 2.0, normalize_advantages: true, clip_value_loss: true, evaluation_seed_base: 42000000, checkpoint_interval_sampled_steps: 500000}
 modules:
   wave_context: {enabled: false, context_target: critic_only, encoding: mission_markov, max_waves: 3}
   recurrent_memory: {enabled: false, mode: actor_critic_gru, hidden_dim: 128, sequence_length: 32}
@@ -41,6 +41,6 @@ development_protocol:
   primary_checkpoint: latest_at_budget
   primary_budget: 900000
   best_checkpoint_role: diagnostic_only
-  validation: {seed_start: 41000000, seed_end: 41000049, episodes: 50, deterministic: true, common_scenarios: true, is_holdout: false}
+  validation: {seed_start: 42000000, seed_end: 42000049, episodes: 50, deterministic: true, common_scenarios: true, is_holdout: false}
   historical_exposed: {training_seeds: [5101, 5102, 5103], evaluation_seed_start: 39000000, primary: false}
   reserved_future_final_test: {seed_start: 33000000, seed_end: 33000199, executed: false}

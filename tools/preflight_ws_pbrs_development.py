@@ -24,7 +24,7 @@ def validate(check_outputs=True,check_cuda=True):
     manifest=json.loads(MANIFEST.read_text(encoding='utf-8'));runs=manifest['runs']
     if manifest['protocol_role']!='development_only' or len(runs)!=6:raise RuntimeError('manifest must define exactly six development runs')
     execution=manifest.get('execution_plan',{})
-    if execution!={"parallelization_unit":"training_seed_pipeline","max_parallel_training_seeds":2,"within_seed_order":["MAPPO Baseline","MAPPO + WS-PBRS"],"seed_batches":[[5101,5102],[5103]],"shared_cuda_device":0}:raise RuntimeError('two-seed execution plan mismatch')
+    if execution!={"mode":"strict_serial","max_parallel_processes":1,"within_seed_order":["MAPPO Baseline","MAPPO + WS-PBRS"],"seed_order":[5101,5102,5103],"shared_cuda_device":0}:raise RuntimeError('historical serial execution plan mismatch')
     expected={(m,s) for m in manifest['methods'] for s in SEEDS}
     if {(r['method'],r['training_seed']) for r in runs}!=expected:raise RuntimeError('matrix is not two methods x three paired seeds')
     if check_cuda and not torch.cuda.is_available():raise RuntimeError('CUDA is required')
@@ -51,8 +51,8 @@ def validate(check_outputs=True,check_cuda=True):
         output=ROOT/run['output_dir']
         if check_outputs and output.exists() and any(output.iterdir()):raise FileExistsError(f'development output contains results: {output}')
     launcher=LAUNCHER.read_text(encoding='utf-8')
-    required=('MAX_PARALLEL_SEEDS=2','run_seed_pair 5101 5102','run_seed 5103','run_one baseline "$seed"','run_one pbrs "$seed"')
-    if any(token not in launcher for token in required):raise RuntimeError('launcher is not the frozen two-seed pipeline plan')
-    return {'status':'READY_FOR_WS_PBRS_DEVELOPMENT','runs':6,'training_seeds':list(SEEDS),'max_parallel_training_seeds':2,'parallelization_unit':'training_seed_pipeline','within_seed_order':['MAPPO Baseline','MAPPO + WS-PBRS'],'evaluation_range':list(EVAL),'future_final_33m_executed':False,'evaluation_reward':'raw_environment_reward','primary_checkpoint':'latest.pt@900000'}
+    required=('for seed in 5101 5102 5103','run_one baseline "$seed"','run_one pbrs "$seed"')
+    if any(token not in launcher for token in required) or 'run_seed_pair' in launcher or 'MAX_PARALLEL' in launcher:raise RuntimeError('launcher is not the frozen serial plan')
+    return {'status':'READY_FOR_WS_PBRS_DEVELOPMENT','runs':6,'training_seeds':list(SEEDS),'max_parallel_processes':1,'execution_mode':'strict_serial','within_seed_order':['MAPPO Baseline','MAPPO + WS-PBRS'],'evaluation_range':list(EVAL),'future_final_33m_executed':False,'evaluation_reward':'raw_environment_reward','primary_checkpoint':'latest.pt@900000'}
 
 if __name__=='__main__':print(json.dumps(validate(),indent=2))

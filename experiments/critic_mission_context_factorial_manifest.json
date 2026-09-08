@@ -11,13 +11,25 @@
     "C1R1": {"critic_mission_context": true, "wave_survival_pbrs": true, "config": "configs/dev_c1r1_critic_context_pbrs_900k.yaml"}
   },
   "training_seeds": [5201, 5202, 5203],
-  "evaluation": {"seed_start": 41000000, "seed_end": 41000049, "episodes": 50, "deterministic": true, "common_scenarios": true},
+  "evaluation": {"seed_start": 42000000, "seed_end": 42000049, "episodes": 50, "deterministic": true, "common_scenarios": true},
+  "environment_config_sha256": "ca2108c449065f17a3ad8ea287c94e8aa94dadac8b1e20a7b063afbfd22333ee",
+  "environment_file_sha256": "ad16c516b31c6fd6eeed825da114e53e6092356daed18b2723371750e5dd92b2",
   "budget": {"sampled_steps": 900000, "num_envs": 24, "rollout_steps": 256},
   "checkpoint_selection": {"primary": "latest_at_budget", "best": "diagnostic_only"},
   "historical_exposed_not_primary": {"training_seeds": [5101, 5102, 5103], "evaluation_seed_start": 39000000, "evaluation_seed_end": 39000049},
+  "seed_provenance": {
+    "39000000..39000049": "EXPOSED_PREVIOUS_WS_PBRS_DEVELOPMENT",
+    "40000000..40000049": "EXPOSED",
+    "41000000..41000199": "EXPOSED_HISTORICAL_DETERMINISTIC_8M_EVALUATION",
+    "42000000..42000049": "SELECTED_FRESH_DEVELOPMENT_ONLY",
+    "5101..5103": "EXPOSED_HISTORICAL_TRAINING",
+    "5201..5203": "SELECTED_FRESH_TRAINING",
+    "33000000..33000199": "RESERVED_UNTOUCHED_FUTURE_FINAL"
+  },
   "rejected_candidate_evaluation": {"seed_start": 40000000, "seed_end": 40000049, "reason": "40000000 already appears in existing visualization tests"},
+  "rejected_exposed_evaluation": {"seed_start": 41000000, "seed_end": 41000199, "reason": "historical deterministic 8M evaluation range documented in docs/archive/li2023/environment_diagnosis.md"},
   "reserved_untouched_future_final_test": {"seed_start": 33000000, "seed_end": 33000199, "executed": false},
-  "execution_plan": {"parallelization_unit": "training_seed_pipeline", "max_parallel_training_seeds": 2, "within_seed_order": ["C0R0", "C0R1", "C1R0", "C1R1"], "seed_batches": [[5201, 5202], [5203]], "shared_cuda_device": 0},
+  "execution_plan": {"mode": "strict_serial", "max_parallel_processes": 1, "seed_order": [5201, 5202, 5203], "within_seed_order": ["C0R0", "C0R1", "C1R0", "C1R1"], "shared_cuda_device": 0},
   "mechanism_gate": {"c1r1_vs_c1r0_paired_waves_wins_min": 2, "mean_waves_positive": true, "mean_w2_nonnegative": true, "mean_w3_nonnegative": true, "mean_interaction_positive": true, "positive_interaction_seeds_min": 2},
   "practical_gate": {"c1r1_vs_c0r0_paired_waves_wins_min": 2, "mean_waves_positive": true, "mean_w2_nonnegative": true, "mean_w3_nonnegative": true},
   "runs": [
