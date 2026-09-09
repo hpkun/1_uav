@@ -19,6 +19,7 @@ from algorithm.modules.wave_survival_pbrs import (
 from tools.preflight_critic_mission_context_factorial import (
     CONFIGS, validate_critic_context_factorial_configs,
 )
+import tools.preflight_critic_mission_context_factorial as factorial_preflight
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -183,3 +184,16 @@ def test_reserved_and_historical_seeds_not_reused():
         assert cfg["implementation"]["evaluation_seed_base"]==42000000
         assert protocol["historical_exposed"]["evaluation_seed_start"]==39000000
         assert protocol["reserved_future_final_test"]=={"seed_start":33000000,"seed_end":33000199,"executed":False}
+
+
+def test_launch_check_accepts_checkout_without_archived_history(monkeypatch, tmp_path):
+    """Deployment preflight trusts frozen provenance but still rejects fresh-seed hits."""
+    monkeypatch.setattr(factorial_preflight,"AUDIT",tmp_path/"audit")
+    monkeypatch.setattr(factorial_preflight.torch.cuda,"is_available",lambda:True)
+    monkeypatch.setattr(factorial_preflight,"text_freshness_scan",lambda:{
+        "training_5201_5203":[],"candidate_40m":[],"exposed_41m":[],"selected_42m":[]})
+    monkeypatch.setattr(factorial_preflight,"checkpoint_freshness_scan",lambda:{"checkpoint_count":0,"hits":[]})
+    result=factorial_preflight.validate(check_outputs=False,launch_check=True)
+    assert result["status"]=="CRITIC_MISSION_CONTEXT_FACTORIAL_HARDENED_READY"
+    freshness=yaml.safe_load((tmp_path/"audit"/"seed_freshness.json").read_text(encoding="utf-8"))
+    assert freshness["historical_evidence_policy"]=="FROZEN_MANIFEST_PROVENANCE_FOR_DEPLOYMENT_CHECKOUT"

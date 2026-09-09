@@ -1,0 +1,53 @@
+{
+  "protocol_role": "development_diagnostic_only",
+  "research_question": "Can unchanged pure MAPPO learn one, two, and three persistent waves under equal 1000-step-per-wave horizons?",
+  "algorithm_config": "configs/diag_mappo_learnability_common_3m.yaml",
+  "conditions": {
+    "L1": {"total_waves": 1, "max_steps": 1000, "environment_config": "configs/diag_learnability_1wave_environment.yaml"},
+    "L2": {"total_waves": 2, "max_steps": 2000, "environment_config": "configs/diag_learnability_2wave_environment.yaml"},
+    "L3": {"total_waves": 3, "max_steps": 3000, "environment_config": "configs/persistent_wave_v2_environment.yaml"}
+  },
+  "controlled_difference": ["persistent_waves.total_waves", "simulation.max_steps"],
+  "horizon_rationale": "Keep exactly 1000 steps available per wave so wave-count complexity is not confounded with tighter time pressure.",
+  "training_seeds": [5301, 5302, 5303],
+  "evaluation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "deterministic": true, "common_scenarios": true},
+  "budget": {"sampled_steps": 3000000, "num_envs": 24, "rollout_steps": 256},
+  "checkpoint_selection": {"primary": [900000, 3000000], "best": "diagnostic_only"},
+  "actor_lr_protocol": {"0_to_600k": 0.0003, "600k_to_900k": "linear_to_0.0001", "900k_to_3m": 0.0001},
+  "warm_start": false,
+  "from_scratch": true,
+  "action_space": "frozen_3d_continuous",
+  "blue_policy": "frozen_pending_audit_no_bug",
+  "frozen_contract": {
+    "environment_variant": "persistent_wave_v2",
+    "l3_environment_config_sha256": "ca2108c449065f17a3ad8ea287c94e8aa94dadac8b1e20a7b063afbfd22333ee",
+    "l3_environment_file_sha256": "ad16c516b31c6fd6eeed825da114e53e6092356daed18b2723371750e5dd92b2",
+    "action_config_sha256": "05127f57255e090f9650ad981d8d60e0c04fa1b577229ecc3883afe66a57aead",
+    "blue_policy_config_sha256": "b70d8df8ef5ad3a9f049983d06c8d45e2ec3f3ddcd4e40991bd41e7340c248c9",
+    "blue_policy_source_sha256": "fe2c0938636919a07ad7f37898b78bb25839a02280584954bc35853552425652",
+    "action_semantics": ["delta_psi", "delta_theta", "delta_v"],
+    "action_dim": 3,
+    "observation_dim": 52
+  },
+  "seed_provenance": {
+    "39000000..39000049": "EXPOSED",
+    "40000000..40000049": "EXPOSED",
+    "41000000..41000199": "EXPOSED",
+    "42000000..42000049": "EXPOSED",
+    "43000000..43000049": "EXPOSED_DURING_PREFLIGHT_SMOKE_AND_REJECTED",
+    "44000000..44000049": "SELECTED_FRESH_DEVELOPMENT_DIAGNOSTIC",
+    "33000000..33000199": "RESERVED_UNTOUCHED_FUTURE_FINAL"
+  },
+  "execution_plan": {"mode": "strict_serial", "max_parallel_processes": 1, "seed_order": [5301, 5302, 5303], "within_seed_order": ["L1", "L2", "L3"], "shared_cuda_device": 0},
+  "runs": [
+    {"condition": "L1", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability/l1_seed5301"},
+    {"condition": "L2", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability/l2_seed5301"},
+    {"condition": "L3", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability/l3_seed5301"},
+    {"condition": "L1", "training_seed": 5302, "output_dir": "outputs/diag_mappo_learnability/l1_seed5302"},
+    {"condition": "L2", "training_seed": 5302, "output_dir": "outputs/diag_mappo_learnability/l2_seed5302"},
+    {"condition": "L3", "training_seed": 5302, "output_dir": "outputs/diag_mappo_learnability/l3_seed5302"},
+    {"condition": "L1", "training_seed": 5303, "output_dir": "outputs/diag_mappo_learnability/l1_seed5303"},
+    {"condition": "L2", "training_seed": 5303, "output_dir": "outputs/diag_mappo_learnability/l2_seed5303"},
+    {"condition": "L3", "training_seed": 5303, "output_dir": "outputs/diag_mappo_learnability/l3_seed5303"}
+  ]
+}

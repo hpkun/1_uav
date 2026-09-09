@@ -473,6 +473,21 @@ def validate(check_outputs: bool = True, deep_freshness: bool = True,
         raise RuntimeError("manifest evaluation mismatch")
     if manifest["reserved_untouched_future_final_test"]["executed"] is not False:
         raise RuntimeError("33M marked executed")
+    expected_provenance={
+        "39000000..39000049":"EXPOSED_PREVIOUS_WS_PBRS_DEVELOPMENT",
+        "40000000..40000049":"EXPOSED",
+        "41000000..41000199":"EXPOSED_HISTORICAL_DETERMINISTIC_8M_EVALUATION",
+        "42000000..42000049":"SELECTED_FRESH_DEVELOPMENT_ONLY",
+        "5101..5103":"EXPOSED_HISTORICAL_TRAINING",
+        "5201..5203":"SELECTED_FRESH_TRAINING",
+        "33000000..33000199":"RESERVED_UNTOUCHED_FUTURE_FINAL",
+    }
+    if manifest.get("seed_provenance")!=expected_provenance:
+        raise RuntimeError("manifest seed provenance mismatch")
+    if manifest.get("rejected_exposed_evaluation")!={
+        "seed_start":41000000,"seed_end":41000199,
+        "reason":"historical deterministic 8M evaluation range documented in docs/archive/li2023/environment_diagnosis.md"}:
+        raise RuntimeError("manifest 41M exposure declaration mismatch")
     configs = {cell: load_config(path) for cell, path in CONFIGS.items()}
     cells = validate_critic_context_factorial_configs(configs)
     env = yaml.safe_load((ROOT / "configs/persistent_wave_v2_environment.yaml").read_text(encoding="utf-8"))
@@ -496,10 +511,15 @@ def validate(check_outputs: bool = True, deep_freshness: bool = True,
     text_hits = text_freshness_scan()
     if text_hits["training_5201_5203"] or text_hits["selected_42m"]:
         raise RuntimeError(f"selected seeds are not fresh: {text_hits}")
-    if not text_hits["candidate_40m"]:
-        raise RuntimeError("expected evidence that rejected 40M is already exposed")
-    if not text_hits["exposed_41m"]:
-        raise RuntimeError("expected docs/archive evidence that 41M is already exposed")
+    # The complete local engineering audit must independently recover the
+    # historical evidence.  A deployment checkout may intentionally omit
+    # archived docs/results, so launch-check instead validates the frozen,
+    # exact provenance declarations above while still scanning everything
+    # that is actually present for conflicts with the selected fresh seeds.
+    if not launch_check and not text_hits["candidate_40m"]:
+        raise RuntimeError("full audit expected evidence that rejected 40M is already exposed")
+    if not launch_check and not text_hits["exposed_41m"]:
+        raise RuntimeError("full audit expected docs/archive evidence that 41M is already exposed")
     checkpoint_scan = checkpoint_freshness_scan()
     selected_checkpoint_hits=[]
     for hit in checkpoint_scan["hits"]:
@@ -518,6 +538,8 @@ def validate(check_outputs: bool = True, deep_freshness: bool = True,
                  "selected_evaluation_range":list(EVAL), "candidate_40m":"REJECTED_AS_EXPOSED",
                  "candidate_40m_evidence":text_hits["candidate_40m"],
                  "exposed_41m":"REJECTED_AS_EXPOSED","exposed_41m_evidence":text_hits["exposed_41m"],
+                 "historical_evidence_policy":("FROZEN_MANIFEST_PROVENANCE_FOR_DEPLOYMENT_CHECKOUT"
+                    if launch_check else "INDEPENDENT_REPOSITORY_EVIDENCE_REQUIRED"),
                  "selected_text_hits":[], "checkpoint_metadata_scan":checkpoint_scan,
                  "protocol_declarations_excluded_from_freshness_scan":[str(p.relative_to(ROOT)) for p in sorted(PROTOCOL_DECLARATIONS)],
                  "historical_5101_5103_primary":False, "historical_39m_primary":False,
