@@ -1,7 +1,7 @@
 """Strict offline preflight plus optional tiny CUDA smoke for the learnability ladder."""
 from __future__ import annotations
 
-import argparse, csv, hashlib, json, re, shutil, sys
+import argparse, csv, hashlib, json, re, sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from algorithm.train_modular_mappo import load_config
 from env.factory import make_combat_environment
 
 MANIFEST = ROOT / "experiments/mappo_baseline_learnability_manifest.json"
+SEED_REGISTRY = ROOT / "experiments/current_seed_provenance.json"
 ALGORITHM = ROOT / "configs/diag_mappo_learnability_common_3m.yaml"
 ENV_PATHS = {
     "L1": ROOT / "configs/diag_learnability_1wave_environment.yaml",
@@ -28,10 +29,11 @@ ENV_PATHS = {
 AUDIT = ROOT / "outputs/mappo_baseline_learnability_preflight_audit"
 EXPECTED_SEEDS = (5301, 5302, 5303)
 EXPECTED_EVAL = (44000000, 44000049)
+FUTURE_FINAL = (45000000, 45000199)
 OFF = ("wave_context", "recurrent_memory", "popart", "multi_wave_reward",
        "wave_survival_pbrs", "wave_balancing", "warm_start", "curriculum",
        "policy_anchor", "entity_attention", "advantage_priority", "ppo_stabilization")
-DECLARATIONS = {p.resolve() for p in [MANIFEST, ALGORITHM, Path(__file__).resolve(),
+DECLARATIONS = {p.resolve() for p in [MANIFEST, SEED_REGISTRY, ALGORITHM, Path(__file__).resolve(),
     ROOT / "tools/run_mappo_baseline_learnability.sh", ROOT / "tests/test_mappo_baseline_learnability.py"]}
 
 
@@ -52,6 +54,7 @@ def states(env):
 
 def validate_configs() -> dict:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    registry = json.loads(SEED_REGISTRY.read_text(encoding="utf-8"))
     envs = {name: load_yaml(path) for name, path in ENV_PATHS.items()}
     if any(normalized_env(envs[name]) != normalized_env(envs["L3"]) for name in ("L1", "L2")):
         raise RuntimeError("environment ladder differs outside total_waves/max_steps")
@@ -119,18 +122,33 @@ def validate_configs() -> dict:
     if manifest["evaluation"] != {"seed_start": 44000000, "seed_end": 44000049,
             "episodes": 50, "deterministic": True, "common_scenarios": True}:
         raise RuntimeError("evaluation protocol mismatch")
-    return {"manifest": manifest, "envs": envs, "algorithm": cfg, "lr": expected_lr}
+    ranges = registry["evaluation_ranges"]
+    if ranges["33000000..33000199"]["status"] != "CONTAMINATED_RETIRED_FINAL_RANGE":
+        raise RuntimeError("33M is not retired in current seed registry")
+    if ranges["44000000..44000049"]["status"] != "CURRENT_LEARNABILITY_DEVELOPMENT":
+        raise RuntimeError("44M development status mismatch")
+    if ranges["45000000..45000199"] != {
+            "status": "CURRENT_FUTURE_FINAL_BLOCK", "executed": False,
+            "selection": "first complete fresh 200-seed block scanned from 45M upward",
+            "freshness_evidence": {"repository_text_hits": 0, "outputs_structured_or_log_hits": 0,
+                "checkpoint_metadata_hits": 0, "outputs_files_scanned": 4088, "checkpoints_scanned": 356}}:
+        raise RuntimeError("future-final registry mismatch")
+    if cfg["development_protocol"]["reserved_future_final_test"] != {
+            "seed_start": 45000000, "seed_end": 45000199, "executed": False}:
+        raise RuntimeError("algorithm future-final range mismatch")
+    return {"manifest": manifest, "registry": registry, "envs": envs, "algorithm": cfg, "lr": expected_lr}
 
 
 def classify_seed(value: int):
     if value in EXPECTED_SEEDS: return "training"
     if EXPECTED_EVAL[0] <= value <= EXPECTED_EVAL[1]: return "evaluation"
-    if 33_000_000 <= value <= 33_000_199: return "reserved_33m"
+    if 33_000_000 <= value <= 33_000_199: return "retired_33m"
+    if FUTURE_FINAL[0] <= value <= FUTURE_FINAL[1]: return "future_final"
     return None
 
 
 def freshness_scan(checkpoints: bool = True) -> dict:
-    hits = {"training": [], "evaluation": [], "reserved_33m": []}
+    hits = {"training": [], "evaluation": [], "retired_33m": [], "future_final": []}
     # Scan all repository text except outputs, binary/git data and this protocol's declarations.
     suffixes = {".json", ".jsonl", ".csv", ".yaml", ".yml", ".md", ".txt", ".py", ".sh"}
     pattern = re.compile(r"(?<!\d)(5301|5302|5303|\d{8})(?!\d)")
@@ -140,9 +158,10 @@ def freshness_scan(checkpoints: bool = True) -> dict:
         text = path.read_text(encoding="utf-8", errors="ignore")
         for token in set(pattern.findall(text)):
             category = classify_seed(int(token))
-            # Textual mention of 33M documents its reservation; only structured
-            # output/checkpoint evidence can prove that the reserved range ran.
-            if category in ("training", "evaluation"):
+            # Current protocol declarations are excluded above. Historical 33M
+            # prose is provenance, while any 45M mention outside the current
+            # declarations invalidates the proposed future block.
+            if category in ("training", "evaluation", "future_final"):
                 hits[category].append({"path": str(path.relative_to(ROOT)), "value": int(token), "field": "text"})
     # Outputs: only seed-bearing structured fields/log declarations, avoiding metric-value false positives.
     def walk(value, parts=()):
@@ -293,13 +312,19 @@ def validate(*, deep_freshness: bool, smoke: bool) -> dict:
     blockers = []
     if fresh["hits"]["training"] or fresh["hits"]["evaluation"]:
         blockers.append("candidate training/evaluation seeds are not fresh")
-    if fresh["hits"]["reserved_33m"]:
-        blockers.append("reserved 33M range has prior execution evidence")
+    if fresh["hits"]["future_final"]:
+        blockers.append("future-final 45M block is not fully fresh")
+    retired = fresh["hits"]["retired_33m"]
+    expected_evidence = "outputs\\dev_ea_hwb_stable_cuda_smoke\\post_resume_eval_2ep.json"
+    if not any(row["path"] == expected_evidence and row["value"] == 33000000 for row in retired):
+        blockers.append("retired 33M contamination evidence is missing")
     existing = [r["output_dir"] for r in configs["manifest"]["runs"] if (ROOT / r["output_dir"]).exists()]
     if existing: blockers.append(f"non-fresh output directories: {existing}")
     result = {"status": ("NOT_READY_FOR_MAPPO_BASELINE_LEARNABILITY_DIAGNOSTIC" if blockers else "READY_FOR_MAPPO_BASELINE_LEARNABILITY_DIAGNOSTIC"),
         "blockers": blockers,
         "training_seeds": list(EXPECTED_SEEDS), "evaluation_seeds": list(EXPECTED_EVAL),
+        "retired_final_range": [33000000, 33000199], "future_final_range": list(FUTURE_FINAL),
+        "future_final_executed": False,
         "checkpoints_scanned": fresh["checkpoints_scanned"], "freshness_hits": fresh["hits"],
         "action_dim": 3, "action_config_sha256": configs["manifest"]["frozen_contract"]["action_config_sha256"],
         "environment_ladder": {k: {"waves": v["persistent_waves"]["total_waves"], "max_steps": v["simulation"]["max_steps"], "config_sha256": config_sha256(v)} for k, v in configs["envs"].items()},

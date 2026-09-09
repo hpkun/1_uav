@@ -41,4 +41,5 @@ development_protocol:
   primary_checkpoints: [900000, 3000000]
   best_checkpoint_role: diagnostic_only
   validation: {seed_start: 44000000, seed_end: 44000049, episodes: 50, deterministic: true, common_scenarios: true, is_holdout: false}
-  reserved_future_final_test: {seed_start: 33000000, seed_end: 33000199, executed: false}
+  contaminated_retired_final_range: {seed_start: 33000000, seed_end: 33000199, status: CONTAMINATED_RETIRED_FINAL_RANGE}
+  reserved_future_final_test: {seed_start: 45000000, seed_end: 45000199, executed: false}

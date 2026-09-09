@@ -36,8 +36,12 @@
     "42000000..42000049": "EXPOSED",
     "43000000..43000049": "EXPOSED_DURING_PREFLIGHT_SMOKE_AND_REJECTED",
     "44000000..44000049": "SELECTED_FRESH_DEVELOPMENT_DIAGNOSTIC",
-    "33000000..33000199": "RESERVED_UNTOUCHED_FUTURE_FINAL"
+    "33000000..33000199": "CONTAMINATED_RETIRED_FINAL_RANGE",
+    "45000000..45000199": "CURRENT_FUTURE_FINAL_BLOCK_UNTOUCHED"
   },
+  "seed_registry": "experiments/current_seed_provenance.json",
+  "retired_final_range": {"seed_start": 33000000, "seed_end": 33000199, "status": "CONTAMINATED_RETIRED_FINAL_RANGE", "evidence": "outputs/dev_ea_hwb_stable_cuda_smoke/post_resume_eval_2ep.json"},
+  "reserved_future_final_test": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
   "execution_plan": {"mode": "strict_serial", "max_parallel_processes": 1, "seed_order": [5301, 5302, 5303], "within_seed_order": ["L1", "L2", "L3"], "shared_cuda_device": 0},
   "runs": [
     {"condition": "L1", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability/l1_seed5301"},

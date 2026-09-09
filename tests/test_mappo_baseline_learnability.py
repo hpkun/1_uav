@@ -11,7 +11,10 @@ from algorithm.modules.actor_lr_decay import ActorLRDecayModule
 from env.factory import make_combat_environment
 from env.fixed_policy import GroundAwareNearestTargetPursuitPolicy
 from env.models import AircraftState
-from tools.analyze_mappo_baseline_learnability import enriched, select_endpoint
+from tools.analyze_mappo_baseline_learnability import (
+    completed_training_episodes, diagnostic_labels, enriched, safe_ratio,
+    select_endpoint,
+)
 from tools.preflight_mappo_baseline_learnability import (
     ENV_PATHS, freshness_scan, load_yaml, normalized_env, validate_configs,
 )
@@ -93,15 +96,59 @@ def test_analyzer_preserves_structurally_missing_wave_fields(condition, missing)
     assert result["w1"] == .5
 
 
-def test_candidate_seed_freshness_and_reserved_range_breach_are_detected():
+def test_candidate_seeds_are_fresh_and_final_range_is_reassigned():
     scan = freshness_scan(checkpoints=False)["hits"]
     assert scan["training"] == []
     assert scan["evaluation"] == []
-    # Historical smoke metadata proves the requested "33M untouched" premise
-    # is false; keeping this assertion prevents the launcher from hiding it.
-    assert any(row["value"] == 33_000_000 for row in scan["reserved_33m"])
+    assert scan["future_final"] == []
+    assert any(row["value"] == 33_000_000 for row in scan["retired_33m"])
+    registry = validate_configs()["registry"]["evaluation_ranges"]
+    assert registry["33000000..33000199"]["status"] == "CONTAMINATED_RETIRED_FINAL_RANGE"
+    assert registry["42000000..42000049"]["status"] == "EXPOSED"
+    assert registry["44000000..44000049"]["status"] == "CURRENT_LEARNABILITY_DEVELOPMENT"
+    assert registry["45000000..45000199"]["executed"] is False
 
 
 def test_analyzer_uses_nearest_real_evaluation_without_interpolation():
     rows = [{"sampled_steps": 811008}, {"sampled_steps": 909312}, {"sampled_steps": 1007616}]
     assert select_endpoint(rows, 900_000)["sampled_steps"] == 909312
+
+
+def test_conditional_wave_metrics_preserve_undefined_denominators():
+    assert safe_ratio(.4, .8) == pytest.approx(.5)
+    assert safe_ratio(0, 0) is None
+    assert safe_ratio(None, .5) is None
+    l1 = enriched({"condition": "L1", "training_seed": 1}, {"clear_wave_1_probability": .8})
+    l2 = enriched({"condition": "L2", "training_seed": 1}, {"clear_wave_1_probability": .8, "clear_wave_2_probability": .4})
+    assert l1["q2_w2_given_w1"] is None and l1["q3_w3_given_w2"] is None
+    assert l2["q2_w2_given_w1"] == pytest.approx(.5) and l2["q3_w3_given_w2"] is None
+
+
+def test_persistent_difficulty_is_unresolved_when_l1_is_unstable():
+    def row(condition, step, w1, low, q2=None, q3=None):
+        return {"condition": condition, "sampled_steps": step, "w1_mean": w1,
+                "w1_min": low, "q2_w2_given_w1_mean": q2,
+                "q3_w3_given_w2_mean": q3}
+    rows = [row("L1", 900_000, .2, .1), row("L1", 3_000_000, .3, .2),
+            row("L2", 3_000_000, .2, .1, .1), row("L3", 3_000_000, .1, 0, .1, 0)]
+    labels = diagnostic_labels(rows)
+    assert labels["persistent_wave"] == "PERSISTENT_WAVE_DIFFICULTY_UNRESOLVED"
+    assert labels["persistent_wave_reason"] == "SINGLE_WAVE_BASELINE_UNSTABLE"
+
+
+def test_first_wave_interference_and_later_distribution_candidates():
+    def rows(l2_w1, l3_w1, q2, q3):
+        base = lambda c, s, w, low, a=None, b=None: {"condition": c, "sampled_steps": s,
+            "w1_mean": w, "w1_min": low, "q2_w2_given_w1_mean": a, "q3_w3_given_w2_mean": b}
+        return [base("L1", 900_000, .6, .5), base("L1", 3_000_000, .9, .8),
+                base("L2", 3_000_000, l2_w1, l2_w1, q2), base("L3", 3_000_000, l3_w1, l3_w1, q2, q3)]
+    assert "LONG_HORIZON_OPTIMIZATION_INTERFERENCE" in diagnostic_labels(rows(.7, .65, .9, .9))["diagnostic_candidates"]
+    assert "LATER_WAVE_DISTRIBUTION_DIFFICULTY" in diagnostic_labels(rows(.88, .86, .6, .5))["diagnostic_candidates"]
+
+
+def test_completed_episode_count_uses_recorded_rows_only(tmp_path):
+    path = tmp_path / "training_metrics.jsonl"
+    path.write_text('\n'.join(['{"sampled_steps": 10}', '{"sampled_steps": 20}', '{"sampled_steps": 30}']), encoding="utf-8")
+    assert completed_training_episodes(path, 20) == 2
+    assert completed_training_episodes(path, 25) == 2
+    assert completed_training_episodes(tmp_path / "missing.jsonl", 20) is None

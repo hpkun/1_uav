@@ -1,8 +1,7 @@
 """Analyze the completed 3x3 learnability ladder; never evaluates a policy."""
 from __future__ import annotations
 
-import csv, json, math, shutil, sys
-from collections import defaultdict
+import csv, json, math, shutil
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +36,22 @@ def metric(row, key):
     return float(value) if isinstance(value, (int, float)) and math.isfinite(float(value)) else None
 
 
+def safe_ratio(numerator, denominator):
+    if numerator is None or denominator is None or denominator == 0: return None
+    return float(numerator) / float(denominator)
+
+
+def completed_training_episodes(path: Path, sampled_steps: int) -> int | None:
+    """Count actually recorded completed episodes through a real sampled step."""
+    if not path.is_file(): return None
+    count = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip(): continue
+        row = json.loads(line)
+        if int(row["sampled_steps"]) <= sampled_steps: count += 1
+    return count
+
+
 def select_endpoint(rows, step):
     """Use the nearest real scheduled evaluation; never interpolate."""
     selected = min(rows, key=lambda row: (abs(int(row["sampled_steps"]) - step), int(row["sampled_steps"])))
@@ -65,6 +80,8 @@ def enriched(run, row):
     out["reach_w3"] = out["w2"] if run["condition"] == "L3" else None
     out["red_survivors_entering_w2"] = out["red_survivors_after_wave_1"] if run["condition"] in ("L2", "L3") else None
     out["red_survivors_entering_w3"] = out["red_survivors_after_wave_2"] if run["condition"] == "L3" else None
+    out["q2_w2_given_w1"] = safe_ratio(out["w2"], out["w1"]) if run["condition"] in ("L2", "L3") else None
+    out["q3_w3_given_w2"] = safe_ratio(out["w3"], out["w2"]) if run["condition"] == "L3" else None
     return out
 
 
@@ -74,12 +91,39 @@ def mean_sd(values):
             min(values) if values else None, max(values) if values else None) if values else (None, None, None, None)
 
 
+def diagnostic_labels(summary: list[dict]) -> dict:
+    lookup = {(r["condition"], r["sampled_steps"]): r for r in summary}
+    l1_900, l1 = lookup[("L1", 900_000)], lookup[("L1", 3_000_000)]
+    l2, l3 = lookup[("L2", 3_000_000)], lookup[("L3", 3_000_000)]
+    stable = (l1["w1_mean"] or 0) >= .7 and (l1["w1_min"] or 0) >= .5
+    single = "SINGLE_WAVE_BASELINE_STABLE" if stable else "SINGLE_WAVE_BASELINE_UNSTABLE"
+    budget = "TRAINING_BUDGET_900K_LIKELY_INSUFFICIENT" if (l1["w1_mean"] or 0) - (l1_900["w1_mean"] or 0) >= .1 else "TRAINING_BUDGET_900K_NOT_PRIMARY_LIMITATION"
+    delta_l2 = None if l1["w1_mean"] is None or l2["w1_mean"] is None else l2["w1_mean"] - l1["w1_mean"]
+    delta_l3 = None if l1["w1_mean"] is None or l3["w1_mean"] is None else l3["w1_mean"] - l1["w1_mean"]
+    interference = stable and any(v is not None and v <= -.10 for v in (delta_l2, delta_l3))
+    conditional = [l2.get("q2_w2_given_w1_mean"), l3.get("q2_w2_given_w1_mean"), l3.get("q3_w3_given_w2_mean")]
+    later = stable and not interference and any(v is not None and v < .80 for v in conditional)
+    candidates = []
+    if interference: candidates.append("LONG_HORIZON_OPTIMIZATION_INTERFERENCE")
+    if later: candidates.append("LATER_WAVE_DISTRIBUTION_DIFFICULTY")
+    if not stable:
+        persistent = "PERSISTENT_WAVE_DIFFICULTY_UNRESOLVED"
+        reason = "SINGLE_WAVE_BASELINE_UNSTABLE"
+    elif interference or later:
+        persistent = "PERSISTENT_WAVE_DIFFICULTY_SUPPORTED"; reason = None
+    else:
+        persistent = "PERSISTENT_WAVE_DIFFICULTY_NOT_SUPPORTED"; reason = None
+    return {"single_wave": single, "training_budget": budget, "persistent_wave": persistent,
+            "persistent_wave_reason": reason, "diagnostic_candidates": candidates,
+            "delta_w1_l2_minus_l1": delta_l2, "delta_w1_l3_minus_l1": delta_l3}
+
+
 def main():
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     missing = []
     for run in manifest["runs"]:
         run_dir = ROOT / run["output_dir"]
-        for name in ("run_config.json", "evaluation_history.csv", "latest.pt"):
+        for name in ("run_config.json", "evaluation_history.csv", "training_metrics.jsonl", "latest.pt"):
             if not (run_dir / name).is_file(): missing.append(str((run_dir / name).relative_to(ROOT)))
     if missing: raise RuntimeError("results incomplete; no audit written: " + ", ".join(missing))
     if not torch.cuda.is_available(): raise RuntimeError("CUDA required for checkpoint integrity audit; CPU fallback forbidden")
@@ -101,6 +145,9 @@ def main():
         for row in rows: curves.append(enriched(run, row))
         for step in SUMMARY_STEPS:
             selected = enriched(run, select_endpoint(rows, step)); selected["target_endpoint"] = step
+            selected["endpoint_name"] = "900k scheduled evaluation endpoint" if step == 900_000 else ("3M final/latest endpoint" if step == 3_000_000 else "scheduled learning-curve endpoint")
+            selected["completed_training_episodes"] = completed_training_episodes(
+                run_dir / "training_metrics.jsonl", int(selected["sampled_steps"]))
             endpoints[step].append(selected)
         integrity["runs"].append({"condition": run["condition"], "training_seed": run["training_seed"],
             "sampled_steps": int(state["sampled_steps"]), "device": config["device"],
@@ -116,7 +163,8 @@ def main():
         for step in SUMMARY_STEPS:
             subset = [r for r in endpoints[step] if r["condition"] == condition]
             row = {"condition": condition, "sampled_steps": step, "n_training_seeds": 3}
-            for key in ("w1", "w2", "w3", "average_waves_cleared", "average_return",
+            for key in ("w1", "w2", "w3", "q2_w2_given_w1", "q3_w3_given_w2",
+                        "completed_training_episodes", "average_waves_cleared", "average_return",
                         "average_red_ground_losses", "average_red_boundary_exits"):
                 mean, sd, low, high = mean_sd([r.get(key) for r in subset])
                 row.update({f"{key}_mean": mean, f"{key}_sample_sd": sd, f"{key}_min": low, f"{key}_max": high})
@@ -152,7 +200,11 @@ def main():
             rows = {c: next(r for r in endpoints[step] if r["condition"] == c and r["training_seed"] == seed) for c in ("L1", "L2", "L3")}
             progression.append({"sampled_steps": step, "training_seed": seed,
                 "w1_l1": rows["L1"]["w1"], "w1_l2": rows["L2"]["w1"], "w1_l3": rows["L3"]["w1"],
-                "w2_l2": rows["L2"]["w2"], "w2_l3": rows["L3"]["w2"], "w3_l3": rows["L3"]["w3"]})
+                "delta_w1_l2_minus_l1": rows["L2"]["w1"] - rows["L1"]["w1"],
+                "delta_w1_l3_minus_l1": rows["L3"]["w1"] - rows["L1"]["w1"],
+                "w2_l2": rows["L2"]["w2"], "q2_l2": rows["L2"]["q2_w2_given_w1"],
+                "w2_l3": rows["L3"]["w2"], "q2_l3": rows["L3"]["q2_w2_given_w1"],
+                "w3_l3": rows["L3"]["w3"], "q3_l3": rows["L3"]["q3_w3_given_w2"]})
     write_csv(DEST / "wave_progression.csv", progression)
     safety = [{k: r.get(k) for k in ("condition", "training_seed", "sampled_steps", "average_red_ground_losses", "average_red_boundary_exits", "timeout_rate", "red_ground_losses_wave_1", "red_ground_losses_wave_2", "red_ground_losses_wave_3", "red_boundary_losses_wave_1", "red_boundary_losses_wave_2", "red_boundary_losses_wave_3")} for step in ENDPOINTS for r in endpoints[step]]
     write_csv(DEST / "safety_summary.csv", safety)
@@ -161,25 +213,22 @@ def main():
     source = ROOT / "outputs/mappo_baseline_learnability_preflight_audit"
     for name in ("blue_policy_audit.md", "literature_design_mapping.md"):
         if (source / name).is_file(): shutil.copy2(source / name, DEST / name)
-    l1_900 = next(r for r in summary if r["condition"] == "L1" and r["sampled_steps"] == 900_000)
-    l1_3m = next(r for r in summary if r["condition"] == "L1" and r["sampled_steps"] == 3_000_000)
-    l3_3m = next(r for r in summary if r["condition"] == "L3" and r["sampled_steps"] == 3_000_000)
-    single = "SINGLE_WAVE_BASELINE_STABLE" if (l1_3m["w1_mean"] or 0) >= .7 and (l1_3m["w1_min"] or 0) >= .5 else "SINGLE_WAVE_BASELINE_UNSTABLE"
-    budget = "TRAINING_BUDGET_900K_LIKELY_INSUFFICIENT" if (l1_3m["w1_mean"] or 0) - (l1_900["w1_mean"] or 0) >= .1 else "TRAINING_BUDGET_900K_NOT_PRIMARY_LIMITATION"
-    persistent = "PERSISTENT_WAVE_DIFFICULTY_SUPPORTED" if (l1_3m["w1_mean"] or 0) - (l3_3m["w1_mean"] or 0) >= .1 or (l3_3m["w3_mean"] or 0) < .5 else "PERSISTENT_WAVE_DIFFICULTY_NOT_SUPPORTED"
+    labels = diagnostic_labels(summary)
     (DEST / "final_report.md").write_text(f"""# MAPPO baseline learnability diagnostic
 
-Primary endpoints use latest checkpoints at 900k and 3M; best checkpoints are not used as evidence. The replication unit is the training seed (n=3); the 50 deterministic scenarios are evaluation cases, not independent training replicates.
+Primary endpoints are the nearest real **900k scheduled evaluation endpoint** and the **3M final/latest endpoint**; no interpolation or re-evaluation is performed. Best checkpoints are not used as evidence. The replication unit is the training seed (n=3); the 50 deterministic scenarios are evaluation cases, not independent training replicates.
 
 ## Diagnostic labels
 
-- {single}
-- {budget}
-- {persistent}
+- {labels['single_wave']}
+- {labels['training_budget']}
+- {labels['persistent_wave']} {('reason=' + labels['persistent_wave_reason']) if labels['persistent_wave_reason'] else ''}
+- Diagnostic candidates: {labels['diagnostic_candidates'] or ['NONE']}
+- Mean first-wave interference: ΔW1_L2-L1={labels['delta_w1_l2_minus_l1']}, ΔW1_L3-L1={labels['delta_w1_l3_minus_l1']}
 
 See `condition_summary.csv`, `budget_effects.csv`, and `wave_progression.csv` for the predeclared comparisons. Missing W2/W3 fields for L1 and missing W3 for L2 are intentionally blank, not zero.
 """, encoding="utf-8")
-    print(json.dumps({"status": "ANALYSIS_COMPLETE", "output_dir": str(DEST), "labels": [single, budget, persistent]}, indent=2))
+    print(json.dumps({"status": "ANALYSIS_COMPLETE", "output_dir": str(DEST), "labels": labels}, indent=2))
 
 
 if __name__ == "__main__": main()

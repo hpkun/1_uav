@@ -1,0 +1,39 @@
+{
+  "registry_role": "authoritative_current_seed_status",
+  "updated_for_protocol": "mappo_baseline_learnability_diagnostic",
+  "evaluation_ranges": {
+    "33000000..33000199": {
+      "status": "CONTAMINATED_RETIRED_FINAL_RANGE",
+      "executed": true,
+      "evidence": "outputs/dev_ea_hwb_stable_cuda_smoke/post_resume_eval_2ep.json",
+      "observed_used_subset": [33000000, 33000001]
+    },
+    "39000000..39000049": {"status": "EXPOSED"},
+    "40000000..40000049": {"status": "EXPOSED"},
+    "41000000..41000199": {"status": "EXPOSED"},
+    "42000000..42000049": {"status": "EXPOSED"},
+    "43000000..43000049": {"status": "EXPOSED_DURING_PREFLIGHT_SMOKE"},
+    "44000000..44000049": {
+      "status": "CURRENT_LEARNABILITY_DEVELOPMENT",
+      "executed": false,
+      "purpose": "development diagnostic only"
+    },
+    "45000000..45000199": {
+      "status": "CURRENT_FUTURE_FINAL_BLOCK",
+      "executed": false,
+      "selection": "first complete fresh 200-seed block scanned from 45M upward",
+      "freshness_evidence": {
+        "repository_text_hits": 0,
+        "outputs_structured_or_log_hits": 0,
+        "checkpoint_metadata_hits": 0,
+        "outputs_files_scanned": 4088,
+        "checkpoints_scanned": 356
+      }
+    }
+  },
+  "training_seeds": {
+    "5301": "CURRENT_FRESH_TRAINING_SEEDS",
+    "5302": "CURRENT_FRESH_TRAINING_SEEDS",
+    "5303": "CURRENT_FRESH_TRAINING_SEEDS"
+  }
+}
