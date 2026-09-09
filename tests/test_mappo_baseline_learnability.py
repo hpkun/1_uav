@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +17,8 @@ from tools.analyze_mappo_baseline_learnability import (
     select_endpoint,
 )
 from tools.preflight_mappo_baseline_learnability import (
-    ENV_PATHS, freshness_scan, load_yaml, normalized_env, validate_configs,
+    ENV_PATHS, freshness_scan, load_yaml, normalized_env, retired_33m_evidence_ok,
+    validate, validate_configs, validate_seed_registry,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +109,49 @@ def test_candidate_seeds_are_fresh_and_final_range_is_reassigned():
     assert registry["42000000..42000049"]["status"] == "EXPOSED"
     assert registry["44000000..44000049"]["status"] == "CURRENT_LEARNABILITY_DEVELOPMENT"
     assert registry["45000000..45000199"]["executed"] is False
+
+
+def test_full_audit_accepts_historical_33m_evidence_with_portable_path():
+    registry = copy.deepcopy(validate_configs()["registry"])
+    registry["evaluation_ranges"]["33000000..33000199"]["evidence"] = (
+        r"outputs\dev_ea_hwb_stable_cuda_smoke\post_resume_eval_2ep.json")
+    freshness = {"hits": {"retired_33m": [
+        {"path": "outputs/dev_ea_hwb_stable_cuda_smoke/post_resume_eval_2ep.json",
+         "value": 33000000, "field": "metadata.evaluation_seed_base"},
+        {"path": "outputs/dev_ea_hwb_stable_cuda_smoke/post_resume_eval_2ep.json",
+         "value": 33000001, "field": "metadata.evaluation_seed_end"}]}}
+    assert retired_33m_evidence_ok(freshness, registry)
+
+
+def test_launch_check_allows_missing_retired_33m_archive(monkeypatch):
+    configs = validate_configs()
+    monkeypatch.setattr("tools.preflight_mappo_baseline_learnability.validate_configs", lambda: configs)
+    monkeypatch.setattr("tools.preflight_mappo_baseline_learnability.freshness_scan",
+                        lambda checkpoints: {"hits": {"training": [], "evaluation": [],
+                            "retired_33m": [], "future_final": []}, "checkpoints_scanned": 0})
+    monkeypatch.setattr("tools.preflight_mappo_baseline_learnability.write_audit", lambda result: None)
+    result = validate(deep_freshness=False, smoke=False, launch_check=True)
+    assert result["status"] == "READY_FOR_MAPPO_BASELINE_LEARNABILITY_DIAGNOSTIC"
+
+
+def test_launch_check_rejects_wrong_retired_registry_status():
+    registry = copy.deepcopy(validate_configs()["registry"])
+    registry["evaluation_ranges"]["33000000..33000199"]["status"] = "UNTOUCHED"
+    with pytest.raises(RuntimeError, match="33M is not retired"):
+        validate_seed_registry(registry)
+
+
+def test_launch_check_rejects_any_current_45m_evidence(monkeypatch):
+    configs = validate_configs()
+    monkeypatch.setattr("tools.preflight_mappo_baseline_learnability.validate_configs", lambda: configs)
+    monkeypatch.setattr("tools.preflight_mappo_baseline_learnability.freshness_scan",
+                        lambda checkpoints: {"hits": {"training": [], "evaluation": [],
+                            "retired_33m": [], "future_final": [{"path": "outputs/current.json",
+                            "value": 45000000, "field": "metadata.evaluation_seed_base"}]},
+                            "checkpoints_scanned": 0})
+    monkeypatch.setattr("tools.preflight_mappo_baseline_learnability.write_audit", lambda result: None)
+    result = validate(deep_freshness=False, smoke=False, launch_check=True)
+    assert "future-final 45M block is not fully fresh" in result["blockers"]
 
 
 def test_analyzer_uses_nearest_real_evaluation_without_interpolation():

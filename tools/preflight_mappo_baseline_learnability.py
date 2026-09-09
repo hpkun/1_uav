@@ -48,6 +48,20 @@ def normalized_env(value: dict) -> dict:
     return row
 
 
+def validate_seed_registry(registry: dict) -> None:
+    ranges = registry["evaluation_ranges"]
+    if ranges["33000000..33000199"]["status"] != "CONTAMINATED_RETIRED_FINAL_RANGE":
+        raise RuntimeError("33M is not retired in current seed registry")
+    if ranges["44000000..44000049"]["status"] != "CURRENT_LEARNABILITY_DEVELOPMENT":
+        raise RuntimeError("44M development status mismatch")
+    if ranges["45000000..45000199"] != {
+            "status": "CURRENT_FUTURE_FINAL_BLOCK", "executed": False,
+            "selection": "first complete fresh 200-seed block scanned from 45M upward",
+            "freshness_evidence": {"repository_text_hits": 0, "outputs_structured_or_log_hits": 0,
+                "checkpoint_metadata_hits": 0, "outputs_files_scanned": 4088, "checkpoints_scanned": 356}}:
+        raise RuntimeError("future-final registry mismatch")
+
+
 def states(env):
     return np.stack([s.as_array() for s in env.red]), np.stack([s.as_array() for s in env.blue])
 
@@ -122,17 +136,7 @@ def validate_configs() -> dict:
     if manifest["evaluation"] != {"seed_start": 44000000, "seed_end": 44000049,
             "episodes": 50, "deterministic": True, "common_scenarios": True}:
         raise RuntimeError("evaluation protocol mismatch")
-    ranges = registry["evaluation_ranges"]
-    if ranges["33000000..33000199"]["status"] != "CONTAMINATED_RETIRED_FINAL_RANGE":
-        raise RuntimeError("33M is not retired in current seed registry")
-    if ranges["44000000..44000049"]["status"] != "CURRENT_LEARNABILITY_DEVELOPMENT":
-        raise RuntimeError("44M development status mismatch")
-    if ranges["45000000..45000199"] != {
-            "status": "CURRENT_FUTURE_FINAL_BLOCK", "executed": False,
-            "selection": "first complete fresh 200-seed block scanned from 45M upward",
-            "freshness_evidence": {"repository_text_hits": 0, "outputs_structured_or_log_hits": 0,
-                "checkpoint_metadata_hits": 0, "outputs_files_scanned": 4088, "checkpoints_scanned": 356}}:
-        raise RuntimeError("future-final registry mismatch")
+    validate_seed_registry(registry)
     if cfg["development_protocol"]["reserved_future_final_test"] != {
             "seed_start": 45000000, "seed_end": 45000199, "executed": False}:
         raise RuntimeError("algorithm future-final range mismatch")
@@ -145,6 +149,25 @@ def classify_seed(value: int):
     if 33_000_000 <= value <= 33_000_199: return "retired_33m"
     if FUTURE_FINAL[0] <= value <= FUTURE_FINAL[1]: return "future_final"
     return None
+
+
+def repo_relative_posix(path: Path) -> str:
+    """Return a repository-relative path stable across Windows and POSIX hosts."""
+    return path.relative_to(ROOT).as_posix()
+
+
+def retired_33m_evidence_ok(freshness: dict, registry: dict) -> bool:
+    """Validate retired 33M provenance when a full local archive is available."""
+    expected = "outputs/dev_ea_hwb_stable_cuda_smoke/post_resume_eval_2ep.json"
+    entry = registry["evaluation_ranges"]["33000000..33000199"]
+    evidence = Path(str(entry.get("evidence", "")).replace("\\", "/")).as_posix()
+    if evidence != expected:
+        return False
+    rows = [row for row in freshness["hits"]["retired_33m"] if row["path"] == expected]
+    values = {row["field"]: row["value"] for row in rows}
+    return (values.get("metadata.evaluation_seed_base") == 33000000
+            and values.get("metadata.evaluation_seed_end") == 33000001
+            and entry.get("observed_used_subset") == [33000000, 33000001])
 
 
 def freshness_scan(checkpoints: bool = True) -> dict:
@@ -162,7 +185,7 @@ def freshness_scan(checkpoints: bool = True) -> dict:
             # prose is provenance, while any 45M mention outside the current
             # declarations invalidates the proposed future block.
             if category in ("training", "evaluation", "future_final"):
-                hits[category].append({"path": str(path.relative_to(ROOT)), "value": int(token), "field": "text"})
+                hits[category].append({"path": repo_relative_posix(path), "value": int(token), "field": "text"})
     # Outputs: only seed-bearing structured fields/log declarations, avoiding metric-value false positives.
     def walk(value, parts=()):
         found = []
@@ -202,7 +225,7 @@ def freshness_scan(checkpoints: bool = True) -> dict:
                         cat = classify_seed(int(token))
                         if cat: found.append((cat, int(token), "log_seed_declaration"))
         except (OSError, ValueError, json.JSONDecodeError, csv.Error): pass
-        for cat, value, field in found: hits[cat].append({"path": str(path.relative_to(ROOT)), "value": value, "field": field})
+        for cat, value, field in found: hits[cat].append({"path": repo_relative_posix(path), "value": value, "field": field})
     checkpoint_count = 0
     if checkpoints and output.exists():
         if not torch.cuda.is_available(): raise RuntimeError("CUDA required for checkpoint metadata freshness audit")
@@ -211,7 +234,7 @@ def freshness_scan(checkpoints: bool = True) -> dict:
             try:
                 state = torch.load(path, map_location="cuda", weights_only=False)
                 for cat, value, field in walk(state.get("extra", {}) if isinstance(state, dict) else {}):
-                    hits[cat].append({"path": str(path.relative_to(ROOT)), "value": value, "field": f"checkpoint.extra.{field}"})
+                    hits[cat].append({"path": repo_relative_posix(path), "value": value, "field": f"checkpoint.extra.{field}"})
             except Exception as exc:
                 raise RuntimeError(f"checkpoint metadata unreadable: {path}: {exc}") from exc
     for key in hits:
@@ -306,7 +329,7 @@ def cuda_smoke(configs: dict) -> dict:
     return rows
 
 
-def validate(*, deep_freshness: bool, smoke: bool) -> dict:
+def validate(*, deep_freshness: bool, smoke: bool, launch_check: bool = False) -> dict:
     configs = validate_configs()
     fresh = freshness_scan(checkpoints=deep_freshness)
     blockers = []
@@ -314,9 +337,7 @@ def validate(*, deep_freshness: bool, smoke: bool) -> dict:
         blockers.append("candidate training/evaluation seeds are not fresh")
     if fresh["hits"]["future_final"]:
         blockers.append("future-final 45M block is not fully fresh")
-    retired = fresh["hits"]["retired_33m"]
-    expected_evidence = "outputs\\dev_ea_hwb_stable_cuda_smoke\\post_resume_eval_2ep.json"
-    if not any(row["path"] == expected_evidence and row["value"] == 33000000 for row in retired):
+    if not launch_check and not retired_33m_evidence_ok(fresh, configs["registry"]):
         blockers.append("retired 33M contamination evidence is missing")
     existing = [r["output_dir"] for r in configs["manifest"]["runs"] if (ROOT / r["output_dir"]).exists()]
     if existing: blockers.append(f"non-fresh output directories: {existing}")
@@ -341,7 +362,8 @@ def main():
     parser.add_argument("--cuda-smoke", action="store_true")
     parser.add_argument("--skip-checkpoint-scan", action="store_true")
     args = parser.parse_args()
-    result = validate(deep_freshness=not args.skip_checkpoint_scan, smoke=args.cuda_smoke)
+    result = validate(deep_freshness=not args.skip_checkpoint_scan, smoke=args.cuda_smoke,
+                      launch_check=args.launch_check)
     print(json.dumps(result, indent=2))
     if result["blockers"]: raise SystemExit(2)
 
