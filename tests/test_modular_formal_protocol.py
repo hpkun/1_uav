@@ -14,6 +14,7 @@ from algorithm.modular_mappo.buffer import ModularRolloutBatch
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from algorithm.modular_mappo.trainer import ModularMAPPOTrainer,MODULAR_MAPPO_IMPL_VERSION
 from algorithm.modular_mappo.protocol import validate_modular_checkpoint,is_formal_v2_checkpoint,checkpoint_architecture
+from algorithm.modules.wave_survival_pbrs import mission_context_numpy
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -24,6 +25,40 @@ def formal_state():
 
 def test_fresh_checkpoint_is_formal_v2():
  state,env,config=formal_state();assert MODULAR_MAPPO_IMPL_VERSION==2 and state["modular_mappo_impl_version"]==2 and is_formal_v2_checkpoint(state);assert validate_modular_checkpoint(state,env,config)
+
+def test_historical_disabled_curriculum_wave_mismatch_rejected_but_l3_allowed():
+ state,env,config=formal_state();extra=state["extra"]
+ extra.update({"environment_config":copy.deepcopy(env),"curriculum_config":{"enabled":False},"current_total_waves":3})
+ assert validate_modular_checkpoint(state,env,config)
+ l1=copy.deepcopy(env);l1["persistent_waves"]["total_waves"]=1;l1["simulation"]["max_steps"]=1000
+ bad=copy.deepcopy(state);bad["extra"]["environment_config"]=l1
+ bad["extra"]["environment_config_sha256"]=config_sha256(l1)
+ with pytest.raises(RuntimeError,match="checkpoint declared/runtime wave mismatch under disabled curriculum"):
+  validate_modular_checkpoint(bad,l1,config)
+
+def test_new_checkpoint_environment_provenance_is_strict():
+ state,env,config=formal_state();extra=state["extra"];digest=config_sha256(env)
+ extra.update({"environment_config":copy.deepcopy(env),"runtime_environment_config":copy.deepcopy(env),
+  "curriculum_config":{"enabled":False},"current_total_waves":3,
+  "declared_environment_config_sha256":digest,"declared_total_waves":3,"declared_max_steps":3000,
+  "effective_training_environment_config_sha256":digest,"effective_training_total_waves":3,"effective_training_max_steps":3000,
+  "runtime_environment_config_sha256":digest,"runtime_total_waves":3,"runtime_max_steps":3000,
+  "evaluation_environment_config_sha256":digest,"evaluation_total_waves":3,"evaluation_max_steps":3000,
+  "curriculum_enabled":False})
+ assert validate_modular_checkpoint(state,env,config)
+ state["extra"]["runtime_total_waves"]=2
+ with pytest.raises(RuntimeError,match="runtime_total_waves mismatch"):
+  validate_modular_checkpoint(state,env,config)
+
+def test_mission_markov_context_is_shared_by_training_evaluation_holdout_and_record_paths():
+ cfg={"wave_context":{"enabled":True,"encoding":"mission_markov","context_target":"actor_critic","max_waves":3}}
+ trainer=ModularMAPPOTrainer(hidden_dim=16,modules_config=cfg)
+ args=(trainer,np.asarray([2]),np.asarray([3]),np.asarray([[1,1,0,0]],np.float32),np.asarray([750]),3000)
+ contexts=[mission_context_numpy(*args) for _ in ("training","evaluation","holdout","record")]
+ assert all(np.array_equal(contexts[0],value) for value in contexts[1:])
+ assert np.array_equal(contexts[0],np.asarray([[0,1,0,.5,.75]],np.float32))
+ for relative in ("algorithm/modular_mappo/evaluation.py","tools/run_formal_holdout.py","tools/record_combat_episode.py"):
+  assert "mission_context_numpy" in (ROOT/relative).read_text(encoding="utf-8")
 
 def test_v2_resume_allowed_and_v1_formal_resume_rejected(tmp_path):
  trainer=ModularMAPPOTrainer();path=tmp_path/"v2.pt";trainer.save(path);ModularMAPPOTrainer().load(path)

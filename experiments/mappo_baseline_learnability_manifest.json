@@ -43,6 +43,29 @@
   "retired_final_range": {"seed_start": 33000000, "seed_end": 33000199, "status": "CONTAMINATED_RETIRED_FINAL_RANGE", "evidence": "outputs/dev_ea_hwb_stable_cuda_smoke/post_resume_eval_2ep.json"},
   "reserved_future_final_test": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
   "execution_plan": {"mode": "strict_serial", "max_parallel_processes": 1, "seed_order": [5301, 5302, 5303], "within_seed_order": ["L1", "L2", "L3"], "shared_cuda_device": 0},
+  "historical_execution_audit": {
+    "status": "RUNTIME_CURRICULUM_OVERRIDE_DEFECT_CONFIRMED",
+    "scope": "outputs/diag_mappo_learnability",
+    "cause": "disabled curriculum overwrote effective training persistent_waves.total_waves with 3 while scheduled evaluation used the declared environment",
+    "L1": "INVALID_FOR_ORIGINAL_LADDER",
+    "L2": "INVALID_FOR_ORIGINAL_LADDER",
+    "L3": "VALID_FULL_3_WAVE_BASELINE",
+    "remediation": "disabled curriculum is now a true no-op and runner startup enforces declared/effective/evaluation environment contracts",
+    "historical_outputs_modified": false
+  },
+  "corrected_execution_output_root": "outputs/diag_mappo_learnability_corrected",
+  "corrected_execution_status": "NOT_STARTED",
+  "corrected_runs": [
+    {"condition": "L1", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability_corrected/l1_seed5301"},
+    {"condition": "L2", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability_corrected/l2_seed5301"},
+    {"condition": "L3", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability_corrected/l3_seed5301"},
+    {"condition": "L1", "training_seed": 5302, "output_dir": "outputs/diag_mappo_learnability_corrected/l1_seed5302"},
+    {"condition": "L2", "training_seed": 5302, "output_dir": "outputs/diag_mappo_learnability_corrected/l2_seed5302"},
+    {"condition": "L3", "training_seed": 5302, "output_dir": "outputs/diag_mappo_learnability_corrected/l3_seed5302"},
+    {"condition": "L1", "training_seed": 5303, "output_dir": "outputs/diag_mappo_learnability_corrected/l1_seed5303"},
+    {"condition": "L2", "training_seed": 5303, "output_dir": "outputs/diag_mappo_learnability_corrected/l2_seed5303"},
+    {"condition": "L3", "training_seed": 5303, "output_dir": "outputs/diag_mappo_learnability_corrected/l3_seed5303"}
+  ],
   "runs": [
     {"condition": "L1", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability/l1_seed5301"},
     {"condition": "L2", "training_seed": 5301, "output_dir": "outputs/diag_mappo_learnability/l2_seed5301"},

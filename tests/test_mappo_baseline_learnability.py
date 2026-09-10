@@ -4,16 +4,21 @@ from __future__ import annotations
 import hashlib
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from algorithm.modules.actor_lr_decay import ActorLRDecayModule
+from algorithm.modules.curriculum import CurriculumController
+from algorithm.common.protocol import config_sha256
+from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner,validate_runtime_environment_contract
+from algorithm.train_modular_mappo import load_config
 from env.factory import make_combat_environment
 from env.fixed_policy import GroundAwareNearestTargetPursuitPolicy
 from env.models import AircraftState
 from tools.analyze_mappo_baseline_learnability import (
-    completed_training_episodes, diagnostic_labels, enriched, safe_ratio,
+    audit_actual_environment, completed_training_episodes, diagnostic_labels, enriched, safe_ratio,
     select_endpoint,
 )
 from tools.preflight_mappo_baseline_learnability import (
@@ -51,6 +56,34 @@ def test_ladder_diff_and_first_wave_are_exact_matched():
     assert envs["L1"]["weapon"] == envs["L2"]["weapon"] == envs["L3"]["weapon"]
     assert envs["L1"]["reward"] == envs["L2"]["reward"] == envs["L3"]["reward"]
     assert envs["L1"]["blue_policy"] == envs["L2"]["blue_policy"] == envs["L3"]["blue_policy"]
+
+
+def test_ladder_effective_runtime_matches_declared_with_disabled_curriculum():
+    result = validate_configs(); controller = CurriculumController(result["algorithm"]["modules"]["curriculum"])
+    for condition, expected in {"L1": (1,1000), "L2": (2,2000), "L3": (3,3000)}.items():
+        declared = result["envs"][condition]
+        effective = controller.runtime_config(declared, 1_500_000)
+        contract = validate_runtime_environment_contract(declared,effective,declared,curriculum_enabled=False)
+        assert (contract["effective_training"]["total_waves"],contract["effective_training"]["max_steps"]) == expected
+        assert contract["declared"]["config_sha256"] == contract["effective_training"]["config_sha256"]
+
+
+def test_runner_disabled_curriculum_uses_effective_waves_and_never_rebuilds(monkeypatch,tmp_path):
+    builds=[]
+    def fake_make_vector(self,episode_indices=None):
+        builds.append(1)
+        self.vector=SimpleNamespace(episode_indices=np.zeros(self.num_envs,dtype=np.int64),close=lambda:None)
+        self.observations=np.zeros((self.num_envs,4,52),np.float32)
+        self.alive=np.ones((self.num_envs,4),np.float32);self.blue_alive=self.alive.copy()
+        self.wave=np.ones(self.num_envs,np.int64);self.total=np.full(self.num_envs,self.current_waves,np.int64)
+        self.episode_steps=np.zeros(self.num_envs,np.int64);self.episode_mask=np.zeros(self.num_envs,np.float32)
+        self.actor_hidden,self.critic_hidden=self.trainer.initial_hidden(self.num_envs)
+    monkeypatch.setattr(ModularMAPPOTrainingRunner,"_make_vector",fake_make_vector)
+    cfg=load_config(ROOT/"configs/diag_mappo_learnability_common_3m.yaml")
+    runner=ModularMAPPOTrainingRunner(load_yaml(ENV_PATHS["L1"]),cfg,1,8,"cpu",88_100_001,tmp_path,True)
+    before=copy.deepcopy(runner.runtime_env_config);runner.trainer.sampled_steps=2_000_000
+    runner._maybe_curriculum()
+    assert runner.current_waves==1 and runner.runtime_env_config==before and len(builds)==1
 
 
 def test_blue_reselects_nearest_alive_without_stale_target():
@@ -100,8 +133,9 @@ def test_analyzer_preserves_structurally_missing_wave_fields(condition, missing)
 
 def test_candidate_seeds_are_fresh_and_final_range_is_reassigned():
     scan = freshness_scan(checkpoints=False)["hits"]
-    assert scan["training"] == []
-    assert scan["evaluation"] == []
+    assert all(row["path"].replace("\\","/").startswith(("outputs/diag_mappo_learnability/",
+                                                             "outputs/mappo_baseline_learnability_audit/"))
+               for key in ("training","evaluation") for row in scan[key])
     assert scan["future_final"] == []
     assert any(row["value"] == 33_000_000 for row in scan["retired_33m"])
     registry = validate_configs()["registry"]["evaluation_ranges"]
@@ -197,3 +231,22 @@ def test_completed_episode_count_uses_recorded_rows_only(tmp_path):
     assert completed_training_episodes(path, 20) == 2
     assert completed_training_episodes(path, 25) == 2
     assert completed_training_episodes(tmp_path / "missing.jsonl", 20) is None
+
+
+@pytest.mark.parametrize("condition,declared,runtime,expected",[
+    ("L1",(1,1000),(3,1000),"INVALID_FOR_ORIGINAL_LADDER"),
+    ("L2",(2,2000),(3,2000),"INVALID_FOR_ORIGINAL_LADDER"),
+    ("L3",(3,3000),(3,3000),"VALID_FULL_3_WAVE_BASELINE"),
+])
+def test_analyzer_classifies_historical_runtime_override(tmp_path,condition,declared,runtime,expected):
+    source=load_yaml(ENV_PATHS[condition]);effective=copy.deepcopy(source)
+    source["persistent_waves"]["total_waves"],source["simulation"]["max_steps"]=declared
+    effective["persistent_waves"]["total_waves"],effective["simulation"]["max_steps"]=runtime
+    import yaml,json
+    (tmp_path/"env_config.yaml").write_text(yaml.safe_dump(source),encoding="utf-8")
+    (tmp_path/"runtime_env_config.yaml").write_text(yaml.safe_dump(effective),encoding="utf-8")
+    (tmp_path/"run_config.json").write_text(json.dumps({"environment_config_sha256":config_sha256(source)}),encoding="utf-8")
+    (tmp_path/"run_summary.json").write_text('{"sampled_steps":3000000}',encoding="utf-8")
+    manifest={"conditions":{condition:{"total_waves":declared[0],"max_steps":declared[1]}}}
+    state={"extra":{"current_total_waves":runtime[0]}}
+    assert audit_actual_environment(tmp_path,{"condition":condition},manifest,state)["status"]==expected

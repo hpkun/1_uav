@@ -14,7 +14,9 @@ if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 
 from algorithm.common.protocol import config_sha256
 from algorithm.modules.actor_lr_decay import ActorLRDecayModule
-from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
+from algorithm.modules.curriculum import CurriculumController
+from algorithm.modular_mappo.runner import (ModularMAPPOTrainingRunner,
+    validate_runtime_environment_contract)
 from algorithm.train_modular_mappo import load_config
 from env.factory import make_combat_environment
 
@@ -30,6 +32,7 @@ AUDIT = ROOT / "outputs/mappo_baseline_learnability_preflight_audit"
 EXPECTED_SEEDS = (5301, 5302, 5303)
 EXPECTED_EVAL = (44000000, 44000049)
 FUTURE_FINAL = (45000000, 45000199)
+PROPOSED_OUTPUT_ROOT = ROOT / "outputs/diag_mappo_learnability_corrected"
 OFF = ("wave_context", "recurrent_memory", "popart", "multi_wave_reward",
        "wave_survival_pbrs", "wave_balancing", "warm_start", "curriculum",
        "policy_anchor", "entity_attention", "advantage_priority", "ppo_stabilization")
@@ -105,6 +108,21 @@ def validate_configs() -> dict:
     enabled = [k for k, v in cfg["modules"].items() if v.get("enabled", False)]
     if enabled != ["actor_lr_decay"] or any(cfg["modules"][k]["enabled"] for k in OFF):
         raise RuntimeError(f"not pure baseline protocol: {enabled}")
+    curriculum = CurriculumController(cfg["modules"]["curriculum"])
+    effective_runtime = {}
+    for name, declared in envs.items():
+        effective = curriculum.runtime_config(declared, 0)
+        contract = validate_runtime_environment_contract(
+            declared, effective, declared, curriculum_enabled=curriculum.enabled)
+        d, e = contract["declared"], contract["effective_training"]
+        effective_runtime[name] = {
+            "declared_waves": d["total_waves"], "effective_waves": e["total_waves"],
+            "declared_max_steps": d["max_steps"], "effective_max_steps": e["max_steps"],
+            "declared_hash": d["config_sha256"], "effective_hash": e["config_sha256"],
+            "match": d["config_sha256"] == e["config_sha256"],
+        }
+        if not effective_runtime[name]["match"]:
+            raise RuntimeError(f"{name} effective runtime environment mismatch")
     decay = ActorLRDecayModule(cfg["modules"]["actor_lr_decay"])
     expected_lr = {0: 3e-4, 300_000: 3e-4, 600_000: 3e-4,
                    750_000: 2e-4, 900_000: 1e-4, 1_500_000: 1e-4, 3_000_000: 1e-4}
@@ -133,6 +151,11 @@ def validate_configs() -> dict:
     if len(runs) != 9 or [(r["training_seed"], r["condition"]) for r in runs] != [
             (s, c) for s in EXPECTED_SEEDS for c in ("L1", "L2", "L3")]:
         raise RuntimeError("9-run serial matrix mismatch")
+    corrected = manifest.get("corrected_runs", [])
+    expected_corrected = [(s,c,f"outputs/diag_mappo_learnability_corrected/{c.lower()}_seed{s}")
+                          for s in EXPECTED_SEEDS for c in ("L1","L2","L3")]
+    if [(r["training_seed"],r["condition"],r["output_dir"]) for r in corrected] != expected_corrected:
+        raise RuntimeError("corrected 9-run output matrix mismatch")
     if manifest["evaluation"] != {"seed_start": 44000000, "seed_end": 44000049,
             "episodes": 50, "deterministic": True, "common_scenarios": True}:
         raise RuntimeError("evaluation protocol mismatch")
@@ -140,7 +163,8 @@ def validate_configs() -> dict:
     if cfg["development_protocol"]["reserved_future_final_test"] != {
             "seed_start": 45000000, "seed_end": 45000199, "executed": False}:
         raise RuntimeError("algorithm future-final range mismatch")
-    return {"manifest": manifest, "registry": registry, "envs": envs, "algorithm": cfg, "lr": expected_lr}
+    return {"manifest": manifest, "registry": registry, "envs": envs,
+            "algorithm": cfg, "lr": expected_lr, "effective_runtime": effective_runtime}
 
 
 def classify_seed(value: int):
@@ -297,11 +321,11 @@ BLUE_RULE_POLICY_KEEP_FROZEN
 
 def cuda_smoke(configs: dict) -> dict:
     if not torch.cuda.is_available(): raise RuntimeError("CUDA required; CPU fallback forbidden")
-    root = ROOT / "outputs/mappo_baseline_learnability_smoke_v2"
+    root = ROOT / "outputs/mappo_baseline_learnability_smoke_v3"
     rows = {}
-    reuse = root.exists()
-    for index, condition in enumerate(("L1", "L2", "L3")):
+    for index, condition in enumerate(("L1", "L3")):
         out = root / condition.lower()
+        reuse = out.exists()
         if not reuse:
             cfg = deepcopy(configs["algorithm"])
             smoke_seed = 88_000_001 + index
@@ -315,8 +339,13 @@ def cuda_smoke(configs: dict) -> dict:
         if not (out / "latest.pt").is_file(): raise RuntimeError(f"incomplete existing smoke: {out}")
         state = torch.load(out / "latest.pt", map_location="cuda", weights_only=False)
         finite = all(torch.isfinite(v).all().item() for group in (state["actor"], state["critic"]) for v in group.values())
+        expected_waves = configs["envs"][condition]["persistent_waves"]["total_waves"]
+        actual_waves = int(state.get("extra", {}).get("runtime_total_waves", -1))
+        if actual_waves != expected_waves:
+            raise RuntimeError(f"{condition} smoke runtime waves mismatch: {actual_waves} != {expected_waves}")
         rows[condition] = {"sampled_steps": int(state["sampled_steps"]), "finite": finite,
-            "checkpoint": str(out / "latest.pt"), "reused_existing": reuse}
+            "actual_runtime_waves": actual_waves, "checkpoint": str(out / "latest.pt"),
+            "reused_existing": reuse}
         if not finite: raise RuntimeError(f"{condition} nonfinite checkpoint")
     # Focused L2 transition; no performance evaluation.
     env = make_combat_environment(configs["envs"]["L2"]); env.reset(8_800_100)
@@ -333,13 +362,19 @@ def validate(*, deep_freshness: bool, smoke: bool, launch_check: bool = False) -
     configs = validate_configs()
     fresh = freshness_scan(checkpoints=deep_freshness)
     blockers = []
-    if fresh["hits"]["training"] or fresh["hits"]["evaluation"]:
+    historical_prefixes = ("outputs/diag_mappo_learnability/",
+                           "outputs/mappo_baseline_learnability_audit/")
+    unexpected_development_hits = [row for key in ("training", "evaluation") for row in fresh["hits"][key]
+                                   if not row["path"].replace("\\", "/").startswith(historical_prefixes)]
+    if unexpected_development_hits:
         blockers.append("candidate training/evaluation seeds are not fresh")
     if fresh["hits"]["future_final"]:
         blockers.append("future-final 45M block is not fully fresh")
     if not launch_check and not retired_33m_evidence_ok(fresh, configs["registry"]):
         blockers.append("retired 33M contamination evidence is missing")
-    existing = [r["output_dir"] for r in configs["manifest"]["runs"] if (ROOT / r["output_dir"]).exists()]
+    existing = [str((PROPOSED_OUTPUT_ROOT / f"{condition.lower()}_seed{seed}").relative_to(ROOT))
+                for seed in EXPECTED_SEEDS for condition in ("L1", "L2", "L3")
+                if (PROPOSED_OUTPUT_ROOT / f"{condition.lower()}_seed{seed}").exists()]
     if existing: blockers.append(f"non-fresh output directories: {existing}")
     result = {"status": ("NOT_READY_FOR_MAPPO_BASELINE_LEARNABILITY_DIAGNOSTIC" if blockers else "READY_FOR_MAPPO_BASELINE_LEARNABILITY_DIAGNOSTIC"),
         "blockers": blockers,
@@ -347,8 +382,9 @@ def validate(*, deep_freshness: bool, smoke: bool, launch_check: bool = False) -
         "retired_final_range": [33000000, 33000199], "future_final_range": list(FUTURE_FINAL),
         "future_final_executed": False,
         "checkpoints_scanned": fresh["checkpoints_scanned"], "freshness_hits": fresh["hits"],
+        "historical_development_seed_hits_allowed": True,
         "action_dim": 3, "action_config_sha256": configs["manifest"]["frozen_contract"]["action_config_sha256"],
-        "environment_ladder": {k: {"waves": v["persistent_waves"]["total_waves"], "max_steps": v["simulation"]["max_steps"], "config_sha256": config_sha256(v)} for k, v in configs["envs"].items()},
+        "environment_ladder": configs["effective_runtime"],
         "first_wave_exact_match": True, "enabled_modules": ["actor_lr_decay"],
         "blue_policy_audit": {"implementation_bug_found": False, "keep_frozen": True, "existing_safety": blue_existing_safety()},
         "cuda_smoke": cuda_smoke(configs) if smoke else "NOT_REQUESTED"}

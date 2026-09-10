@@ -34,6 +34,23 @@ def mission_progress_from_wave_state(
     return mission_progress_from_blue_losses(losses, total_waves, team_size)
 
 
+def mission_context_numpy(
+    trainer, wave_index: np.ndarray, total_waves: np.ndarray,
+    blue_alive: np.ndarray, episode_step: np.ndarray, max_steps: int | np.ndarray,
+) -> np.ndarray:
+    """Build the canonical policy/value mission context at an environment state.
+
+    Keeping this adapter shared prevents training, evaluation, holdout and replay
+    tools from silently using different definitions for mission progress/horizon.
+    It is harmless for configurations with wave context disabled.
+    """
+    progress = mission_progress_from_wave_state(wave_index, blue_alive, total_waves)
+    return trainer.context_numpy(
+        wave_index, total_waves, mission_progress=progress,
+        episode_step=episode_step, max_steps=max_steps,
+    )
+
+
 class WaveSurvivalPotentialShapingModule(CapabilityModule):
     name = "wave_survival_pbrs"
 
@@ -104,5 +121,5 @@ class WaveSurvivalPotentialShapingModule(CapabilityModule):
 
 __all__ = [
     "WaveSurvivalPotentialShapingModule", "mission_progress_from_blue_losses",
-    "mission_progress_from_wave_state",
+    "mission_progress_from_wave_state", "mission_context_numpy",
 ]

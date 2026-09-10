@@ -25,6 +25,15 @@ def test_m5_alive_agent_basis_cap_and_mean_preservation():
  assert metrics["weight_wave_2"]>metrics["weight_wave_1"] and max(metrics["weight_wave_1"],metrics["weight_wave_2"])<=2 and abs(metrics["effective_wave_weight_mean"]-1)<1e-10
 def test_m7_curriculum_does_not_mutate_source():
  m=CurriculumController({"enabled":True,"stage1_end":10,"stage2_end":20});source={"persistent_waves":{"total_waves":3}};original=copy.deepcopy(source);assert [m.runtime_config(source,s)["persistent_waves"]["total_waves"] for s in (0,10,20)]==[1,2,3] and source==original
+def test_m7_disabled_curriculum_is_exact_noop_at_all_steps():
+ m=CurriculumController({"enabled":False,"stage1_end":500_000,"stage2_end":1_000_000})
+ source={"simulation":{"max_steps":1000},"persistent_waves":{"total_waves":1},"reward":{"kill_reward":10}}
+ original=copy.deepcopy(source)
+ for step in (0,500_000,1_000_000,3_000_000,9_999_999):
+  effective=m.runtime_config(source,step)
+  assert effective==source and effective is not source and effective["persistent_waves"] is not source["persistent_waves"]
+  assert m.stage(step)==(0,0)
+ assert source==original
 def test_m8_anchor_zero_then_positive_and_frozen():
  torch.manual_seed(0);cur=ModularMAPPOActor(5,2,8);ref=copy.deepcopy(cur);a=PolicyAnchorRegularizer({"enabled":True,"coefficient":.1});a.attach(ref);x=torch.randn(4,5);loss,m=a.loss(cur.distribution(x),ref.distribution(x),0,torch.ones(4));assert m["anchor_kl"]<1e-7 and all(not p.requires_grad for p in ref.parameters());cur.mean.bias.data.add_(.2);_,m=a.loss(cur.distribution(x),ref.distribution(x),0,torch.ones(4));assert m["anchor_kl"]>0
 

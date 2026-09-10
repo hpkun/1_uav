@@ -279,7 +279,11 @@ def run_episode(trainer, kind: str, env_config: dict[str, Any], seed: int) -> di
         if kind == "baseline":
             actions = trainer.act(observation, alive, deterministic=True)
         else:
-            context = trainer.context_numpy(np.asarray([wave]), np.asarray([total_waves]))
+            from algorithm.modules.wave_survival_pbrs import mission_context_numpy
+            context = mission_context_numpy(
+                trainer, np.asarray([wave]), np.asarray([total_waves]),
+                env.blue_alive_mask[None], np.asarray([env.steps]), env.max_steps,
+            )
             actions, actor_hidden = trainer.act(
                 observation[None], alive[None], True, False,
                 context, actor_hidden, episode_mask,

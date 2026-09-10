@@ -228,7 +228,9 @@ def _run_instrumented(spec:dict[str,Any])->dict[str,Any]:
         while True:
             if kind=="baseline":actions=trainer.act(observation,alive,deterministic=True)
             else:
-                context=trainer.context_numpy(np.asarray([wave]),np.asarray([total]))
+                from algorithm.modules.wave_survival_pbrs import mission_context_numpy
+                context=mission_context_numpy(trainer,np.asarray([wave]),np.asarray([total]),
+                    env.blue_alive_mask[None],np.asarray([env.steps]),env.max_steps)
                 actions,actor_hidden=trainer.act(observation[None],alive[None],True,False,context,actor_hidden,episode_mask)
                 _,critic_hidden=trainer.values_step(observation[None],alive[None],context,critic_hidden,episode_mask);actions=actions[0]
             observation,reward,terminated,truncated,info=env.step(actions);returns+=reward

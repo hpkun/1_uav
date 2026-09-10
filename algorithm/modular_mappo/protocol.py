@@ -12,12 +12,51 @@ def checkpoint_architecture(trainer):
  critic_input_dim=trainer.critic.embedding[0].in_features
  return {"actor_class":type(trainer.actor).__name__,"critic_class":type(trainer.critic).__name__,"actor_input_dim":trainer.actor.base_observation_dim+trainer.actor.context_dim,"critic_input_dim":critic_input_dim,"actor_context_dim":trainer.actor.context_dim,"critic_context_dim":trainer.critic.context_dim,"critic_context_injection":trainer.critic.context_injection,"wave_context_encoding":trainer.wave_context.encoding if trainer.wave_context.enabled else "disabled","wave_context_target":trainer.wave_context.target if trainer.wave_context.enabled else "disabled","actor_parameter_count":sum(parameter.numel() for parameter in trainer.actor.parameters()),"critic_parameter_count":sum(parameter.numel() for parameter in trainer.critic.parameters()),"hidden_dim":256 if trainer.actor.entity_attention_enabled else trainer.actor.backbone[0].out_features,"actor_gru_hidden_dim":trainer.actor.recurrent_hidden_dim,"critic_gru_hidden_dim":trainer.critic.recurrent_hidden_dim,"entity_attention_enabled":trainer.actor.entity_attention_enabled,"entity_attention_mode":mode,"entity_dim":trainer.actor.entity_dim if trainer.actor.entity_attention_enabled else 0,"entity_attention_heads":trainer.actor.entity_attention_heads if trainer.actor.entity_attention_enabled else 0,"base_actor_frozen":fbmr,"entity_mean_residual_enabled":fbmr,"max_mean_correction":trainer.actor.max_mean_correction if mode=="frozen_base_mean_residual" else 0.,"dual_bound_enabled":dual,"alpha_abs":trainer.actor.alpha_abs if dual else 0.,"alpha_rel":trainer.actor.alpha_rel if dual else 0.,"log_std_source":"frozen_baseline" if fbmr else "actor_head"}
 
+def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):
+ source=extra.get("environment_config")
+ curriculum=extra.get("curriculum_config",algorithm_config.get("modules",{}).get("curriculum",{}))
+ if (not bool(curriculum.get("enabled",False)) and isinstance(source,dict)
+     and extra.get("current_total_waves") is not None
+     and int(extra["current_total_waves"])!=int(source.get("persistent_waves",{}).get("total_waves",1))):
+  raise RuntimeError("checkpoint declared/runtime wave mismatch under disabled curriculum")
+
 def validate_modular_checkpoint(state,env_config,algorithm_config,expected_runtime=None):
  if state.get("algorithm")!="modular_mappo":raise RuntimeError("checkpoint algorithm mismatch")
  checkpoint_version=state.get("modular_mappo_impl_version")
  if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
  if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
- extra=state.get("extra",{});checks={
+ extra=state.get("extra",{})
+ source=extra.get("environment_config")
+ curriculum_config=extra.get("curriculum_config",algorithm_config.get("modules",{}).get("curriculum",{}))
+ curriculum_enabled=bool(curriculum_config.get("enabled",False))
+ # Backward-compatible forensic guard: old checkpoints did not carry runtime
+ # hashes, but did carry both the declared environment and the actual wave count.
+ _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config)
+ new_keys=("declared_environment_config_sha256","declared_total_waves","declared_max_steps",
+           "effective_training_environment_config_sha256","effective_training_total_waves","effective_training_max_steps",
+           "runtime_environment_config_sha256","runtime_total_waves","runtime_max_steps",
+           "evaluation_environment_config_sha256","evaluation_total_waves","evaluation_max_steps",
+           "curriculum_enabled")
+ if any(key in extra for key in new_keys):
+  missing=[key for key in new_keys if key not in extra]
+  if missing:raise RuntimeError(f"checkpoint runtime environment provenance incomplete: {missing}")
+  if not isinstance(source,dict):raise RuntimeError("checkpoint runtime provenance lacks declared environment_config")
+  runtime_config=extra.get("runtime_environment_config")
+  if not isinstance(runtime_config,dict):raise RuntimeError("checkpoint runtime provenance lacks runtime_environment_config")
+  source_waves=int(source.get("persistent_waves",{}).get("total_waves",1));source_steps=int(source["simulation"]["max_steps"])
+  runtime_waves=int(runtime_config.get("persistent_waves",{}).get("total_waves",1));runtime_steps=int(runtime_config["simulation"]["max_steps"])
+  strict={"declared_environment_config_sha256":config_sha256(source),"declared_total_waves":source_waves,
+          "declared_max_steps":source_steps,"runtime_environment_config_sha256":config_sha256(runtime_config),
+          "runtime_total_waves":runtime_waves,"runtime_max_steps":runtime_steps,
+          "effective_training_environment_config_sha256":config_sha256(runtime_config),
+          "effective_training_total_waves":runtime_waves,"effective_training_max_steps":runtime_steps,
+          "evaluation_environment_config_sha256":config_sha256(source),"evaluation_total_waves":source_waves,
+          "evaluation_max_steps":source_steps,"curriculum_enabled":curriculum_enabled}
+  for key,expected in strict.items():
+   if extra.get(key)!=expected:raise RuntimeError(f"checkpoint {key} mismatch: expected {expected!r}, got {extra.get(key)!r}")
+  if not curriculum_enabled and config_sha256(runtime_config)!=config_sha256(source):
+   raise RuntimeError("checkpoint declared/runtime environment mismatch under disabled curriculum")
+ checks={
   "environment_version":str(env_config.get("environment_version",ENVIRONMENT_VERSION)),
   "environment_variant":str(env_config.get("environment_variant","direct_v2_3")),
   "environment_config_sha256":config_sha256(env_config),
@@ -48,7 +87,7 @@ def validate_modular_branch(state,env_config,algorithm_config,expected_runtime=N
  if state.get("algorithm")!="modular_mappo":raise RuntimeError("branch checkpoint algorithm mismatch")
  if state.get("modular_mappo_impl_version")!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError("branch modular implementation version mismatch")
  if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("branch baseline MAPPO implementation version mismatch")
- extra=state.get("extra",{});source_env=extra.get("environment_config");source_algorithm=extra.get("algorithm_config")
+ extra=state.get("extra",{});_validate_embedded_disabled_curriculum_runtime(extra,algorithm_config);source_env=extra.get("environment_config");source_algorithm=extra.get("algorithm_config")
  if not isinstance(source_env,dict) or not isinstance(source_algorithm,dict):raise RuntimeError("branch checkpoint lacks self-describing source configs")
  if source_env!=env_config:raise RuntimeError("branch environment config differs from source checkpoint")
  if extra.get("environment_config_sha256")!=config_sha256(env_config):raise RuntimeError("branch environment hash mismatch")
@@ -77,7 +116,7 @@ def validate_fbmr_stage2_branch(state,env_config,algorithm_config,expected_runti
  """Strictly validate one 900k Formal MAPPO source and its Stage-2 intervention."""
  if state.get("algorithm")!="modular_mappo":raise RuntimeError("FBMR source algorithm must be modular_mappo")
  if state.get("modular_mappo_impl_version")!=MODULAR_MAPPO_IMPL_VERSION or state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("FBMR source implementation version mismatch")
- extra=state.get("extra",{});source_env=extra.get("environment_config");source=extra.get("algorithm_config")
+ extra=state.get("extra",{});_validate_embedded_disabled_curriculum_runtime(extra,algorithm_config);source_env=extra.get("environment_config");source=extra.get("algorithm_config")
  if not isinstance(source_env,dict) or not isinstance(source,dict):raise RuntimeError("FBMR source lacks embedded configs")
  if source_env!=env_config or extra.get("environment_config_sha256")!=config_sha256(env_config):raise RuntimeError("FBMR source environment mismatch")
  if extra.get("algorithm_config_sha256")!=config_sha256(source) or state.get("module_config_sha256")!=canonical_sha256(source.get("modules",{})):raise RuntimeError("FBMR source self-description hash mismatch")

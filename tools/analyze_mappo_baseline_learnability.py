@@ -1,13 +1,16 @@
 """Analyze the completed 3x3 learnability ladder; never evaluates a policy."""
 from __future__ import annotations
 
-import csv, json, math, shutil
+import csv, json, math, shutil, sys
 from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
+from algorithm.common.protocol import config_sha256
 MANIFEST = ROOT / "experiments/mappo_baseline_learnability_manifest.json"
 DEST = ROOT / "outputs/mappo_baseline_learnability_audit"
 ENDPOINTS = (900_000, 3_000_000)
@@ -50,6 +53,41 @@ def completed_training_episodes(path: Path, sampled_steps: int) -> int | None:
         row = json.loads(line)
         if int(row["sampled_steps"]) <= sampled_steps: count += 1
     return count
+
+
+def audit_actual_environment(run_dir: Path, run: dict, manifest: dict, state: dict) -> dict:
+    """Reconstruct declared, effective training and evaluation identities offline."""
+    expected = manifest["conditions"][run["condition"]]
+    declared = yaml.safe_load((run_dir / "env_config.yaml").read_text(encoding="utf-8"))
+    runtime = yaml.safe_load((run_dir / "runtime_env_config.yaml").read_text(encoding="utf-8"))
+    run_config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+    extra = state.get("extra", {})
+    declared_waves = int(declared.get("persistent_waves", {}).get("total_waves", 1))
+    runtime_waves = int(runtime.get("persistent_waves", {}).get("total_waves", 1))
+    declared_steps = int(declared["simulation"]["max_steps"])
+    runtime_steps = int(runtime["simulation"]["max_steps"])
+    checkpoint_waves = int(extra.get("runtime_total_waves", extra.get("current_total_waves", -1)))
+    checkpoint_steps = int(extra.get("runtime_max_steps", runtime_steps))
+    declared_hash = config_sha256(declared); runtime_hash = config_sha256(runtime)
+    checks = {
+        "declared_expected": (declared_waves, declared_steps) == (int(expected["total_waves"]), int(expected["max_steps"])),
+        "runtime_expected": (runtime_waves, runtime_steps) == (int(expected["total_waves"]), int(expected["max_steps"])),
+        "declared_hash_recorded": run_config.get("environment_config_sha256") == declared_hash,
+        "checkpoint_runtime_matches_file": (checkpoint_waves, checkpoint_steps) == (runtime_waves, runtime_steps),
+    }
+    valid = all(checks.values())
+    status = ("VALID_FULL_3_WAVE_BASELINE" if valid and run["condition"] == "L3"
+              else "VALID_FOR_ORIGINAL_LADDER" if valid else "INVALID_FOR_ORIGINAL_LADDER")
+    return {"status": status, "valid_for_ladder": valid, "checks": checks,
+            "declared_waves": declared_waves, "runtime_waves": runtime_waves,
+            "evaluation_waves": declared_waves, "declared_max_steps": declared_steps,
+            "runtime_max_steps": runtime_steps, "evaluation_max_steps": declared_steps,
+            "declared_hash": declared_hash, "runtime_hash": runtime_hash,
+            "checkpoint_current_total_waves": checkpoint_waves,
+            "checkpoint_runtime_max_steps": checkpoint_steps,
+            "run_summary_sampled_steps": int(summary.get("sampled_steps", -1)),
+            "evaluation_semantics": "declared/source env_config (historical runner behavior)"}
 
 
 def select_endpoint(rows, step):
@@ -120,18 +158,25 @@ def diagnostic_labels(summary: list[dict]) -> dict:
 
 def main():
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    corrected = manifest.get("corrected_runs", [])
+    required = ("env_config.yaml", "runtime_env_config.yaml", "run_config.json", "run_summary.json",
+                "evaluation_history.csv", "training_metrics.jsonl", "latest.pt")
+    use_corrected = bool(corrected) and all(
+        all((ROOT / run["output_dir"] / name).is_file() for name in required) for run in corrected)
+    runs = corrected if use_corrected else manifest["runs"]
     missing = []
-    for run in manifest["runs"]:
+    for run in runs:
         run_dir = ROOT / run["output_dir"]
-        for name in ("run_config.json", "evaluation_history.csv", "training_metrics.jsonl", "latest.pt"):
+        for name in required:
             if not (run_dir / name).is_file(): missing.append(str((run_dir / name).relative_to(ROOT)))
     if missing: raise RuntimeError("results incomplete; no audit written: " + ", ".join(missing))
     if not torch.cuda.is_available(): raise RuntimeError("CUDA required for checkpoint integrity audit; CPU fallback forbidden")
 
     histories, integrity = {}, {"complete": True, "runs": []}
+    validity = {}
     endpoints = {step: [] for step in SUMMARY_STEPS}
     curves = []
-    for run in manifest["runs"]:
+    for run in runs:
         run_dir = ROOT / run["output_dir"]
         config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
         state = torch.load(run_dir / "latest.pt", map_location="cuda", weights_only=False)
@@ -140,18 +185,29 @@ def main():
                 or config["environment_variant"] != "persistent_wave_v2"
                 or config["enabled_modules"] != ["actor_lr_decay"]):
             raise RuntimeError(f"run protocol mismatch: {run_dir}")
+        environment_audit = audit_actual_environment(run_dir, run, manifest, state)
+        validity[(run["condition"], run["training_seed"])] = environment_audit["valid_for_ladder"]
         rows = read_eval(run_dir / "evaluation_history.csv")
         histories[(run["condition"], run["training_seed"])] = rows
-        for row in rows: curves.append(enriched(run, row))
+        for row in rows:
+            item = enriched(run, row); item["protocol_status"] = environment_audit["status"]
+            curves.append(item)
         for step in SUMMARY_STEPS:
             selected = enriched(run, select_endpoint(rows, step)); selected["target_endpoint"] = step
+            selected["protocol_status"] = environment_audit["status"]
             selected["endpoint_name"] = "900k scheduled evaluation endpoint" if step == 900_000 else ("3M final/latest endpoint" if step == 3_000_000 else "scheduled learning-curve endpoint")
             selected["completed_training_episodes"] = completed_training_episodes(
                 run_dir / "training_metrics.jsonl", int(selected["sampled_steps"]))
             endpoints[step].append(selected)
         integrity["runs"].append({"condition": run["condition"], "training_seed": run["training_seed"],
             "sampled_steps": int(state["sampled_steps"]), "device": config["device"],
-            "evaluation_rows": len(rows), "finite_checkpoint": all(torch.isfinite(v).all().item() for group in (state["actor"], state["critic"]) for v in group.values())})
+            "evaluation_rows": len(rows), "finite_checkpoint": all(torch.isfinite(v).all().item() for group in (state["actor"], state["critic"]) for v in group.values()),
+            "environment_protocol": environment_audit})
+
+    ladder_valid = all(validity.values())
+    integrity["execution_source"] = "corrected_runs" if use_corrected else "historical_runs"
+    integrity["ladder_causal_analysis_valid"] = ladder_valid
+    integrity["ladder_status"] = "VALID" if ladder_valid else "LADDER_CAUSAL_ANALYSIS_INVALID"
 
     DEST.mkdir(parents=True, exist_ok=True)
     write_csv(DEST / "latest_900k.csv", endpoints[900_000])
@@ -160,6 +216,8 @@ def main():
 
     summary = []
     for condition in ("L1", "L2", "L3"):
+        if not all(validity[(condition, seed)] for seed in manifest["training_seeds"]):
+            continue
         for step in SUMMARY_STEPS:
             subset = [r for r in endpoints[step] if r["condition"] == condition]
             row = {"condition": condition, "sampled_steps": step, "n_training_seeds": 3}
@@ -177,13 +235,15 @@ def main():
             for seed in manifest["training_seeds"]:
                 h = histories[(condition, seed)]; x = np.asarray([r["sampled_steps"] for r in h], float)
                 y = np.asarray([metric(r, "average_waves_cleared") for r in h], float)
-                aucs.append(float(np.trapz(y, x) / max(x[-1] - x[0], 1)))
+                aucs.append(float(np.trapezoid(y, x) / max(x[-1] - x[0], 1)))
             row["waves_learning_curve_auc_mean"] = float(np.mean(aucs))
             summary.append(row)
     write_csv(DEST / "condition_summary.csv", summary)
 
     effects = []
     for condition in ("L1", "L2", "L3"):
+        if not all(validity[(condition, seed)] for seed in manifest["training_seeds"]):
+            continue
         for seed in manifest["training_seeds"]:
             a = next(r for r in endpoints[900_000] if r["condition"] == condition and r["training_seed"] == seed)
             b = next(r for r in endpoints[3_000_000] if r["condition"] == condition and r["training_seed"] == seed)
@@ -195,7 +255,7 @@ def main():
     write_csv(DEST / "budget_effects.csv", effects)
 
     progression = []
-    for step in ENDPOINTS:
+    for step in ENDPOINTS if ladder_valid else ():
         for seed in manifest["training_seeds"]:
             rows = {c: next(r for r in endpoints[step] if r["condition"] == c and r["training_seed"] == seed) for c in ("L1", "L2", "L3")}
             progression.append({"sampled_steps": step, "training_seed": seed,
@@ -213,20 +273,26 @@ def main():
     source = ROOT / "outputs/mappo_baseline_learnability_preflight_audit"
     for name in ("blue_policy_audit.md", "literature_design_mapping.md"):
         if (source / name).is_file(): shutil.copy2(source / name, DEST / name)
-    labels = diagnostic_labels(summary)
+    labels = (diagnostic_labels(summary) if ladder_valid else {
+        "ladder_causal_analysis": "LADDER_CAUSAL_ANALYSIS_INVALID",
+        "reason": "L1/L2 effective training environments do not match the intended ladder",
+        "valid_descriptive_scope": "L3_FULL_3_WAVE_BASELINE_ONLY",
+    })
+    status_lines = "\n".join(
+        f"- {row['condition']} seed{row['training_seed']}: {row['environment_protocol']['status']}"
+        for row in integrity["runs"]
+    )
     (DEST / "final_report.md").write_text(f"""# MAPPO baseline learnability diagnostic
 
 Primary endpoints are the nearest real **900k scheduled evaluation endpoint** and the **3M final/latest endpoint**; no interpolation or re-evaluation is performed. Best checkpoints are not used as evidence. The replication unit is the training seed (n=3); the 50 deterministic scenarios are evaluation cases, not independent training replicates.
 
-## Diagnostic labels
+## Protocol validity
 
-- {labels['single_wave']}
-- {labels['training_budget']}
-- {labels['persistent_wave']} {('reason=' + labels['persistent_wave_reason']) if labels['persistent_wave_reason'] else ''}
-- Diagnostic candidates: {labels['diagnostic_candidates'] or ['NONE']}
-- Mean first-wave interference: ΔW1_L2-L1={labels['delta_w1_l2_minus_l1']}, ΔW1_L3-L1={labels['delta_w1_l3_minus_l1']}
+- {integrity['ladder_status']}
+{status_lines}
+- Labels: {labels}
 
-See `condition_summary.csv`, `budget_effects.csv`, and `wave_progression.csv` for the predeclared comparisons. Missing W2/W3 fields for L1 and missing W3 for L2 are intentionally blank, not zero.
+When the ladder is invalid, condition/budget summaries contain valid L3 descriptive evidence only and `wave_progression.csv` contains no causal comparisons. A future correctly executed L1/L2/L3 set automatically restores the predeclared ladder analysis.
 """, encoding="utf-8")
     print(json.dumps({"status": "ANALYSIS_COMPLETE", "output_dir": str(DEST), "labels": labels}, indent=2))
 

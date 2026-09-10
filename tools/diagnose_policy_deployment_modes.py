@@ -300,7 +300,11 @@ def run_episode(
     episode_mask = np.zeros(1, dtype=np.float32)
     returns = np.zeros(int(source["num_agents"]), dtype=np.float64)
     while True:
-        context = trainer.context_numpy(np.asarray([wave]), np.asarray([total_waves]))
+        from algorithm.modules.wave_survival_pbrs import mission_context_numpy
+        context = mission_context_numpy(
+            trainer, np.asarray([wave]), np.asarray([total_waves]),
+            environment.blue_alive_mask[None], np.asarray([environment.steps]), environment.max_steps,
+        )
         actions, actor_hidden = custom_action_step(
             trainer, observation[None], alive[None], context, actor_hidden,
             episode_mask, mode, quadrature_nodes,

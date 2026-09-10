@@ -18,6 +18,7 @@ from algorithm.common.protocol import config_sha256
 from algorithm.modular_mappo.factory import build_modular_mappo_trainer
 from algorithm.modular_mappo.protocol import validate_modular_checkpoint
 from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
+from algorithm.modules.wave_survival_pbrs import mission_context_numpy
 from algorithm.train_modular_mappo import load_config
 from tools.combat_visualization import (FEATURE_NAMES, TRACE_SCHEMA_VERSION,
     RecordingPersistentWaveCombatEnv, append_frame, assert_episode_seed_allowed,
@@ -79,7 +80,10 @@ def main() -> None:
     while True:
         wave = np.asarray([env.wave_index], dtype=np.int64)
         total = np.asarray([env.total_waves], dtype=np.int64)
-        context = trainer.context_numpy(wave, total)
+        context = mission_context_numpy(
+            trainer, wave, total, env.blue_alive_mask[None],
+            np.asarray([env.steps]), env.max_steps,
+        )
         actions, _, _, actor_hidden = trainer.act(observation[None], alive[None], deterministic=True, return_policy_data=True, context=context, hidden=actor_hidden, episode_mask=episode_mask)
         _, critic_hidden = trainer.values_step(observation[None], alive[None], context, critic_hidden, episode_mask)
         next_observation, reward, terminated, truncated, info = env.step(actions[0])

@@ -205,6 +205,7 @@ def _load_policy(task: dict[str, Any]):
 
 def run_episode(trainer, env_config: dict[str, Any], episode_seed: int, task: dict[str, Any]) -> dict[str, Any]:
     from env.factory import make_combat_environment
+    from algorithm.modules.wave_survival_pbrs import mission_context_numpy
     env = make_combat_environment(env_config)
     observation, _ = env.reset(int(episode_seed))
     alive = env.red_alive_mask.copy()
@@ -214,7 +215,10 @@ def run_episode(trainer, env_config: dict[str, Any], episode_seed: int, task: di
     actor_hidden, critic_hidden = trainer.initial_hidden(1)
     episode_mask = np.zeros(1, dtype=np.float32)
     while True:
-        context = trainer.context_numpy(np.asarray([wave]), np.asarray([total_waves]))
+        context = mission_context_numpy(
+            trainer, np.asarray([wave]), np.asarray([total_waves]),
+            env.blue_alive_mask[None], np.asarray([env.steps]), env.max_steps,
+        )
         actions, actor_hidden = trainer.act(
             observation[None], alive[None], True, False, context, actor_hidden, episode_mask
         )

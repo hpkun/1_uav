@@ -25,9 +25,50 @@ from .evaluation import evaluate_modular
 from .factory import build_modular_mappo_trainer
 from .protocol import checkpoint_architecture, validate_modular_checkpoint
 from .trainer import MODULAR_MAPPO_IMPL_VERSION
-from algorithm.modules.wave_survival_pbrs import (
-    mission_progress_from_blue_losses, mission_progress_from_wave_state,
-)
+from algorithm.modules.wave_survival_pbrs import mission_context_numpy, mission_progress_from_wave_state
+
+
+def environment_runtime_identity(config: dict[str, Any]) -> dict[str, Any]:
+    """Compact, auditable identity for every environment used by the runner."""
+    return {
+        "environment_variant": config.get("environment_variant", "direct_v2_3"),
+        "environment_version": str(config.get("environment_version", ENVIRONMENT_VERSION)),
+        "total_waves": int(config.get("persistent_waves", {}).get("total_waves", 1)),
+        "max_steps": int(config["simulation"]["max_steps"]),
+        "team_size": int(config["scenario"]["team_size"]),
+        "action_config_sha256": config_sha256(config.get("action", {})),
+        "weapon_config_sha256": config_sha256(config.get("weapon", {})),
+        "reward_config_sha256": config_sha256(config.get("reward", {})),
+        "blue_policy_config_sha256": config_sha256(config.get("blue_policy", {})),
+        "config_sha256": config_sha256(config),
+    }
+
+
+def validate_runtime_environment_contract(
+    declared: dict[str, Any], effective: dict[str, Any], evaluation: dict[str, Any],
+    *, curriculum_enabled: bool,
+) -> dict[str, Any]:
+    """Fail before rollout when declared/training/evaluation semantics diverge."""
+    declared_id = environment_runtime_identity(declared)
+    effective_id = environment_runtime_identity(effective)
+    evaluation_id = environment_runtime_identity(evaluation)
+    if evaluation_id["config_sha256"] != declared_id["config_sha256"]:
+        raise RuntimeError("evaluation environment must equal the declared environment contract")
+    if not curriculum_enabled:
+        if effective_id["config_sha256"] != declared_id["config_sha256"]:
+            raise RuntimeError(
+                "disabled curriculum changed runtime environment: "
+                f"declared_waves={declared_id['total_waves']} effective_waves={effective_id['total_waves']} "
+                f"declared_max_steps={declared_id['max_steps']} effective_max_steps={effective_id['max_steps']} "
+                f"declared_hash={declared_id['config_sha256']} effective_hash={effective_id['config_sha256']}"
+            )
+    else:
+        normalized = deepcopy(effective)
+        normalized.setdefault("persistent_waves", {})["total_waves"] = declared_id["total_waves"]
+        if config_sha256(normalized) != declared_id["config_sha256"]:
+            raise RuntimeError("enabled curriculum changed environment fields other than persistent_waves.total_waves")
+    return {"declared": declared_id, "effective_training": effective_id,
+            "evaluation": evaluation_id, "curriculum_enabled": bool(curriculum_enabled)}
 
 
 class ModularMAPPOTrainingRunner:
@@ -39,7 +80,9 @@ class ModularMAPPOTrainingRunner:
                  reference_checkpoint: str | None = None,
                  resume_mode: bool = False,
                  branch_provenance: dict[str, Any] | None = None) -> None:
-        self.env_config = deepcopy(env_config)
+        self.declared_env_config = deepcopy(env_config)
+        self.env_config = self.declared_env_config  # compatibility alias: always declared/source
+        self.evaluation_env_config = deepcopy(env_config)
         self.algorithm_config = deepcopy(algorithm_config)
         self.output_dir = Path(output_dir)
         self.branch_provenance = deepcopy(branch_provenance or {})
@@ -73,8 +116,14 @@ class ModularMAPPOTrainingRunner:
         self.next_evaluation = self.evaluation_interval
         self.next_checkpoint = self.checkpoint_interval
         self.next_console = self.console_interval
-        self.current_stage, self.current_waves = self.trainer.curriculum.stage(0)
+        self.curriculum_enabled = bool(self.trainer.curriculum.enabled)
+        self.current_stage, _ = self.trainer.curriculum.stage(0)
         self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, 0)
+        self.current_waves = int(self.runtime_env_config.get("persistent_waves", {}).get("total_waves", 1))
+        self.environment_contract = validate_runtime_environment_contract(
+            self.declared_env_config, self.runtime_env_config, self.evaluation_env_config,
+            curriculum_enabled=self.curriculum_enabled,
+        )
         self.vector: ParallelVectorEnv | None = None
         self._make_vector()
         self.recent_episodes: deque[dict[str, Any]] = deque(maxlen=self.recent_window)
@@ -149,6 +198,10 @@ class ModularMAPPOTrainingRunner:
         }
 
     def _make_vector(self, episode_indices: np.ndarray | None = None) -> None:
+        self.environment_contract = validate_runtime_environment_contract(
+            self.declared_env_config, self.runtime_env_config, self.evaluation_env_config,
+            curriculum_enabled=self.curriculum_enabled,
+        )
         if self.vector is not None:
             self.vector.close()
         self.vector = ParallelVectorEnv(
@@ -170,6 +223,8 @@ class ModularMAPPOTrainingRunner:
         )
 
     def _maybe_curriculum(self) -> None:
+        if not self.curriculum_enabled:
+            return
         stage, waves = self.trainer.curriculum.stage(self.trainer.sampled_steps)
         if (stage, waves) == (self.current_stage, self.current_waves):
             return
@@ -177,6 +232,10 @@ class ModularMAPPOTrainingRunner:
         self.current_stage, self.current_waves = stage, waves
         self.curriculum_transitions.append({"sampled_steps": self.trainer.sampled_steps, "stage": stage, "total_waves": waves})
         self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, self.trainer.sampled_steps)
+        self.environment_contract = validate_runtime_environment_contract(
+            self.declared_env_config, self.runtime_env_config, self.evaluation_env_config,
+            curriculum_enabled=True,
+        )
         self._make_vector(previous)
 
     @staticmethod
@@ -261,18 +320,18 @@ class ModularMAPPOTrainingRunner:
         for _ in range(int(steps or self.rollout_steps)):
             obs, alive, pre_wave = self.observations.copy(), self.alive.copy(), self.wave.copy()
             blue_alive = self.blue_alive.copy()
-            progress = mission_progress_from_wave_state(pre_wave, blue_alive, self.total)
             remaining_horizon = np.clip(
                 (float(self.runtime_env_config["simulation"]["max_steps"]) - self.episode_steps)
                 / float(self.runtime_env_config["simulation"]["max_steps"]), 0.0, 1.0,
             ).astype(np.float32)
+            context = mission_context_numpy(
+                self.trainer, pre_wave, self.total, blue_alive, self.episode_steps,
+                self.runtime_env_config["simulation"]["max_steps"],
+            )
+            # The mission-progress component is penultimate in mission_markov.
+            progress = mission_progress_from_wave_state(pre_wave, blue_alive, self.total)
             context_progress_rows.append(progress.copy())
             context_horizon_rows.append(remaining_horizon.copy())
-            context = self.trainer.context_numpy(
-                pre_wave, self.total, mission_progress=progress,
-                episode_step=self.episode_steps,
-                max_steps=self.runtime_env_config["simulation"]["max_steps"],
-            )
             actor_before = None if self.actor_hidden is None else self.actor_hidden.copy()
             critic_before = None if self.critic_hidden is None else self.critic_hidden.copy()
             actions, raw, log_prob, new_actor = self.trainer.act(
@@ -335,12 +394,10 @@ class ModularMAPPOTrainingRunner:
             next_wave = np.asarray([int(row.get("wave_index", 1)) for row in result.infos])
             next_total = np.asarray([int(row.get("total_waves", self.current_waves)) for row in result.infos])
             next_steps = np.asarray([int(row.get("episode_length", 0)) for row in result.infos], dtype=np.int64)
-            next_losses = np.asarray([int(row.get("blue_losses", 0)) for row in result.infos], dtype=np.int64)
-            next_progress = mission_progress_from_blue_losses(next_losses, next_total, self.alive.shape[1])
-            next_context = self.trainer.context_numpy(
-                next_wave, next_total, mission_progress=next_progress,
-                episode_step=next_steps,
-                max_steps=self.runtime_env_config["simulation"]["max_steps"],
+            post_blue = np.stack([np.asarray(row["blue_alive_mask"], dtype=np.float32) for row in result.infos])
+            next_context = mission_context_numpy(
+                self.trainer, next_wave, next_total, post_blue, next_steps,
+                self.runtime_env_config["simulation"]["max_steps"],
             )
             for k in (1, 2, 3):
                 transition = pre_wave == k
@@ -382,7 +439,6 @@ class ModularMAPPOTrainingRunner:
                     self.pbrs_episode_samples[env_id] = 0
             self.observations = result.observations
             self.alive = self.vector.current_alive_masks.copy()
-            post_blue = np.stack([np.asarray(row["blue_alive_mask"], dtype=np.float32) for row in result.infos])
             self.blue_alive = np.where(done[:, None], np.ones_like(post_blue), post_blue)
             self.wave = np.where(done, 1, next_wave)
             self.total = np.where(done, self.current_waves, next_total)
@@ -448,8 +504,20 @@ class ModularMAPPOTrainingRunner:
             "training_total_sampled_steps": self.total_sampled_steps,
             "training_smoke": self.smoke,
             "environment_config_sha256": config_sha256(self.env_config),
+            "declared_environment_config_sha256": self.environment_contract["declared"]["config_sha256"],
+            "declared_total_waves": self.environment_contract["declared"]["total_waves"],
+            "declared_max_steps": self.environment_contract["declared"]["max_steps"],
+            "runtime_environment_config_sha256": self.environment_contract["effective_training"]["config_sha256"],
+            "runtime_total_waves": self.environment_contract["effective_training"]["total_waves"],
+            "runtime_max_steps": self.environment_contract["effective_training"]["max_steps"],
+            "evaluation_environment_config_sha256": self.environment_contract["evaluation"]["config_sha256"],
+            "evaluation_total_waves": self.environment_contract["evaluation"]["total_waves"],
+            "evaluation_max_steps": self.environment_contract["evaluation"]["max_steps"],
+            "curriculum_enabled": self.curriculum_enabled,
+            **self.environment_provenance(),
             "algorithm_config_sha256": config_sha256(self.algorithm_config),
             "environment_config": self.env_config,
+            "runtime_environment_config": self.runtime_env_config,
             "algorithm_config": self.algorithm_config,
             "network_architecture": checkpoint_architecture(self.trainer),
             "curriculum_stage": self.current_stage,
@@ -495,7 +563,7 @@ class ModularMAPPOTrainingRunner:
                "evaluation_seed_base": self.eval_base,
                "evaluation_seed_end": self.eval_base + self.eval_episodes - 1,
                **evaluate_modular(
-            self.trainer, self.env_config, range(self.eval_base, self.eval_base + self.eval_episodes)
+            self.trainer, self.evaluation_env_config, range(self.eval_base, self.eval_base + self.eval_episodes)
         )}
         self.latest_evaluation = row
         self.evaluation_history.append(row)
@@ -558,9 +626,16 @@ class ModularMAPPOTrainingRunner:
             extra=self.trainer.load_fbmr_branch(path,source_checkpoint_sha256,restore_rng=False)
         else:
             extra = self.trainer.load(path, strict_protocol=not branch, restore_rng=False)
-        self.current_stage = int(extra["curriculum_stage"])
-        self.current_waves = int(extra["current_total_waves"])
         self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, self.trainer.sampled_steps)
+        if self.curriculum_enabled:
+            self.current_stage, _ = self.trainer.curriculum.stage(self.trainer.sampled_steps)
+        else:
+            self.current_stage = 0
+        self.current_waves = int(self.runtime_env_config.get("persistent_waves", {}).get("total_waves", 1))
+        self.environment_contract = validate_runtime_environment_contract(
+            self.declared_env_config, self.runtime_env_config, self.evaluation_env_config,
+            curriculum_enabled=self.curriculum_enabled,
+        )
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64) + 1
         self._make_vector(previous)
         self.trainer.restore_rng_state(state)
@@ -593,11 +668,22 @@ class ModularMAPPOTrainingRunner:
                                  source_checkpoint_sha256=source_checkpoint_sha256)
 
     def startup_summary(self) -> dict[str, Any]:
+        ids = self.environment_contract
         return {"algorithm":"modular_mappo","mode":"smoke" if self.smoke else "formal",
                 "device":self.device,"seed":self.seed,"num_envs":self.num_envs,
                 "total_sampled_steps":self.total_sampled_steps,"rollout_steps":self.rollout_steps,
                 "gamma":self.trainer.gamma,"enabled_modules":self.trainer.module_protocol()["enabled_modules"],
                 "environment_variant":self.env_config.get("environment_variant","direct_v2_3"),
+                "curriculum_enabled":self.curriculum_enabled,
+                "declared_waves":ids["declared"]["total_waves"],
+                "declared_max_steps":ids["declared"]["max_steps"],
+                "declared_environment_config_sha256":ids["declared"]["config_sha256"],
+                "effective_training_waves":ids["effective_training"]["total_waves"],
+                "effective_training_max_steps":ids["effective_training"]["max_steps"],
+                "runtime_environment_config_sha256":ids["effective_training"]["config_sha256"],
+                "evaluation_waves":ids["evaluation"]["total_waves"],
+                "evaluation_max_steps":ids["evaluation"]["max_steps"],
+                "evaluation_environment_config_sha256":ids["evaluation"]["config_sha256"],
                 "branch_mode":bool(self.branch_provenance)}
 
     def train_log_line(self) -> str:
@@ -612,7 +698,9 @@ class ModularMAPPOTrainingRunner:
                 f"| wmean={self.last_metrics.get('effective_wave_weight_mean',1):.3f} "
                 f"| bonus={self.reward_bonus_totals[0]:.2f} "
                 f"| anchor={self.last_metrics.get('anchor_kl',0):.3f} "
-                f"| stage={self.current_stage}/{self.current_waves}")
+                f"| curriculum_enabled={self.curriculum_enabled} "
+                f"| training_waves={self.current_waves}" +
+                (f" | curriculum_stage={self.current_stage}" if self.curriculum_enabled else ""))
         return (f"[TRAIN] steps={self.trainer.sampled_steps}/{self.total_sampled_steps} | episodes={self.completed_episode_count} "
                 f"| raw_return={mean('team_raw_environment_return'):.2f} | waves={mean('waves_cleared'):.2f} "
                 f"| red_loss={mean('red_losses'):.2f} | blue_loss={mean('blue_losses'):.2f} "
@@ -642,6 +730,7 @@ class ModularMAPPOTrainingRunner:
             "baseline_mappo_impl_version":MAPPO_IMPL_VERSION,
             "protocol": {**self.trainer.module_protocol(), "network_architecture":checkpoint_architecture(self.trainer),
                          "environment_config_sha256":config_sha256(self.env_config),
+                         **self.environment_provenance(),
                          "algorithm_config_sha256":config_sha256(self.algorithm_config)},
             "sampled_steps": self.trainer.sampled_steps,
             "current_pw_training_sampled_steps": self.trainer.sampled_steps,
@@ -676,6 +765,22 @@ class ModularMAPPOTrainingRunner:
             "branch_provenance": self.branch_provenance,
             "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
             "final_optimization_metrics": self.last_metrics,
+            **self.environment_provenance(),
+        }
+
+    def environment_provenance(self) -> dict[str, Any]:
+        ids = self.environment_contract
+        return {
+            "curriculum_enabled": self.curriculum_enabled,
+            "declared_environment_config_sha256": ids["declared"]["config_sha256"],
+            "declared_total_waves": ids["declared"]["total_waves"],
+            "declared_max_steps": ids["declared"]["max_steps"],
+            "effective_training_environment_config_sha256": ids["effective_training"]["config_sha256"],
+            "effective_training_total_waves": ids["effective_training"]["total_waves"],
+            "effective_training_max_steps": ids["effective_training"]["max_steps"],
+            "evaluation_environment_config_sha256": ids["evaluation"]["config_sha256"],
+            "evaluation_total_waves": ids["evaluation"]["total_waves"],
+            "evaluation_max_steps": ids["evaluation"]["max_steps"],
         }
 
     def run(self) -> dict[str, Any]:
@@ -713,4 +818,5 @@ class ModularMAPPOTrainingRunner:
             self.vector.close()
 
 
-__all__ = ["ModularMAPPOTrainingRunner"]
+__all__ = ["ModularMAPPOTrainingRunner", "environment_runtime_identity",
+           "validate_runtime_environment_contract"]
