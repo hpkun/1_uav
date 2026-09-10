@@ -37,7 +37,11 @@ OFF = ("wave_context", "recurrent_memory", "popart", "multi_wave_reward",
        "wave_survival_pbrs", "wave_balancing", "warm_start", "curriculum",
        "policy_anchor", "entity_attention", "advantage_priority", "ppo_stabilization")
 DECLARATIONS = {p.resolve() for p in [MANIFEST, SEED_REGISTRY, ALGORITHM, Path(__file__).resolve(),
-    ROOT / "tools/run_mappo_baseline_learnability.sh", ROOT / "tests/test_mappo_baseline_learnability.py"]}
+    ROOT / "tools/run_mappo_baseline_learnability.sh", ROOT / "tests/test_mappo_baseline_learnability.py",
+    ROOT / "configs/dev_actor_mission_context_3m.yaml",
+    ROOT / "experiments/actor_mission_context_development_manifest.json",
+    ROOT / "tools/preflight_actor_mission_context.py", ROOT / "tools/run_actor_mission_context_3m.sh",
+    ROOT / "tools/analyze_actor_mission_context.py", ROOT / "tests/test_actor_mission_context.py"]}
 
 
 def load_yaml(path: Path) -> dict:
@@ -363,7 +367,8 @@ def validate(*, deep_freshness: bool, smoke: bool, launch_check: bool = False) -
     fresh = freshness_scan(checkpoints=deep_freshness)
     blockers = []
     historical_prefixes = ("outputs/diag_mappo_learnability/",
-                           "outputs/mappo_baseline_learnability_audit/")
+                           "outputs/mappo_baseline_learnability_audit/",
+                           "outputs/actor_mission_context_preflight/")
     unexpected_development_hits = [row for key in ("training", "evaluation") for row in fresh["hits"][key]
                                    if not row["path"].replace("\\", "/").startswith(historical_prefixes)]
     if unexpected_development_hits:

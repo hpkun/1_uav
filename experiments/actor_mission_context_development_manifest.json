@@ -1,0 +1,67 @@
+{
+  "protocol_role": "development_method_screening",
+  "development_method": "actor_mission_context",
+  "research_question": "在固定三波持续对抗环境中，仅向 Actor 提供显式任务阶段状态，是否改善后续波持续作战能力？",
+  "environment": "configs/persistent_wave_v2_environment.yaml",
+  "algorithm_config": "configs/dev_actor_mission_context_3m.yaml",
+  "method_contract": {
+    "actor_input": "52D tactical observation + 5D algorithm-side mission_markov context",
+    "critic_input": "unchanged baseline centralized critic without mission context",
+    "wave_context_target": "actor_only",
+    "wave_context_encoding": "mission_markov",
+    "mission_context_dim": 5,
+    "actor_input_dim": 57,
+    "critic_context_dim": 0,
+    "from_scratch": true,
+    "warm_start": false,
+    "branch_from_baseline": false
+  },
+  "training_seeds": [5301, 5302, 5303],
+  "paired_seed_note": "Paired seeds are matched environment/training stochastic controls, not bit-identical actor initialization; the 57D actor changes initialization shape by design.",
+  "development_evaluation": {
+    "seed_start": 44000000,
+    "seed_end": 44000049,
+    "episodes": 50,
+    "deterministic": true,
+    "common_scenarios": true,
+    "is_holdout": false
+  },
+  "future_final": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
+  "baseline_references": {
+    "5301": "outputs/diag_mappo_learnability/l3_seed5301",
+    "5302": "outputs/diag_mappo_learnability/l3_seed5302",
+    "5303": "outputs/diag_mappo_learnability/l3_seed5303",
+    "status": "VALID_FULL_3_WAVE_BASELINE",
+    "excluded_historical_conditions": ["L1", "L2"]
+  },
+  "output_root": "outputs/dev_actor_mission_context_3m",
+  "runs": [
+    {"training_seed": 5301, "output_dir": "outputs/dev_actor_mission_context_3m/seed5301"},
+    {"training_seed": 5302, "output_dir": "outputs/dev_actor_mission_context_3m/seed5302"},
+    {"training_seed": 5303, "output_dir": "outputs/dev_actor_mission_context_3m/seed5303"}
+  ],
+  "execution": {"mode": "strict_serial", "max_parallel_processes": 1, "order": [5301, 5302, 5303], "cuda_device": 0},
+  "frozen_environment_contract": {
+    "environment_variant": "persistent_wave_v2",
+    "total_waves": 3,
+    "max_steps": 3000,
+    "team_size": 4,
+    "observation_dim": 52,
+    "action_dim": 3,
+    "environment_config_sha256": "ca2108c449065f17a3ad8ea287c94e8aa94dadac8b1e20a7b063afbfd22333ee",
+    "action_config_sha256": "05127f57255e090f9650ad981d8d60e0c04fa1b577229ecc3883afe66a57aead",
+    "weapon_config_sha256": "e4926808f99ff7a0f00a008d4c300ce8d3b335e4123055b2e7ec6f8cdf4fcafc",
+    "reward_config_sha256": "ca32c924d8e85f7946fb785212691a460aebc175cea05a8edf19c7e3312a2ac8",
+    "blue_policy_config_sha256": "b70d8df8ef5ad3a9f049983d06c8d45e2ec3f3ddcd4e40991bd41e7340c248c9",
+    "blue_policy_source_sha256": "fe2c0938636919a07ad7f37898b78bb25839a02280584954bc35853552425652"
+  },
+  "primary_metric": "average_waves_cleared at 3M final/latest endpoint",
+  "development_gate": {
+    "all_three_method_runs_complete": true,
+    "mean_delta_average_waves_min": 0.15,
+    "paired_average_waves_wins_min": 2,
+    "mean_delta_w1_min": -0.05,
+    "require_mean_q2_or_q3_improvement": true,
+    "labels": ["ACTOR_MISSION_CONTEXT_PROMISING", "ACTOR_MISSION_CONTEXT_WEAK_OR_MIXED", "ACTOR_MISSION_CONTEXT_NOT_SUPPORTED"]
+  }
+}

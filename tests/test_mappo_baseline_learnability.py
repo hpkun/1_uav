@@ -134,7 +134,8 @@ def test_analyzer_preserves_structurally_missing_wave_fields(condition, missing)
 def test_candidate_seeds_are_fresh_and_final_range_is_reassigned():
     scan = freshness_scan(checkpoints=False)["hits"]
     assert all(row["path"].replace("\\","/").startswith(("outputs/diag_mappo_learnability/",
-                                                             "outputs/mappo_baseline_learnability_audit/"))
+                                                             "outputs/mappo_baseline_learnability_audit/",
+                                                             "outputs/actor_mission_context_preflight/"))
                for key in ("training","evaluation") for row in scan[key])
     assert scan["future_final"] == []
     assert any(row["value"] == 33_000_000 for row in scan["retired_33m"])

@@ -515,6 +515,7 @@ class ModularMAPPOTrainingRunner:
             "evaluation_max_steps": self.environment_contract["evaluation"]["max_steps"],
             "curriculum_enabled": self.curriculum_enabled,
             **self.environment_provenance(),
+            **self.method_identity(),
             "algorithm_config_sha256": config_sha256(self.algorithm_config),
             "environment_config": self.env_config,
             "runtime_environment_config": self.runtime_env_config,
@@ -670,6 +671,7 @@ class ModularMAPPOTrainingRunner:
     def startup_summary(self) -> dict[str, Any]:
         ids = self.environment_contract
         return {"algorithm":"modular_mappo","mode":"smoke" if self.smoke else "formal",
+                **self.method_identity(),
                 "device":self.device,"seed":self.seed,"num_envs":self.num_envs,
                 "total_sampled_steps":self.total_sampled_steps,"rollout_steps":self.rollout_steps,
                 "gamma":self.trainer.gamma,"enabled_modules":self.trainer.module_protocol()["enabled_modules"],
@@ -708,16 +710,20 @@ class ModularMAPPOTrainingRunner:
                 f"| alive={tuple(round(self.last_rollout_metrics.get(f'alive_agent_fraction_wave_{k}',0),3) for k in (1,2,3))} "
                 f"| actor={self.last_metrics.get('actor_loss',float('nan')):.4f} | value={self.last_metrics.get('value_loss',float('nan')):.4f} "
                 f"| H={self.last_metrics.get('entropy',float('nan')):.3f} | KL={self.last_metrics.get('approx_kl',float('nan')):.5f} "
+                f"| actor_lr={self.last_metrics.get('actor_learning_rate',float('nan')):.8f} "
                 f"| logR=[{self.last_metrics.get('log_ratio_min',float('nan')):.2f},{self.last_metrics.get('log_ratio_max',float('nan')):.2f}] "
                 f"| underflow={self.last_metrics.get('ratio_underflow_fraction',0):.4f} | {module}")
 
     @staticmethod
     def evaluation_log_line(row: dict[str, Any]) -> str:
+        w1,w2,w3=(row.get(f"clear_wave_{k}_probability") for k in (1,2,3))
+        q2=float("nan") if w1 in (None,0) or w2 is None else float(w2)/float(w1)
+        q3=float("nan") if w2 in (None,0) or w3 is None else float(w3)/float(w2)
         return (f"[EVAL] steps={int(row['sampled_steps'])} | W1/W2/W3="
                 f"{row.get('clear_wave_1_probability',0):.2f}/{row.get('clear_wave_2_probability',0):.2f}/{row.get('clear_wave_3_probability',0):.2f} "
                 f"| waves={row.get('average_waves_cleared',0):.2f} | return={row['average_return']:.2f} "
                 f"| red_loss={row['average_red_loss']:.2f} | blue_loss={row['average_blue_loss']:.2f} "
-                f"| K/L={row.get('kill_loss_ratio',0):.2f} | boundary={row['average_red_boundary_exits']:.2f} "
+                f"| Q2/Q3={q2:.2f}/{q3:.2f} | K/L={row.get('kill_loss_ratio',0):.2f} | boundary={row['average_red_boundary_exits']:.2f} "
                 f"| ground={row['average_red_ground_losses']:.2f}")
 
     def summary(self) -> dict[str, Any]:
@@ -726,6 +732,7 @@ class ModularMAPPOTrainingRunner:
         pretraining = int(self.trainer.warm_start_provenance.get("pretraining_sampled_steps", 0))
         return {
             "algorithm":"modular_mappo",
+            **self.method_identity(),
             "modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,
             "baseline_mappo_impl_version":MAPPO_IMPL_VERSION,
             "protocol": {**self.trainer.module_protocol(), "network_architecture":checkpoint_architecture(self.trainer),
@@ -781,6 +788,17 @@ class ModularMAPPOTrainingRunner:
             "evaluation_environment_config_sha256": ids["evaluation"]["config_sha256"],
             "evaluation_total_waves": ids["evaluation"]["total_waves"],
             "evaluation_max_steps": ids["evaluation"]["max_steps"],
+        }
+
+    def method_identity(self) -> dict[str, Any]:
+        architecture = checkpoint_architecture(self.trainer)
+        return {
+            "development_method": self.algorithm_config.get("development_method", "modular_mappo"),
+            "wave_context_target": self.trainer.wave_context.target if self.trainer.wave_context.enabled else "disabled",
+            "wave_context_encoding": self.trainer.wave_context.encoding if self.trainer.wave_context.enabled else "disabled",
+            "mission_context_dim": int(self.trainer.wave_context.context_dim),
+            "actor_input_dim": int(architecture["actor_input_dim"]),
+            "critic_context_dim": int(architecture["critic_context_dim"]),
         }
 
     def run(self) -> dict[str, Any]:
