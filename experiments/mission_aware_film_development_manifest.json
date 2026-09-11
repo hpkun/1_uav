@@ -1,0 +1,56 @@
+{
+  "protocol_role": "development_method_screening",
+  "development_method": "mission_aware_film",
+  "research_question": "在持续三波空战中，恒等初始化、有界的结构化mission conditioning能否比直接context concatenation更稳定地利用任务阶段信息，并提高后续波持续作战能力？",
+  "environment": "configs/persistent_wave_v2_environment.yaml",
+  "algorithm_config": "configs/dev_mission_aware_film_3m.yaml",
+  "methods": {
+    "baseline": "Plain MAPPO valid L3",
+    "raw_context_ablation": "actor_mission_context completed three-seed development results",
+    "candidate": "mission_aware_film"
+  },
+  "method_contract": {
+    "actor_tactical_input_dim": 52,
+    "actor_context_dim": 5,
+    "critic_context_dim": 0,
+    "mission_film_mode": "bounded_augmented_film",
+    "mission_encoder_hidden_dim": 32,
+    "mission_film_alpha": 0.2,
+    "identity_init": true,
+    "augmented_residual": true,
+    "from_scratch": true,
+    "warm_start": false,
+    "branch": false,
+    "matched_initialization": "For the same seed, Film base backbone/mean/log_std and the full critic are bit-identical to Plain MAPPO; Film-only parameters are additional."
+  },
+  "training_seeds": [5301, 5302, 5303],
+  "development_evaluation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "deterministic": true, "common_scenarios": true, "is_holdout": false},
+  "future_final": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
+  "references": {
+    "baseline_root": "outputs/diag_mappo_learnability",
+    "raw_context_root": "outputs/dev_actor_mission_context_3m"
+  },
+  "output_root": "outputs/dev_mission_aware_film_3m",
+  "runs": [
+    {"training_seed": 5301, "output_dir": "outputs/dev_mission_aware_film_3m/seed5301"},
+    {"training_seed": 5302, "output_dir": "outputs/dev_mission_aware_film_3m/seed5302"},
+    {"training_seed": 5303, "output_dir": "outputs/dev_mission_aware_film_3m/seed5303"}
+  ],
+  "execution": {"mode": "strict_serial", "max_parallel_processes": 1, "order": [5301, 5302, 5303], "cuda_device": 0},
+  "frozen_environment_contract": {
+    "environment_variant": "persistent_wave_v2", "total_waves": 3, "max_steps": 3000, "team_size": 4, "observation_dim": 52, "action_dim": 3,
+    "environment_config_sha256": "ca2108c449065f17a3ad8ea287c94e8aa94dadac8b1e20a7b063afbfd22333ee",
+    "action_config_sha256": "05127f57255e090f9650ad981d8d60e0c04fa1b577229ecc3883afe66a57aead",
+    "weapon_config_sha256": "e4926808f99ff7a0f00a008d4c300ce8d3b335e4123055b2e7ec6f8cdf4fcafc",
+    "reward_config_sha256": "ca32c924d8e85f7946fb785212691a460aebc175cea05a8edf19c7e3312a2ac8",
+    "blue_policy_config_sha256": "b70d8df8ef5ad3a9f049983d06c8d45e2ec3f3ddcd4e40991bd41e7340c248c9",
+    "blue_policy_source_sha256": "fe2c0938636919a07ad7f37898b78bb25839a02280584954bc35853552425652"
+  },
+  "primary_metric": "average_waves_cleared at 3M final/latest endpoint",
+  "development_gate": {
+    "all_three_method_runs_complete": true, "mean_delta_average_waves_min": 0.15,
+    "paired_average_waves_wins_min": 2, "mean_delta_w1_min": -0.05,
+    "require_mean_q2_or_q3_improvement": true,
+    "labels": ["MISSION_AWARE_FILM_PROMISING", "MISSION_AWARE_FILM_WEAK_OR_MIXED", "MISSION_AWARE_FILM_NOT_SUPPORTED"]
+  }
+}

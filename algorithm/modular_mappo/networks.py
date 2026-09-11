@@ -11,11 +11,27 @@ class ModularMAPPOActor(SharedMAPPOActor):
     def __init__(self, observation_dim=52, action_dim=3, hidden_dim=256,
                  log_std_min=-5.0, log_std_max=2.0, activation="relu",
                  context_dim=0, recurrent_hidden_dim=0,
-                 entity_attention_config=None):
+                 entity_attention_config=None, mission_film_config=None):
         self.base_observation_dim=int(observation_dim); self.context_dim=int(context_dim)
         self.recurrent_hidden_dim=int(recurrent_hidden_dim)
-        super().__init__(observation_dim+self.context_dim, action_dim, hidden_dim,
+        film=dict(mission_film_config or {});self.mission_film_enabled=bool(film.get("enabled",False))
+        super().__init__(observation_dim if self.mission_film_enabled else observation_dim+self.context_dim, action_dim, hidden_dim,
                          log_std_min, log_std_max, activation)
+        if self.mission_film_enabled:
+            if self.context_dim<=0:raise ValueError("mission_film requires actor context")
+            self.mission_film_mode=str(film["mode"]);self.mission_encoder_hidden_dim=int(film["encoder_hidden_dim"])
+            self.mission_film_alpha=float(film["alpha"]);self.mission_film_augmented_residual=bool(film["augmented_residual"])
+            self.mission_film_identity_init=bool(film["identity_init"])
+            # Mission-only construction must not perturb the RNG stream used by
+            # the subsequently-created baseline critic.
+            with torch.random.fork_rng(devices=[]):
+                self.mission_encoder=nn.Sequential(nn.Linear(self.context_dim,self.mission_encoder_hidden_dim),nn.ReLU(),
+                                                   nn.Linear(self.mission_encoder_hidden_dim,self.mission_encoder_hidden_dim),nn.ReLU())
+                self.gamma_head=nn.Linear(self.mission_encoder_hidden_dim,hidden_dim)
+                self.beta_head=nn.Linear(self.mission_encoder_hidden_dim,hidden_dim)
+                self.residual_head=nn.Linear(self.mission_encoder_hidden_dim,hidden_dim)
+                for head in (self.gamma_head,self.beta_head,self.residual_head):
+                    nn.init.zeros_(head.weight);nn.init.zeros_(head.bias)
         config=dict(entity_attention_config or {})
         self.entity_attention_enabled=bool(config.get("enabled",False))
         self.entity_attention_mode=str(config.get("mode","replacement"))
@@ -109,10 +125,29 @@ class ModularMAPPOActor(SharedMAPPOActor):
         return encoded,diagnostics
 
     def _input(self, obs, context):
+        if self.mission_film_enabled:return obs
         if not self.context_dim:return obs
         if context is None: raise ValueError("actor wave context is required")
         if context.ndim==obs.ndim-1: context=context.unsqueeze(-2).expand(*obs.shape[:-1],-1)
         return torch.cat((obs,context),-1)
+
+    def _mission_film_encode(self,observations,context):
+        if context is None:raise ValueError("mission_film actor context is required")
+        if context.ndim==observations.ndim-1:context=context.unsqueeze(-2).expand(*observations.shape[:-1],-1)
+        if context.shape[:-1]!=observations.shape[:-1] or context.shape[-1]!=self.context_dim:
+            raise ValueError("mission_film context shape mismatch")
+        h1=self.backbone[1](self.backbone[0](observations));mission=self.mission_encoder(context)
+        alpha=self.mission_film_alpha
+        delta_gamma=alpha*torch.tanh(self.gamma_head(mission));gamma=1.0+delta_gamma
+        beta=alpha*torch.tanh(self.beta_head(mission));residual=alpha*torch.tanh(self.residual_head(mission))
+        h1_film=gamma*h1+beta;pre_h2=self.backbone[2](h1_film)+residual;h2=self.backbone[3](pre_h2)
+        saturation=torch.cat(((delta_gamma.abs()>.9*alpha),(beta.abs()>.9*alpha),(residual.abs()>.9*alpha)),-1).float()
+        diagnostics={"mission_feature_norm":torch.linalg.vector_norm(mission,dim=-1),
+            "film_delta_gamma":delta_gamma,"film_beta":beta,"film_residual":residual,"film_gamma":gamma,
+            "film_hidden_base_norm":torch.linalg.vector_norm(h1,dim=-1),
+            "film_hidden_modulated_norm":torch.linalg.vector_norm(h1_film,dim=-1),
+            "film_saturation":saturation}
+        return h2,diagnostics
 
     def freeze_baseline_policy(self):
         """Freeze the complete legacy policy function used by FBMR-EA."""
@@ -177,6 +212,8 @@ class ModularMAPPOActor(SharedMAPPOActor):
                     encoded=h_base+gate*delta
                 else:
                     encoded=h_base+delta
+        elif self.mission_film_enabled:
+            encoded,diagnostics=self._mission_film_encode(observations,context)
         else:encoded=self.backbone(self._input(observations,context))
         new_hidden=hidden
         if self.recurrent_hidden_dim:

@@ -541,6 +541,7 @@ class ModularMAPPOTrainingRunner:
             "resume_count": self.resume_count,
             "branch_provenance": self.branch_provenance,
             "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
+            "last_optimization_metrics": deepcopy(self.last_metrics),
             "evaluation": evaluation,
         }
         if self.trainer.fbmr_enabled:
@@ -699,8 +700,9 @@ class ModularMAPPOTrainingRunner:
             f"envs={self.num_envs} steps={self.total_sampled_steps} rollout={self.rollout_steps}",
             f"[PROTOCOL] env={self.env_config.get('environment_variant','direct_v2_3')} "
             f"waves={self.current_waves} max_steps={self.runtime_env_config['simulation']['max_steps']} "
-            f"actor_input={method['actor_input_dim']} critic_context={method['critic_context_dim']} "
+            f"actor_input={method['actor_input_dim']} actor_ctx={method['actor_context_dim']} critic_ctx={method['critic_context_dim']} "
             f"wave_context={method['wave_context_target']}/{method['wave_context_encoding']}/{method['mission_context_dim']}D "
+            f"{('mission_film='+method['mission_film_mode']+'/'+str(method['mission_encoder_hidden_dim'])+'D/a'+str(method['mission_film_alpha'])+' ') if method.get('mission_film_enabled') else ''}"
             f"modules={modules} eval={self.eval_episodes}",
         )
 
@@ -817,14 +819,20 @@ class ModularMAPPOTrainingRunner:
 
     def method_identity(self) -> dict[str, Any]:
         architecture = checkpoint_architecture(self.trainer)
-        return {
+        result = {
             "development_method": self.algorithm_config.get("development_method", "modular_mappo"),
             "wave_context_target": self.trainer.wave_context.target if self.trainer.wave_context.enabled else "disabled",
             "wave_context_encoding": self.trainer.wave_context.encoding if self.trainer.wave_context.enabled else "disabled",
             "mission_context_dim": int(self.trainer.wave_context.context_dim),
             "actor_input_dim": int(architecture["actor_input_dim"]),
+            "actor_context_dim": int(architecture["actor_context_dim"]),
             "critic_context_dim": int(architecture["critic_context_dim"]),
         }
+        if self.trainer.mission_film.enabled:
+            result.update({key:architecture[key] for key in ("mission_film_enabled","mission_film_mode",
+                "mission_encoder_hidden_dim","mission_film_alpha","mission_film_identity_init",
+                "mission_film_augmented_residual")})
+        return result
 
     def run(self) -> dict[str, Any]:
         for line in self.startup_console_lines():print(line,flush=True)

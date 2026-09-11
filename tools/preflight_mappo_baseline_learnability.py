@@ -41,7 +41,11 @@ DECLARATIONS = {p.resolve() for p in [MANIFEST, SEED_REGISTRY, ALGORITHM, Path(_
     ROOT / "configs/dev_actor_mission_context_3m.yaml",
     ROOT / "experiments/actor_mission_context_development_manifest.json",
     ROOT / "tools/preflight_actor_mission_context.py", ROOT / "tools/run_actor_mission_context_3m.sh",
-    ROOT / "tools/analyze_actor_mission_context.py", ROOT / "tests/test_actor_mission_context.py"]}
+    ROOT / "tools/analyze_actor_mission_context.py", ROOT / "tests/test_actor_mission_context.py",
+    ROOT / "configs/dev_mission_aware_film_3m.yaml",
+    ROOT / "experiments/mission_aware_film_development_manifest.json",
+    ROOT / "tools/preflight_mission_aware_film.py", ROOT / "tools/run_mission_aware_film_3m.sh",
+    ROOT / "tools/analyze_mission_aware_film.py", ROOT / "tests/test_mission_aware_film.py"]}
 
 
 def load_yaml(path: Path) -> dict:
@@ -371,7 +375,10 @@ def validate(*, deep_freshness: bool, smoke: bool, launch_check: bool = False) -
                            "outputs/mappo_baseline_learnability_audit/",
                            "outputs/actor_mission_context_preflight/",
                            "outputs/dev_actor_mission_context_3m/",
-                           "outputs/actor_mission_context_analysis/")
+                           "outputs/actor_mission_context_analysis/",
+                           "outputs/mission_aware_film_preflight/",
+                           "outputs/dev_mission_aware_film_3m/",
+                           "outputs/mission_aware_film_analysis/")
     unexpected_development_hits = [row for key in ("training", "evaluation") for row in fresh["hits"][key]
                                    if not row["path"].replace("\\", "/").startswith(historical_prefixes)]
     if unexpected_development_hits:

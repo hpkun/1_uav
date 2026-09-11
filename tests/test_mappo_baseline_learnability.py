@@ -137,7 +137,10 @@ def test_candidate_seeds_are_fresh_and_final_range_is_reassigned():
                                                              "outputs/mappo_baseline_learnability_audit/",
                                                              "outputs/actor_mission_context_preflight/",
                                                              "outputs/dev_actor_mission_context_3m/",
-                                                             "outputs/actor_mission_context_analysis/"))
+                                                             "outputs/actor_mission_context_analysis/",
+                                                             "outputs/mission_aware_film_preflight/",
+                                                             "outputs/dev_mission_aware_film_3m/",
+                                                             "outputs/mission_aware_film_analysis/"))
                for key in ("training","evaluation") for row in scan[key])
     assert scan["future_final"] == []
     assert any(row["value"] == 33_000_000 for row in scan["retired_33m"])
