@@ -3,7 +3,7 @@ set -euo pipefail
 
 [[ "${CONDA_DEFAULT_ENV:-}" == "uav" ]] || { echo "Activate conda environment uav first" >&2; exit 1; }
 python -c 'import torch; assert torch.cuda.is_available(), "CUDA required"'
-python -u tools/preflight_actor_mission_context.py
+python -u tools/preflight_actor_mission_context.py --summary
 
 mkdir -p outputs/dev_actor_mission_context_3m
 

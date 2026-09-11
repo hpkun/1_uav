@@ -1,19 +1,22 @@
 """Focused protocol tests for the actor-only mission_markov development method."""
 from __future__ import annotations
 
-import copy,json
+import copy,csv,json
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from algorithm.modular_mappo.factory import build_modular_mappo_trainer
 from algorithm.modular_mappo.protocol import checkpoint_architecture
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from algorithm.modules.wave_survival_pbrs import mission_context_numpy,mission_progress_from_wave_state
 from algorithm.train_modular_mappo import load_config
-from tools.preflight_actor_mission_context import ENV,MANIFEST,load_yaml,resolve_protocol
-from tools.analyze_actor_mission_context import development_label
+from tools.preflight_actor_mission_context import ENV,MANIFEST,load_yaml,resolve_protocol,summary_line,write_audit
+from tools.analyze_actor_mission_context import audit_run,development_label
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -112,3 +115,63 @@ def test_evaluation_log_q_ratios_are_safe_for_missing_or_zero_denominators():
          "average_return":0.,"average_red_loss":1.,"average_blue_loss":2.,
          "average_red_boundary_exits":0.,"average_red_ground_losses":0.}
     assert "Q2/Q3=nan/nan" in ModularMAPPOTrainingRunner.evaluation_log_line(row)
+
+def dummy_log_runner():
+    r=object.__new__(ModularMAPPOTrainingRunner);r.total_sampled_steps=3_000_000;r.completed_episode_count=1927
+    r.recent_episodes=deque([{"team_raw_environment_return":27.11,"waves_cleared":1.32,"red_losses":3.67,"blue_losses":6.42}])
+    off=lambda:SimpleNamespace(enabled=False)
+    r.trainer=SimpleNamespace(sampled_steps=1_600_000,recurrent=off(),popart=off(),wave_balance=off(),
+        reward_adapter=off(),wave_survival_pbrs=off(),anchor=off())
+    r.curriculum_enabled=False;r.current_stage=0;r.current_waves=3;r.reward_bonus_totals=np.zeros(4);r.pbrs_totals=np.zeros(5)
+    r.last_metrics={"actor_loss":-.0064,"value_loss":1.329,"entropy":.397,"approx_kl":.0291,
+        "actor_learning_rate":1e-4,"log_ratio_min":-2.,"log_ratio_max":2.,"ratio_underflow_fraction":0.,
+        "hidden_norm_mean":.2,"hidden_reset_count":4,"sequence_chunks":8,"gru_gradient_norm":.3}
+    r.last_rollout_metrics={"transition_fraction_wave_1":.5,"alive_agent_fraction_wave_1":.5}
+    return r
+
+def test_compact_train_log_contains_core_and_omits_disabled_diagnostics_without_schema_mutation():
+    r=dummy_log_runner();before=copy.deepcopy(r.last_metrics);line=r.train_log_line()
+    for token in ("53.3%","steps=1.60M/3.00M","ep=1927","R=27.11","waves=1.32","red/blue=3.67/6.42","actor=","value=","H=","KL=","lr="):assert token in line
+    for token in ("hiddenA/C","chunks","rsteps","gru_grad","popart","wmean","bonus","anchor","curriculum_enabled","training_waves","logR","underflow","transition","alive"):
+        assert token not in line
+    assert r.last_metrics==before and "log_ratio_min" in r.last_metrics and "ratio_underflow_fraction" in r.last_metrics
+
+def test_train_log_dynamically_adds_recurrent_and_curriculum_only_when_enabled():
+    r=dummy_log_runner();r.trainer.recurrent.enabled=True;r.curriculum_enabled=True;r.current_stage=2;r.current_waves=2
+    line=r.train_log_line();assert "recurrent_h=" in line and "chunks=" in line and "gru_grad=" in line and "stage=2 waves=2" in line
+
+def test_opt_warn_threshold_underflow_and_nonfinite_behavior():
+    r=dummy_log_runner();assert r.optimization_warning_line() is None
+    r.last_metrics["approx_kl"]=.05;assert r.optimization_warning_line().startswith("[OPT_WARN]")
+    r.last_metrics["approx_kl"]=.01;r.last_metrics["ratio_underflow_fraction"]=.001;assert "underflow=0.0010" in r.optimization_warning_line()
+    r.last_metrics["ratio_underflow_fraction"]=0;r.last_metrics["entropy"]=float("nan");assert "[OPT_WARN]" in r.optimization_warning_line()
+
+def test_eval_log_retains_research_metrics_and_progress():
+    row={"sampled_steps":1_800_000,"clear_wave_1_probability":.86,"clear_wave_2_probability":.52,
+         "clear_wave_3_probability":.20,"average_waves_cleared":1.58,"average_return":41.95,
+         "average_red_loss":3.36,"average_blue_loss":7.56,"average_red_boundary_exits":.2,"average_red_ground_losses":.28}
+    line=ModularMAPPOTrainingRunner.evaluation_log_line(row,3_000_000)
+    for token in ("60.0%","W1/W2/W3=0.86/0.52/0.20","Q2/Q3=0.60/0.38","waves=1.58","R=41.95","red/blue=3.36/7.56","boundary=0.20","ground=0.28"):assert token in line
+
+def test_preflight_summary_is_single_compact_line_while_audit_stays_complete(tmp_path):
+    result=resolve_protocol(check_outputs=False);line=summary_line(result)
+    assert line.startswith("[PREFLIGHT] READY") and "actor=57" in line and "future_final=UNUSED" in line
+    assert "config_sha256" not in line and "{" not in line and "\n" not in line
+    write_audit(result,tmp_path);saved=json.loads((tmp_path/"preflight.json").read_text(encoding="utf-8"))
+    assert saved["environment_contract"]["declared"]["config_sha256"] and saved["architecture"]["actor_input_dim"]==57
+
+def test_offline_analyzer_checkpoint_audit_runs_on_cpu(tmp_path,monkeypatch):
+    env=load_yaml(ENV);cfg=load_config(ROOT/"configs/diag_mappo_learnability_common_3m.yaml")
+    trainer=build_modular_mappo_trainer(cfg,"cpu",16,3_000_000);trainer.sampled_steps=3_000_000
+    extra={"environment_config":env,"current_total_waves":3,"curriculum_config":{"enabled":False}}
+    state=trainer.checkpoint_state(extra)
+    for name in ("latest.pt","final.pt","checkpoint_3000000.pt"):torch.save(state,tmp_path/name)
+    (tmp_path/"env_config.yaml").write_text(yaml.safe_dump(env),encoding="utf-8");(tmp_path/"runtime_env_config.yaml").write_text(yaml.safe_dump(env),encoding="utf-8")
+    (tmp_path/"run_config.json").write_text(json.dumps({"enabled_modules":["actor_lr_decay"],"environment_config_sha256":__import__('algorithm.common.protocol',fromlist=['config_sha256']).config_sha256(env)}),encoding="utf-8")
+    (tmp_path/"run_summary.json").write_text('{"sampled_steps":3000000}',encoding="utf-8")
+    fields=["sampled_steps","clear_wave_1_probability","clear_wave_2_probability","clear_wave_3_probability"]
+    with (tmp_path/"evaluation_history.csv").open("w",newline="",encoding="utf-8") as f:w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerow(dict(zip(fields,[3000000,.8,.5,.2])))
+    (tmp_path/"training_metrics.jsonl").write_text("",encoding="utf-8");(tmp_path/"optimization_metrics.jsonl").write_text("",encoding="utf-8")
+    monkeypatch.setattr(torch.cuda,"is_available",lambda:False)
+    _,audit=audit_run(tmp_path,"baseline",5301,{})
+    assert audit["checkpoint_map_location"]=="cpu" and audit["finite_checkpoint"] is True

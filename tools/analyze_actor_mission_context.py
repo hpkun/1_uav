@@ -57,9 +57,11 @@ def audit_run(directory,method,seed,manifest):
     if missing:raise RuntimeError(f"incomplete {method} seed{seed}: {missing}")
     run=json.loads((directory/"run_config.json").read_text(encoding="utf-8"))
     summary=json.loads((directory/"run_summary.json").read_text(encoding="utf-8"))
-    state=torch.load(directory/"latest.pt",map_location="cuda",weights_only=False);extra=state.get("extra",{})
+    state=torch.load(directory/"latest.pt",map_location="cpu",weights_only=False);extra=state.get("extra",{})
     if int(state.get("sampled_steps",-1))!=3_000_000 or int(summary.get("sampled_steps",-1))!=3_000_000:
         raise RuntimeError(f"incomplete 3M endpoint: {directory}")
+    if not all(torch.isfinite(value).all().item() for group in (state.get("actor",{}),state.get("critic",{})) for value in group.values()):
+        raise RuntimeError(f"non-finite checkpoint tensors: {directory}")
     pseudo={"conditions":{"L3":{"total_waves":3,"max_steps":3000}}}
     env_audit=audit_actual_environment(directory,{"condition":"L3"},pseudo,state)
     if env_audit["status"]!="VALID_FULL_3_WAVE_BASELINE":raise RuntimeError(f"invalid runtime environment: {directory}")
@@ -73,7 +75,8 @@ def audit_run(directory,method,seed,manifest):
         raise RuntimeError(f"baseline is not valid Plain MAPPO L3: {directory}")
     rows=read_eval(directory/"evaluation_history.csv")
     return rows,{"method":method,"training_seed":seed,"directory":str(directory),
-        "sampled_steps":int(state["sampled_steps"]),"evaluation_rows":len(rows),"environment":env_audit}
+        "sampled_steps":int(state["sampled_steps"]),"evaluation_rows":len(rows),
+        "checkpoint_map_location":"cpu","finite_checkpoint":True,"environment":env_audit}
 
 def summarize(values):
     clean=[float(v) for v in values if v is not None]
@@ -92,7 +95,6 @@ def development_label(aggregate,complete=True):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("--baseline-root",default="outputs/diag_mappo_learnability");
     parser.add_argument("--method-root",default="outputs/dev_actor_mission_context_3m");parser.add_argument("--output-dir",default=str(DEST));args=parser.parse_args()
-    if not torch.cuda.is_available():raise RuntimeError("CUDA required for checkpoint audit; CPU fallback forbidden")
     manifest=json.loads(MANIFEST.read_text(encoding="utf-8"));baseline_root=Path(args.baseline_root);method_root=Path(args.method_root)
     if not baseline_root.is_absolute():baseline_root=ROOT/baseline_root
     if not method_root.is_absolute():method_root=ROOT/method_root

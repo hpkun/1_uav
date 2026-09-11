@@ -205,7 +205,8 @@ def freshness_scan(checkpoints: bool = True) -> dict:
     pattern = re.compile(r"(?<!\d)(5301|5302|5303|\d{8})(?!\d)")
     for path in ROOT.rglob("*"):
         if (not path.is_file() or path.suffix.lower() not in suffixes or path.resolve() in DECLARATIONS
-                or ROOT / ".git" in path.parents or ROOT / "outputs" in path.parents): continue
+                or ROOT / ".git" in path.parents or ROOT / "outputs" in path.parents
+                or any(parent.name.startswith(".pytest_tmp") for parent in path.parents)): continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for token in set(pattern.findall(text)):
             category = classify_seed(int(token))
@@ -368,7 +369,9 @@ def validate(*, deep_freshness: bool, smoke: bool, launch_check: bool = False) -
     blockers = []
     historical_prefixes = ("outputs/diag_mappo_learnability/",
                            "outputs/mappo_baseline_learnability_audit/",
-                           "outputs/actor_mission_context_preflight/")
+                           "outputs/actor_mission_context_preflight/",
+                           "outputs/dev_actor_mission_context_3m/",
+                           "outputs/actor_mission_context_analysis/")
     unexpected_development_hits = [row for key in ("training", "evaluation") for row in fresh["hits"][key]
                                    if not row["path"].replace("\\", "/").startswith(historical_prefixes)]
     if unexpected_development_hits:

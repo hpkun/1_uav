@@ -134,13 +134,24 @@ def cuda_smoke(protocol):
             "runtime_max_steps":extra["runtime_max_steps"],"actor_input_dim":extra["actor_input_dim"],
             "critic_context_dim":extra["critic_context_dim"],"checkpoint":str(out/"latest.pt")}
 
+def summary_line(result):
+    env=result["environment_contract"]["effective_training"];arch=result["architecture"]
+    return (f"[PREFLIGHT] READY | method={result['development_method']} | waves={env['total_waves']} "
+            f"| max_steps={env['max_steps']} | actor={arch['actor_input_dim']} | critic_ctx={arch['critic_context_dim']} "
+            f"| seeds={','.join(map(str,result['training_seeds']))} "
+            f"| eval={result['evaluation_seed_range'][0]}..{result['evaluation_seed_range'][1]} | future_final=UNUSED")
+
+def write_audit(result,output=AUDIT):
+    output=Path(output);output.mkdir(parents=True,exist_ok=True)
+    (output/"preflight.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
+    (output/"preflight.md").write_text("# Actor mission-context preflight\n\n```json\n"+json.dumps(result,indent=2)+"\n```\n",encoding="utf-8")
+
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--cuda-smoke",action="store_true");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--cuda-smoke",action="store_true")
+    mode=parser.add_mutually_exclusive_group();mode.add_argument("--summary",action="store_true");mode.add_argument("--verbose",action="store_true");args=parser.parse_args()
     result=resolve_protocol();result["cuda_smoke"]=cuda_smoke(result) if args.cuda_smoke else "NOT_REQUESTED"
-    AUDIT.mkdir(parents=True,exist_ok=True)
-    (AUDIT/"preflight.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
-    (AUDIT/"preflight.md").write_text("# Actor mission-context preflight\n\n```json\n"+json.dumps(result,indent=2)+"\n```\n",encoding="utf-8")
-    print(json.dumps(result,indent=2))
+    write_audit(result)
+    print(json.dumps(result,indent=2) if args.verbose else summary_line(result))
 
 if __name__=="__main__":main()

@@ -572,7 +572,7 @@ class ModularMAPPOTrainingRunner:
         with path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(self.evaluation_history[0]))
             writer.writeheader(); writer.writerows(self.evaluation_history)
-        print(self.evaluation_log_line(row), flush=True)
+        print(self.evaluation_log_line(row,self.total_sampled_steps), flush=True)
         if self.best_evaluation is None or self._evaluation_key(row) > self._evaluation_key(self.best_evaluation):
             old = None if self.best_evaluation is None else self._evaluation_key(self.best_evaluation)
             self.best_evaluation = dict(row); self.best_sampled_steps = self.trainer.sampled_steps
@@ -688,42 +688,67 @@ class ModularMAPPOTrainingRunner:
                 "evaluation_environment_config_sha256":ids["evaluation"]["config_sha256"],
                 "branch_mode":bool(self.branch_provenance)}
 
+    @staticmethod
+    def _compact_steps(value: int) -> str:
+        return f"{value / 1_000_000:.2f}M" if value >= 1_000_000 else f"{value / 1_000:.0f}k"
+
+    def startup_console_lines(self) -> tuple[str, str]:
+        method=self.method_identity();modules=",".join(self.trainer.module_protocol()["enabled_modules"]) or "none"
+        return (
+            f"[START] method={method['development_method']} seed={self.seed} device={self.device} "
+            f"envs={self.num_envs} steps={self.total_sampled_steps} rollout={self.rollout_steps}",
+            f"[PROTOCOL] env={self.env_config.get('environment_variant','direct_v2_3')} "
+            f"waves={self.current_waves} max_steps={self.runtime_env_config['simulation']['max_steps']} "
+            f"actor_input={method['actor_input_dim']} critic_context={method['critic_context_dim']} "
+            f"wave_context={method['wave_context_target']}/{method['wave_context_encoding']}/{method['mission_context_dim']}D "
+            f"modules={modules} eval={self.eval_episodes}",
+        )
+
     def train_log_line(self) -> str:
         rows = list(self.recent_episodes)
         mean = lambda key: float(np.mean([row[key] for row in rows])) if rows else float("nan")
-        module=(f"hiddenA/C={self.last_metrics.get('actor_hidden_norm',0):.3f}/{self.last_metrics.get('critic_hidden_norm',0):.3f} "
-                f"| resets={self.last_metrics.get('hidden_reset_count',0):.0f} "
-                f"| chunks={self.last_metrics.get('sequence_chunks',0):.0f} "
-                f"| rsteps={self.last_metrics.get('recurrent_optimizer_steps_this_update',0):.0f} "
-                f"| gru_grad={self.last_metrics.get('gru_gradient_norm',0):.3f} "
-                f"| popart={self.last_metrics.get('popart_std',1):.3f} "
-                f"| wmean={self.last_metrics.get('effective_wave_weight_mean',1):.3f} "
-                f"| bonus={self.reward_bonus_totals[0]:.2f} "
-                f"| anchor={self.last_metrics.get('anchor_kl',0):.3f} "
-                f"| curriculum_enabled={self.curriculum_enabled} "
-                f"| training_waves={self.current_waves}" +
-                (f" | curriculum_stage={self.current_stage}" if self.curriculum_enabled else ""))
-        return (f"[TRAIN] steps={self.trainer.sampled_steps}/{self.total_sampled_steps} | episodes={self.completed_episode_count} "
-                f"| raw_return={mean('team_raw_environment_return'):.2f} | waves={mean('waves_cleared'):.2f} "
-                f"| red_loss={mean('red_losses'):.2f} | blue_loss={mean('blue_losses'):.2f} "
-                f"| transition={tuple(round(self.last_rollout_metrics.get(f'transition_fraction_wave_{k}',0),3) for k in (1,2,3))} "
-                f"| alive={tuple(round(self.last_rollout_metrics.get(f'alive_agent_fraction_wave_{k}',0),3) for k in (1,2,3))} "
-                f"| actor={self.last_metrics.get('actor_loss',float('nan')):.4f} | value={self.last_metrics.get('value_loss',float('nan')):.4f} "
-                f"| H={self.last_metrics.get('entropy',float('nan')):.3f} | KL={self.last_metrics.get('approx_kl',float('nan')):.5f} "
-                f"| actor_lr={self.last_metrics.get('actor_learning_rate',float('nan')):.8f} "
-                f"| logR=[{self.last_metrics.get('log_ratio_min',float('nan')):.2f},{self.last_metrics.get('log_ratio_max',float('nan')):.2f}] "
-                f"| underflow={self.last_metrics.get('ratio_underflow_fraction',0):.4f} | {module}")
+        percent=100.0*self.trainer.sampled_steps/max(self.total_sampled_steps,1)
+        line=(f"[TRAIN] {percent:.1f}% | steps={self._compact_steps(self.trainer.sampled_steps)}/{self._compact_steps(self.total_sampled_steps)} "
+              f"| ep={self.completed_episode_count} | R={mean('team_raw_environment_return'):.2f} "
+              f"| waves={mean('waves_cleared'):.2f} | red/blue={mean('red_losses'):.2f}/{mean('blue_losses'):.2f} "
+              f"| actor={self.last_metrics.get('actor_loss',float('nan')):.4f} "
+              f"| value={self.last_metrics.get('value_loss',float('nan')):.3f} "
+              f"| H={self.last_metrics.get('entropy',float('nan')):.3f} "
+              f"| KL={self.last_metrics.get('approx_kl',float('nan')):.4f} "
+              f"| lr={self.last_metrics.get('actor_learning_rate',float('nan')):.1e}")
+        extras=[]
+        if self.trainer.recurrent.enabled:
+            extras.append(f"recurrent_h={self.last_metrics.get('hidden_norm_mean',0):.3f} resets={self.last_metrics.get('hidden_reset_count',0):.0f} chunks={self.last_metrics.get('sequence_chunks',0):.0f} gru_grad={self.last_metrics.get('gru_gradient_norm',0):.3f}")
+        if self.trainer.popart.enabled:extras.append(f"popart_std={self.last_metrics.get('popart_std',1):.3f}")
+        if self.trainer.wave_balance.enabled:extras.append(f"wave_weight={self.last_metrics.get('effective_wave_weight_mean',1):.3f}")
+        if self.trainer.reward_adapter.enabled:extras.append(f"bonus={self.reward_bonus_totals[0]:.2f}")
+        if self.trainer.wave_survival_pbrs.enabled:extras.append(f"shaping={self.pbrs_totals[0]:.2f}")
+        if self.trainer.anchor.enabled:extras.append(f"anchor_KL={self.last_metrics.get('anchor_kl',0):.4f}")
+        if self.curriculum_enabled:extras.append(f"stage={self.current_stage} waves={self.current_waves}")
+        return line+(" | "+" | ".join(extras) if extras else "")
+
+    def optimization_warning_line(self) -> str | None:
+        keys=("actor_loss","value_loss","entropy","approx_kl")
+        nonfinite=any(not math.isfinite(float(self.last_metrics.get(key,float("nan")))) for key in keys)
+        kl=float(self.last_metrics.get("approx_kl",float("nan")))
+        underflow=float(self.last_metrics.get("ratio_underflow_fraction",0.0))
+        if not (nonfinite or (math.isfinite(kl) and kl>=.05) or underflow>0):return None
+        return (f"[OPT_WARN] steps={self.trainer.sampled_steps} | KL={kl:.5f} "
+                f"| H={self.last_metrics.get('entropy',float('nan')):.3f} "
+                f"| logR=[{self.last_metrics.get('log_ratio_min',float('nan')):.2f},"
+                f"{self.last_metrics.get('log_ratio_max',float('nan')):.2f}] | underflow={underflow:.4f}")
 
     @staticmethod
-    def evaluation_log_line(row: dict[str, Any]) -> str:
+    def evaluation_log_line(row: dict[str, Any], total_sampled_steps: int | None = None) -> str:
         w1,w2,w3=(row.get(f"clear_wave_{k}_probability") for k in (1,2,3))
         q2=float("nan") if w1 in (None,0) or w2 is None else float(w2)/float(w1)
         q3=float("nan") if w2 in (None,0) or w3 is None else float(w3)/float(w2)
-        return (f"[EVAL] steps={int(row['sampled_steps'])} | W1/W2/W3="
+        prefix=(f"{100.0*int(row['sampled_steps'])/total_sampled_steps:.1f}% | " if total_sampled_steps else "")
+        return (f"[EVAL] {prefix}steps={ModularMAPPOTrainingRunner._compact_steps(int(row['sampled_steps']))} | W1/W2/W3="
                 f"{row.get('clear_wave_1_probability',0):.2f}/{row.get('clear_wave_2_probability',0):.2f}/{row.get('clear_wave_3_probability',0):.2f} "
-                f"| waves={row.get('average_waves_cleared',0):.2f} | return={row['average_return']:.2f} "
-                f"| red_loss={row['average_red_loss']:.2f} | blue_loss={row['average_blue_loss']:.2f} "
-                f"| Q2/Q3={q2:.2f}/{q3:.2f} | K/L={row.get('kill_loss_ratio',0):.2f} | boundary={row['average_red_boundary_exits']:.2f} "
+                f"| Q2/Q3={q2:.2f}/{q3:.2f} | waves={row.get('average_waves_cleared',0):.2f} | R={row['average_return']:.2f} "
+                f"| red/blue={row['average_red_loss']:.2f}/{row['average_blue_loss']:.2f} "
+                f"| boundary={row['average_red_boundary_exits']:.2f} "
                 f"| ground={row['average_red_ground_losses']:.2f}")
 
     def summary(self) -> dict[str, Any]:
@@ -802,7 +827,7 @@ class ModularMAPPOTrainingRunner:
         }
 
     def run(self) -> dict[str, Any]:
-        print(f"[START] {self.startup_summary()}", flush=True)
+        for line in self.startup_console_lines():print(line,flush=True)
         try:
             while self.trainer.sampled_steps < self.total_sampled_steps:
                 self._maybe_curriculum()
@@ -811,6 +836,8 @@ class ModularMAPPOTrainingRunner:
                 self.last_metrics = {**self.trainer.update(rollout), **self.last_rollout_metrics,
                                      "curriculum_stage":float(self.current_stage),
                                      "current_total_waves":float(self.current_waves)}
+                warning=self.optimization_warning_line()
+                if warning is not None:print(warning,flush=True)
                 record = {"sampled_steps":self.trainer.sampled_steps,"rollout_update":self.trainer.ppo_update_count,**self.last_metrics}
                 with (self.output_dir / "optimization_metrics.jsonl").open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record) + "\n")
