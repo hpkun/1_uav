@@ -180,8 +180,10 @@ class ModularMAPPOTrainer:
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
   if self.recurrent.actor_enabled or self.recurrent.critic_enabled:
    metrics=self._update_recurrent(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
-  elif self.ppo_stabilization.enabled or self.actor_kl_guard.enabled:
+  elif self.ppo_stabilization.enabled:
    metrics=self._update_flat_stabilized(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w)
+  elif self.actor_kl_guard.enabled:
+   metrics=self._update_flat_actor_kl_guard(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w if self.advantage_priority.enabled else None)
   else:
    metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w if self.advantage_priority.enabled else None)
   live_mask=alive>.5;rv=returns[live_mask];vv=values[live_mask];variance=torch.var(rv,unbiased=False)
@@ -233,6 +235,44 @@ class ModularMAPPOTrainer:
    for start in range(0,N,self.minibatch_size):
     ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args,actor_weights=None if flat_actor is None else flat_actor[ix]);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
   return aggregate_update_rows(rows,self.clip_ratio)
+
+ def _critic_loss_step(self,obs,mask,oldvalue,target,weights,ctx):
+  value,_=self.critic.forward_step(obs,mask,self._ctx(ctx,False),None,None)
+  clipped=oldvalue+(value-oldvalue).clamp(-self.clip_ratio,self.clip_ratio)
+  err=torch.maximum((value-target).square(),(clipped-target).square()) if self.clip_value_loss else (value-target).square()
+  weights=weights.unsqueeze(-1) if weights.ndim==mask.ndim-1 else weights
+  vw=weights if self.wave_balance.critic_enabled else torch.ones_like(weights)
+  return .5*masked_mean(err*vw,mask)
+
+ def _update_flat_actor_kl_guard(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None):
+  """Preserve the flat PPO update order until the actor epoch guard fires."""
+  flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:])
+  arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)))
+  flat_actor=None if actor_weights is None else flat(actor_weights);N=arrays[0].shape[0]
+  rows=[];critic_losses=[];critic_grad_norms=[];epoch_kls=[];actor_epochs=0;hard_stop=False;actor_active=True
+  for _ in range(self.ppo_epochs):
+   permutation=self.rng.permutation(N)
+   for start in range(0,N,self.minibatch_size):
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device);args=[x[ix] for x in arrays]
+    if actor_active:
+     loss=self._loss_step(*args,actor_weights=None if flat_actor is None else flat_actor[ix]);ag,cg,arg,crg=self._opt(loss)
+     rows.append(self._row(loss,args[4],ag,cg,arg,crg));critic_losses.append(float(loss[1].detach()));critic_grad_norms.append(float(cg))
+    else:
+     value_loss=self._critic_loss_step(args[0],args[4],args[6],args[7],args[8],args[9])
+     self.critic_optimizer.zero_grad();(self.value_loss_coefficient*value_loss).backward();cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.critic_update_count+=1
+     critic_losses.append(float(value_loss.detach()));critic_grad_norms.append(float(cg))
+   if actor_active:
+    actor_epochs+=1;epoch_kl=self._full_rollout_kl(arrays[0],arrays[2],arrays[3],arrays[4],arrays[9]);epoch_kls.append(epoch_kl)
+    if self.actor_kl_guard.should_stop_actor(epoch_kl):
+     hard_stop=True;actor_active=False;self.kl_hard_stop_count+=1;self.actor_kl_guard_hard_stop_count+=1
+  self.actor_kl_guard_actor_epochs_total+=actor_epochs
+  self.actor_kl_guard_actor_epochs_min=(actor_epochs if self.actor_kl_guard_actor_epochs_min is None
+                                       else min(self.actor_kl_guard_actor_epochs_min,actor_epochs))
+  out=aggregate_update_rows(rows,self.clip_ratio)
+  if hard_stop:
+   out.update({"value_loss":float(np.mean(critic_losses)),"weighted_value_loss":float(np.mean(critic_losses)),"critic_grad_norm":float(np.mean(critic_grad_norms))})
+  out.update({"actor_epochs_planned":float(self.ppo_epochs),"actor_epochs_used":float(actor_epochs),"critic_epochs_used":float(self.ppo_epochs),"epoch_kl_last":float(epoch_kls[-1]),"epoch_kl_max":float(max(epoch_kls)),"kl_hard_stop_triggered":float(hard_stop)})
+  return out
 
  def _update_flat_stabilized(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights):
   """Split actor/critic epochs so a hard actor KL stop never truncates critic work."""

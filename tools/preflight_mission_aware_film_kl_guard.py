@@ -1,7 +1,7 @@
 """Focused protocol preflight for the final Mission-Aware FiLM KL-guard diagnostic."""
 from __future__ import annotations
 
-import argparse,json,sys
+import argparse,json,random,sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -51,13 +51,42 @@ def _rollout(trainer)->ModularRolloutBatch:
     return ModularRolloutBatch(obs,actions,raw,old,rewards,rewards.copy(),zeros,alive,obs.copy(),alive.copy(),
       np.ones((t,e),int),np.full((t,e),3,int),ctx,ctx.copy(),episode_masks=np.ones((t,e),np.float32))
 
-def _simulated_update(config:dict[str,Any],epoch_kl:float,device:str="cpu",epochs:int=10)->dict[str,float]:
+def _simulated_update(config:dict[str,Any],epoch_kl:float|list[float],device:str="cpu",epochs:int=10)->dict[str,float]:
     cfg=deepcopy(config);cfg["training"]["seed"]=771;cfg["training"]["ppo_epochs"]=epochs;cfg["training"]["minibatch_size"]=512
     trainer=build_modular_mappo_trainer(cfg,device,32,1000)
-    trainer._full_rollout_kl=lambda *_:float(epoch_kl)
+    if isinstance(epoch_kl,list):
+        values=iter(epoch_kl);trainer._full_rollout_kl=lambda *_:float(next(values))
+    else:trainer._full_rollout_kl=lambda *_:float(epoch_kl)
     metrics=trainer.update(_rollout(trainer))
     if not all(np.isfinite(float(v)) for v in metrics.values()):raise RuntimeError("non-finite synthetic update")
     return metrics
+
+def _no_trigger_exact_match(original:dict[str,Any],guard:dict[str,Any])->dict[str,bool]:
+    a,b=deepcopy(original),deepcopy(guard);a["training"]["seed"]=b["training"]["seed"]=773
+    ta=build_modular_mappo_trainer(a,"cpu",32,1000);tb=build_modular_mappo_trainer(b,"cpu",32,1000)
+    rollout=_rollout(ta)
+    if not (_equal(ta.actor.state_dict(),tb.actor.state_dict()) and _equal(ta.critic.state_dict(),tb.critic.state_dict())
+            and _equal(ta.actor_optimizer.state_dict(),tb.actor_optimizer.state_dict())
+            and _equal(ta.critic_optimizer.state_dict(),tb.critic_optimizer.state_dict())
+            and _equal(ta.rng.bit_generator.state,tb.rng.bit_generator.state)):
+        raise RuntimeError("no-trigger comparison did not start from identical trainer state")
+    python_state=random.getstate();numpy_state=np.random.get_state();torch_state=torch.get_rng_state()
+    ta.update(rollout);end_python=random.getstate();end_numpy=np.random.get_state();end_torch=torch.get_rng_state()
+    random.setstate(python_state);np.random.set_state(numpy_state);torch.set_rng_state(torch_state)
+    tb._full_rollout_kl=lambda *_:.01;tb.update(rollout)
+    numpy_equal=all(np.array_equal(x,y) if isinstance(x,np.ndarray) else x==y for x,y in zip(end_numpy,np.random.get_state()))
+    result={"actor_bit_identical":_equal(ta.actor.state_dict(),tb.actor.state_dict()),
+      "critic_bit_identical":_equal(ta.critic.state_dict(),tb.critic.state_dict()),
+      "actor_optimizer_identical":_equal(ta.actor_optimizer.state_dict(),tb.actor_optimizer.state_dict()),
+      "critic_optimizer_identical":_equal(ta.critic_optimizer.state_dict(),tb.critic_optimizer.state_dict()),
+      "trainer_rng_identical":_equal(ta.rng.bit_generator.state,tb.rng.bit_generator.state),
+      "torch_rng_identical":torch.equal(end_torch,torch.get_rng_state()),
+      "python_rng_identical":end_python==random.getstate(),"numpy_rng_identical":numpy_equal,
+      "actor_update_count_identical":ta.actor_update_count==tb.actor_update_count,
+      "critic_update_count_identical":ta.critic_update_count==tb.critic_update_count,
+      "sampled_steps_identical":ta.sampled_steps==tb.sampled_steps}
+    if not all(result.values()):raise RuntimeError(f"no-trigger update is not exact matched: {result}")
+    return result
 
 def validate(check_outputs:bool=True)->dict[str,Any]:
     env=_yaml(ENV);original=load_config(ORIGINAL);guard=load_config(GUARD);manifest=_json(MANIFEST);registry=_json(REGISTRY)
@@ -96,9 +125,11 @@ def validate(check_outputs:bool=True)->dict[str,Any]:
     architecture=checkpoint_architecture(build_modular_mappo_trainer(guard,"cpu",256,3_000_000))
     expected_arch={"actor_input_dim":52,"actor_context_dim":5,"critic_context_dim":0,"mission_film_enabled":True,"mission_film_alpha":.2}
     if any(architecture.get(k)!=v for k,v in expected_arch.items()):raise RuntimeError(f"FiLM architecture changed: {architecture}")
-    low=_simulated_update(guard,.01);high=_simulated_update(guard,.06)
+    exact=_no_trigger_exact_match(original,guard)
+    low=_simulated_update(guard,.01);high=_simulated_update(guard,.06);third=_simulated_update(guard,[.01,.01,.06])
     if (low["actor_epochs_used"],low["critic_epochs_used"],low["kl_hard_stop_triggered"])!=(10.,10.,0.):raise RuntimeError("low-KL simulation failed")
     if (high["actor_epochs_used"],high["critic_epochs_used"],high["kl_hard_stop_triggered"])!=(1.,10.,1.):raise RuntimeError("high-KL simulation failed")
+    if (third["actor_epochs_used"],third["critic_epochs_used"],third["kl_hard_stop_triggered"])!=(3.,10.,1.):raise RuntimeError("third-epoch KL simulation failed")
     future_registry=registry["evaluation_ranges"]["45000000..45000199"]
     if future_registry.get("executed") is not False or manifest["future_final"].get("executed") is not False:raise RuntimeError("45M future-final block is not untouched")
     existing=[str(FORMAL_ROOT/f"seed{s}") for s in SEEDS if (FORMAL_ROOT/f"seed{s}").exists()]
@@ -107,8 +138,10 @@ def validate(check_outputs:bool=True)->dict[str,Any]:
       "enabled_modules":enabled,"environment":{"variant":"persistent_wave_v2","waves":3,"max_steps":3000,"observation_dim":52,"action_dim":3},
       "training_seeds":list(SEEDS),"strict_serial":True,"architecture":architecture,"formal_outputs_fresh":not existing,"future_final":{"range":[45000000,45000199],"executed":False},
       "matched_initialization":initialization,"actor_lr_by_step":lr_values,"guard_has_no_parameters":no_parameters,
+      "NO_TRIGGER_UPDATE_EXACT_MATCH":"PASS","no_trigger_update_exact_match":exact,
       "simulated_low_kl":{"epoch_kl":.01,"actor_epochs_used":low["actor_epochs_used"],"critic_epochs_used":low["critic_epochs_used"],"triggered":False},
-      "simulated_high_kl":{"epoch_kl":.06,"actor_epochs_used":high["actor_epochs_used"],"critic_epochs_used":high["critic_epochs_used"],"triggered":True}}
+      "simulated_high_kl":{"epoch_kl":.06,"actor_epochs_used":high["actor_epochs_used"],"critic_epochs_used":high["critic_epochs_used"],"triggered":True},
+      "simulated_third_epoch_stop":{"epoch_kls":[.01,.01,.06],"actor_epochs_used":third["actor_epochs_used"],"critic_epochs_used":third["critic_epochs_used"],"triggered":True}}
 
 def cuda_smoke()->dict[str,Any]:
     if not torch.cuda.is_available():raise RuntimeError("CUDA required for smoke; CPU fallback forbidden")

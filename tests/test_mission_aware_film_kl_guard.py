@@ -5,13 +5,15 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
 from algorithm.modular_mappo.factory import build_modular_mappo_trainer
 from algorithm.modules import ActorKLEpochGuardModule,PPOStabilizationModule
 from algorithm.train_modular_mappo import load_config
-from tools.preflight_mission_aware_film_kl_guard import GUARD,MANIFEST,ORIGINAL,REGISTRY,ROOT,_equal,_simulated_update,validate
+from tools.preflight_mission_aware_film_kl_guard import (GUARD,MANIFEST,ORIGINAL,REGISTRY,ROOT,
+    _equal,_no_trigger_exact_match,_rollout,_simulated_update,validate)
 
 def configs():return load_config(ORIGINAL),load_config(GUARD)
 
@@ -56,11 +58,33 @@ def test_07_actor_lr_schedule_is_unchanged():
 def test_08_low_kl_runs_full_actor_and_critic_epochs():
     _,guard=configs();m=_simulated_update(guard,.01)
     assert m["actor_epochs_used"]==10 and m["critic_epochs_used"]==10 and m["kl_hard_stop_triggered"]==0
+    assert m["actor_optimizer_steps_this_update"]==10 and m["critic_optimizer_steps_this_update"]==10
 
 def test_09_high_kl_stops_actor_only_after_complete_epoch():
     _,guard=configs();m=_simulated_update(guard,.06)
     assert m["actor_epochs_used"]==1 and m["critic_epochs_used"]==10 and m["kl_hard_stop_triggered"]==1
     assert m["actor_kl_guard_hard_stop_count"]==1 and m["actor_kl_guard_hard_stop_fraction"]==1
+    assert m["actor_optimizer_steps_this_update"]==1 and m["critic_optimizer_steps_this_update"]==10
+
+
+def test_09a_third_epoch_stop_keeps_interleaved_critic_schedule():
+    _,guard=configs();m=_simulated_update(guard,[.01,.01,.06])
+    assert m["actor_epochs_used"]==3 and m["critic_epochs_used"]==10 and m["kl_hard_stop_triggered"]==1
+    assert m["actor_optimizer_steps_this_update"]==3 and m["critic_optimizer_steps_this_update"]==10
+
+
+def test_09b_no_trigger_update_is_exact_matched_intervention():
+    original,guard=configs();result=_no_trigger_exact_match(original,guard)
+    assert all(result.values())
+
+
+def test_09c_full_rollout_kl_does_not_consume_torch_rng():
+    _,guard=configs();trainer=build_modular_mappo_trainer(guard,"cpu",32,1000);batch=_rollout(trainer)
+    tensors=[torch.as_tensor(value,dtype=torch.float32) for value in
+             (batch.observations,batch.raw_actions,batch.old_log_probs,batch.alive_masks,batch.contexts)]
+    obs,raw,oldlog,alive,ctx=[value.reshape(value.shape[0]*value.shape[1],*value.shape[2:]) for value in tensors]
+    before=torch.get_rng_state();value=trainer._full_rollout_kl(obs,raw,oldlog,alive,ctx);after=torch.get_rng_state()
+    assert np.isfinite(value) and torch.equal(before,after)
 
 def test_10_guard_conflicts_are_enforced():
     _,guard=configs()
@@ -89,5 +113,6 @@ def test_13_manifest_seed_guard_and_serial_launcher():
 
 def test_14_preflight_and_analyzer_are_focused_and_offline():
     result=validate(check_outputs=False);assert result["status"]=="READY_FOR_MISSION_AWARE_FILM_KL_GUARD_3M"
+    assert result["NO_TRIGGER_UPDATE_EXACT_MATCH"]=="PASS"
     source=(ROOT/"tools/analyze_mission_aware_film_kl_guard.py").read_text(encoding="utf-8")
     assert "evaluate_modular" not in source and "torch.cuda" not in source and len(source.splitlines())<180
