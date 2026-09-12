@@ -1,0 +1,84 @@
+{
+  "protocol_role": "final_mission_aware_film_mechanism_diagnostic",
+  "development_method": "mission_aware_film_kl_guard",
+  "research_question": "限制异常大的Actor PPO epoch更新，能否改善Mission-Aware FiLM的后期策略保持，并使3M最终性能恢复到或超过Plain MAPPO？",
+  "environment": "configs/persistent_wave_v2_environment.yaml",
+  "algorithm_config": "configs/dev_mission_aware_film_kl_guard_3m.yaml",
+  "intervention": {
+    "module": "actor_kl_guard",
+    "version": 1,
+    "hard_kl": 0.05,
+    "comparison_operator": ">=",
+    "actor_early_stop": true,
+    "check_timing": "after_each_complete_actor_epoch",
+    "critic_epochs_always_complete": 10,
+    "learning_rate_side_effects": false,
+    "optimizer_side_effects": false,
+    "checkpoint_rollback": false
+  },
+  "comparisons": {
+    "primary": "Mission-Aware FiLM + Actor KL Epoch Guard versus original Mission-Aware FiLM",
+    "candidate_reference": "Mission-Aware FiLM + Actor KL Epoch Guard versus Plain MAPPO L3",
+    "historical_only": true
+  },
+  "training": {
+    "seeds": [5301, 5302, 5303],
+    "sampled_steps": 3000000,
+    "num_envs": 24,
+    "ppo_epochs": 10,
+    "execution": "strict_serial",
+    "order": [5301, 5302, 5303],
+    "last_adaptive_film_use_of_training_seeds": true
+  },
+  "actor_lr_contract": {
+    "start_lr": 0.0003,
+    "decay_start_step": 600000,
+    "decay_end_step": 900000,
+    "end_lr": 0.0001,
+    "after_end": "fixed_0.0001"
+  },
+  "development_evaluation": {
+    "seed_start": 44000000,
+    "seed_end": 44000049,
+    "episodes": 50,
+    "deterministic": true,
+    "is_holdout": false
+  },
+  "future_final": {
+    "seed_start": 45000000,
+    "seed_end": 45000199,
+    "executed": false
+  },
+  "references": {
+    "original_film_root": "outputs/dev_mission_aware_film_3m",
+    "plain_mappo_root": "outputs/diag_mappo_learnability",
+    "guard_root": "outputs/dev_mission_aware_film_kl_guard_3m"
+  },
+  "runs": [
+    {"training_seed": 5301, "output_dir": "outputs/dev_mission_aware_film_kl_guard_3m/seed5301"},
+    {"training_seed": 5302, "output_dir": "outputs/dev_mission_aware_film_kl_guard_3m/seed5302"},
+    {"training_seed": 5303, "output_dir": "outputs/dev_mission_aware_film_kl_guard_3m/seed5303"}
+  ],
+  "environment_contract": {
+    "environment_variant": "persistent_wave_v2",
+    "total_waves": 3,
+    "max_steps": 3000,
+    "team_size": 4,
+    "observation_dim": 52,
+    "action_dim": 3
+  },
+  "gate_a_retention": {
+    "all_three_runs_complete": true,
+    "mean_final_average_waves_delta_vs_film_min": 0.15,
+    "paired_final_average_waves_wins_min": 2,
+    "mean_final_to_observed_peak_average_waves_retention_min": 0.90,
+    "labels": ["KL_GUARD_RETENTION_SUPPORTED", "KL_GUARD_RETENTION_NOT_SUPPORTED"]
+  },
+  "gate_b_candidate": {
+    "mean_final_average_waves_delta_vs_plain_min": 0.15,
+    "paired_final_average_waves_wins_min": 2,
+    "mean_final_w1_delta_vs_plain_min": -0.05,
+    "require_mean_q2_or_q3_improvement": true,
+    "labels": ["MISSION_AWARE_FILM_KL_GUARD_PROMISING", "MISSION_AWARE_FILM_KL_GUARD_NOT_PROMISING"]
+  }
+}

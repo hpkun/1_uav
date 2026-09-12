@@ -16,6 +16,7 @@ from algorithm.modules import (AdvantagePriorityModule,PPOStabilizationModule,
 from algorithm.modules import ActorLRDecayModule,ACTOR_LR_DECAY_VERSION
 from algorithm.modules import WaveSurvivalPotentialShapingModule
 from algorithm.modules import MissionFiLMModule,MISSION_FILM_VERSION
+from algorithm.modules import ActorKLEpochGuardModule,ACTOR_KL_GUARD_VERSION
 from .networks import ModularMAPPOActor,ModularCentralizedCritic
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 
@@ -88,6 +89,7 @@ class ModularMAPPOTrainer:
   self.ppo_stabilization=PPOStabilizationModule(self.modules_config.get("ppo_stabilization"))
   self.actor_lr_decay=ActorLRDecayModule(self.modules_config.get("actor_lr_decay"))
   self.mission_film=MissionFiLMModule(self.modules_config.get("mission_film"))
+  self.actor_kl_guard=ActorKLEpochGuardModule(self.modules_config.get("actor_kl_guard"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -97,6 +99,8 @@ class ModularMAPPOTrainer:
   if self.total_sampled_steps<=0:raise ValueError("total_sampled_steps must be positive")
   if self.entity_attention_enabled and (self.recurrent.enabled or self.wave_context.enabled):raise ValueError("entity attention v1 is incompatible with recurrent memory and wave context")
   if self.ppo_stabilization.enabled and self.recurrent.enabled:raise ValueError("PPO stabilization v1 requires the feed-forward update path")
+  if self.actor_kl_guard.enabled and self.recurrent.enabled:raise ValueError("actor_kl_guard requires the feed-forward update path")
+  if self.actor_kl_guard.enabled and self.ppo_stabilization.enabled:raise ValueError("actor_kl_guard and ppo_stabilization are mutually exclusive")
   if self.actor_lr_decay.enabled and self.ppo_stabilization.enabled:raise ValueError("actor_lr_decay and ppo_stabilization are mutually exclusive")
   if self.actor_lr_decay.enabled and abs(self.actor_lr_decay.start_lr-float(actor_learning_rate))>1e-15:raise ValueError("actor_lr_decay start_lr must match the configured base actor learning rate")
   if self.mission_film.enabled:
@@ -104,7 +108,7 @@ class ModularMAPPOTrainer:
            and self.wave_context.target=="actor_only" and self.wave_context.encoding=="mission_markov"
            and self.wave_context.context_dim==5):
     raise ValueError("mission_film requires actor_only 5D mission_markov wave context and no critic context")
-   allowed={"actor_lr_decay","wave_context","mission_film"};enabled=set(enabled_module_names(self.modules_config))
+   allowed={"actor_lr_decay","wave_context","mission_film","actor_kl_guard"};enabled=set(enabled_module_names(self.modules_config))
    if not enabled.issubset(allowed):raise ValueError(f"mission_film incompatible enabled modules: {sorted(enabled-allowed)}")
   ac=self.wave_context.context_dim if self.wave_context.actor_enabled else 0;cc=self.wave_context.context_dim if self.wave_context.critic_enabled else 0
   ar=self.recurrent.hidden_dim if self.recurrent.actor_enabled else 0;cr=self.recurrent.hidden_dim if self.recurrent.critic_enabled else 0
@@ -119,6 +123,9 @@ class ModularMAPPOTrainer:
   self.base_actor_learning_rate=float(actor_learning_rate);self.base_critic_learning_rate=float(critic_learning_rate)
   self.ppo_update_count=self.actor_update_count=self.critic_update_count=self.sampled_steps=self.vector_steps=0
   self.kl_hard_stop_count=0
+  self.actor_kl_guard_hard_stop_count=0
+  self.actor_kl_guard_actor_epochs_total=0
+  self.actor_kl_guard_actor_epochs_min=None
   self.warm_start_provenance={};self.anchor_provenance={}
   self.fbmr_branch_metadata={};self._frozen_actor_reference=None
   self.rng_restore_metadata={"rng_state_available":False,"rng_state_restored":False,"cuda_rng_state_restored":False}
@@ -173,7 +180,7 @@ class ModularMAPPOTrainer:
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
   if self.recurrent.actor_enabled or self.recurrent.critic_enabled:
    metrics=self._update_recurrent(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
-  elif self.ppo_stabilization.enabled:
+  elif self.ppo_stabilization.enabled or self.actor_kl_guard.enabled:
    metrics=self._update_flat_stabilized(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w)
   else:
    metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w if self.advantage_priority.enabled else None)
@@ -183,7 +190,7 @@ class ModularMAPPOTrainer:
   recurrent_steps=(self.actor_update_count-actor_before) if (self.recurrent.actor_enabled or self.recurrent.critic_enabled) else 0
   metrics["recurrent_optimizer_steps_this_update"]=float(recurrent_steps)
   metrics.update(self._policy_diagnostics(r,obs,act,alive,ctx))
-  self.ppo_update_count+=1;metrics.update(wmetrics);metrics.update(pmetrics);metrics.update({"popart_mean":float(self.popart.mean),"popart_std":float(self.popart.std),"popart_count":float(self.popart.count),"actor_learning_rate":float(self.actor_optimizer.param_groups[0]["lr"]),"critic_learning_rate":float(self.critic_optimizer.param_groups[0]["lr"]),"kl_hard_stop_count":float(self.kl_hard_stop_count),"cumulative_kl_hard_stop_count":float(self.kl_hard_stop_count)})
+  self.ppo_update_count+=1;metrics.update(wmetrics);metrics.update(pmetrics);metrics.update({"popart_mean":float(self.popart.mean),"popart_std":float(self.popart.std),"popart_count":float(self.popart.count),"actor_learning_rate":float(self.actor_optimizer.param_groups[0]["lr"]),"critic_learning_rate":float(self.critic_optimizer.param_groups[0]["lr"]),"kl_hard_stop_count":float(self.kl_hard_stop_count),"cumulative_kl_hard_stop_count":float(self.kl_hard_stop_count),"actor_kl_guard_hard_stop_count":float(self.actor_kl_guard_hard_stop_count),"actor_kl_guard_hard_stop_fraction":float(self.actor_kl_guard_hard_stop_count/self.ppo_update_count)})
   if not np.all(np.isfinite(list(metrics.values()))):raise FloatingPointError(f"non-finite modular update: {metrics}")
   return metrics
  def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None):
@@ -240,7 +247,16 @@ class ModularMAPPOTrainer:
     self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();ag=nn.utils.clip_grad_norm_(self.actor.trainable_policy_parameters(),self.max_grad_norm);self.actor_optimizer.step();self.actor_update_count+=1
     actor_rows.append(self._row(loss,args[4],ag,0.))
    actor_epochs+=1;epoch_kl=self._full_rollout_kl(arrays[0],arrays[2],arrays[3],arrays[4],arrays[9]);epoch_kls.append(epoch_kl)
-   if self.ppo_stabilization.should_stop_actor(epoch_kl):hard_stop=True;self.kl_hard_stop_count+=1;break
+   stop_actor=(self.ppo_stabilization.should_stop_actor(epoch_kl) if self.ppo_stabilization.enabled
+               else self.actor_kl_guard.should_stop_actor(epoch_kl))
+   if stop_actor:
+    hard_stop=True;self.kl_hard_stop_count+=1
+    if self.actor_kl_guard.enabled:self.actor_kl_guard_hard_stop_count+=1
+    break
+  if self.actor_kl_guard.enabled:
+   self.actor_kl_guard_actor_epochs_total+=actor_epochs
+   self.actor_kl_guard_actor_epochs_min=(actor_epochs if self.actor_kl_guard_actor_epochs_min is None
+                                        else min(self.actor_kl_guard_actor_epochs_min,actor_epochs))
   for _ in range(self.ppo_epochs):
    permutation=self.rng.permutation(N)
    for start in range(0,N,self.minibatch_size):
@@ -445,7 +461,7 @@ class ModularMAPPOTrainer:
   return True
  def checkpoint_state(self,extra=None):
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -454,11 +470,12 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
    if self.mission_film.enabled and versions.get("mission_film")!=MISSION_FILM_VERSION:raise RuntimeError("checkpoint mission_film feature version mismatch")
+   if self.actor_kl_guard.enabled and versions.get("actor_kl_guard")!=ACTOR_KL_GUARD_VERSION:raise RuntimeError("checkpoint actor_kl_guard feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   self.warm_start_provenance=state.get("warm_start_provenance",{});self.anchor_provenance=state.get("anchor_provenance",{})
@@ -476,6 +493,9 @@ class ModularMAPPOTrainer:
    reference=deepcopy(self.actor).to(self.device);reference.load_state_dict(reference_state);self.anchor.attach(reference,self.anchor_provenance.get("reference_checkpoint"))
   for key,attr in (("ppo_updates","ppo_update_count"),("actor_updates","actor_update_count"),("critic_updates","critic_update_count"),("sampled_steps","sampled_steps"),("vector_steps","vector_steps")):setattr(self,attr,int(state.get(key,0)))
   self.kl_hard_stop_count=int(state.get("kl_hard_stop_count",0))
+  self.actor_kl_guard_hard_stop_count=int(state.get("actor_kl_guard_hard_stop_count",0))
+  self.actor_kl_guard_actor_epochs_total=int(state.get("actor_kl_guard_actor_epochs_total",0))
+  self.actor_kl_guard_actor_epochs_min=state.get("actor_kl_guard_actor_epochs_min")
   if self.actor_lr_decay.enabled:
    self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
   elif self.ppo_stabilization.enabled:

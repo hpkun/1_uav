@@ -12,5 +12,6 @@ from .ppo_stabilization import PPO_STABILIZATION_VERSION,PPOStabilizationModule
 from .actor_lr_decay import ACTOR_LR_DECAY_VERSION,ActorLRDecayModule
 from .wave_survival_pbrs import WaveSurvivalPotentialShapingModule
 from .mission_film import MISSION_FILM_VERSION,MissionFiLMModule
+from .actor_kl_guard import ACTOR_KL_GUARD_VERSION,ActorKLEpochGuardModule
 
-__all__=["CapabilityModule","enabled_module_names","WaveContextModule","RecurrentMemoryModule","PopArtValueNormalizer","MultiWaveRewardAdapter","WaveBalancingModule","WarmStartInitializer","CurriculumController","PolicyAnchorRegularizer","ADVANTAGE_PRIORITY_VERSION","AdvantagePriorityModule","capped_mean_preserving","PPO_STABILIZATION_VERSION","PPOStabilizationModule","ACTOR_LR_DECAY_VERSION","ActorLRDecayModule","WaveSurvivalPotentialShapingModule","MISSION_FILM_VERSION","MissionFiLMModule"]
+__all__=["CapabilityModule","enabled_module_names","WaveContextModule","RecurrentMemoryModule","PopArtValueNormalizer","MultiWaveRewardAdapter","WaveBalancingModule","WarmStartInitializer","CurriculumController","PolicyAnchorRegularizer","ADVANTAGE_PRIORITY_VERSION","AdvantagePriorityModule","capped_mean_preserving","PPO_STABILIZATION_VERSION","PPOStabilizationModule","ACTOR_LR_DECAY_VERSION","ActorLRDecayModule","WaveSurvivalPotentialShapingModule","MISSION_FILM_VERSION","MissionFiLMModule","ACTOR_KL_GUARD_VERSION","ActorKLEpochGuardModule"]

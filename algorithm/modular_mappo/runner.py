@@ -757,6 +757,8 @@ class ModularMAPPOTrainingRunner:
         transition_fraction = self._fractions(self.transition_counts)
         alive_fraction = self._fractions(self.alive_agent_counts)
         pretraining = int(self.trainer.warm_start_provenance.get("pretraining_sampled_steps", 0))
+        guard_updates = int(self.trainer.ppo_update_count)
+        guard_epoch_total = int(self.trainer.actor_kl_guard_actor_epochs_total)
         return {
             "algorithm":"modular_mappo",
             **self.method_identity(),
@@ -799,6 +801,17 @@ class ModularMAPPOTrainingRunner:
             "branch_provenance": self.branch_provenance,
             "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
             "final_optimization_metrics": self.last_metrics,
+            "actor_kl_guard_summary": {
+                "enabled": bool(self.trainer.actor_kl_guard.enabled),
+                "total_ppo_updates": guard_updates,
+                "hard_stop_count": int(self.trainer.actor_kl_guard_hard_stop_count),
+                "hard_stop_fraction": (float(self.trainer.actor_kl_guard_hard_stop_count / guard_updates)
+                                       if guard_updates else 0.0),
+                "mean_actor_epochs_used": (float(guard_epoch_total / guard_updates)
+                                           if self.trainer.actor_kl_guard.enabled and guard_updates else None),
+                "min_actor_epochs_used": (int(self.trainer.actor_kl_guard_actor_epochs_min)
+                                          if self.trainer.actor_kl_guard_actor_epochs_min is not None else None),
+            },
             **self.environment_provenance(),
         }
 
@@ -832,6 +845,11 @@ class ModularMAPPOTrainingRunner:
             result.update({key:architecture[key] for key in ("mission_film_enabled","mission_film_mode",
                 "mission_encoder_hidden_dim","mission_film_alpha","mission_film_identity_init",
                 "mission_film_augmented_residual")})
+        if self.trainer.actor_kl_guard.enabled:
+            result.update({"actor_kl_guard_enabled":True,
+                           "actor_kl_guard_version":int(self.trainer.actor_kl_guard.version),
+                           "actor_kl_guard_hard_kl":float(self.trainer.actor_kl_guard.hard_kl),
+                           "actor_kl_guard_actor_early_stop":bool(self.trainer.actor_kl_guard.actor_early_stop)})
         return result
 
     def run(self) -> dict[str, Any]:
@@ -844,6 +862,12 @@ class ModularMAPPOTrainingRunner:
                 self.last_metrics = {**self.trainer.update(rollout), **self.last_rollout_metrics,
                                      "curriculum_stage":float(self.current_stage),
                                      "current_total_waves":float(self.current_waves)}
+                if (self.trainer.actor_kl_guard.enabled and
+                        self.last_metrics.get("kl_hard_stop_triggered", 0.0) > 0.5):
+                    print(f"[KL_GUARD] steps={self.trainer.sampled_steps} | "
+                          f"epoch_kl={self.last_metrics['epoch_kl_last']:.5f} | "
+                          f"actor_epochs={int(self.last_metrics['actor_epochs_used'])}/{self.trainer.ppo_epochs}",
+                          flush=True)
                 warning=self.optimization_warning_line()
                 if warning is not None:print(warning,flush=True)
                 record = {"sampled_steps":self.trainer.sampled_steps,"rollout_update":self.trainer.ppo_update_count,**self.last_metrics}
