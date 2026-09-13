@@ -178,7 +178,9 @@ class ModularMAPPOTrainer:
    lr=self.ppo_stabilization.actor_learning_rate(self.sampled_steps,self.total_sampled_steps)
    for group in self.actor_optimizer.param_groups:group["lr"]=lr
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
-  if self.recurrent.actor_enabled or self.recurrent.critic_enabled:
+  if self.recurrent.actor_enabled and not self.recurrent.critic_enabled:
+   metrics=self._update_actor_recurrent_critic_flat(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
+  elif self.recurrent.actor_enabled or self.recurrent.critic_enabled:
    metrics=self._update_recurrent(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
   elif self.ppo_stabilization.enabled:
    metrics=self._update_flat_stabilized(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w)
@@ -324,6 +326,79 @@ class ModularMAPPOTrainer:
     group=[chunks[int(i)] for i in order[start:start+sequences_per_minibatch]]
     rows.append(self._recurrent_minibatch(r,group,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,tt))
   out=aggregate_update_rows(rows,self.clip_ratio);out.update({"sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),"recurrent_minibatches_per_epoch":float(np.ceil(len(chunks)/sequences_per_minibatch))});return out
+
+ def _update_actor_recurrent_critic_flat(self,r,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
+  """Train an actor-only GRU with BPTT while retaining Plain flat critic updates."""
+  tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
+  chunks=contiguous_chunks(obs.shape[0],obs.shape[1],self.recurrent.sequence_length)
+  sequences_per_minibatch=max(1,self.minibatch_size//self.recurrent.sequence_length)
+  actor_rows=[]
+  # Actor shuffling is deliberately ephemeral: only the flat critic consumes
+  # the trainer RNG, exactly as it does in the Plain MAPPO update.
+  actor_rng=np.random.default_rng()
+  actor_rng.bit_generator.state=deepcopy(self.rng.bit_generator.state)
+  for _ in range(self.ppo_epochs):
+   order=actor_rng.permutation(len(chunks))
+   for start in range(0,len(chunks),sequences_per_minibatch):
+    group=[chunks[int(i)] for i in order[start:start+sequences_per_minibatch]]
+    actor_rows.append(self._actor_recurrent_minibatch(r,group,obs,act,raw,oldlog,alive,adv,weights,ctx,tt))
+
+  flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:])
+  O,M,OV,TG,W,C=map(flat,(obs,alive,oldvalue,target,weights,ctx));N=O.shape[0]
+  critic_losses=[];critic_grad_norms=[]
+  for _ in range(self.ppo_epochs):
+   permutation=self.rng.permutation(N)
+   for start in range(0,N,self.minibatch_size):
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device)
+    value_loss=self._critic_loss_step(O[ix],M[ix],OV[ix],TG[ix],W[ix],C[ix])
+    self.critic_optimizer.zero_grad();(self.value_loss_coefficient*value_loss).backward()
+    cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm)
+    self.critic_optimizer.step();self.critic_update_count+=1
+    critic_losses.append(float(value_loss.detach()));critic_grad_norms.append(float(cg))
+  out=aggregate_update_rows(actor_rows,self.clip_ratio)
+  out.update({"value_loss":float(np.mean(critic_losses)),"weighted_value_loss":float(np.mean(critic_losses)),
+   "critic_grad_norm":float(np.mean(critic_grad_norms)),"critic_gru_grad_norm":0.0,
+   "sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),
+   "recurrent_minibatches_per_epoch":float(np.ceil(len(chunks)/sequences_per_minibatch))})
+  return out
+
+ def _actor_recurrent_minibatch(self,r,group,obs,act,raw,oldlog,alive,adv,weights,ctx,tt):
+  """One actor-only contiguous-sequence PPO minibatch."""
+  length=max(z-s for _,s,z in group);batch=len(group)
+  def padded(source):
+   out=torch.zeros((length,batch,*source.shape[2:]),dtype=source.dtype,device=self.device)
+   for b,(e,s,z) in enumerate(group):out[:z-s,b]=source[s:z,e]
+   return out
+  O,A,R,L,M,ADV,W,C=map(padded,(obs,act,raw,oldlog,alive,adv,weights,ctx))
+  valid=torch.zeros(length,batch,device=self.device)
+  for b,(_,s,z) in enumerate(group):valid[:z-s,b]=1
+  EP=torch.zeros(length,batch,device=self.device)
+  if r.episode_masks is not None:
+   episode=tt(r.episode_masks)
+   for b,(e,s,z) in enumerate(group):EP[:z-s,b]=episode[s:z,e]
+  ah=torch.stack([tt(r.actor_hidden_before_step[s,e]) for e,s,_ in group]).detach()
+  surrogates=[];entropies=[];ratios=[];logratios=[];newlogs=[];masks=[];waveweights=[];anchor_kls=[]
+  for t in range(length):
+   mask=M[t]*valid[t,:,None]
+   dist,ah=self.actor.distribution_step(O[t],self._ctx(C[t],True),ah,EP[t],mask)
+   newlog=self.actor._squashed_log_prob(dist,R[t],A[t]);logratio,ratio=stable_ratio_terms(newlog,L[t])
+   surrogate=torch.minimum(ratio*ADV[t],ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*ADV[t])
+   sampled=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sampled,torch.tanh(sampled))
+   if self.anchor.enabled and self.anchor.reference_actor is not None:
+    with torch.no_grad():reference=self.anchor.reference_actor.distribution(O[t])
+    anchor_kls.append(kl_divergence(dist,reference).sum(-1))
+   surrogates.append(surrogate);entropies.append(entropy);ratios.append(ratio);logratios.append(logratio);newlogs.append(newlog);masks.append(mask);waveweights.append(W[t,:,None].expand_as(mask))
+  surrogate,entropy,ratio,logratio,newlog,mask,ww=map(lambda x:torch.stack(x),(surrogates,entropies,ratios,logratios,newlogs,masks,waveweights))
+  aw=ww if self.wave_balance.actor_enabled else torch.ones_like(ww)
+  actor_loss=-recurrent_alive_mean(surrogate*aw,M,valid);entropy_mean=recurrent_alive_mean(entropy,M,valid)
+  anchor_mean=recurrent_alive_mean(torch.stack(anchor_kls),M,valid) if anchor_kls else torch.zeros((),device=self.device)
+  anchor_loss=anchor_mean*self.anchor.effective_coefficient(self.sampled_steps)
+  zero=torch.zeros((),device=self.device)
+  merged=(actor_loss,zero,entropy_mean,anchor_loss,ratio.reshape(-1,self.num_agents),logratio.reshape(-1,self.num_agents),newlog.reshape(-1,self.num_agents),L.reshape(-1,self.num_agents),ah,None,float(anchor_mean.detach()))
+  self.actor_optimizer.zero_grad();(actor_loss-self.entropy_coefficient*entropy_mean+anchor_loss).backward()
+  arg=self._gradient_norm(self.actor.gru.parameters());ag=nn.utils.clip_grad_norm_(self.actor.trainable_policy_parameters(),self.max_grad_norm)
+  self.actor_optimizer.step();self.actor_update_count+=1
+  return self._row(merged,mask.reshape(-1,self.num_agents),ag,0.,arg,0.)
 
  def _recurrent_minibatch(self,r,group,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,tt):
   length=max(z-s for _,s,z in group);batch=len(group)

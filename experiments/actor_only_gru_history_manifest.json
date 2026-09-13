@@ -21,6 +21,7 @@
     "actor_recurrent_cell": "GRUCell",
     "actor_gru_hidden_dim": 128,
     "sequence_length": 32,
+    "critic_training_batching": "plain_flat",
     "critic_context_dim": 0,
     "critic_gru_hidden_dim": 0,
     "critic": "unchanged_feed_forward_centralized_two_head_attention"

@@ -83,9 +83,14 @@ class ModularMAPPOActor(SharedMAPPOActor):
                 nn.init.zeros_(self.entity_mean_adapter.bias)
                 self.freeze_baseline_policy()
         if self.recurrent_hidden_dim:
-            self.gru=nn.GRUCell(hidden_dim, self.recurrent_hidden_dim)
-            self.mean=nn.Linear(self.recurrent_hidden_dim, action_dim)
-            self.log_std=nn.Linear(self.recurrent_hidden_dim, action_dim)
+            # Recurrent-only parameters must vary with the training seed without
+            # advancing the global CPU RNG seen by the subsequently-built
+            # baseline critic.  This preserves from-scratch matched
+            # initialization for every parameter shared with Plain MAPPO.
+            with torch.random.fork_rng(devices=[]):
+                self.gru=nn.GRUCell(hidden_dim, self.recurrent_hidden_dim)
+                self.mean=nn.Linear(self.recurrent_hidden_dim, action_dim)
+                self.log_std=nn.Linear(self.recurrent_hidden_dim, action_dim)
 
     @staticmethod
     def split_entities(observations):
