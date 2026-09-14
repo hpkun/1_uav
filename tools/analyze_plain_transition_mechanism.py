@@ -314,9 +314,9 @@ def matched_ground_risk(direct, risks):
     risk={(int(r["evaluation_seed"]),int(r["policy_training_seed"]),int(r["wave"])):float(r["ground_risk_ratio"]) for r in risks}
     out=[]
     for wave in (1,2):
-        cases=[case for case in sorted({k[0] for k in clear}) if all(clear.get((case,s,w),False) for s in POLICY_SEEDS)]
+        cases=[case for case in sorted({k[0] for k in clear}) if all(clear.get((case,s,wave),False) for s in POLICY_SEEDS)]
         for other in (5301,5302):
-            delta=[risk[(case,5303,w)]-risk[(case,other,w)] for case in cases]
+            delta=[risk[(case,5303,wave)]-risk[(case,other,wave)] for case in cases]
             out.append({"wave":wave,"contrast":f"5303-{other}","N":len(delta),
                         "mean_difference":float(np.mean(delta)) if delta else None,
                         "median_difference":float(np.median(delta)) if delta else None,
@@ -406,7 +406,7 @@ def main():
     artifacts["analysis/analysis.json"]=stable_file_sha256(analysis/"analysis.json")
     snapshot={"source_commit":None,"diagnostic_protocol_version":2,"checkpoint_seeds":list(POLICY_SEEDS),"evaluation_seed_range":[44000000,44000049],"counts":{"direct":metadata["direct_episode_count"],"native_transitions":metadata["native_transition_count"],"canonical_transitions":metadata["canonical_transition_count"],"native_continuations":metadata["native_continuation_count"],"canonical_continuations":metadata["canonical_continuation_count"]},"replay_integrity":integrity["status"],"conditional_metric_fix":True,"death_precedence_fix":True,"simultaneous_boundary_ground_count":simultaneous,"case_outcomes":result["case_outcomes"],"clear_conditioned_survivors":survivors,"ground_risk_summary":ground,"matched_ground_risk_summary":matched_ground,"native_entry_effect":result["native_entry_effect"],"canonical_entry_effect":result["canonical_entry_effect"],"native_controller_effect":result["native_controller_effect"],"canonical_controller_effect":result["canonical_controller_effect"],"mechanism_classification":labels,"ground_classification":ground_label,"reward_credit_interpretation":result["reward_credit_interpretation"],"recommended_next_experiment":recommended,"training":False,"policy_update":False,"future_final_45m_used":False,"input_artifact_sha256":artifacts}
     exp=ROOT/"experiments";(exp/"plain_transition_mechanism_diagnostic_result.json").write_text(json.dumps(snapshot,indent=2),encoding="utf-8")
-    (exp/"plain_transition_mechanism_diagnostic_report.md").write_text("# Plain transition mechanism diagnostic result\n\n"+f"Replay: `{integrity['status']}`\n\nMechanism: `{labels['final']}`\n\nGround: `{ground_label['label']}`\n\nConsistency: `{consistency}`\n\nNext experiment: {recommended}.\n\nNo PURE_RED_STATE_CAUSAL_EFFECT is claimed. Matched initial future RNG stream is not event-wise coupled randomness. No training or 45M use occurred.\n",encoding="utf-8")
+    (exp/"plain_transition_mechanism_diagnostic_report.md").write_text((analysis/"report.md").read_text(encoding="utf-8"),encoding="utf-8")
     print(json.dumps({"status":result["status"],"replay":integrity["status"],"analysis_dir":str(analysis)},indent=2))
 
 
