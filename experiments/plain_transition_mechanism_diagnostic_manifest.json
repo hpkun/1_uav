@@ -1,0 +1,28 @@
+{
+  "name": "plain_transition_mechanism_44m",
+  "purpose": "mechanistic diagnosis of inter-wave state quality, safety, and continuation control",
+  "policies": [5301, 5302, 5303],
+  "checkpoint": "3M final only",
+  "evaluation_seeds": {
+    "start": 44000000,
+    "end": 44000049,
+    "count": 50,
+    "role": "development-exposed matched diagnostic cases"
+  },
+  "future_final": {
+    "start": 45000000,
+    "end": 45000199,
+    "executed": false
+  },
+  "training": false,
+  "new_policy_optimization": false,
+  "deterministic_actor": true,
+  "counterfactual_continuation": true,
+  "counterfactual_future_rng": {
+    "mode": "matched diagnostic-only",
+    "formula": "evaluation_seed * 10 + next_wave",
+    "depends_only_on": ["evaluation_seed", "next_wave"],
+    "does_not_change_spawned_blue_state": true
+  },
+  "replication_note": "Training seed remains the algorithm-level replication unit. Evaluation cases are matched diagnostic cases, not independent algorithm replications."
+}
