@@ -53,7 +53,6 @@ def clone_checks(env_config):
 def main():
     p=argparse.ArgumentParser();p.add_argument("--output-dir",default=str(OUTPUT_DIR));p.add_argument("--overwrite",action="store_true");a=p.parse_args()
     output=Path(a.output_dir)
-    if output.exists() and not a.overwrite:raise FileExistsError(f"diagnostic output exists: {output}")
     checks={};contracts={}
     for seed in POLICY_SEEDS:
         assert CHECKPOINTS[seed].exists();contract=checkpoint_contract(CHECKPOINTS[seed],True);contracts[seed]=contract
@@ -83,7 +82,7 @@ def main():
     required=("direct_case_results.csv","transition_states.csv","transition_agents.csv","ground_risk_cases.csv",
               "death_pretrace.jsonl","replay_integrity.json","continuation_results.csv",
               "canonical_transition_states.csv","canonical_continuation_results.csv","run_metadata.json")
-    if output.exists() and not all((output/name).is_file() for name in required):
+    if output.exists() and not a.overwrite and not all((output/name).is_file() for name in required):
         raise RuntimeError("diagnostic output is incomplete; rerun diagnostic runner with --overwrite")
     else: checks["output_fresh_or_overwrite"]="PASS"
     result={"status":"READY_FOR_PLAIN_TRANSITION_MECHANISM_DIAGNOSTIC","checks":checks}

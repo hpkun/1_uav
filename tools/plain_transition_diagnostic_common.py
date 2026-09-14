@@ -310,11 +310,13 @@ def canonicalize_spawn(env, evaluation_seed: int, next_wave: int):
         raise ValueError("environment must be a post-spawn entry state")
     seed = canonical_spawn_seed(int(evaluation_seed), int(next_wave))
     red_before = [(s.x, s.y, s.z, s.v, s.theta, s.psi, s.alive) for s in env.red]
-    steps_before, cleared_before = env.steps, env.waves_cleared
+    counters_before = (env.steps, env.wave_index, env.waves_cleared, env.max_steps)
     env.rng = np.random.default_rng(seed)
     angle = env._spawn_next_wave()
     red_after = [(s.x, s.y, s.z, s.v, s.theta, s.psi, s.alive) for s in env.red]
-    if red_before != red_after or steps_before != env.steps or cleared_before != env.waves_cleared:
+    counters_after = (env.steps, env.wave_index, env.waves_cleared, env.max_steps)
+    armed = all(state.armed for state in env.red_fire_states + env.blue_fire_states)
+    if red_before != red_after or counters_before != counters_after or not armed:
         raise RuntimeError("canonical spawn changed source Red or episode counters")
     return int(seed), float(angle)
 

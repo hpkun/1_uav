@@ -93,6 +93,45 @@ def test_canonical_spawn_seed_is_policy_invariant_and_reproducible():
     assert seed1==seed2==canonical_spawn_seed(44_000_000,2) and angle1==angle2
     assert all(np.array_equal(a.as_array(),b.as_array()) for a,b in zip(first.blue,second.blue))
     assert [(a.x,a.y,a.z,a.v,a.theta,a.psi,a.alive) for a in env.red] == [(a.x,a.y,a.z,a.v,a.theta,a.psi,a.alive) for a in first.red]
+    assert (env.steps,env.wave_index,env.waves_cleared,env.max_steps)==(first.steps,first.wave_index,first.waves_cleared,first.max_steps)
+    assert all(state.armed for state in first.red_fire_states+first.blue_fire_states)
+
+
+def test_paired_controller_effect_counts_each_entry_once():
+    rows=[]
+    for case in (1,2):
+        for source in (5301,5302,5303):
+            for controller in (5301,5302,5303):
+                rows.append({"evaluation_seed":case,"source_policy_seed":source,
+                             "continuation_policy_seed":controller,"next_wave":2,
+                             "next_wave_clear":int(controller==5303)})
+    effects=analyzer.paired_controller_effect(rows,2)
+    assert all(row["N"]==6 and row["wins"]==6 and row["mean_paired_outcome_delta"]==1 for row in effects)
+
+
+def test_paired_entry_effect_requires_all_three_sources_and_controllers():
+    rows=[]
+    for case in (1,2):
+        for source in (5301,5302,5303):
+            for controller in (5301,5302,5303):
+                if not (case==2 and source==5302 and controller==5301):
+                    rows.append({"evaluation_seed":case,"source_policy_seed":source,
+                                 "continuation_policy_seed":controller,"next_wave":2,
+                                 "next_wave_clear":int(source==5303)})
+    effects=analyzer.paired_entry_effect(rows,2)
+    assert all(row["N"]==1 and row["wins"]==1 for row in effects)
+
+
+def test_fixed_effect_and_overall_classification_rules():
+    assert analyzer.effect_label([1,1,1,1,1,1])=="ENTRY_SUPPORTED_STRONG"
+    assert analyzer.effect_label([1,1,1,1,-1,0])=="ENTRY_SUPPORTED_DIRECTIONALLY"
+    assert analyzer.effect_label([1,1,1,-1,-1,0])=="ENTRY_MIXED_POSITIVE"
+    assert analyzer.controller_label([1,1])=="CONTROLLER_SUPPORTED_DIRECTIONALLY"
+    assert analyzer.controller_label([1,0])=="CONTROLLER_MIXED_POSITIVE"
+    assert analyzer.overall_entry_label("ENTRY_SUPPORTED_STRONG","ENTRY_SUPPORTED_DIRECTIONALLY")=="ENTRY_OVERALL_SUPPORTED"
+    assert analyzer.overall_controller_label("CONTROLLER_SUPPORTED_DIRECTIONALLY","CONTROLLER_MIXED_POSITIVE")=="CONTROLLER_OVERALL_MIXED"
+    assert analyzer.classify_overall_mechanism("ENTRY_OVERALL_MIXED","CONTROLLER_OVERALL_SUPPORTED")=="CONTROLLER_QUALITY_DOMINANT"
+    assert analyzer.classify_overall_mechanism("ENTRY_OVERALL_MIXED","CONTROLLER_OVERALL_MIXED")=="NEITHER_RESOLVED"
 
 
 def test_deepcopy_and_transition_deepcopy_fidelity_and_same_observation():

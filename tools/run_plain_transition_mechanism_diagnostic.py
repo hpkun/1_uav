@@ -267,14 +267,37 @@ def main() -> None:
         canonical=deepcopy(source);spawn_seed,spawn_angle=canonicalize_spawn(canonical,int(entry["evaluation_seed"]),int(entry["next_wave"]))
         summary, _ = transition_snapshot(canonical,int(entry["source_policy_seed"]),int(entry["evaluation_seed"]),int(entry["cleared_wave"]))
         summary.update({"entry_mode":"canonical_spawn","canonical_spawn_seed":spawn_seed,
-                        "canonical_spawn_radial_angle":spawn_angle,"canonical_source_red_state_unchanged":True})
+                        "canonical_spawn_radial_angle":spawn_angle,"canonical_source_red_state_unchanged":True,
+                        "source_wave_ground_risk_ratio":entry["source_wave_ground_risk_ratio"],
+                        "source_wave_ground_risk_steps":entry["source_wave_ground_risk_steps"],
+                        "source_wave_living_agent_steps":entry["source_wave_living_agent_steps"],
+                        "next_wave_clear":entry["next_wave_clear"]})
         canonical_transitions.append(summary)
         canonical_continuation.extend(run_continuation(source,entry,trainers,"canonical_spawn"))
+        print(f"[CANONICAL] {index}/{len(clones)} source={entry['source_policy_seed']} case={entry['evaluation_seed']} next={entry['next_wave']}",flush=True)
+    if len(direct) != len(POLICY_SEEDS) * len(EVALUATION_SEEDS):
+        raise RuntimeError(f"direct episode count mismatch: {len(direct)}")
+    if len(canonical_transitions) != len(transitions):
+        raise RuntimeError(f"canonical transition count mismatch: {len(canonical_transitions)} != {len(transitions)}")
+    expected_continuations = len(POLICY_SEEDS) * len(transitions)
+    if len(continuation) != expected_continuations:
+        raise RuntimeError(f"native continuation count mismatch: {len(continuation)} != {expected_continuations}")
+    if len(canonical_continuation) != expected_continuations:
+        raise RuntimeError(f"canonical continuation count mismatch: {len(canonical_continuation)} != {expected_continuations}")
     write_csv(out/"canonical_transition_states.csv",canonical_transitions)
     write_csv(out/"canonical_continuation_results.csv",canonical_continuation)
     armed_ok=all((not bool(x["alive"])) or bool(x["fire_armed"]) for x in agents)
-    metadata={"status":"DIAGNOSTIC_COMPLETE","replay_integrity":integrity["status"],"transition_weapon_state_reset":"TRANSITION_WEAPON_STATE_RESET_PASS" if armed_ok else "TRANSITION_WEAPON_STATE_RESET_FAIL",
-              "policy_seeds":list(POLICY_SEEDS),"evaluation_seed_start":EVALUATION_SEEDS[0],"evaluation_seed_end":EVALUATION_SEEDS[-1],"direct_episode_count":len(direct),"transition_count":len(transitions),"continuation_count":len(continuation),"canonical_transition_count":len(canonical_transitions),"canonical_continuation_count":len(canonical_continuation),"matched_future_rng_note":"matched initial future RNG stream, not event-wise coupled randomness","training":False,"policy_update":False,"future_final_45m_used":False}
+    simultaneous=sum(bool(row.get("simultaneous_boundary_ground",False)) for row in deaths)
+    metadata={"status":"DIAGNOSTIC_COMPLETE","diagnostic_protocol_version":2,
+              "replay_integrity":integrity["status"],"transition_weapon_state_reset":"TRANSITION_WEAPON_STATE_RESET_PASS" if armed_ok else "TRANSITION_WEAPON_STATE_RESET_FAIL",
+              "policy_seeds":list(POLICY_SEEDS),"evaluation_seed_start":EVALUATION_SEEDS[0],"evaluation_seed_end":EVALUATION_SEEDS[-1],
+              "direct_episode_count":len(direct),"native_transition_count":len(transitions),"canonical_transition_count":len(canonical_transitions),
+              "native_continuation_count":len(continuation),"canonical_continuation_count":len(canonical_continuation),
+              "transition_count":len(transitions),"continuation_count":len(continuation),
+              "simultaneous_boundary_ground_count":simultaneous,"canonical_spawn_mode":"policy-invariant diagnostic-only Blue respawn",
+              "future_rng_mode":"matched initial future RNG stream, not event-wise coupled randomness",
+              "matched_future_rng_note":"matched initial future RNG stream, not event-wise coupled randomness",
+              "training":False,"policy_update":False,"future_final_45m_used":False}
     (out/"run_metadata.json").write_text(json.dumps(metadata,indent=2),encoding="utf-8")
     print(json.dumps(metadata,indent=2))
 

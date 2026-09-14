@@ -14,7 +14,7 @@ import numpy as np
 
 ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
-from tools.plain_transition_diagnostic_common import OUTPUT_DIR,POLICY_SEEDS
+from tools.plain_transition_diagnostic_common import OUTPUT_DIR,POLICY_SEEDS,stable_file_sha256
 
 
 def scalar(value: str):
@@ -84,13 +84,61 @@ def controller_label(deltas):
     return "CONTROLLER_NOT_SUPPORTED"
 
 
-def classify_mechanism(entry_label, controller_label_value):
-    entry_ok=entry_label in {"ENTRY_SUPPORTED_STRONG","ENTRY_SUPPORTED_DIRECTIONALLY"}
-    controller_ok=controller_label_value=="CONTROLLER_SUPPORTED_DIRECTIONALLY"
+def overall_entry_label(wave2, wave3):
+    supported={"ENTRY_SUPPORTED_STRONG","ENTRY_SUPPORTED_DIRECTIONALLY"}
+    if wave2 in supported and wave3 in supported:return "ENTRY_OVERALL_SUPPORTED"
+    if ((wave2 in supported and wave3=="ENTRY_MIXED_POSITIVE") or
+        (wave3 in supported and wave2=="ENTRY_MIXED_POSITIVE")):return "ENTRY_OVERALL_MIXED"
+    return "ENTRY_OVERALL_NOT_ESTABLISHED"
+
+
+def overall_controller_label(wave2, wave3):
+    supported="CONTROLLER_SUPPORTED_DIRECTIONALLY"
+    if wave2==supported and wave3==supported:return "CONTROLLER_OVERALL_SUPPORTED"
+    if ((wave2==supported and wave3=="CONTROLLER_MIXED_POSITIVE") or
+        (wave3==supported and wave2=="CONTROLLER_MIXED_POSITIVE")):return "CONTROLLER_OVERALL_MIXED"
+    return "CONTROLLER_OVERALL_NOT_ESTABLISHED"
+
+
+def classify_overall_mechanism(entry_label, controller_label_value):
+    entry_ok=entry_label=="ENTRY_OVERALL_SUPPORTED"
+    controller_ok=controller_label_value=="CONTROLLER_OVERALL_SUPPORTED"
     if entry_ok and controller_ok:return "STATE_AND_CONTROLLER_BOTH"
     if entry_ok:return "STATE_QUALITY_DOMINANT"
     if controller_ok:return "CONTROLLER_QUALITY_DOMINANT"
     return "NEITHER_RESOLVED"
+
+
+def paired_controller_effect(rows, next_wave):
+    indexed={(int(r["evaluation_seed"]),int(r["source_policy_seed"]),int(r["continuation_policy_seed"])):int(r["next_wave_clear"])
+             for r in rows if int(r["next_wave"])==next_wave}
+    out=[]
+    for other in (5301,5302):
+        deltas=[]
+        for case,source in sorted({(case,source) for case,source,_ in indexed}):
+            a=indexed.get((case,source,5303));b=indexed.get((case,source,other))
+            if a is not None and b is not None:deltas.append(a-b)
+        out.append({"next_wave":next_wave,"contrast":f"controller5303-controller{other}","N":len(deltas),
+                    "wins":sum(x>0 for x in deltas),"losses":sum(x<0 for x in deltas),"ties":sum(x==0 for x in deltas),
+                    "mean_paired_outcome_delta":float(np.mean(deltas)) if deltas else None})
+    return out
+
+
+def paired_entry_effect(rows, next_wave):
+    indexed={(int(r["evaluation_seed"]),int(r["source_policy_seed"]),int(r["continuation_policy_seed"])):int(r["next_wave_clear"])
+             for r in rows if int(r["next_wave"])==next_wave}
+    cases={case for case,_,_ in indexed
+           if all(all((case,source,controller) in indexed for controller in POLICY_SEEDS)
+                  for source in POLICY_SEEDS)}
+    out=[]
+    for controller in POLICY_SEEDS:
+        for other in (5301,5302):
+            deltas=[indexed[(case,5303,controller)]-indexed[(case,other,controller)] for case in sorted(cases)
+                    if (case,5303,controller) in indexed and (case,other,controller) in indexed]
+            out.append({"next_wave":next_wave,"continuation_policy":controller,"contrast":f"source5303-source{other}",
+                        "N":len(deltas),"wins":sum(x>0 for x in deltas),"losses":sum(x<0 for x in deltas),
+                        "ties":sum(x==0 for x in deltas),"mean_paired_outcome_delta":float(np.mean(deltas)) if deltas else None})
+    return out
 
 
 def case_matrix(direct):
@@ -187,6 +235,19 @@ def death_summary(path: Path):
     return rows,events
 
 
+def death_counts(events):
+    rows=[]
+    for seed in POLICY_SEEDS:
+        for wave in (1,2,3):
+            selected=[e for e in events if int(e["policy_seed"])==seed and int(e["wave"])==wave]
+            rows.append({"policy_seed":seed,"wave":wave,
+                         "ground_death_count":sum(e["death_type"]=="ground" for e in selected),
+                         "boundary_death_count":sum(e["death_type"]=="boundary" for e in selected),
+                         "combat_death_count":sum(e["death_type"]=="combat" for e in selected),
+                         "simultaneous_boundary_ground_count":sum(bool(e.get("simultaneous_boundary_ground",False)) for e in selected)})
+    return rows
+
+
 def feature_associations(transitions):
     rows=[]
     for nxt in (2,3):
@@ -247,14 +308,60 @@ def duration_summary(direct):
     return rows
 
 
+def matched_ground_risk(direct, risks):
+    clear={(int(r["evaluation_seed"]),int(r["policy_training_seed"]),w):bool(r[f"clear_wave_{w}"])
+           for r in direct for w in (1,2)}
+    risk={(int(r["evaluation_seed"]),int(r["policy_training_seed"]),int(r["wave"])):float(r["ground_risk_ratio"]) for r in risks}
+    out=[]
+    for wave in (1,2):
+        cases=[case for case in sorted({k[0] for k in clear}) if all(clear.get((case,s,w),False) for s in POLICY_SEEDS)]
+        for other in (5301,5302):
+            delta=[risk[(case,5303,w)]-risk[(case,other,w)] for case in cases]
+            out.append({"wave":wave,"contrast":f"5303-{other}","N":len(delta),
+                        "mean_difference":float(np.mean(delta)) if delta else None,
+                        "median_difference":float(np.median(delta)) if delta else None,
+                        "direction_fraction_5303_lower":float(np.mean([x<0 for x in delta])) if delta else None})
+    return out
+
+
+def ground_episode_exposure(direct, risks, events):
+    deaths={(int(e["policy_seed"]),int(e["evaluation_seed"])) for e in events if e["death_type"]=="ground"}
+    out=[]
+    for seed in POLICY_SEEDS:
+        all_rows=[r for r in risks if int(r["policy_training_seed"])==seed and int(r["wave"])==0]
+        for label,flag in (("with_ground_death",True),("without_ground_death",False)):
+            rows=[r for r in all_rows if (((seed,int(r["evaluation_seed"])) in deaths)==flag)]
+            out.append({"policy_seed":seed,"episode_group":label,"N":len(rows),
+                        "mean_ground_risk_ratio":float(np.mean([r["ground_risk_ratio"] for r in rows])) if rows else None})
+    return out
+
+
+def ground_classification(ground, matched, death, integrity):
+    overall={int(r["policy_seed"]):float(r["ground_risk_ratio"]) for r in ground if r["wave"]=="all"}
+    a=overall[5301]>overall[5303] and overall[5302]>overall[5303]
+    contrasts=[r for r in matched if r["mean_difference"] is not None]
+    b=sum(r["mean_difference"]<0 for r in contrasts)>=3
+    precursor=[r for r in death if r["t_minus"] in (1,5) and r["guard_risk_fraction"] is not None]
+    c=any(r["guard_risk_fraction"]>0 for r in precursor)
+    aw={int(k):float(v["diagnostic"]["average_waves"]) for k,v in integrity["policies"].items()}
+    d=overall[5303]==min(overall.values()) and aw[5303]==max(aw.values()) and any(aw[s]<aw[5303] for s in (5301,5302) if overall[s]>overall[5303])
+    label=("GROUND_PRIMARY_MECHANISM_SUPPORTED" if all((a,b,c,d)) else
+           "GROUND_HIGH_PRIORITY_PLAUSIBLE" if a and b else
+           "GROUND_ASSOCIATED_NOT_PRIMARY" if a else "GROUND_INCONCLUSIVE")
+    return {"label":label,"criteria":{"A_overall_exposure":a,"B_matched_exposure":b,"C_death_precursor":c,"D_task_association":d},
+            "overall_ground_risk_ratio":overall,"matched_lower_contrasts":sum(r["mean_difference"]<0 for r in contrasts),"matched_contrast_count":len(contrasts)}
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument("--input-dir",default=str(OUTPUT_DIR));a=p.parse_args();base=Path(a.input_dir);analysis=base/"analysis";analysis.mkdir(exist_ok=True)
     direct=read_csv(base/"direct_case_results.csv");transitions=read_csv(base/"transition_states.csv");risks=read_csv(base/"ground_risk_cases.csv");continuations=read_csv(base/"continuation_results.csv")
+    canonical_transitions=read_csv(base/"canonical_transition_states.csv");canonical_continuations=read_csv(base/"canonical_continuation_results.csv")
     matrix=case_matrix(direct);write_csv(analysis/"case_policy_matrix.csv",matrix)
     survivors=survivor_summary(direct);write_csv(analysis/"transition_summary.csv",survivors)
     matched,matched_summary=matched_transition(transitions);write_csv(analysis/"matched_transition_case_results.csv",matched);write_csv(analysis/"matched_transition_summary.csv",matched_summary)
     ground=ground_summary(risks);write_csv(analysis/"ground_risk_summary.csv",ground)
     death,events=death_summary(base/"death_pretrace.jsonl");write_csv(analysis/"ground_death_summary.csv",death)
+    deaths_by_policy_wave=death_counts(events);write_csv(analysis/"death_counts_by_policy_wave.csv",deaths_by_policy_wave)
     associations=feature_associations(transitions);write_csv(analysis/"feature_success_association.csv",associations)
     surv_prob=survivor_probability(transitions);write_csv(analysis/"survivor_success_probability.csv",surv_prob)
     m2=continuation_matrix(continuations,2);m3=continuation_matrix(continuations,3);write_csv(analysis/"continuation_matrix_wave2.csv",m2);write_csv(analysis/"continuation_matrix_wave3.csv",m3)
@@ -262,10 +369,44 @@ def main():
     duration=duration_summary(direct);write_csv(analysis/"wave_duration_summary.csv",duration)
     integrity=json.loads((base/"replay_integrity.json").read_text(encoding="utf-8"));metadata=json.loads((base/"run_metadata.json").read_text(encoding="utf-8"))
     simultaneous=sum(bool(e.get("simultaneous_boundary_ground",False)) for e in events)
-    result={"status":"ANALYSIS_COMPLETE","integrity":integrity,"run_metadata":metadata,"case_outcomes":case_counts(matrix),"clear_and_record_survivors":survivors,"matched_transition_summary":matched_summary,"ground_risk":ground,"ground_death_precursors":death,"simultaneous_boundary_ground_count":simultaneous,"survivor_success_probability":surv_prob,"wave_duration":duration,"continuation_wave2":m2,"continuation_wave3":m3,"state_source_effect":s2+s3,"controller_effect":c2+c3,"transition_weapon_state_reset":metadata["transition_weapon_state_reset"],"effect_interpretation_note":"Native results are NATIVE_ENTRY_CONDITION_EFFECT; canonical results are CANONICAL_ENTRY_CONDITION_EFFECT; controller tables are CONTROLLER_EFFECT. No PURE_RED_STATE_CAUSAL_EFFECT is claimed.","matched_future_rng_note":"matched initial future RNG stream, not event-wise coupled randomness","statistical_unit_note":"Training seed is the algorithm replication unit; 44M cases are matched mechanism diagnostics."}
+    native_controller=paired_controller_effect(continuations,2)+paired_controller_effect(continuations,3)
+    canonical_controller=paired_controller_effect(canonical_continuations,2)+paired_controller_effect(canonical_continuations,3)
+    native_entry=paired_entry_effect(continuations,2)+paired_entry_effect(continuations,3)
+    canonical_entry=paired_entry_effect(canonical_continuations,2)+paired_entry_effect(canonical_continuations,3)
+    write_csv(analysis/"paired_controller_effect_native.csv",native_controller);write_csv(analysis/"paired_controller_effect_canonical.csv",canonical_controller)
+    write_csv(analysis/"paired_entry_effect_native.csv",native_entry);write_csv(analysis/"paired_entry_effect_canonical.csv",canonical_entry)
+    labels={}
+    for mode,entry_rows,controller_rows in (("native",native_entry,native_controller),("canonical",canonical_entry,canonical_controller)):
+        for wave in (2,3):
+            labels[f"{mode}_entry_wave{wave}"]=effect_label([r["mean_paired_outcome_delta"] for r in entry_rows if r["next_wave"]==wave])
+            labels[f"{mode}_controller_wave{wave}"]=controller_label([r["mean_paired_outcome_delta"] for r in controller_rows if r["next_wave"]==wave])
+    labels["canonical_entry_overall"]=overall_entry_label(labels["canonical_entry_wave2"],labels["canonical_entry_wave3"])
+    labels["canonical_controller_overall"]=overall_controller_label(labels["canonical_controller_wave2"],labels["canonical_controller_wave3"])
+    labels["final"]=classify_overall_mechanism(labels["canonical_entry_overall"],labels["canonical_controller_overall"])
+    supported={"ENTRY_SUPPORTED_STRONG","ENTRY_SUPPORTED_DIRECTIONALLY"}
+    def same_direction(left,right):
+        return (left in supported and right in supported) or left==right
+    agreements=sum(same_direction(labels[f"native_entry_wave{w}"],labels[f"canonical_entry_wave{w}"]) for w in (2,3))
+    consistency="CONSISTENT" if agreements==2 else "PARTIALLY_CONSISTENT" if agreements==1 else "INCONSISTENT"
+    matched_ground=matched_ground_risk(direct,risks);write_csv(analysis/"matched_ground_risk_comparison.csv",matched_ground)
+    episode_ground=ground_episode_exposure(direct,risks,events);write_csv(analysis/"ground_risk_by_episode_outcome.csv",episode_ground)
+    ground_label=ground_classification(ground,matched_ground,death,integrity)
+    entry_mag=float(np.mean([abs(r["mean_paired_outcome_delta"]) for r in canonical_entry if r["mean_paired_outcome_delta"] is not None]))
+    controller_mag=float(np.mean([abs(r["mean_paired_outcome_delta"]) for r in canonical_controller if r["mean_paired_outcome_delta"] is not None]))
+    final=labels["final"]
+    recommended=("minimal inter-wave state-quality credit intervention" if final=="STATE_QUALITY_DOMINANT" or (final=="STATE_AND_CONTROLLER_BOTH" and entry_mag>=controller_mag) else
+                 "minimal persistent safety/control stabilization intervention" if final=="CONTROLLER_QUALITY_DOMINANT" or final=="STATE_AND_CONTROLLER_BOTH" else
+                 "no new training; mechanism diagnosis remains unresolved")
+    result={"status":"ANALYSIS_COMPLETE","integrity":integrity,"run_metadata":metadata,"case_outcomes":case_counts(matrix),"clear_and_record_survivors":survivors,"matched_transition_summary":matched_summary,"ground_risk":ground,"matched_ground_risk":matched_ground,"ground_death_precursors":death,"ground_episode_exposure":episode_ground,"simultaneous_boundary_ground_count":simultaneous,"previous_death_precedence_bug_realized_impact":"ZERO_REALIZED_IMPACT" if simultaneous==0 else "AFFECTED_DIAGNOSTIC_DEATH_LABELS","survivor_success_probability":surv_prob,"wave_duration":duration,"native_entry_effect":{"wave2":[r for r in native_entry if r["next_wave"]==2],"wave3":[r for r in native_entry if r["next_wave"]==3]},"canonical_entry_effect":{"wave2":[r for r in canonical_entry if r["next_wave"]==2],"wave3":[r for r in canonical_entry if r["next_wave"]==3]},"native_controller_effect":{"wave2":[r for r in native_controller if r["next_wave"]==2],"wave3":[r for r in native_controller if r["next_wave"]==3]},"canonical_controller_effect":{"wave2":[r for r in canonical_controller if r["next_wave"]==2],"wave3":[r for r in canonical_controller if r["next_wave"]==3]},"mechanism_classification":labels,"ground_classification":ground_label,"native_canonical_direction_consistency":consistency,"effect_interpretation_note":"Entry effects are entry-condition effects, not PURE_RED_STATE_CAUSAL_EFFECT.","matched_future_rng_note":"matched initial future RNG stream, not event-wise coupled randomness","statistical_unit_note":"Training seed is the algorithm replication unit; 44M cases are matched mechanism diagnostics.","reward_credit_interpretation":"Mechanism labels are development diagnostics and do not by themselves establish a reward intervention.","recommended_next_experiment":recommended}
+    result["ground_death_counts"]=deaths_by_policy_wave
     (analysis/"analysis.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
-    report=["# Plain transition mechanism diagnostic closure audit","",f"- Status: `{result['status']}`",f"- Replay: `{integrity['status']}`",f"- Weapon reset: `{metadata['transition_weapon_state_reset']}`",f"- Direct episodes: {metadata['direct_episode_count']}",f"- Native transitions: {metadata['transition_count']}",f"- Native continuations: {metadata['continuation_count']}",f"- Canonical transitions: {metadata.get('canonical_transition_count',0)}",f"- Canonical continuations: {metadata.get('canonical_continuation_count',0)}",f"- Simultaneous boundary+ground deaths: {simultaneous}","", "Native continuation is labeled NATIVE_ENTRY_CONDITION_EFFECT.","Canonical continuation is labeled CANONICAL_ENTRY_CONDITION_EFFECT.","Controller comparisons are CONTROLLER_EFFECT; no PURE_RED_STATE_CAUSAL_EFFECT is claimed.","Matched randomness means a matched initial future RNG stream, not event-wise coupled randomness.","", "Detailed machine-readable results are in `analysis.json` and the accompanying CSV tables."]
+    report=["# Plain transition mechanism diagnostic closure audit","","## Protocol", "Plain MAPPO seeds 5301/5302/5303 at 3M final; deterministic 44M cases only.","","## Replay integrity",f"`{integrity['status']}`","","## Counts",f"Direct={metadata['direct_episode_count']}, native transitions={metadata['native_transition_count']}, canonical transitions={metadata['canonical_transition_count']}, native continuations={metadata['native_continuation_count']}, canonical continuations={metadata['canonical_continuation_count']}.","","## Death precedence impact",f"Count={simultaneous}; `{result['previous_death_precedence_bug_realized_impact']}`.","","## Case outcomes",json.dumps(result["case_outcomes"],indent=2),"","## Clear-conditioned survivors",json.dumps(survivors,indent=2),"","## Native entry effects",json.dumps(result["native_entry_effect"],indent=2),"","## Canonical entry effects",json.dumps(result["canonical_entry_effect"],indent=2),"","## Controller effects",json.dumps({"native":result["native_controller_effect"],"canonical":result["canonical_controller_effect"]},indent=2),"","## Native-vs-canonical consistency",consistency,"","## Ground risk and death precursor",json.dumps({"classification":ground_label,"matched":matched_ground,"precursors":death},indent=2),"","## Wave duration",json.dumps(duration,indent=2),"","## Final mechanism classification",json.dumps(labels,indent=2),"","## Reward/credit interpretation",result["reward_credit_interpretation"],"","## Next experiment",recommended,"","No training, no policy update, and no 45M use occurred. Matched future RNG is initial-stream matched, not event-wise coupled."]
     (analysis/"report.md").write_text("\n".join(report)+"\n",encoding="utf-8")
+    artifacts={name:stable_file_sha256(base/name) for name in ("direct_case_results.csv","transition_states.csv","canonical_transition_states.csv","continuation_results.csv","canonical_continuation_results.csv","ground_risk_cases.csv","death_pretrace.jsonl")}
+    artifacts["analysis/analysis.json"]=stable_file_sha256(analysis/"analysis.json")
+    snapshot={"source_commit":None,"diagnostic_protocol_version":2,"checkpoint_seeds":list(POLICY_SEEDS),"evaluation_seed_range":[44000000,44000049],"counts":{"direct":metadata["direct_episode_count"],"native_transitions":metadata["native_transition_count"],"canonical_transitions":metadata["canonical_transition_count"],"native_continuations":metadata["native_continuation_count"],"canonical_continuations":metadata["canonical_continuation_count"]},"replay_integrity":integrity["status"],"conditional_metric_fix":True,"death_precedence_fix":True,"simultaneous_boundary_ground_count":simultaneous,"case_outcomes":result["case_outcomes"],"clear_conditioned_survivors":survivors,"ground_risk_summary":ground,"matched_ground_risk_summary":matched_ground,"native_entry_effect":result["native_entry_effect"],"canonical_entry_effect":result["canonical_entry_effect"],"native_controller_effect":result["native_controller_effect"],"canonical_controller_effect":result["canonical_controller_effect"],"mechanism_classification":labels,"ground_classification":ground_label,"reward_credit_interpretation":result["reward_credit_interpretation"],"recommended_next_experiment":recommended,"training":False,"policy_update":False,"future_final_45m_used":False,"input_artifact_sha256":artifacts}
+    exp=ROOT/"experiments";(exp/"plain_transition_mechanism_diagnostic_result.json").write_text(json.dumps(snapshot,indent=2),encoding="utf-8")
+    (exp/"plain_transition_mechanism_diagnostic_report.md").write_text("# Plain transition mechanism diagnostic result\n\n"+f"Replay: `{integrity['status']}`\n\nMechanism: `{labels['final']}`\n\nGround: `{ground_label['label']}`\n\nConsistency: `{consistency}`\n\nNext experiment: {recommended}.\n\nNo PURE_RED_STATE_CAUSAL_EFFECT is claimed. Matched initial future RNG stream is not event-wise coupled randomness. No training or 45M use occurred.\n",encoding="utf-8")
     print(json.dumps({"status":result["status"],"replay":integrity["status"],"analysis_dir":str(analysis)},indent=2))
 
 
