@@ -20,8 +20,9 @@ from algorithm.modules.wave_survival_pbrs import mission_context_numpy
 from env.factory import make_combat_environment
 from tools.plain_transition_diagnostic_common import (
     CHECKPOINTS, EVALUATION_SEEDS, OUTPUT_DIR, POLICY_SEEDS,
-    classify_death, continuation_should_stop, dump_death_trace, future_rng_seed, load_trainer,
-    new_ring_buffers, step_trace_row, transition_snapshot,
+    canonical_spawn_seed, canonicalize_spawn, classify_death, continuation_should_stop,
+    dump_death_trace, future_rng_seed, load_trainer, new_ring_buffers, step_trace_row,
+    transition_snapshot,
 )
 
 
@@ -110,9 +111,8 @@ def run_direct_episode(trainer, contract: dict, policy_seed: int, evaluation_see
         post_alive = np.asarray(env.red_alive_mask, dtype=bool).copy()
         for agent in np.flatnonzero(pre_alive & ~post_alive):
             cause=classify_death(env.red[int(agent)],env.arena_radius)
-            deaths.append(dump_death_trace(
-                rings[int(agent)],policy_seed,evaluation_seed,wave,int(agent),cause,int(env.steps)
-            ))
+            deaths.append(dump_death_trace(rings[int(agent)],policy_seed,evaluation_seed,wave,int(agent),cause,
+                int(env.steps),env.red[int(agent)],env.arena_radius))
         if info.get("spawned_next_wave",False):
             summary, agents = transition_snapshot(env,policy_seed,evaluation_seed,wave)
             summary["spawn_radial_angle"] = info.get("wave_spawn_radial_angle")
@@ -187,10 +187,15 @@ def historical_row(policy_seed: int) -> dict:
             "timeout_rate":float(row["timeout_rate"]),"average_episode_length":float(row["average_episode_length"])}
 
 
-def run_continuation(source_env, entry: dict, trainers: dict[int,object]) -> list[dict]:
+def run_continuation(source_env, entry: dict, trainers: dict[int,object], mode="native") -> list[dict]:
     results=[]; initial=None
     for continuation_seed,trainer in trainers.items():
-        env=deepcopy(source_env); env.rng=np.random.default_rng(future_rng_seed(int(entry["evaluation_seed"]),int(entry["next_wave"])))
+        env=deepcopy(source_env)
+        spawn_seed=None;spawn_angle=None
+        if mode == "canonical_spawn":
+            spawn_seed,spawn_angle=canonicalize_spawn(env,int(entry["evaluation_seed"]),int(entry["next_wave"]))
+        future_seed=future_rng_seed(int(entry["evaluation_seed"]),int(entry["next_wave"]))
+        env.rng=np.random.default_rng(future_seed)
         obs=env._observations()
         if initial is None: initial=obs.copy()
         elif not np.array_equal(initial,obs): raise RuntimeError("same-state policies received different initial observations")
@@ -211,7 +216,8 @@ def run_continuation(source_env, entry: dict, trainers: dict[int,object]) -> lis
         row={"source_policy_seed":entry["source_policy_seed"],"evaluation_seed":entry["evaluation_seed"],
              "source_cleared_wave":entry["cleared_wave"],"next_wave":entry["next_wave"],
              "continuation_policy_seed":continuation_seed,
-             "future_rng_seed":future_rng_seed(int(entry["evaluation_seed"]),int(entry["next_wave"])),
+             "entry_mode":mode,"canonical_spawn_seed":spawn_seed,"canonical_spawn_radial_angle":spawn_angle,
+             "future_rng_seed":future_seed,
              "entry_global_step":start_step,"entry_remaining_horizon":env.max_steps-start_step,"entry_survivors":start_alive,
              "next_wave_clear":int(success),"continuation_steps":int(env.steps-start_step),"red_survivors_end":int(env.red_alive_mask.sum()),
              "red_losses_during_continuation":red_lost,"ground_losses":ground,"boundary_losses":boundary,"combat_losses":combat,
@@ -256,9 +262,19 @@ def main() -> None:
         continuation.extend(run_continuation(source,entry,trainers))
         print(f"[CONT] {index}/{len(clones)} source={entry['source_policy_seed']} case={entry['evaluation_seed']} next={entry['next_wave']}",flush=True)
     write_csv(out/"continuation_results.csv",continuation)
+    canonical_transitions=[];canonical_continuation=[]
+    for index,(source,entry) in enumerate(clones,1):
+        canonical=deepcopy(source);spawn_seed,spawn_angle=canonicalize_spawn(canonical,int(entry["evaluation_seed"]),int(entry["next_wave"]))
+        summary, _ = transition_snapshot(canonical,int(entry["source_policy_seed"]),int(entry["evaluation_seed"]),int(entry["cleared_wave"]))
+        summary.update({"entry_mode":"canonical_spawn","canonical_spawn_seed":spawn_seed,
+                        "canonical_spawn_radial_angle":spawn_angle,"canonical_source_red_state_unchanged":True})
+        canonical_transitions.append(summary)
+        canonical_continuation.extend(run_continuation(source,entry,trainers,"canonical_spawn"))
+    write_csv(out/"canonical_transition_states.csv",canonical_transitions)
+    write_csv(out/"canonical_continuation_results.csv",canonical_continuation)
     armed_ok=all((not bool(x["alive"])) or bool(x["fire_armed"]) for x in agents)
     metadata={"status":"DIAGNOSTIC_COMPLETE","replay_integrity":integrity["status"],"transition_weapon_state_reset":"TRANSITION_WEAPON_STATE_RESET_PASS" if armed_ok else "TRANSITION_WEAPON_STATE_RESET_FAIL",
-              "policy_seeds":list(POLICY_SEEDS),"evaluation_seed_start":EVALUATION_SEEDS[0],"evaluation_seed_end":EVALUATION_SEEDS[-1],"direct_episode_count":len(direct),"transition_count":len(transitions),"continuation_count":len(continuation),"training":False,"policy_update":False,"future_final_45m_used":False}
+              "policy_seeds":list(POLICY_SEEDS),"evaluation_seed_start":EVALUATION_SEEDS[0],"evaluation_seed_end":EVALUATION_SEEDS[-1],"direct_episode_count":len(direct),"transition_count":len(transitions),"continuation_count":len(continuation),"canonical_transition_count":len(canonical_transitions),"canonical_continuation_count":len(canonical_continuation),"matched_future_rng_note":"matched initial future RNG stream, not event-wise coupled randomness","training":False,"policy_update":False,"future_final_45m_used":False}
     (out/"run_metadata.json").write_text(json.dumps(metadata,indent=2),encoding="utf-8")
     print(json.dumps(metadata,indent=2))
 

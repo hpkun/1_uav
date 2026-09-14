@@ -24,5 +24,14 @@
     "depends_only_on": ["evaluation_seed", "next_wave"],
     "does_not_change_spawned_blue_state": true
   },
+  "canonical_spawn": {
+    "enabled": true,
+    "seed_formula": "1000000000 + (evaluation_seed - 44000000) * 10 + next_wave",
+    "depends_only_on": ["evaluation_seed", "next_wave"],
+    "future_rng_is_separate": true
+  },
+  "native_continuation_label": "NATIVE_ENTRY_CONDITION_CONTINUATION",
+  "effect_terms": ["NATIVE_ENTRY_CONDITION_EFFECT", "CANONICAL_ENTRY_CONDITION_EFFECT", "CONTROLLER_EFFECT"],
+  "matched_future_rng_note": "matched initial future RNG stream, not event-wise coupled randomness",
   "replication_note": "Training seed remains the algorithm-level replication unit. Evaluation cases are matched diagnostic cases, not independent algorithm replications."
 }

@@ -140,10 +140,10 @@ def diagnostic_ground_risk(state, commanded_pitch: float, config: dict[str, Any]
 def classify_death(state, arena_radius: float) -> str:
     # This ordering follows the requested diagnostic classification. Normal
     # environment trajectories virtually never cross both surfaces together.
-    if state.altitude <= 0.0:
-        return "ground"
     if math.hypot(state.x, state.y) > arena_radius:
         return "boundary"
+    if state.altitude <= 0.0:
+        return "ground"
     return "combat"
 
 
@@ -282,13 +282,41 @@ def new_ring_buffers() -> list[deque]:
 
 
 def dump_death_trace(buffer: deque, policy_seed: int, evaluation_seed: int,
-                     wave: int, agent_id: int, death_type: str, step: int) -> dict[str, Any]:
+                     wave: int, agent_id: int, death_type: str, step: int,
+                     post_state: Any | None = None, arena_radius: float | None = None) -> dict[str, Any]:
     rows = list(buffer)
     trace = []
     for index, row in enumerate(reversed(rows)):
         trace.append({"t_minus": index, **row})
+    outside = bool(post_state is not None and arena_radius is not None and
+                   math.hypot(post_state.x, post_state.y) > arena_radius)
+    below = bool(post_state is not None and post_state.altitude <= 0.0)
     return {"policy_seed":policy_seed,"evaluation_seed":evaluation_seed,"wave":wave,
-            "agent_id":agent_id,"death_type":death_type,"death_global_step":step,"trace":trace}
+            "agent_id":agent_id,"death_type":death_type,"death_global_step":step,
+            "post_outside_boundary":outside,"post_below_ground":below,
+            "simultaneous_boundary_ground":bool(outside and below),"trace":trace}
+
+
+def canonical_spawn_seed(evaluation_seed: int, next_wave: int) -> int:
+    """Stable diagnostic-only seed for spawn realization, independent of policy."""
+    if evaluation_seed not in EVALUATION_SEEDS or next_wave not in (2, 3):
+        raise ValueError("canonical spawn requires a 44M case and next wave 2 or 3")
+    return int(1_000_000_000 + (evaluation_seed - 44_000_000) * 10 + next_wave)
+
+
+def canonicalize_spawn(env, evaluation_seed: int, next_wave: int):
+    """Regenerate only Blue using an independent, policy-invariant spawn stream."""
+    if int(env.wave_index) != int(next_wave):
+        raise ValueError("environment must be a post-spawn entry state")
+    seed = canonical_spawn_seed(int(evaluation_seed), int(next_wave))
+    red_before = [(s.x, s.y, s.z, s.v, s.theta, s.psi, s.alive) for s in env.red]
+    steps_before, cleared_before = env.steps, env.waves_cleared
+    env.rng = np.random.default_rng(seed)
+    angle = env._spawn_next_wave()
+    red_after = [(s.x, s.y, s.z, s.v, s.theta, s.psi, s.alive) for s in env.red]
+    if red_before != red_after or steps_before != env.steps or cleared_before != env.waves_cleared:
+        raise RuntimeError("canonical spawn changed source Red or episode counters")
+    return int(seed), float(angle)
 
 
 def stable_file_sha256(path: Path) -> str:

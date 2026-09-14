@@ -16,7 +16,7 @@ from algorithm.modular_mappo.evaluation import per_wave_episode_diagnostics
 from env.factory import make_combat_environment
 from tools.plain_transition_diagnostic_common import (
     CHECKPOINTS,EVALUATION_SEEDS,FUTURE_FINAL_RANGE,OUTPUT_DIR,POLICY_SEEDS,
-    checkpoint_contract,future_rng_seed,
+    canonical_spawn_seed,checkpoint_contract,future_rng_seed,
 )
 import tools.run_plain_transition_mechanism_diagnostic as runner
 
@@ -72,12 +72,20 @@ def main():
     checks["explicit_wave_semantics"]="PASS"
     assert clone_checks(contracts[5301]["environment_config"]);checks["deepcopy_fidelity"]="PASS"
     assert future_rng_seed(44_000_007,2)==future_rng_seed(44_000_007,2)
+    assert canonical_spawn_seed(44_000_007,2)==1_000_000_072
+    assert canonical_spawn_seed(44_000_007,2)!=future_rng_seed(44_000_007,2)
     assert "source_policy_seed" not in inspect.signature(future_rng_seed).parameters and "continuation_policy_seed" not in inspect.signature(future_rng_seed).parameters
     checks["matched_future_rng"]="PASS"
+    checks["canonical_spawn_rng"]="PASS"
     source=inspect.getsource(runner)
     assert "trainer.update(" not in source and "optimizer.step(" not in source and ".backward(" not in source
     checks["no_training_or_optimizer"]="PASS"
-    checks["output_fresh_or_overwrite"]="PASS"
+    required=("direct_case_results.csv","transition_states.csv","transition_agents.csv","ground_risk_cases.csv",
+              "death_pretrace.jsonl","replay_integrity.json","continuation_results.csv",
+              "canonical_transition_states.csv","canonical_continuation_results.csv","run_metadata.json")
+    if output.exists() and not all((output/name).is_file() for name in required):
+        raise RuntimeError("diagnostic output is incomplete; rerun diagnostic runner with --overwrite")
+    else: checks["output_fresh_or_overwrite"]="PASS"
     result={"status":"READY_FOR_PLAIN_TRANSITION_MECHANISM_DIAGNOSTIC","checks":checks}
     print(json.dumps(result,indent=2))
 

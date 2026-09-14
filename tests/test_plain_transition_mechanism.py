@@ -15,7 +15,7 @@ from env.fixed_policy import GroundAwareNearestTargetPursuitPolicy
 from env.models import AircraftState
 from tools.plain_transition_diagnostic_common import (
     EVALUATION_SEEDS,FUTURE_FINAL_RANGE,boundary_diagnostics,circular_heading_dispersion,
-    classify_death,continuation_should_stop,diagnostic_ground_risk,future_rng_seed,
+    canonical_spawn_seed,canonicalize_spawn,classify_death,continuation_should_stop,diagnostic_ground_risk,future_rng_seed,
     pairwise_metrics,time_to_ground,transition_snapshot,
 )
 import tools.analyze_plain_transition_mechanism as analyzer
@@ -81,6 +81,18 @@ def test_death_classification_all_three_causes():
     assert classify_death(AircraftState(0,0,1,200,0,0,False),5000)=="ground"
     assert classify_death(AircraftState(6000,0,-1000,200,0,0,False),5000)=="boundary"
     assert classify_death(AircraftState(0,0,-1000,200,0,0,False),5000)=="combat"
+    assert classify_death(AircraftState(6000,0,0,200,0,0,False),5000)=="boundary"
+
+
+def test_canonical_spawn_seed_is_policy_invariant_and_reproducible():
+    cfg=load_config(ENV);env=make_combat_environment(cfg);env.reset(88_200_004)
+    for blue in env.blue:blue.alive=False
+    _,_,_,_,info=env.step(np.zeros((4,3),np.float32));assert info["spawned_next_wave"]
+    first=deepcopy(env);second=deepcopy(env)
+    seed1,angle1=canonicalize_spawn(first,44_000_000,2);seed2,angle2=canonicalize_spawn(second,44_000_000,2)
+    assert seed1==seed2==canonical_spawn_seed(44_000_000,2) and angle1==angle2
+    assert all(np.array_equal(a.as_array(),b.as_array()) for a,b in zip(first.blue,second.blue))
+    assert [(a.x,a.y,a.z,a.v,a.theta,a.psi,a.alive) for a in env.red] == [(a.x,a.y,a.z,a.v,a.theta,a.psi,a.alive) for a in first.red]
 
 
 def test_deepcopy_and_transition_deepcopy_fidelity_and_same_observation():

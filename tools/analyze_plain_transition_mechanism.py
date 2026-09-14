@@ -60,6 +60,39 @@ def spearman(values,targets):
     return float(np.corrcoef(rx,ry)[0,1])
 
 
+def paired_outcome_summary(rows, left_key, right_key):
+    pairs=[(int(r[left_key]),int(r[right_key])) for r in rows if r.get(left_key) is not None and r.get(right_key) is not None]
+    wins=sum(a>b for a,b in pairs);losses=sum(a<b for a,b in pairs);ties=len(pairs)-wins-losses
+    return {"N":len(pairs),"wins":wins,"losses":losses,"ties":ties,
+            "mean_paired_outcome_delta":float(np.mean([a-b for a,b in pairs])) if pairs else None}
+
+
+def effect_label(deltas):
+    values=[float(x) for x in deltas if x is not None]
+    if not values:return "ENTRY_NOT_SUPPORTED"
+    mean=float(np.mean(values));positive=sum(x>0 for x in values)
+    if all(x>0 for x in values):return "ENTRY_SUPPORTED_STRONG"
+    if mean>0 and positive>=4:return "ENTRY_SUPPORTED_DIRECTIONALLY"
+    if mean>0:return "ENTRY_MIXED_POSITIVE"
+    return "ENTRY_NOT_SUPPORTED"
+
+
+def controller_label(deltas):
+    values=[float(x) for x in deltas if x is not None]
+    if len(values)>=2 and all(x>0 for x in values):return "CONTROLLER_SUPPORTED_DIRECTIONALLY"
+    if values and float(np.mean(values))>0:return "CONTROLLER_MIXED_POSITIVE"
+    return "CONTROLLER_NOT_SUPPORTED"
+
+
+def classify_mechanism(entry_label, controller_label_value):
+    entry_ok=entry_label in {"ENTRY_SUPPORTED_STRONG","ENTRY_SUPPORTED_DIRECTIONALLY"}
+    controller_ok=controller_label_value=="CONTROLLER_SUPPORTED_DIRECTIONALLY"
+    if entry_ok and controller_ok:return "STATE_AND_CONTROLLER_BOTH"
+    if entry_ok:return "STATE_QUALITY_DOMINANT"
+    if controller_ok:return "CONTROLLER_QUALITY_DOMINANT"
+    return "NEITHER_RESOLVED"
+
+
 def case_matrix(direct):
     by={(int(r["evaluation_seed"]),int(r["policy_training_seed"])):r for r in direct};rows=[]
     for case in sorted({k[0] for k in by}):
@@ -228,9 +261,10 @@ def main():
     s2,c2=continuation_effects(continuations,2);s3,c3=continuation_effects(continuations,3);write_csv(analysis/"state_source_effect.csv",s2+s3);write_csv(analysis/"controller_effect.csv",c2+c3)
     duration=duration_summary(direct);write_csv(analysis/"wave_duration_summary.csv",duration)
     integrity=json.loads((base/"replay_integrity.json").read_text(encoding="utf-8"));metadata=json.loads((base/"run_metadata.json").read_text(encoding="utf-8"))
-    result={"status":"ANALYSIS_COMPLETE","integrity":integrity,"run_metadata":metadata,"case_outcomes":case_counts(matrix),"clear_and_record_survivors":survivors,"matched_transition_summary":matched_summary,"ground_risk":ground,"ground_death_precursors":death,"survivor_success_probability":surv_prob,"wave_duration":duration,"continuation_wave2":m2,"continuation_wave3":m3,"state_source_effect":s2+s3,"controller_effect":c2+c3,"transition_weapon_state_reset":metadata["transition_weapon_state_reset"],"statistical_unit_note":"Training seed is the algorithm replication unit; 44M cases are matched mechanism diagnostics."}
+    simultaneous=sum(bool(e.get("simultaneous_boundary_ground",False)) for e in events)
+    result={"status":"ANALYSIS_COMPLETE","integrity":integrity,"run_metadata":metadata,"case_outcomes":case_counts(matrix),"clear_and_record_survivors":survivors,"matched_transition_summary":matched_summary,"ground_risk":ground,"ground_death_precursors":death,"simultaneous_boundary_ground_count":simultaneous,"survivor_success_probability":surv_prob,"wave_duration":duration,"continuation_wave2":m2,"continuation_wave3":m3,"state_source_effect":s2+s3,"controller_effect":c2+c3,"transition_weapon_state_reset":metadata["transition_weapon_state_reset"],"effect_interpretation_note":"Native results are NATIVE_ENTRY_CONDITION_EFFECT; canonical results are CANONICAL_ENTRY_CONDITION_EFFECT; controller tables are CONTROLLER_EFFECT. No PURE_RED_STATE_CAUSAL_EFFECT is claimed.","matched_future_rng_note":"matched initial future RNG stream, not event-wise coupled randomness","statistical_unit_note":"Training seed is the algorithm replication unit; 44M cases are matched mechanism diagnostics."}
     (analysis/"analysis.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
-    report=["# Plain transition mechanism diagnostic","",f"- Status: `{result['status']}`",f"- Replay: `{integrity['status']}`",f"- Weapon reset: `{metadata['transition_weapon_state_reset']}`",f"- Direct episodes: {metadata['direct_episode_count']}",f"- Transitions: {metadata['transition_count']}",f"- Continuations: {metadata['continuation_count']}","","Detailed machine-readable results are in `analysis.json` and the accompanying CSV tables."]
+    report=["# Plain transition mechanism diagnostic closure audit","",f"- Status: `{result['status']}`",f"- Replay: `{integrity['status']}`",f"- Weapon reset: `{metadata['transition_weapon_state_reset']}`",f"- Direct episodes: {metadata['direct_episode_count']}",f"- Native transitions: {metadata['transition_count']}",f"- Native continuations: {metadata['continuation_count']}",f"- Canonical transitions: {metadata.get('canonical_transition_count',0)}",f"- Canonical continuations: {metadata.get('canonical_continuation_count',0)}",f"- Simultaneous boundary+ground deaths: {simultaneous}","", "Native continuation is labeled NATIVE_ENTRY_CONDITION_EFFECT.","Canonical continuation is labeled CANONICAL_ENTRY_CONDITION_EFFECT.","Controller comparisons are CONTROLLER_EFFECT; no PURE_RED_STATE_CAUSAL_EFFECT is claimed.","Matched randomness means a matched initial future RNG stream, not event-wise coupled randomness.","", "Detailed machine-readable results are in `analysis.json` and the accompanying CSV tables."]
     (analysis/"report.md").write_text("\n".join(report)+"\n",encoding="utf-8")
     print(json.dumps({"status":result["status"],"replay":integrity["status"],"analysis_dir":str(analysis)},indent=2))
 
