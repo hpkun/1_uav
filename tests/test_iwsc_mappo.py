@@ -8,8 +8,10 @@ import torch
 from algorithm.modules import InterWaveCreditModule
 from algorithm.modular_mappo.buffer import ModularRolloutBatch
 from algorithm.modular_mappo.networks import InterWaveStateQualityCritic
-from algorithm.modular_mappo.trainer import ModularMAPPOTrainer,asymmetric_tactical_projection,normalize_iw_deltas,balanced_iw_losses
+from algorithm.modular_mappo.trainer import ModularMAPPOTrainer,asymmetric_tactical_projection,normalize_iw_deltas,balanced_iw_losses,combine_iw_actor_loss
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
+from tools.analyze_iwsc_mappo import exact_row,nearest,primary_endpoint
+import tools.smoke_iwsc_persistent_integration as real_smoke
 
 
 IW={"enabled":True,"max_waves":3,"quality_critic_learning_rate":3e-4,"actor_credit_coefficient":1.,
@@ -58,7 +60,7 @@ def test_segment_balanced_sampling_and_readiness():
 def test_runner_pending_cache_cross_rollout_boundary_and_failure_labels():
     runner=ModularMAPPOTrainingRunner.__new__(ModularMAPPOTrainingRunner)
     runner.trainer=type("T",(),{})();runner.trainer.inter_wave_credit=InterWaveCreditModule(IW)
-    runner.iw_pending_episode=[{1:[],2:[]}]
+    runner.iw_pending_episode=[{1:[],2:[]}];runner.iw_completed_episode_counter=0
     z=np.zeros((4,52),np.float32);alive=np.ones(4,np.float32)
     runner._iw_record_transition(0,1,z,alive,.9,z+1,alive,.8,False)
     assert len(runner.iw_pending_episode[0][1])==1  # survives an arbitrary rollout boundary
@@ -96,6 +98,37 @@ def test_delta_telescoping_per_wave_normalization_and_equal_wave_loss():
     normalized,active=normalize_iw_deltas(delta,waves,{1:True,2:True})
     assert active.all() and normalized[waves==1].mean()==pytest.approx(0,abs=1e-6) and normalized[waves==2].std(unbiased=False)==pytest.approx(1,abs=1e-6)
     assert balanced_iw_losses([torch.tensor(2.),torch.tensor(8.)]).item()==5
+
+
+def test_actor_balance_true_false_and_single_wave_semantics():
+    surrogate=torch.cat((torch.ones(100,1),torch.full((10,1),10.0)));alive=torch.ones_like(surrogate)
+    waves=torch.cat((torch.ones(100,dtype=torch.long),torch.full((10,),2,dtype=torch.long)));active=torch.ones(110,dtype=torch.bool)
+    balanced=combine_iw_actor_loss(surrogate,alive,active,waves,True)
+    pooled=combine_iw_actor_loss(surrogate,alive,active,waves,False)
+    assert balanced.item()==pytest.approx(-.5*(1+10))
+    assert pooled.item()==pytest.approx(-(100+100)/110) and pooled.item()!=balanced.item()
+    only1=waves==1
+    assert combine_iw_actor_loss(surrogate,alive,only1,waves,True)==combine_iw_actor_loss(surrogate,alive,only1,waves,False)
+
+
+def test_exact_primary_endpoint_and_intermediate_nearest(tmp_path):
+    values=[{"sampled_steps":"2900000"},{"sampled_steps":"3000000"},{"sampled_steps":"3100000"}]
+    assert exact_row(values,3000000)["sampled_steps"]=="3000000"
+    assert nearest(values,2920000)["sampled_steps"]=="2900000"
+    with pytest.raises(RuntimeError,match="IWSC_PRIMARY_ENDPOINT_3M_MISSING"):exact_row([values[0],values[2]],3000000)
+    (tmp_path/"run_summary.json").write_text('{"sampled_steps":3000000}',encoding="utf-8")
+    with pytest.raises(RuntimeError,match="IWSC_DEVELOPMENT_INCOMPLETE"):primary_endpoint(tmp_path,[values[0]])
+    (tmp_path/"run_summary.json").write_text('{"sampled_steps":2900000}',encoding="utf-8")
+    with pytest.raises(RuntimeError,match="IWSC_DEVELOPMENT_INCOMPLETE"):primary_endpoint(tmp_path,[values[1]])
+
+
+def test_real_smoke_static_protocol_guards():
+    assert real_smoke.ENV_CONFIG_PATH=="configs/persistent_wave_v2_environment.yaml"
+    env=__import__("yaml").safe_load(Path(real_smoke.ENV_CONFIG_PATH).read_text(encoding="utf-8"))
+    assert env["persistent_waves"]["total_waves"]==3 and env["simulation"]["max_steps"]==3000
+    assert all("best" not in path.lower() for path in real_smoke.BEHAVIOR_CHECKPOINT_CANDIDATES)
+    assert real_smoke.ENGINEERING_SMOKE_SEED>=8801000 and all(not lo<=real_smoke.ENGINEERING_SMOKE_SEED<=hi for lo,hi in real_smoke.FORBIDDEN_SEED_RANGES)
+    assert real_smoke.ACTOR_OPTIMIZER_STEPS_ALLOWED is False and real_smoke.MAX_VECTOR_STEPS==4096
 
 
 def test_same_seed_plain_initialization_and_rng_isolation_exact():

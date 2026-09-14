@@ -83,6 +83,17 @@ def normalize_iw_deltas(delta,waves,ready):
 def balanced_iw_losses(losses):
  return torch.stack(list(losses)).mean()
 
+def combine_iw_actor_loss(surrogate,alive_mask,active_states,source_waves,wave_balanced):
+ """Combine active IW PPO samples using the configured minibatch semantics."""
+ active_mask=alive_mask*active_states[:,None].to(alive_mask.dtype)
+ if not bool(active_states.any()):return surrogate.sum()*0
+ if not wave_balanced:return -masked_mean(surrogate,active_mask)
+ losses=[]
+ for wave in (1,2):
+  wave_states=active_states & (source_waves==wave)
+  if wave_states.any():losses.append(-masked_mean(surrogate,alive_mask*wave_states[:,None].to(alive_mask.dtype)))
+ return balanced_iw_losses(losses)
+
 class ModularMAPPOTrainer:
  def __init__(self,observation_dim=52,action_dim=3,num_agents=4,hidden_dim=256,attention_heads=2,
   actor_learning_rate=3e-4,critic_learning_rate=3e-4,gamma=.99,gae_lambda=.95,clip_ratio=.2,
@@ -310,12 +321,10 @@ class ModularMAPPOTrainer:
     ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device);args=[x[ix] for x in arrays]
     loss=self._loss_step(*args);al,vl,en,anchor,*_=loss;tactical=al-self.entropy_coefficient*en+anchor
     dist,_=self.actor.distribution_step(args[0],self._ctx(args[9],True),None,None,args[4]);newlog=self.actor._squashed_log_prob(dist,args[2],args[1]);_,ratio=stable_ratio_terms(newlog,args[3])
-    wave_losses=[]
-    for wave in (1,2):
-     state_mask=fim[ix] & (source_waves[ix]==wave)
-     if state_mask.any():
-      mask=args[4]*state_mask[:,None];a=fia[ix][:,None];sur=torch.minimum(ratio*a,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*a);wave_losses.append(-masked_mean(sur,mask))
-    iw_loss=balanced_iw_losses(wave_losses) if wave_losses else tactical*0
+    state_active=fim[ix];a=fia[ix][:,None]
+    surrogate=torch.minimum(ratio*a,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*a)
+    iw_loss=combine_iw_actor_loss(surrogate,args[4],state_active,source_waves[ix],
+                                  self.inter_wave_credit.wave_balanced_actor_loss)
     gt=torch.autograd.grad(tactical,params,retain_graph=True,allow_unused=True);gi=torch.autograd.grad(iw_loss,params,retain_graph=True,allow_unused=True)
     gt=[torch.zeros_like(p) if g is None else g for p,g in zip(params,gt)];gi=[torch.zeros_like(p) if g is None else g for p,g in zip(params,gi)]
     dot=sum((a*b).sum() for a,b in zip(gt,gi));nt=sum(a.square().sum() for a in gt);ni=sum(a.square().sum() for a in gi)

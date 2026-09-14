@@ -61,6 +61,7 @@ class InterWaveCreditModule(CapabilityModule):
         chosen = [states[i] for i in indices]
         segment = {
             "segment_id": self.next_segment_id, "credit_wave": int(wave), "target": float(target),
+            "original_state_count": count, "sample_indices": np.asarray(indices,dtype=np.int64),
             "observations": np.asarray([x["observation"] for x in chosen], dtype=np.float16),
             "alive_masks": np.asarray([x["alive_mask"] for x in chosen], dtype=np.float16),
             "horizons": np.asarray([x["horizon"] for x in chosen], dtype=np.float32),

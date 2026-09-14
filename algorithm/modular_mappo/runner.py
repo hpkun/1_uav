@@ -166,6 +166,7 @@ class ModularMAPPOTrainingRunner:
         self.last_rollout_metrics: dict[str, float] = {}
         self.iw_pending_episode = [{1: [], 2: []} for _ in range(self.num_envs)]
         self.iw_pending_segments_dropped_on_resume = 0
+        self.iw_completed_episode_counter = 0
         self.resume_count = 0
         if not resume_mode:
             if warm_start_checkpoint:
@@ -315,10 +316,14 @@ class ModularMAPPOTrainingRunner:
     def _iw_finalize_episode(self, env_id, waves_cleared):
         completed=[]
         if not self.trainer.inter_wave_credit.enabled:return completed
+        group_id=self.iw_completed_episode_counter;self.iw_completed_episode_counter+=1
         for source_wave in (1,2):
             states=self.iw_pending_episode[int(env_id)][source_wave]
-            if states:completed.append(self.trainer.inter_wave_credit.cap_segment(
-                states,self.trainer.inter_wave_credit.target(source_wave,int(waves_cleared)),source_wave))
+            if states:
+                segment=self.trainer.inter_wave_credit.cap_segment(
+                    states,self.trainer.inter_wave_credit.target(source_wave,int(waves_cleared)),source_wave)
+                segment.update({"episode_waves_cleared":int(waves_cleared),"episode_group_id":group_id,
+                                "source_env_id":int(env_id)});completed.append(segment)
         self.iw_pending_episode[int(env_id)]={1:[],2:[]}
         return completed
 

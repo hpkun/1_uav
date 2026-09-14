@@ -6,6 +6,8 @@ import torch,yaml
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from algorithm.train_modular_mappo import load_config
 from algorithm.modular_mappo.trainer import ModularMAPPOTrainer
+from algorithm.modular_mappo.trainer import combine_iw_actor_loss
+from tools.analyze_iwsc_mappo import exact_row
 from algorithm.common.protocol import config_sha256
 
 def main():
@@ -17,6 +19,9 @@ def main():
     p=ModularMAPPOTrainer(hidden_dim=256,seed=5301,modules_config=plain["modules"],gamma=.999)
     i=ModularMAPPOTrainer(hidden_dim=256,seed=5301,modules_config=mods,gamma=.999)
     provenance=json.loads((ROOT/"experiments/current_seed_provenance.json").read_text(encoding="utf-8"))
+    surrogate=torch.cat((torch.ones(100,1),torch.full((10,1),10.0)));alive=torch.ones_like(surrogate)
+    active=torch.ones(110,dtype=torch.bool);waves=torch.cat((torch.ones(100,dtype=torch.long),torch.full((10,),2,dtype=torch.long)))
+    balanced=combine_iw_actor_loss(surrogate,alive,active,waves,True);pooled=combine_iw_actor_loss(surrogate,alive,active,waves,False)
     checks={
       "A_environment":env["environment_variant"]=="persistent_wave_v2","B_three_waves_max3000":env["persistent_waves"]["total_waves"]==3 and env["simulation"]["max_steps"]==3000,
       "C_actor_input_52":config["network"]["observation_dim"]==52,"D_actor_topology":list(p.actor.state_dict())==list(i.actor.state_dict()),
@@ -33,7 +38,9 @@ def main():
       "Q_terminal_q_next_zero":"torch.where(terminal,torch.zeros_like(qn),qn)" in trainer_source,
       "R_source_wave_boundary":"credit_wave = 2" not in runner_source and "transition_next_observations" in runner_source,
       "S_independent_iw_rng":p.rng.bit_generator.state==i.rng.bit_generator.state and "self.iw_rng" in trainer_source,
-      "T_cold_plain_path":"elif self.inter_wave_credit.enabled and iw_active is not None and bool(iw_active.any())" in trainer_source}
+      "T_cold_plain_path":"elif self.inter_wave_credit.enabled and iw_active is not None and bool(iw_active.any())" in trainer_source,
+      "U_actor_balance_functional":balanced.item()==-5.5 and pooled.item()!=balanced.item(),
+      "V_exact_3m_functional":int(exact_row([{"sampled_steps":"2900000"},{"sampled_steps":"3000000"}],3000000)["sampled_steps"])==3000000}
     if not all(checks.values()):raise RuntimeError({k:v for k,v in checks.items() if not v})
-    print(json.dumps({"checks":checks,"result":"READY_FOR_IWSC_MAPPO_DEVELOPMENT"},indent=2))
+    print(json.dumps({"checks":checks,"result":"IWSC_STATIC_PREFLIGHT_PASS"},indent=2))
 if __name__=="__main__":main()
