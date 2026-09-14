@@ -316,4 +316,20 @@ class ModularCentralizedCritic(CentralizedValueCritic):
         return (values,weights) if return_attention else values
 
 
-__all__=["ModularMAPPOActor","ModularCentralizedCritic"]
+class InterWaveStateQualityCritic(nn.Module):
+    """Independent team-level future-wave completion estimator."""
+    def __init__(self, observation_dim=52, hidden_dim=256, attention_heads=2, activation="relu", max_waves=3):
+        super().__init__(); self.observation_dim=int(observation_dim); self.max_waves=int(max_waves)
+        self.backbone=CentralizedValueCritic(observation_dim+self.max_waves+1,hidden_dim,attention_heads,activation)
+
+    def forward(self, observations, alive_mask, credit_wave, remaining_horizon):
+        if observations.ndim != 3: raise ValueError("IW critic observations must be [B,A,D]")
+        wave=torch.nn.functional.one_hot((credit_wave.long()-1).clamp(0,self.max_waves-1),self.max_waves).to(observations.dtype)
+        context=torch.cat((wave,remaining_horizon.reshape(-1,1).to(observations.dtype)),-1)
+        augmented=torch.cat((observations,context[:,None,:].expand(-1,observations.shape[1],-1)),-1)
+        logits=self.backbone(augmented,alive_mask)
+        team_logit=(logits*alive_mask).sum(-1)/alive_mask.sum(-1).clamp_min(1.0)
+        return torch.sigmoid(team_logit)
+
+
+__all__=["ModularMAPPOActor","ModularCentralizedCritic","InterWaveStateQualityCritic"]

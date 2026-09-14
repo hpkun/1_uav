@@ -1,0 +1,29 @@
+{
+  "method": "IWSC-MAPPO",
+  "method_version": 1,
+  "role": "development_method_candidate",
+  "environment": "persistent_wave_v2",
+  "training_seeds": [5301, 5302, 5303],
+  "training_seed_status": "EXPOSED_DEVELOPMENT",
+  "validation_seed_range": [44000000, 44000049],
+  "validation_status": "EXPOSED_DEVELOPMENT",
+  "future_final_seed_range": [45000000, 45000199],
+  "future_final_executed": false,
+  "plain_baselines": [
+    "outputs/diag_mappo_learnability/l3_seed5301",
+    "outputs/diag_mappo_learnability/l3_seed5302",
+    "outputs/diag_mappo_learnability/l3_seed5303"
+  ],
+  "primary_gate": {
+    "checkpoint": "3M final/latest only",
+    "best_checkpoint_rescue": false,
+    "all_three_runs_complete": true,
+    "mean_delta_average_waves_min": 0.15,
+    "paired_wins_min": 2,
+    "mean_delta_w1_min": -0.05,
+    "mean_delta_q2_strictly_positive": true,
+    "mean_delta_q3_strictly_positive": true,
+    "max_mean_delta_q2_q3_min": 0.05,
+    "allowed_labels": ["IWSC_SUPPORTED", "IWSC_NOT_SUPPORTED"]
+  }
+}

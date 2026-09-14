@@ -16,6 +16,13 @@ def checkpoint_architecture(trainer):
    "mission_encoder_hidden_dim":trainer.mission_film.encoder_hidden_dim,"mission_film_alpha":trainer.mission_film.alpha,
    "mission_film_augmented_residual":trainer.mission_film.augmented_residual,
    "mission_film_identity_init":trainer.mission_film.identity_init})
+ if trainer.inter_wave_credit.enabled:
+  result.update({"inter_wave_credit_enabled":True,"inter_wave_credit_version":trainer.inter_wave_credit.version,
+   "iw_critic_class":type(trainer.iw_critic).__name__,"iw_critic_input_dim":56,
+   "iw_critic_parameter_count":sum(parameter.numel() for parameter in trainer.iw_critic.parameters()),
+   "iw_target_definition":{"wave1":"(clear_wave2 + clear_wave3) / 2","wave2":"clear_wave3","wave3":None},
+   "iw_actor_credit":"q_next - q_current (no gamma, stop-gradient)",
+   "iw_gradient_fusion":"asymmetric_tactical_preserving_projection"})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):

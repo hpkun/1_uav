@@ -164,6 +164,8 @@ class ModularMAPPOTrainingRunner:
         self.latest_evaluation: dict[str, Any] | None = None
         self.last_metrics: dict[str, float] = {}
         self.last_rollout_metrics: dict[str, float] = {}
+        self.iw_pending_episode = [{1: [], 2: []} for _ in range(self.num_envs)]
+        self.iw_pending_segments_dropped_on_resume = 0
         self.resume_count = 0
         if not resume_mode:
             if warm_start_checkpoint:
@@ -300,13 +302,35 @@ class ModularMAPPOTrainingRunner:
         self.recent_episodes.append(record)
         self.completed_episode_count += 1
 
+    def _iw_record_transition(self, env_id, source_wave, observation, alive_mask, horizon,
+                              next_observation, next_alive_mask, next_horizon, spawned_next_wave):
+        if not self.trainer.inter_wave_credit.enabled or int(source_wave) not in (1,2):return
+        segment=self.iw_pending_episode[int(env_id)][int(source_wave)]
+        segment.append({"observation":np.asarray(observation).copy(),"alive_mask":np.asarray(alive_mask).copy(),
+                        "horizon":float(horizon),"boundary":False})
+        if spawned_next_wave:
+            segment.append({"observation":np.asarray(next_observation).copy(),"alive_mask":np.asarray(next_alive_mask).copy(),
+                            "horizon":float(next_horizon),"boundary":True})
+
+    def _iw_finalize_episode(self, env_id, waves_cleared):
+        completed=[]
+        if not self.trainer.inter_wave_credit.enabled:return completed
+        for source_wave in (1,2):
+            states=self.iw_pending_episode[int(env_id)][source_wave]
+            if states:completed.append(self.trainer.inter_wave_credit.cap_segment(
+                states,self.trainer.inter_wave_credit.target(source_wave,int(waves_cleared)),source_wave))
+        self.iw_pending_episode[int(env_id)]={1:[],2:[]}
+        return completed
+
     def collect_rollout(self, steps: int | None = None) -> ModularRolloutBatch:
         keys = ("observations", "actions", "raw_actions", "old_log_probs", "rewards",
                 "raw_environment_rewards", "dones", "alive_masks", "next_observations",
                 "next_alive_masks", "wave_indices", "total_waves", "contexts",
                 "next_contexts", "actor_hidden_before_step", "critic_hidden_before_step",
-                "episode_masks")
+                "episode_masks", "remaining_horizons", "next_remaining_horizons",
+                "wave_transition_flags")
         storage = {key: [] for key in keys}
+        completed_iw_segments = []
         rollout_transition = np.zeros(3, dtype=np.int64)
         rollout_alive = np.zeros(3, dtype=np.int64)
         reward_rows: list[dict[str, float]] = []
@@ -394,6 +418,10 @@ class ModularMAPPOTrainingRunner:
             next_wave = np.asarray([int(row.get("wave_index", 1)) for row in result.infos])
             next_total = np.asarray([int(row.get("total_waves", self.current_waves)) for row in result.infos])
             next_steps = np.asarray([int(row.get("episode_length", 0)) for row in result.infos], dtype=np.int64)
+            next_remaining_horizon = np.clip(
+                (float(self.runtime_env_config["simulation"]["max_steps"]) - next_steps)
+                / float(self.runtime_env_config["simulation"]["max_steps"]), 0.0, 1.0,
+            ).astype(np.float32)
             post_blue = np.stack([np.asarray(row["blue_alive_mask"], dtype=np.float32) for row in result.infos])
             next_context = mission_context_numpy(
                 self.trainer, next_wave, next_total, post_blue, next_steps,
@@ -406,12 +434,18 @@ class ModularMAPPOTrainingRunner:
                 self.transition_counts[k - 1] += int(transition.sum())
                 self.alive_agent_counts[k - 1] += int(alive[transition].sum())
             for env_id, info in enumerate(result.infos):
+                source_wave = int(pre_wave[env_id])
+                self._iw_record_transition(env_id,source_wave,obs[env_id],alive[env_id],remaining_horizon[env_id],
+                    result.transition_next_observations[env_id],result.next_alive_masks[env_id],next_remaining_horizon[env_id],
+                    info.get("spawned_next_wave",False))
                 if info.get("wave_cleared_this_step", False):
                     self.wave_clear_transition_counts[max(1, min(3, int(pre_wave[env_id]))) - 1] += 1
             values = (obs, actions, raw, log_prob, training_reward, result.rewards.copy(),
                       done.astype(np.float32), alive, result.transition_next_observations,
                       result.next_alive_masks, pre_wave, self.total.copy(), context,
-                      next_context, actor_before, critic_before, self.episode_mask.copy())
+                      next_context, actor_before, critic_before, self.episode_mask.copy(),
+                      remaining_horizon, next_remaining_horizon,
+                      np.asarray([bool(row.get("spawned_next_wave", False)) for row in result.infos], dtype=np.float32))
             for key, value in zip(keys, values):
                 storage[key].append(value)
             self.raw_episode_returns += result.rewards
@@ -419,6 +453,7 @@ class ModularMAPPOTrainingRunner:
             step_after = self.trainer.sampled_steps + self.num_envs
             for env_id, is_done in enumerate(done):
                 if is_done:
+                    completed_iw_segments.extend(self._iw_finalize_episode(env_id,result.infos[env_id].get("waves_cleared",0)))
                     self._write_episode(result.infos[env_id], self.raw_episode_returns[env_id],
                                         self.training_episode_returns[env_id], step_after,
                                         self.paper_episode_blue[env_id], self.paper_episode_red[env_id],
@@ -489,6 +524,17 @@ class ModularMAPPOTrainingRunner:
             for key in reward_rows[0]:
                 self.last_rollout_metrics[key] = float(np.mean([row[key] for row in reward_rows]))
         kwargs = {key: (None if not values or values[0] is None else np.asarray(values)) for key, values in storage.items()}
+        kwargs["iw_supervision_segments"] = completed_iw_segments
+        if completed_iw_segments:
+            kwargs.update({
+                "iw_supervision_observations": np.concatenate([x["observations"] for x in completed_iw_segments]),
+                "iw_supervision_alive_masks": np.concatenate([x["alive_masks"] for x in completed_iw_segments]),
+                "iw_supervision_credit_waves": np.concatenate([np.full(len(x["horizons"]),x["credit_wave"]) for x in completed_iw_segments]),
+                "iw_supervision_horizons": np.concatenate([x["horizons"] for x in completed_iw_segments]),
+                "iw_supervision_targets": np.concatenate([np.full(len(x["horizons"]),x["target"]) for x in completed_iw_segments]),
+                "iw_supervision_segment_ids": np.concatenate([np.full(len(x["horizons"]),x["segment_id"]) for x in completed_iw_segments]),
+                "iw_supervision_boundary_flags": np.concatenate([x["boundary_flags"] for x in completed_iw_segments]),
+            })
         return ModularRolloutBatch(**kwargs)
 
     def checkpoint_extra(self, evaluation: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -542,6 +588,8 @@ class ModularMAPPOTrainingRunner:
             "branch_provenance": self.branch_provenance,
             "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
             "last_optimization_metrics": deepcopy(self.last_metrics),
+            "iw_pending_segments_dropped_on_resume": self.iw_pending_segments_dropped_on_resume,
+            "iw_pending_segment_counts": [{str(w):len(rows[w]) for w in (1,2)} for rows in self.iw_pending_episode],
             "evaluation": evaluation,
         }
         if self.trainer.fbmr_enabled:
@@ -639,6 +687,9 @@ class ModularMAPPOTrainingRunner:
             curriculum_enabled=self.curriculum_enabled,
         )
         previous = np.asarray(extra.get("episode_indices", [0] * self.num_envs), dtype=np.int64) + 1
+        self.iw_pending_segments_dropped_on_resume = int(extra.get("iw_pending_segments_dropped_on_resume",0)) + sum(
+            int(count) > 0 for rows in extra.get("iw_pending_segment_counts",[]) for count in rows.values())
+        self.iw_pending_episode = [{1: [], 2: []} for _ in range(self.num_envs)]
         self._make_vector(previous)
         self.trainer.restore_rng_state(state)
         if branch_intervention in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:

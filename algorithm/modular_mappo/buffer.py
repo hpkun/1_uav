@@ -12,6 +12,17 @@ class ModularRolloutBatch:
     actor_hidden_before_step:np.ndarray|None=None
     critic_hidden_before_step:np.ndarray|None=None
     episode_masks:np.ndarray|None=None
+    remaining_horizons:np.ndarray|None=None
+    next_remaining_horizons:np.ndarray|None=None
+    wave_transition_flags:np.ndarray|None=None
+    iw_supervision_observations:object|None=None
+    iw_supervision_alive_masks:object|None=None
+    iw_supervision_credit_waves:object|None=None
+    iw_supervision_horizons:object|None=None
+    iw_supervision_targets:object|None=None
+    iw_supervision_segment_ids:object|None=None
+    iw_supervision_boundary_flags:object|None=None
+    iw_supervision_segments:object|None=None
 
 def contiguous_chunks(time_steps:int,num_envs:int,sequence_length:int):
     return [(env,start,min(start+sequence_length,time_steps)) for env in range(num_envs) for start in range(0,time_steps,sequence_length)]
