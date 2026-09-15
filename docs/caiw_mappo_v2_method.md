@@ -16,7 +16,7 @@ Balanced training changes the class prior. For recent natural prevalence `p`, ra
 
 ## Freshness and reliability
 
-Replay stores the exact executed action, pre-tanh latent action and behavior log probability. Current-policy log probability is recomputed with the existing squashed-Gaussian implementation; a state is fresh only when every alive agent satisfies `log(.8) <= log π_current-log π_behavior <= log(1.2)`. Dead agents are ignored. Historical replay trains only the CAIW critic and never re-enters PPO.
+Replay stores the exact executed action, pre-tanh latent action and behavior log probability. Current-policy log probability is recomputed with the existing squashed-Gaussian implementation; a state is fresh only when every alive agent satisfies `log(.8) <= log π_current-log π_behavior <= log(1.2)`. Dead agents are ignored. Historical replay trains only the CAIW critic and never re-enters PPO. Validation segments never enter critic optimization or recent-prior estimation; recent natural prevalence is estimated only from train-split completed episodes, so readiness is genuinely held-out.
 
 Every ten PPO updates, untouched validation segments are evaluated at segment level using the mean prediction over at least four fresh stored states. Each task independently requires at least 64 valid segments, 16 positives, 16 negatives, AUROC≥.60, and Brier skill strictly greater than zero for three consecutive checks. Any failed check resets readiness immediately. No temperature or bias calibrator is fit on validation.
 

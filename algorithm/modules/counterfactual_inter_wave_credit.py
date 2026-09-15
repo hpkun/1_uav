@@ -99,9 +99,11 @@ class CounterfactualInterWaveCreditModule(CapabilityModule):
         for segment in segments or ():
             wave=int(segment["source_wave"]);c2=int(segment["label_c2"]);c3=int(segment["label_c3"])
             if c3 and not c2:raise RuntimeError("invalid CAIW outcome class 01")
-            self.prior_window[wave].append({"c2":c2,"c3":c3,"segment_id":int(segment["segment_id"])})
-            if segment["split"]=="validation":self.validation[wave].append(deepcopy(segment))
-            else:self.train_replay[wave][f"{c2}{c3}" if wave==1 else str(c3)].append(deepcopy(segment))
+            if segment["split"]=="validation":
+                self.validation[wave].append(deepcopy(segment))
+            else:
+                self.train_replay[wave][f"{c2}{c3}" if wave==1 else str(c3)].append(deepcopy(segment))
+                self.prior_window[wave].append({"c2":c2,"c3":c3,"segment_id":int(segment["segment_id"])})
             self.next_segment_id=max(self.next_segment_id,int(segment["segment_id"])+1)
 
     def task_classes(self,task):

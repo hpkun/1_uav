@@ -474,7 +474,7 @@ class ModularMAPPOTrainer:
    if not len(index):continue
    logits=self.caiw_critic(o[index],a[index],m[index],w[index],h[index]);q_actual,active=self._caiw_quality(logits,w[index]);active_index=index[active]
    if not len(active_index):continue
-   local=torch.flatnonzero(active);oa=o[active_index];aa=a[active_index];ma=m[active_index];wa=w[active_index];ha=h[active_index]
+   local=torch.nonzero(active,as_tuple=False).reshape(-1);oa=o[active_index];aa=a[active_index];ma=m[active_index];wa=w[active_index];ha=h[active_index]
    dist,_=self.actor.distribution_step(oa,None,None,None,ma)
    for agent in range(A):
     alternatives=torch.tanh(antithetic_latent_actions(dist.mean[:,agent],dist.stddev[:,agent],self.caiw_rng,module.counterfactual_samples));n=len(active_index);joint=aa[:,None].expand(n,module.counterfactual_samples,A,aa.shape[-1]).clone();joint[:,:,agent]=alternatives

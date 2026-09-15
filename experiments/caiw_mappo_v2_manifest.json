@@ -4,6 +4,8 @@
   "from_scratch": true,
   "training_seeds": [5301, 5302, 5303],
   "development_evaluation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "executed_by_this_preparation": false},
+  "primary_endpoint": 3000000,
+  "primary_gate": {"mean_delta_average_waves_min": 0.15, "paired_average_waves_wins_min": 2, "mean_delta_w1_min": -0.05, "mean_delta_q2_strict_positive": true, "mean_delta_q3_strict_positive": true, "max_mean_delta_q2_q3_min": 0.05},
   "future_final": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
   "baseline": ["outputs/diag_mappo_learnability/l3_seed5301", "outputs/diag_mappo_learnability/l3_seed5302", "outputs/diag_mappo_learnability/l3_seed5303"],
   "negative_predecessor": {"method": "IWSC-MAPPO-V1", "status": "IWSC_NOT_SUPPORTED"},
