@@ -332,4 +332,33 @@ class InterWaveStateQualityCritic(nn.Module):
         return torch.sigmoid(team_logit)
 
 
-__all__=["ModularMAPPOActor","ModularCentralizedCritic","InterWaveStateQualityCritic"]
+class InterWaveActionOutcomeCritic(nn.Module):
+    """Joint state-action predictor for future Wave2/Wave3 clear events."""
+    event_heads=("wave2_clear","wave3_clear")
+    def __init__(self,observation_dim=52,action_dim=3,hidden_dim=256,attention_heads=2,activation="relu",max_waves=3):
+        super().__init__();self.observation_dim=int(observation_dim);self.action_dim=int(action_dim);self.hidden_dim=int(hidden_dim);self.attention_heads=int(attention_heads);self.max_waves=int(max_waves)
+        if self.observation_dim!=52 or self.action_dim!=3 or self.max_waves!=3:raise ValueError("CAIW critic requires 52D observations, 3D actions, and three waves")
+        if hidden_dim%attention_heads:raise ValueError("hidden_dim must be divisible by attention_heads")
+        act={"relu":nn.ReLU,"leaky_relu":nn.LeakyReLU}[activation]
+        self.state_encoder=nn.Sequential(nn.Linear(observation_dim+max_waves+1,hidden_dim),act(),nn.Linear(hidden_dim,hidden_dim),act())
+        self.action_projection=nn.Linear(action_dim,hidden_dim);nn.init.zeros_(self.action_projection.weight);nn.init.zeros_(self.action_projection.bias)
+        self.wq=nn.Linear(hidden_dim,hidden_dim,bias=False);self.wk=nn.Linear(hidden_dim,hidden_dim,bias=False);self.wv=nn.Linear(hidden_dim,hidden_dim,bias=False)
+        self.event_network=nn.Sequential(nn.Linear(hidden_dim*2,hidden_dim),act(),nn.Linear(hidden_dim,hidden_dim),act(),nn.Linear(hidden_dim,2))
+        self.head_dim=hidden_dim//attention_heads
+
+    def forward(self,observations,actions,alive_mask,source_wave,remaining_horizon):
+        if observations.ndim!=3 or actions.shape[:2]!=observations.shape[:2]:raise ValueError("CAIW critic expects [B,A,D] observations/actions")
+        batch,agents,_=observations.shape;wave=torch.nn.functional.one_hot((source_wave.long()-1).clamp(0,self.max_waves-1),self.max_waves).to(observations.dtype)
+        context=torch.cat((wave,remaining_horizon.reshape(-1,1).to(observations.dtype)),-1)[:,None,:].expand(-1,agents,-1)
+        entity=self.state_encoder(torch.cat((observations,context),-1))+self.action_projection(actions)
+        def split(x):return x.view(batch,agents,self.attention_heads,self.head_dim).transpose(1,2)
+        q,k,v=split(self.wq(entity)),split(self.wk(entity)),split(self.wv(entity));logits=q@k.transpose(-2,-1)/math.sqrt(self.head_dim)
+        alive=alive_mask>.5;not_self=~torch.eye(agents,dtype=torch.bool,device=observations.device).view(1,1,agents,agents)
+        valid=alive[:,None,None,:].expand(batch,self.attention_heads,agents,agents)&not_self
+        weights=torch.softmax(logits.masked_fill(~valid,-1e9),-1)*valid.to(logits.dtype);weights=weights/weights.sum(-1,keepdim=True).clamp_min(1e-12);weights*=alive[:,None,:,None]
+        attended=(weights@v).transpose(1,2).contiguous().view(batch,agents,self.hidden_dim)
+        per_agent=self.event_network(torch.cat((entity,attended),-1));mask=alive_mask[...,None].to(per_agent.dtype)
+        return (per_agent*mask).sum(1)/mask.sum(1).clamp_min(1.0)
+
+
+__all__=["ModularMAPPOActor","ModularCentralizedCritic","InterWaveStateQualityCritic","InterWaveActionOutcomeCritic"]

@@ -23,6 +23,15 @@ def checkpoint_architecture(trainer):
    "iw_target_definition":{"wave1":"(clear_wave2 + clear_wave3) / 2","wave2":"clear_wave3","wave3":None},
    "iw_actor_credit":"q_next - q_current (no gamma, stop-gradient)",
    "iw_gradient_fusion":"asymmetric_tactical_preserving_projection"})
+ if trainer.counterfactual_inter_wave_credit.enabled:
+  module=trainer.counterfactual_inter_wave_credit
+  result.update({"counterfactual_inter_wave_credit_enabled":True,"counterfactual_inter_wave_credit_version":module.version,
+   "caiw_critic_class":type(trainer.caiw_critic).__name__,"caiw_state_observation_dim":52,"caiw_action_dim":3,
+   "caiw_event_heads":["wave2_clear","wave3_clear"],"caiw_training_targets":{"w1_to_w2":"C2","w1_to_w3":"C3","w2_to_w3":"C3"},
+   "caiw_critic_loss":"BCEWithLogits","caiw_class_sampling":"task_balanced","caiw_probability_correction":"recent_natural_prior_logit_correction",
+   "caiw_actor_credit":"continuous_per_agent_counterfactual_probability_advantage","caiw_advantage_normalization":"none",
+   "caiw_counterfactual_samples":module.counterfactual_samples,"caiw_gradient_projection":"asymmetric_tactical_preserving",
+   "caiw_gradient_ratio_cap":module.auxiliary_gradient_ratio_cap,"caiw_readiness":"held_out_AUROC+BrierSkill+coverage+3_consecutive_passes"})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):

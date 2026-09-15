@@ -1,0 +1,11 @@
+{
+  "method": "CAIW-MAPPO-V2",
+  "role": "development",
+  "from_scratch": true,
+  "training_seeds": [5301, 5302, 5303],
+  "development_evaluation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "executed_by_this_preparation": false},
+  "future_final": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
+  "baseline": ["outputs/diag_mappo_learnability/l3_seed5301", "outputs/diag_mappo_learnability/l3_seed5302", "outputs/diag_mappo_learnability/l3_seed5303"],
+  "negative_predecessor": {"method": "IWSC-MAPPO-V1", "status": "IWSC_NOT_SUPPORTED"},
+  "formal_training_executed": false
+}
