@@ -32,6 +32,16 @@ def checkpoint_architecture(trainer):
    "caiw_actor_credit":"continuous_per_agent_counterfactual_probability_advantage","caiw_advantage_normalization":"none",
    "caiw_counterfactual_samples":module.counterfactual_samples,"caiw_gradient_projection":"asymmetric_tactical_preserving",
    "caiw_gradient_ratio_cap":module.auxiliary_gradient_ratio_cap,"caiw_readiness":"held_out_AUROC+BrierSkill+coverage+3_consecutive_passes"})
+ if trainer.boundary_redistributed_segment_credit.enabled:
+  module=trainer.boundary_redistributed_segment_credit
+  result.update({"boundary_redistributed_segment_credit_enabled":True,"boundary_redistributed_segment_credit_version":module.version,
+   "boundary_state_critic_class":type(trainer.brsc_critic).__name__,"boundary_tasks":["W1_boundary_to_W2","W1_boundary_to_W3","W2_boundary_to_W3"],
+   "post_spawn_entry_state":True,"action_input":False,"critic_loss":"BCEWithLogits",
+   "prior_correction":"train_split_natural_prior","readiness":"held_out_AUROC+BSS+coverage+3passes",
+   "actor_credit":"boundary_quality_minus_prior","redistribution":"gamma_lambda_backward_within_current_rollout_segment",
+   "single_step_counterfactual":False,"advantage_normalization":"none",
+   "gradient_projection":"asymmetric_tactical_preserving","gradient_ratio_cap":module.auxiliary_gradient_ratio_cap,
+   "deployment_actor_unchanged":True})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):

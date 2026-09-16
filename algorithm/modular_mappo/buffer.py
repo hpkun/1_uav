@@ -24,6 +24,7 @@ class ModularRolloutBatch:
     iw_supervision_boundary_flags:object|None=None
     iw_supervision_segments:object|None=None
     caiw_supervision_segments:object|None=None
+    brsc_supervision_boundaries:object|None=None
 
 def contiguous_chunks(time_steps:int,num_envs:int,sequence_length:int):
     return [(env,start,min(start+sequence_length,time_steps)) for env in range(num_envs) for start in range(0,time_steps,sequence_length)]

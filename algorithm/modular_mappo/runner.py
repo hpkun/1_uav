@@ -170,6 +170,9 @@ class ModularMAPPOTrainingRunner:
         self.caiw_pending_episode = [{1: [], 2: []} for _ in range(self.num_envs)]
         self.caiw_pending_segments_dropped_on_resume = 0
         self.caiw_completed_episode_counter = 0
+        self.brsc_pending_episode = [{1: None, 2: None} for _ in range(self.num_envs)]
+        self.brsc_pending_boundaries_dropped_on_resume = 0
+        self.brsc_completed_episode_counter = 0
         self.resume_count = 0
         if not resume_mode:
             if warm_start_checkpoint:
@@ -352,6 +355,31 @@ class ModularMAPPOTrainingRunner:
             if rows:completed.append(self.trainer.counterfactual_inter_wave_credit.cap_segment(rows,wave,int(waves_cleared),group_id,int(env_id)))
         self.caiw_pending_episode[int(env_id)]={1:[],2:[]};return completed
 
+    def _brsc_record_boundary(self,env_id,source_wave,entry_observation,entry_alive_mask,
+                              entry_remaining_horizon,spawned_next_wave,collection_sampled_steps):
+        if not self.trainer.boundary_redistributed_segment_credit.enabled or not spawned_next_wave:return
+        wave=int(source_wave)
+        if wave not in (1,2):return
+        pending=self.brsc_pending_episode[int(env_id)]
+        if pending[wave] is not None:raise RuntimeError(f"duplicate BRSC wave-{wave} boundary in one episode")
+        pending[wave]={"source_wave":wave,"entry_observation":np.asarray(entry_observation,dtype=np.float32).copy(),
+                       "entry_alive_mask":np.asarray(entry_alive_mask,dtype=np.float32).copy(),
+                       "entry_remaining_horizon":float(entry_remaining_horizon),
+                       "collection_sampled_steps":int(collection_sampled_steps),
+                       "collection_ppo_update_id":int(self.trainer.ppo_update_count),
+                       "post_spawn_entry_state":True}
+
+    def _brsc_finalize_episode(self,env_id,waves_cleared):
+        completed=[]
+        if not self.trainer.boundary_redistributed_segment_credit.enabled:return completed
+        group_id=self.brsc_completed_episode_counter;self.brsc_completed_episode_counter+=1
+        for wave in (1,2):
+            pending=self.brsc_pending_episode[int(env_id)][wave]
+            if pending is not None:
+                completed.append(self.trainer.boundary_redistributed_segment_credit.complete_boundary(
+                    pending,waves_cleared,group_id,int(env_id)))
+        self.brsc_pending_episode[int(env_id)]={1:None,2:None};return completed
+
     def collect_rollout(self, steps: int | None = None) -> ModularRolloutBatch:
         keys = ("observations", "actions", "raw_actions", "old_log_probs", "rewards",
                 "raw_environment_rewards", "dones", "alive_masks", "next_observations",
@@ -362,6 +390,7 @@ class ModularMAPPOTrainingRunner:
         storage = {key: [] for key in keys}
         completed_iw_segments = []
         completed_caiw_segments = []
+        completed_brsc_boundaries = []
         rollout_transition = np.zeros(3, dtype=np.int64)
         rollout_alive = np.zeros(3, dtype=np.int64)
         reward_rows: list[dict[str, float]] = []
@@ -470,6 +499,9 @@ class ModularMAPPOTrainingRunner:
                     result.transition_next_observations[env_id],result.next_alive_masks[env_id],next_remaining_horizon[env_id],
                     info.get("spawned_next_wave",False))
                 self._caiw_record_transition(env_id,source_wave,obs[env_id],alive[env_id],actions[env_id],raw[env_id],log_prob[env_id],remaining_horizon[env_id],info.get("wave_cleared_this_step",False),info.get("spawned_next_wave",False),self.trainer.sampled_steps+self.num_envs)
+                self._brsc_record_boundary(env_id,source_wave,result.transition_next_observations[env_id],
+                    result.next_alive_masks[env_id],next_remaining_horizon[env_id],
+                    info.get("spawned_next_wave",False),self.trainer.sampled_steps+self.num_envs)
                 if info.get("wave_cleared_this_step", False):
                     self.wave_clear_transition_counts[max(1, min(3, int(pre_wave[env_id]))) - 1] += 1
             values = (obs, actions, raw, log_prob, training_reward, result.rewards.copy(),
@@ -487,6 +519,7 @@ class ModularMAPPOTrainingRunner:
                 if is_done:
                     completed_iw_segments.extend(self._iw_finalize_episode(env_id,result.infos[env_id].get("waves_cleared",0)))
                     completed_caiw_segments.extend(self._caiw_finalize_episode(env_id,result.infos[env_id].get("waves_cleared",0)))
+                    completed_brsc_boundaries.extend(self._brsc_finalize_episode(env_id,result.infos[env_id].get("waves_cleared",0)))
                     self._write_episode(result.infos[env_id], self.raw_episode_returns[env_id],
                                         self.training_episode_returns[env_id], step_after,
                                         self.paper_episode_blue[env_id], self.paper_episode_red[env_id],
@@ -559,6 +592,7 @@ class ModularMAPPOTrainingRunner:
         kwargs = {key: (None if not values or values[0] is None else np.asarray(values)) for key, values in storage.items()}
         kwargs["iw_supervision_segments"] = completed_iw_segments
         kwargs["caiw_supervision_segments"] = completed_caiw_segments
+        kwargs["brsc_supervision_boundaries"] = completed_brsc_boundaries
         if completed_iw_segments:
             kwargs.update({
                 "iw_supervision_observations": np.concatenate([x["observations"] for x in completed_iw_segments]),
@@ -627,6 +661,9 @@ class ModularMAPPOTrainingRunner:
             "caiw_completed_episode_counter":self.caiw_completed_episode_counter,
             "caiw_pending_segments_dropped_on_resume":self.caiw_pending_segments_dropped_on_resume,
             "caiw_pending_segment_counts":[{str(w):len(rows[w]) for w in (1,2)} for rows in self.caiw_pending_episode],
+            "brsc_completed_episode_counter":self.brsc_completed_episode_counter,
+            "brsc_pending_boundaries_dropped_on_resume":self.brsc_pending_boundaries_dropped_on_resume,
+            "brsc_pending_boundary_counts":[{str(w):int(rows[w] is not None) for w in (1,2)} for rows in self.brsc_pending_episode],
             "evaluation": evaluation,
         }
         if self.trainer.fbmr_enabled:
@@ -731,6 +768,10 @@ class ModularMAPPOTrainingRunner:
             int(count)>0 for rows in extra.get("caiw_pending_segment_counts",[]) for count in rows.values())
         self.caiw_completed_episode_counter=int(extra.get("caiw_completed_episode_counter",0))
         self.caiw_pending_episode=[{1:[],2:[]} for _ in range(self.num_envs)]
+        self.brsc_pending_boundaries_dropped_on_resume = int(extra.get("brsc_pending_boundaries_dropped_on_resume",0)) + sum(
+            int(count)>0 for rows in extra.get("brsc_pending_boundary_counts",[]) for count in rows.values())
+        self.brsc_completed_episode_counter=int(extra.get("brsc_completed_episode_counter",0))
+        self.brsc_pending_episode=[{1:None,2:None} for _ in range(self.num_envs)]
         self._make_vector(previous)
         self.trainer.restore_rng_state(state)
         if branch_intervention in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:

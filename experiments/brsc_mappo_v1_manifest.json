@@ -1,0 +1,27 @@
+{
+  "method": "BRSC-MAPPO-V1",
+  "role": "development",
+  "from_scratch": true,
+  "training_seeds": [5301, 5302, 5303],
+  "plain_baselines": [
+    "outputs/diag_mappo_learnability/l3_seed5301",
+    "outputs/diag_mappo_learnability/l3_seed5302",
+    "outputs/diag_mappo_learnability/l3_seed5303"
+  ],
+  "negative_predecessors": [
+    {"method": "IWSC-MAPPO-V1", "paths": ["outputs/dev_iwsc_mappo_3m/seed5301", "outputs/dev_iwsc_mappo_3m/seed5302", "outputs/dev_iwsc_mappo_3m/seed5303"], "status": "IWSC_NOT_SUPPORTED"},
+    {"method": "CAIW-MAPPO-V2", "paths": ["outputs/dev_caiw_mappo_v2_3m/seed5301", "outputs/dev_caiw_mappo_v2_3m/seed5302", "outputs/dev_caiw_mappo_v2_3m/seed5303"], "status": "CAIW_ROUTE_CLOSED"}
+  ],
+  "primary_endpoint": 3000000,
+  "primary_gate": {
+    "mean_delta_average_waves_min": 0.15,
+    "paired_average_waves_wins_min": 2,
+    "mean_delta_w1_min": -0.05,
+    "mean_delta_q2_strict_positive": true,
+    "mean_delta_q3_strict_positive": true,
+    "max_mean_delta_q2_q3_min": 0.05
+  },
+  "development_evaluation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "deterministic": true, "common_scenarios": true},
+  "future_final": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
+  "formal_training_executed": false
+}

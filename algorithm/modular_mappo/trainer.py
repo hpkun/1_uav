@@ -20,7 +20,11 @@ from algorithm.modules import ActorKLEpochGuardModule,ACTOR_KL_GUARD_VERSION
 from algorithm.modules import (InterWaveCreditModule,IWSC_MAPPO_VERSION,CounterfactualInterWaveCreditModule,
  CAIW_MAPPO_VERSION,CAIW_TASKS,TASK_SOURCE_WAVE,TASK_HEAD,W1_TO_W2,W1_TO_W3,W2_TO_W3,
  binary_auroc,prior_corrected_probability,freshness_mask)
-from .networks import ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,InterWaveActionOutcomeCritic
+from algorithm.modules import (BoundaryRedistributedSegmentCreditModule,BRSC_MAPPO_VERSION,BRSC_TASKS,
+ BRSC_TASK_SOURCE_WAVE,BRSC_TASK_HEAD,W1_BOUNDARY_TO_W2,W1_BOUNDARY_TO_W3,W2_BOUNDARY_TO_W3,
+ redistribute_boundary_credit)
+from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
+ InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 
 # Version 2 is the formal hardened implementation. Version 1 checkpoints use
@@ -135,6 +139,7 @@ class ModularMAPPOTrainer:
   self.actor_kl_guard=ActorKLEpochGuardModule(self.modules_config.get("actor_kl_guard"))
   self.inter_wave_credit=InterWaveCreditModule(self.modules_config.get("inter_wave_credit"))
   self.counterfactual_inter_wave_credit=CounterfactualInterWaveCreditModule(self.modules_config.get("counterfactual_inter_wave_credit"))
+  self.boundary_redistributed_segment_credit=BoundaryRedistributedSegmentCreditModule(self.modules_config.get("boundary_redistributed_segment_credit"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -157,6 +162,11 @@ class ModularMAPPOTrainer:
    if not enabled.issubset(allowed):raise ValueError(f"CAIW V2 incompatible enabled modules: {sorted(enabled-allowed)}")
    if self.inter_wave_credit.enabled:raise ValueError("IWSC V1 and CAIW V2 are mutually exclusive")
    if self.recurrent.enabled or self.wave_context.enabled or self.entity_attention_enabled:raise ValueError("CAIW V2 requires the feed-forward 52D Plain actor")
+  if self.boundary_redistributed_segment_credit.enabled:
+   enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","boundary_redistributed_segment_credit"}
+   if not enabled.issubset(allowed):raise ValueError(f"BRSC V1 incompatible enabled modules: {sorted(enabled-allowed)}")
+   if self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled:raise ValueError("BRSC, IWSC, and CAIW are mutually exclusive")
+   if self.recurrent.enabled or self.wave_context.enabled or self.entity_attention_enabled:raise ValueError("BRSC V1 requires the feed-forward 52D Plain actor")
   if self.mission_film.enabled:
    if not (self.wave_context.enabled and self.wave_context.actor_enabled and not self.wave_context.critic_enabled
            and self.wave_context.target=="actor_only" and self.wave_context.encoding=="mission_markov"
@@ -188,6 +198,12 @@ class ModularMAPPOTrainer:
    with torch.random.fork_rng(devices=[]):
     self.caiw_critic=InterWaveActionOutcomeCritic(observation_dim,action_dim,hidden_dim,attention_heads,critic_activation,self.counterfactual_inter_wave_credit.max_waves).to(self.device)
    self.caiw_critic_optimizer=torch.optim.Adam(self.caiw_critic.parameters(),lr=self.counterfactual_inter_wave_credit.outcome_critic_learning_rate)
+  self.brsc_critic=None;self.brsc_critic_optimizer=None;self.brsc_rng=np.random.default_rng(int(seed)^0x42525343)
+  self.brsc_conflict_count=0;self.brsc_gradient_step_count=0;self.brsc_trust_cap_count=0;self.brsc_aux_induced_clip_count=0
+  if self.boundary_redistributed_segment_credit.enabled:
+   with torch.random.fork_rng(devices=[]):
+    self.brsc_critic=BoundaryStateOutcomeCritic(observation_dim,hidden_dim,attention_heads,critic_activation,self.boundary_redistributed_segment_credit.max_waves).to(self.device)
+   self.brsc_critic_optimizer=torch.optim.Adam(self.brsc_critic.parameters(),lr=self.boundary_redistributed_segment_credit.outcome_critic_learning_rate)
   self.base_actor_learning_rate=float(actor_learning_rate);self.base_critic_learning_rate=float(critic_learning_rate)
   self.ppo_update_count=self.actor_update_count=self.critic_update_count=self.sampled_steps=self.vector_steps=0
   self.kl_hard_stop_count=0
@@ -253,6 +269,12 @@ class ModularMAPPOTrainer:
    caiw_metrics.update(self._validate_caiw_tasks())
    caiw_adv,caiw_active,credit_metrics=self._caiw_rollout_credit(r,obs,act,raw,oldlog,alive,waves)
    caiw_metrics.update(credit_metrics)
+  # BRSC deliberately scores the current rollout with the critic/readiness/prior
+  # frozen at update entry. Current-rollout labels are ingested only after PPO.
+  brsc_metrics=self._brsc_default_metrics();brsc_adv=None;brsc_active=None
+  if self.boundary_redistributed_segment_credit.enabled:
+   brsc_adv,brsc_active,credit_metrics=self._brsc_rollout_credit(r,nobs,alive,nalive,dones,waves)
+   brsc_metrics.update(credit_metrics)
   # All actor priorities are frozen from the complete raw-GAE rollout.
   if self.actor_lr_decay.enabled:
    self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
@@ -274,8 +296,15 @@ class ModularMAPPOTrainer:
   elif self.counterfactual_inter_wave_credit.enabled and caiw_active is not None and bool(caiw_active.any()):
    self._caiw_source_waves=waves.reshape(-1)
    metrics=self._update_flat_caiw(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,caiw_adv,caiw_active)
+  elif self.boundary_redistributed_segment_credit.enabled and brsc_active is not None and bool(brsc_active.any()):
+   self._brsc_source_waves=waves.reshape(-1)
+   metrics=self._update_flat_brsc(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,brsc_adv,brsc_active)
   else:
    metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w if self.advantage_priority.enabled else None)
+  if self.boundary_redistributed_segment_credit.enabled:
+   self.boundary_redistributed_segment_credit.ingest(r.brsc_supervision_boundaries)
+   brsc_metrics.update(self._train_brsc_critic())
+   brsc_metrics.update(self._validate_brsc_tasks())
   live_mask=alive>.5;rv=returns[live_mask];vv=values[live_mask];variance=torch.var(rv,unbiased=False)
   metrics["explained_variance"]=float((1-torch.var(rv-vv,unbiased=False)/variance.clamp_min(1e-8)).detach())
   metrics["actor_optimizer_steps_this_update"]=float(self.actor_update_count-actor_before);metrics["critic_optimizer_steps_this_update"]=float(self.critic_update_count-critic_before)
@@ -285,6 +314,7 @@ class ModularMAPPOTrainer:
   self.ppo_update_count+=1;metrics.update(wmetrics);metrics.update(pmetrics)
   for key,value in iw_metrics.items():metrics.setdefault(key,value)
   for key,value in caiw_metrics.items():metrics.setdefault(key,value)
+  for key,value in brsc_metrics.items():metrics.setdefault(key,value)
   metrics.update({"popart_mean":float(self.popart.mean),"popart_std":float(self.popart.std),"popart_count":float(self.popart.count),"actor_learning_rate":float(self.actor_optimizer.param_groups[0]["lr"]),"critic_learning_rate":float(self.critic_optimizer.param_groups[0]["lr"]),"kl_hard_stop_count":float(self.kl_hard_stop_count),"cumulative_kl_hard_stop_count":float(self.kl_hard_stop_count),"actor_kl_guard_hard_stop_count":float(self.actor_kl_guard_hard_stop_count),"actor_kl_guard_hard_stop_fraction":float(self.actor_kl_guard_hard_stop_count/self.ppo_update_count)})
   if not np.all(np.isfinite(list(metrics.values()))):raise FloatingPointError(f"non-finite modular update: {metrics}")
   return metrics
@@ -518,6 +548,131 @@ class ModularMAPPOTrainer:
   out=aggregate_update_rows(rows,self.clip_ratio)
   for key in crows[0]:out[key]=float(np.mean([row[key] for row in crows]))
   count=max(1,self.caiw_gradient_step_count);out["caiw_cumulative_conflict_fraction"]=self.caiw_conflict_count/count;out["caiw_cumulative_trust_cap_fraction"]=self.caiw_trust_cap_count/count;out["caiw_cumulative_aux_induced_clip_fraction"]=self.caiw_aux_induced_clip_count/count;return out
+
+ def _brsc_default_metrics(self):
+  keys=("brsc_actor_active","brsc_active_wave1","brsc_active_wave2","brsc_boundary_events_wave1","brsc_boundary_events_wave2","brsc_credited_boundaries_wave1","brsc_credited_boundaries_wave2","brsc_segment_length_mean","brsc_segment_length_p50","brsc_segment_length_p90","brsc_credit_distance_mean","brsc_credit_distance_p90","brsc_credited_transition_fraction","brsc_credited_alive_agent_fraction","brsc_adv_mean","brsc_adv_std","brsc_adv_abs_mean","brsc_adv_abs_p90","brsc_adv_abs_max","brsc_critic_loss","brsc_tactical_grad_norm","brsc_aux_grad_norm_pre_projection","brsc_aux_grad_norm_post_projection","brsc_aux_grad_norm_post_trust_cap","brsc_aux_to_tactical_ratio_pre","brsc_aux_to_tactical_ratio_post","brsc_gradient_dot","brsc_gradient_cosine","brsc_conflict","brsc_projection_applied","brsc_trust_scale","brsc_trust_cap_applied","brsc_combined_grad_norm","brsc_combined_would_clip","brsc_aux_induced_clip","brsc_cumulative_conflict_fraction","brsc_cumulative_trust_cap_fraction","brsc_cumulative_aux_induced_clip_fraction")
+  result={key:0. for key in keys}
+  for wave in (1,2):
+   for name in ("boundary_q_mean","boundary_baseline_mean","boundary_credit_mean","boundary_credit_abs_mean","adv_mean","adv_std","adv_abs_mean","adv_abs_p90","adv_abs_max"):result[f"brsc_{name}_wave{wave}"]=0.
+  for task in BRSC_TASKS:
+   for name in ("train_positive","train_negative","validation_segments","validation_positive","validation_negative","validation_auroc","validation_brier","validation_climatology_brier","validation_brier_skill","prediction_mean","prediction_std","positive_prediction_mean","negative_prediction_mean","validation_pass","validation_pass_streak","ready","recent_prior","first_ready_step"):result[f"brsc_{task}_{name}"]=0.
+  return result
+
+ def _brsc_boundary_tensors(self,rows):
+  tt=lambda x,dtype=torch.float32:torch.as_tensor(x,dtype=dtype,device=self.device)
+  return (tt(np.asarray([x["entry_observation"] for x in rows],np.float32)),
+          tt(np.asarray([x["entry_alive_mask"] for x in rows],np.float32)),
+          tt(np.asarray([x["source_wave"] for x in rows],np.int64),torch.long),
+          tt(np.asarray([x["entry_remaining_horizon"] for x in rows],np.float32)))
+
+ def _sample_brsc_class(self,rows,count):
+  indices=self.brsc_rng.integers(0,len(rows),size=count);return [rows[int(i)] for i in indices]
+
+ def _train_brsc_critic(self):
+  module=self.boundary_redistributed_segment_credit;metrics={};loss_rows=[]
+  for task in BRSC_TASKS:
+   positive,negative=module.task_classes(task);metrics[f"brsc_{task}_train_positive"]=float(len(positive));metrics[f"brsc_{task}_train_negative"]=float(len(negative))
+  for _ in range(module.critic_updates_per_rollout):
+   task_losses=[]
+   for task in BRSC_TASKS:
+    positive,negative=module.task_classes(task)
+    if min(len(positive),len(negative))<module.min_train_boundaries_per_class:continue
+    n=module.critic_samples_per_class_per_task;rows=self._sample_brsc_class(positive,n)+self._sample_brsc_class(negative,n)
+    obs,alive,source,horizon=self._brsc_boundary_tensors(rows);logits=self.brsc_critic(obs,alive,source,horizon)[:,BRSC_TASK_HEAD[task]]
+    targets=torch.cat((torch.ones(n,device=self.device),torch.zeros(n,device=self.device)))
+    task_losses.append(torch.nn.functional.binary_cross_entropy_with_logits(logits,targets))
+   if task_losses:
+    loss=torch.stack(task_losses).mean();self.brsc_critic_optimizer.zero_grad();loss.backward();nn.utils.clip_grad_norm_(self.brsc_critic.parameters(),self.max_grad_norm);self.brsc_critic_optimizer.step();loss_rows.append(float(loss.detach()))
+  metrics["brsc_critic_loss"]=float(np.mean(loss_rows)) if loss_rows else 0.;return metrics
+
+ @torch.no_grad()
+ def _validate_brsc_tasks(self):
+  module=self.boundary_redistributed_segment_credit;metrics={}
+  if (self.ppo_update_count+1)%module.validation_interval_updates!=0:
+   for task in BRSC_TASKS:
+    metrics[f"brsc_{task}_ready"]=float(module.task_ready[task]);metrics[f"brsc_{task}_validation_pass_streak"]=float(module.validation_pass_streak[task]);metrics[f"brsc_{task}_recent_prior"]=module.recent_prior(task);metrics[f"brsc_{task}_first_ready_step"]=float(module.first_ready_sampled_steps[task] or 0)
+   return metrics
+  module.validation_check_count+=1
+  for task in BRSC_TASKS:
+   wave=BRSC_TASK_SOURCE_WAVE[task];rows=list(module.validation[wave]);prior=module.recent_prior(task)
+   if rows:
+    obs,alive,source,horizon=self._brsc_boundary_tensors(rows);raw=self.brsc_critic(obs,alive,source,horizon)[:,BRSC_TASK_HEAD[task]]
+    predictions=prior_corrected_probability(raw,prior,module.prior_probability_epsilon).cpu().numpy();labels=np.asarray([module.task_label(task,row) for row in rows],np.float64)
+   else:predictions=np.asarray([],np.float64);labels=np.asarray([],np.float64)
+   n=len(labels);pos=int(labels.sum());neg=n-pos;auroc=binary_auroc(labels,predictions) if n else None
+   brier=float(np.mean((predictions-labels)**2)) if n else None;clim=float(np.mean((labels-labels.mean())**2)) if n else None;bss=(1-brier/clim) if clim is not None and clim>0 else None
+   row={"validation_segments":n,"validation_positive":pos,"validation_negative":neg,"validation_auroc":auroc,"validation_brier":brier,"validation_climatology_brier":clim,"validation_brier_skill":bss,"prediction_mean":float(predictions.mean()) if n else None,"prediction_std":float(predictions.std()) if n else None,"positive_prediction_mean":float(predictions[labels==1].mean()) if pos else None,"negative_prediction_mean":float(predictions[labels==0].mean()) if neg else None}
+   passed=module.apply_validation(task,row,self.sampled_steps);row.update({"validation_pass":float(passed),"validation_pass_streak":module.validation_pass_streak[task],"ready":float(module.task_ready[task]),"recent_prior":prior,"first_ready_step":module.first_ready_sampled_steps[task] or 0})
+   for key,value in row.items():metrics[f"brsc_{task}_{key}"]=float(value) if value is not None else 0.
+  return metrics
+
+ @torch.no_grad()
+ def _brsc_quality(self,logits,waves):
+  module=self.boundary_redistributed_segment_credit;q=torch.zeros(len(waves),device=logits.device);baseline=torch.zeros_like(q);active=torch.zeros(len(waves),dtype=torch.bool,device=logits.device)
+  for index,wave in enumerate(waves.tolist()):
+   tasks=(W1_BOUNDARY_TO_W2,W1_BOUNDARY_TO_W3) if wave==1 else ((W2_BOUNDARY_TO_W3,) if wave==2 else ())
+   tasks=[task for task in tasks if module.task_ready[task]]
+   if tasks:
+    probs=[prior_corrected_probability(logits[index,BRSC_TASK_HEAD[task]],module.recent_prior(task),module.prior_probability_epsilon) for task in tasks]
+    priors=[module.recent_prior(task) for task in tasks];q[index]=torch.stack(probs).mean();baseline[index]=float(np.mean(priors));active[index]=True
+  return q,baseline,active
+
+ @torch.no_grad()
+ def _brsc_rollout_credit(self,r,next_obs,alive,next_alive,dones,waves):
+  if r.wave_transition_flags is None or r.next_remaining_horizons is None:return None,None,{}
+  module=self.boundary_redistributed_segment_credit;T,E=waves.shape;flags=torch.as_tensor(r.wave_transition_flags,dtype=torch.bool,device=self.device)&(waves<=2)
+  boundary_credit=torch.zeros((T,E),device=self.device);credited=torch.zeros((T,E),dtype=torch.bool,device=self.device);q_values={1:[],2:[]};base_values={1:[],2:[]}
+  indices=torch.nonzero(flags,as_tuple=False)
+  if len(indices):
+   obs=next_obs[indices[:,0],indices[:,1]];alive=next_alive[indices[:,0],indices[:,1]];source=waves[indices[:,0],indices[:,1]]
+   horizons=torch.as_tensor(r.next_remaining_horizons,dtype=torch.float32,device=self.device)[indices[:,0],indices[:,1]]
+   logits=self.brsc_critic(obs,alive,source,horizons);q,baseline,active=self._brsc_quality(logits,source);credit=q-baseline
+   for j,(t,e) in enumerate(indices.tolist()):
+    if active[j]:boundary_credit[t,e]=credit[j];credited[t,e]=True;q_values[int(source[j])].append(float(q[j]));base_values[int(source[j])].append(float(baseline[j]))
+  adv_np,active_np,lengths=redistribute_boundary_credit(waves.cpu().numpy(),dones.cpu().numpy(),credited.cpu().numpy(),boundary_credit.cpu().numpy(),self.gamma*self.gae_lambda)
+  advantages=torch.as_tensor(adv_np,dtype=torch.float32,device=self.device);active=torch.as_tensor(active_np,dtype=torch.bool,device=self.device)
+  metrics={"brsc_actor_active":float(active.any()),"brsc_active_wave1":float((active&(waves==1)).any()),"brsc_active_wave2":float((active&(waves==2)).any())}
+  for wave in (1,2):
+   event=(flags&(waves==wave));used=(credited&(waves==wave));z=boundary_credit[used]
+   metrics[f"brsc_boundary_events_wave{wave}"]=float(event.sum());metrics[f"brsc_credited_boundaries_wave{wave}"]=float(used.sum())
+   metrics[f"brsc_boundary_q_mean_wave{wave}"]=float(np.mean(q_values[wave])) if q_values[wave] else 0.;metrics[f"brsc_boundary_baseline_mean_wave{wave}"]=float(np.mean(base_values[wave])) if base_values[wave] else 0.
+   metrics[f"brsc_boundary_credit_mean_wave{wave}"]=float(z.mean()) if z.numel() else 0.;metrics[f"brsc_boundary_credit_abs_mean_wave{wave}"]=float(z.abs().mean()) if z.numel() else 0.
+  def stats(prefix,x):
+   if not x.numel():return {f"{prefix}_mean":0.,f"{prefix}_std":0.,f"{prefix}_abs_mean":0.,f"{prefix}_abs_p90":0.,f"{prefix}_abs_max":0.}
+   absolute=x.abs();return {f"{prefix}_mean":float(x.mean()),f"{prefix}_std":float(x.std(unbiased=False)),f"{prefix}_abs_mean":float(absolute.mean()),f"{prefix}_abs_p90":float(torch.quantile(absolute,.9)),f"{prefix}_abs_max":float(absolute.max())}
+  metrics.update(stats("brsc_adv",advantages[active]))
+  for wave in (1,2):metrics.update(stats(f"brsc_adv_wave{wave}",advantages[active&(waves==wave)]))
+  distances=[]
+  for length in lengths:distances.extend(range(length))
+  metrics["brsc_segment_length_mean"]=float(np.mean(lengths)) if lengths else 0.;metrics["brsc_segment_length_p50"]=float(np.quantile(lengths,.5)) if lengths else 0.;metrics["brsc_segment_length_p90"]=float(np.quantile(lengths,.9)) if lengths else 0.
+  metrics["brsc_credit_distance_mean"]=float(np.mean(distances)) if distances else 0.;metrics["brsc_credit_distance_p90"]=float(np.quantile(distances,.9)) if distances else 0.
+  metrics["brsc_credited_transition_fraction"]=float(active.float().mean());metrics["brsc_credited_alive_agent_fraction"]=float((active[...,None]&(alive>.5)).float().sum()/((alive>.5).float().sum().clamp_min(1)))
+  return advantages.detach(),active,metrics
+
+ def _update_flat_brsc(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,brsc_adv,brsc_active):
+  flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]);arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));ba=brsc_adv.reshape(-1);active=brsc_active.reshape(-1);waves=self._brsc_source_waves;params=self.actor.trainable_policy_parameters();N=arrays[0].shape[0];rows=[];brows=[];module=self.boundary_redistributed_segment_credit
+  for _ in range(self.ppo_epochs):
+   permutation=self.rng.permutation(N)
+   for start in range(0,N,self.minibatch_size):
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device);args=[x[ix] for x in arrays];loss=self._loss_step(*args);al,vl,en,anchor,*_=loss;tactical=al-self.entropy_coefficient*en+anchor
+    dist,_=self.actor.distribution_step(args[0],None,None,None,args[4]);newlog=self.actor._squashed_log_prob(dist,args[2],args[1]);_,ratio=stable_ratio_terms(newlog,args[3]);state_active=active[ix];team=ba[ix][:,None]
+    surrogate=torch.minimum(ratio*team,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*team);wave_losses=[]
+    for wave in (1,2):
+     mask=state_active&(waves[ix]==wave)
+     if mask.any():wave_losses.append(-masked_mean(surrogate,args[4]*mask[:,None].to(args[4].dtype)))
+    brsc_loss=torch.stack(wave_losses).mean() if wave_losses else surrogate.sum()*0
+    gt=torch.autograd.grad(tactical,params,retain_graph=True,allow_unused=True);gb=torch.autograd.grad(brsc_loss,params,retain_graph=True,allow_unused=True);gt=[torch.zeros_like(p) if g is None else g for p,g in zip(params,gt)];gb=[torch.zeros_like(p) if g is None else g for p,g in zip(params,gb)]
+    pre=torch.sqrt(sum(g.square().sum() for g in gb));projected,dot=asymmetric_tactical_projection(gt,gb);post_proj=torch.sqrt(sum(g.square().sum() for g in projected));trusted,scale,nt,_=caiw_trust_cap(gt,projected,module.auxiliary_gradient_ratio_cap);post=torch.sqrt(sum(g.square().sum() for g in trusted));combined=[a+b for a,b in zip(gt,trusted)];combined_norm=torch.sqrt(sum(g.square().sum() for g in combined));conflict=bool(dot.detach()<0);cap=bool(scale.detach()<1-1e-12);induced=bool(nt<=self.max_grad_norm and combined_norm>self.max_grad_norm)
+    self.actor_optimizer.zero_grad();
+    for p,g in zip(params,combined):p.grad=g
+    ag=nn.utils.clip_grad_norm_(params,self.max_grad_norm);self.actor_optimizer.step();self.actor_update_count+=1
+    self.critic_optimizer.zero_grad();(self.value_loss_coefficient*vl).backward();cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.critic_update_count+=1
+    self.brsc_gradient_step_count+=1;self.brsc_conflict_count+=int(conflict);self.brsc_trust_cap_count+=int(cap);self.brsc_aux_induced_clip_count+=int(induced)
+    rows.append(self._row(loss,args[4],ag,cg));brows.append({"brsc_tactical_grad_norm":float(nt),"brsc_aux_grad_norm_pre_projection":float(pre),"brsc_aux_grad_norm_post_projection":float(post_proj),"brsc_aux_grad_norm_post_trust_cap":float(post),"brsc_aux_to_tactical_ratio_pre":float(pre/(nt+1e-12)),"brsc_aux_to_tactical_ratio_post":float(post/(nt+1e-12)),"brsc_gradient_dot":float(dot),"brsc_gradient_cosine":float(dot/(nt*pre+1e-12)),"brsc_conflict":float(conflict),"brsc_projection_applied":float(conflict),"brsc_trust_scale":float(scale),"brsc_trust_cap_applied":float(cap),"brsc_combined_grad_norm":float(combined_norm),"brsc_combined_would_clip":float(combined_norm>self.max_grad_norm),"brsc_aux_induced_clip":float(induced)})
+  out=aggregate_update_rows(rows,self.clip_ratio)
+  for key in brows[0]:out[key]=float(np.mean([row[key] for row in brows]))
+  count=max(1,self.brsc_gradient_step_count);out["brsc_cumulative_conflict_fraction"]=self.brsc_conflict_count/count;out["brsc_cumulative_trust_cap_fraction"]=self.brsc_trust_cap_count/count;out["brsc_cumulative_aux_induced_clip_fraction"]=self.brsc_aux_induced_clip_count/count;return out
+
  def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None):
   dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask);newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
   logratio,ratio=stable_ratio_terms(newlog,oldlog);sur=torch.minimum(ratio*adv,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*adv)
@@ -883,6 +1038,7 @@ class ModularMAPPOTrainer:
   value={"python_random_state":random.getstate(),"numpy_random_state":np.random.get_state(),"torch_cpu_rng_state":torch.get_rng_state(),"torch_cuda_rng_state_all":cuda_states,"trainer_permutation_rng_state":deepcopy(self.rng.bit_generator.state)}
   if self.inter_wave_credit.enabled:value["iw_replay_rng_state"]=deepcopy(self.iw_rng.bit_generator.state)
   if self.counterfactual_inter_wave_credit.enabled:value["caiw_rng_state"]=deepcopy(self.caiw_rng.bit_generator.state)
+  if self.boundary_redistributed_segment_credit.enabled:value["brsc_rng_state"]=deepcopy(self.brsc_rng.bit_generator.state)
   return value
  def restore_rng_state(self,state):
   saved=state.get("rng_state") if isinstance(state,dict) else None
@@ -895,6 +1051,7 @@ class ModularMAPPOTrainer:
   torch.set_rng_state(saved["torch_cpu_rng_state"].cpu());self.rng.bit_generator.state=deepcopy(saved["trainer_permutation_rng_state"])
   if saved.get("iw_replay_rng_state") is not None:self.iw_rng.bit_generator.state=deepcopy(saved["iw_replay_rng_state"])
   if saved.get("caiw_rng_state") is not None:self.caiw_rng.bit_generator.state=deepcopy(saved["caiw_rng_state"])
+  if saved.get("brsc_rng_state") is not None:self.brsc_rng.bit_generator.state=deepcopy(saved["brsc_rng_state"])
   cuda_saved=saved.get("torch_cuda_rng_state_all",[]);cuda_restored=False
   if torch.cuda.is_available() and cuda_saved:
    torch.cuda.set_rng_state_all([value.cpu() for value in cuda_saved]);cuda_restored=True
@@ -902,7 +1059,7 @@ class ModularMAPPOTrainer:
   return True
  def checkpoint_state(self,extra=None):
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -911,7 +1068,7 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -919,6 +1076,7 @@ class ModularMAPPOTrainer:
    if self.actor_kl_guard.enabled and versions.get("actor_kl_guard")!=ACTOR_KL_GUARD_VERSION:raise RuntimeError("checkpoint actor_kl_guard feature version mismatch")
    if self.inter_wave_credit.enabled and versions.get("inter_wave_credit")!=IWSC_MAPPO_VERSION:raise RuntimeError("checkpoint IWSC feature version mismatch")
    if self.counterfactual_inter_wave_credit.enabled and versions.get("counterfactual_inter_wave_credit")!=CAIW_MAPPO_VERSION:raise RuntimeError("checkpoint CAIW feature version mismatch")
+   if self.boundary_redistributed_segment_credit.enabled and versions.get("boundary_redistributed_segment_credit")!=BRSC_MAPPO_VERSION:raise RuntimeError("checkpoint BRSC feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.inter_wave_credit.enabled:
@@ -928,6 +1086,9 @@ class ModularMAPPOTrainer:
   if self.counterfactual_inter_wave_credit.enabled:
    if state.get("caiw_critic") is None or state.get("caiw_critic_optimizer") is None:raise RuntimeError("CAIW checkpoint lacks outcome critic state")
    self.caiw_critic.load_state_dict(state["caiw_critic"]);self.caiw_critic_optimizer.load_state_dict(state["caiw_critic_optimizer"]);self.counterfactual_inter_wave_credit.load_state_dict(state.get("counterfactual_inter_wave_credit_state"));self.caiw_rng.bit_generator.state=deepcopy(state["caiw_rng_state"]);self.caiw_conflict_count=int(state.get("caiw_conflict_count",0));self.caiw_gradient_step_count=int(state.get("caiw_gradient_step_count",0));self.caiw_trust_cap_count=int(state.get("caiw_trust_cap_count",0));self.caiw_aux_induced_clip_count=int(state.get("caiw_aux_induced_clip_count",0))
+  if self.boundary_redistributed_segment_credit.enabled:
+   if state.get("brsc_critic") is None or state.get("brsc_critic_optimizer") is None:raise RuntimeError("BRSC checkpoint lacks boundary critic state")
+   self.brsc_critic.load_state_dict(state["brsc_critic"]);self.brsc_critic_optimizer.load_state_dict(state["brsc_critic_optimizer"]);self.boundary_redistributed_segment_credit.load_state_dict(state.get("boundary_redistributed_segment_credit_state"));self.brsc_rng.bit_generator.state=deepcopy(state["brsc_rng_state"]);self.brsc_conflict_count=int(state.get("brsc_conflict_count",0));self.brsc_gradient_step_count=int(state.get("brsc_gradient_step_count",0));self.brsc_trust_cap_count=int(state.get("brsc_trust_cap_count",0));self.brsc_aux_induced_clip_count=int(state.get("brsc_aux_induced_clip_count",0))
   self.warm_start_provenance=state.get("warm_start_provenance",{});self.anchor_provenance=state.get("anchor_provenance",{})
   self.fbmr_branch_metadata=deepcopy(state.get("fbmr_branch_metadata",{}))
   if self.fbmr_enabled:
