@@ -37,6 +37,7 @@ def main():
       "state_only_boundary_critic":"actions" not in inspect.signature(brsc.brsc_critic.forward).parameters,
       "post_spawn_transition_next_observation":"_brsc_record_boundary(env_id,source_wave,result.transition_next_observations" in runner_source,
       "gamma_lambda_redistribution":"self.gamma*self.gae_lambda" in trainer_source,"no_advantage_normalization":"normalize_iw_deltas" not in trainer_source[trainer_source.index("def _brsc_default_metrics"):trainer_source.index("def _loss_step",trainer_source.index("def _brsc_default_metrics"))],
+      "boundary_subset_vs_rollout_alive":"rollout_alive=alive" in trainer_source and "boundary_alive=next_alive" in trainer_source and "active[...,None]&(rollout_alive>.5)" in trainer_source,
       "held_out_three_pass_gate":module.readiness_consecutive_passes==3 and module.min_validation_auroc==.6 and module.validation_interval_updates==10,
       "gradient_cap_point25":module.auxiliary_gradient_ratio_cap==.25,
       "preupdate_score_before_ingest":update.index("_brsc_rollout_credit")<update.index(".ingest(r.brsc_supervision_boundaries)"),

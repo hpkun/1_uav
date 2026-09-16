@@ -106,6 +106,50 @@ def test_raw_credit_has_no_normalization_and_active_update_is_single_step():
     assert metrics["brsc_aux_to_tactical_ratio_post"]<=.25+1e-6
 
 
+def test_formal_shape_multi_boundary_credit_uses_rollout_alive_coverage():
+    trainer=ModularMAPPOTrainer(hidden_dim=16,seed=92,modules_config={"boundary_redistributed_segment_credit":BRSC})
+    module=trainer.boundary_redistributed_segment_credit
+    for task in (W1_BOUNDARY_TO_W2,W1_BOUNDARY_TO_W3,W2_BOUNDARY_TO_W3):module.task_ready[task]=True
+    class FakeCritic(torch.nn.Module):
+        def forward(self,observations,alive_mask,source_wave,remaining_horizon):
+            logit=torch.full((len(observations),),.2,device=observations.device)
+            return torch.stack((logit,logit),-1)
+    trainer.brsc_critic=FakeCritic().to(trainer.device)
+    t,e,a=256,24,4;flags=np.zeros((t,e),np.float32)
+    for index in ((20,0),(60,1),(100,2),(140,3),(200,4)):flags[index]=1
+    waves=np.ones((t,e),np.int64);waves[120:,3]=2;waves[180:,4]=2
+    dones=np.zeros((t,e),np.float32);dones[40,1]=1
+    rollout_alive=np.ones((t,e,a),np.float32);rollout_alive[::3,:,3]=0;rollout_alive[::5,:,2]=0
+    next_alive=rollout_alive.copy();next_obs=np.zeros((t,e,a,52),np.float32)
+    r=type("R",(),{"wave_transition_flags":flags,"next_remaining_horizons":np.full((t,e),.5,np.float32)})()
+    advantage,active,metrics=trainer._brsc_rollout_credit(
+        r,torch.as_tensor(next_obs),torch.as_tensor(rollout_alive),torch.as_tensor(next_alive),
+        torch.as_tensor(dones),torch.as_tensor(waves))
+    assert advantage.shape==active.shape==(256,24)
+    assert 0<=metrics["brsc_credited_alive_agent_fraction"]<=1 and 0<=metrics["brsc_credited_transition_fraction"]<=1
+    expected=((active.cpu().numpy()[...,None])*(rollout_alive>.5)).sum()/(rollout_alive>.5).sum()
+    assert metrics["brsc_credited_alive_agent_fraction"]==pytest.approx(expected)
+    assert not active[:120,3].any()  # Wave2 boundary never credits preceding Wave1.
+    assert not active[:41,1].any()  # Boundary after reset never crosses episode reset.
+
+
+def test_multi_boundary_trainer_update_completes_with_finite_trusted_gradients():
+    trainer=ModularMAPPOTrainer(hidden_dim=16,seed=93,ppo_epochs=1,minibatch_size=8,modules_config={"boundary_redistributed_segment_credit":BRSC})
+    module=trainer.boundary_redistributed_segment_credit;module.task_ready[W1_BOUNDARY_TO_W2]=True
+    class FakeCritic(torch.nn.Module):
+        def forward(self,observations,alive_mask,source_wave,remaining_horizon):
+            logit=torch.full((len(observations),),.2,device=observations.device)
+            return torch.stack((logit,torch.zeros_like(logit)),-1)
+    trainer.brsc_critic=FakeCritic().to(trainer.device);trainer._train_brsc_critic=lambda:{"brsc_critic_loss":0.};trainer._validate_brsc_tasks=lambda:{}
+    batch=rollout(trainer);batch.wave_transition_flags[1,0]=batch.wave_transition_flags[3,1]=1
+    before_a=[p.detach().clone() for p in trainer.actor.parameters()];before_c=[p.detach().clone() for p in trainer.critic.parameters()]
+    metrics=trainer.update(batch)
+    assert metrics["brsc_actor_active"]==1 and metrics["actor_optimizer_steps_this_update"]==metrics["critic_optimizer_steps_this_update"]==1
+    assert any(not torch.equal(a,b) for a,b in zip(before_a,trainer.actor.parameters())) and any(not torch.equal(a,b) for a,b in zip(before_c,trainer.critic.parameters()))
+    assert np.isfinite([float(v) for v in metrics.values() if isinstance(v,(int,float))]).all()
+    assert metrics["brsc_aux_to_tactical_ratio_post"]<=.25+1e-6 and 0<=metrics["brsc_credited_alive_agent_fraction"]<=1
+
+
 def test_preupdate_causality_and_cold_gate_exact_plain(tmp_path):
     common={"actor_lr_decay":{"enabled":True,"start_step":600000,"end_step":900000,"start_lr":3e-4,"end_lr":1e-4}}
     plain=ModularMAPPOTrainer(hidden_dim=16,seed=77,ppo_epochs=1,minibatch_size=8,modules_config=common)

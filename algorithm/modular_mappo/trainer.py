@@ -620,15 +620,15 @@ class ModularMAPPOTrainer:
  @torch.no_grad()
  def _brsc_rollout_credit(self,r,next_obs,alive,next_alive,dones,waves):
   if r.wave_transition_flags is None or r.next_remaining_horizons is None:return None,None,{}
-  module=self.boundary_redistributed_segment_credit;T,E=waves.shape;flags=torch.as_tensor(r.wave_transition_flags,dtype=torch.bool,device=self.device)&(waves<=2)
+  module=self.boundary_redistributed_segment_credit;rollout_alive=alive;T,E=waves.shape;flags=torch.as_tensor(r.wave_transition_flags,dtype=torch.bool,device=self.device)&(waves<=2)
   boundary_credit=torch.zeros((T,E),device=self.device);credited=torch.zeros((T,E),dtype=torch.bool,device=self.device);q_values={1:[],2:[]};base_values={1:[],2:[]}
   indices=torch.nonzero(flags,as_tuple=False)
   if len(indices):
-   obs=next_obs[indices[:,0],indices[:,1]];alive=next_alive[indices[:,0],indices[:,1]];source=waves[indices[:,0],indices[:,1]]
-   horizons=torch.as_tensor(r.next_remaining_horizons,dtype=torch.float32,device=self.device)[indices[:,0],indices[:,1]]
-   logits=self.brsc_critic(obs,alive,source,horizons);q,baseline,active=self._brsc_quality(logits,source);credit=q-baseline
+   boundary_obs=next_obs[indices[:,0],indices[:,1]];boundary_alive=next_alive[indices[:,0],indices[:,1]];boundary_source=waves[indices[:,0],indices[:,1]]
+   boundary_horizon=torch.as_tensor(r.next_remaining_horizons,dtype=torch.float32,device=self.device)[indices[:,0],indices[:,1]]
+   logits=self.brsc_critic(boundary_obs,boundary_alive,boundary_source,boundary_horizon);q,baseline,active=self._brsc_quality(logits,boundary_source);credit=q-baseline
    for j,(t,e) in enumerate(indices.tolist()):
-    if active[j]:boundary_credit[t,e]=credit[j];credited[t,e]=True;q_values[int(source[j])].append(float(q[j]));base_values[int(source[j])].append(float(baseline[j]))
+    if active[j]:boundary_credit[t,e]=credit[j];credited[t,e]=True;q_values[int(boundary_source[j])].append(float(q[j]));base_values[int(boundary_source[j])].append(float(baseline[j]))
   adv_np,active_np,lengths=redistribute_boundary_credit(waves.cpu().numpy(),dones.cpu().numpy(),credited.cpu().numpy(),boundary_credit.cpu().numpy(),self.gamma*self.gae_lambda)
   advantages=torch.as_tensor(adv_np,dtype=torch.float32,device=self.device);active=torch.as_tensor(active_np,dtype=torch.bool,device=self.device)
   metrics={"brsc_actor_active":float(active.any()),"brsc_active_wave1":float((active&(waves==1)).any()),"brsc_active_wave2":float((active&(waves==2)).any())}
@@ -646,7 +646,7 @@ class ModularMAPPOTrainer:
   for length in lengths:distances.extend(range(length))
   metrics["brsc_segment_length_mean"]=float(np.mean(lengths)) if lengths else 0.;metrics["brsc_segment_length_p50"]=float(np.quantile(lengths,.5)) if lengths else 0.;metrics["brsc_segment_length_p90"]=float(np.quantile(lengths,.9)) if lengths else 0.
   metrics["brsc_credit_distance_mean"]=float(np.mean(distances)) if distances else 0.;metrics["brsc_credit_distance_p90"]=float(np.quantile(distances,.9)) if distances else 0.
-  metrics["brsc_credited_transition_fraction"]=float(active.float().mean());metrics["brsc_credited_alive_agent_fraction"]=float((active[...,None]&(alive>.5)).float().sum()/((alive>.5).float().sum().clamp_min(1)))
+  metrics["brsc_credited_transition_fraction"]=float(active.float().mean());metrics["brsc_credited_alive_agent_fraction"]=float((active[...,None]&(rollout_alive>.5)).float().sum()/((rollout_alive>.5).float().sum().clamp_min(1)))
   return advantages.detach(),active,metrics
 
  def _update_flat_brsc(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,brsc_adv,brsc_active):
