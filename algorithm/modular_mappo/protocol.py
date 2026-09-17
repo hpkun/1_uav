@@ -42,6 +42,21 @@ def checkpoint_architecture(trainer):
    "single_step_counterfactual":False,"advantage_normalization":"none",
    "gradient_projection":"asymmetric_tactical_preserving","gradient_ratio_cap":module.auxiliary_gradient_ratio_cap,
    "deployment_actor_unchanged":True})
+ if trainer.hierarchical_temporal_abstraction.enabled:
+  module=trainer.hierarchical_temporal_abstraction
+  result.update({"hierarchical_temporal_abstraction_enabled":True,"hta_version":module.version,
+   "manager_actor_class":type(trainer.manager_actor).__name__,"manager_critic_class":type(trainer.manager_critic).__name__,
+   "manager_observation_dim":52,"num_options":module.num_options,"decision_interval_steps":module.decision_interval_steps,
+   "manager_recurrent":False,"worker_observation_dim":52,"worker_action_dim":3,
+   "worker_option_conditioning":"zero_initialized_option_mean_residual","worker_logstd":"shared_plain_logstd",
+   "tactical_critic_option_conditioning":"additive_zero_onehot",
+   "manager_reward":"discounted_raw_environment_reward","manager_return":"semi_mdp_discounted_return",
+   "manager_gae":"gamma_power_duration","wave_transition_terminal":False,
+   "rollout_boundary_macro_truncation":True,"rollout_boundary_bootstrap":True,
+   "rollout_boundary_trace_continuation":False,"manager_worker_parameter_sharing":False,
+   "counterfactual":False,"auxiliary_credit_redistribution":False,"reward_shaping":False,
+   "deployment_requires_manager":True,"manager_actor_parameter_count":sum(p.numel() for p in trainer.manager_actor.parameters()),
+   "manager_critic_parameter_count":sum(p.numel() for p in trainer.manager_critic.parameters())})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):

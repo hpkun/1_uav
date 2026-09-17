@@ -21,6 +21,7 @@ from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.mappo.networks import SharedMAPPOActor
 from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from .buffer import ModularRolloutBatch
+from algorithm.modules import ManagerTransitionBatch,smdp_boundary_masks
 from .evaluation import evaluate_modular
 from .factory import build_modular_mappo_trainer
 from .protocol import checkpoint_architecture, validate_modular_checkpoint
@@ -386,11 +387,24 @@ class ModularMAPPOTrainingRunner:
                 "next_alive_masks", "wave_indices", "total_waves", "contexts",
                 "next_contexts", "actor_hidden_before_step", "critic_hidden_before_step",
                 "episode_masks", "remaining_horizons", "next_remaining_horizons",
-                "wave_transition_flags")
+                "wave_transition_flags", "hta_options", "hta_next_options")
         storage = {key: [] for key in keys}
         completed_iw_segments = []
         completed_caiw_segments = []
         completed_brsc_boundaries = []
+        completed_hta_macros = []
+        hta_enabled = self.trainer.hierarchical_temporal_abstraction.enabled
+        rollout_length = int(steps or self.rollout_steps)
+        current_options = current_manager_log_probs = None
+        macros = None
+        if hta_enabled:
+            current_options,current_manager_log_probs,_,_=self.trainer.manager_act(
+                self.observations,self.alive,False,True)
+            macros=[]
+            for env_id in range(self.num_envs):
+                macros.append({"observation":self.observations[env_id].copy(),"alive":self.alive[env_id].copy(),
+                    "options":current_options[env_id].copy(),"old_log_probs":current_manager_log_probs[env_id].copy(),
+                    "reward":np.zeros(self.alive.shape[1],dtype=np.float32),"duration":0,"decision_reason":"rollout_start"})
         rollout_transition = np.zeros(3, dtype=np.int64)
         rollout_alive = np.zeros(3, dtype=np.int64)
         reward_rows: list[dict[str, float]] = []
@@ -401,7 +415,7 @@ class ModularMAPPOTrainingRunner:
         rollout_hidden_resets = 0
         rollout_causes = np.zeros(len(self.death_cause_names), dtype=np.int64)
         rollout_death_indices = np.zeros_like(self.death_index_totals)
-        for _ in range(int(steps or self.rollout_steps)):
+        for rollout_index in range(rollout_length):
             obs, alive, pre_wave = self.observations.copy(), self.alive.copy(), self.wave.copy()
             blue_alive = self.blue_alive.copy()
             remaining_horizon = np.clip(
@@ -419,10 +433,12 @@ class ModularMAPPOTrainingRunner:
             actor_before = None if self.actor_hidden is None else self.actor_hidden.copy()
             critic_before = None if self.critic_hidden is None else self.critic_hidden.copy()
             actions, raw, log_prob, new_actor = self.trainer.act(
-                obs, alive, False, True, context, self.actor_hidden, self.episode_mask
+                obs, alive, False, True, context, self.actor_hidden, self.episode_mask,
+                option_ids=current_options
             )
             _, new_critic = self.trainer.values_step(
-                obs, alive, context, self.critic_hidden, self.episode_mask
+                obs, alive, context, self.critic_hidden, self.episode_mask,
+                option_ids=current_options
             )
             result = self.vector.step_batch(actions)
             done = result.terminated | result.truncated
@@ -434,6 +450,8 @@ class ModularMAPPOTrainingRunner:
                 result.next_alive_masks, done
             )
             reward_metrics.update(pbrs_metrics)
+            if hta_enabled and not np.array_equal(training_reward,result.rewards):
+                raise RuntimeError("HTA manager/worker training reward must equal raw environment reward")
             pbrs = self.trainer.wave_survival_pbrs.last_transition
             shaping = np.asarray(pbrs["shaping"], dtype=np.float64)
             phi_pre = np.asarray(pbrs["phi_pre"], dtype=np.float64)
@@ -487,6 +505,48 @@ class ModularMAPPOTrainingRunner:
                 self.trainer, next_wave, next_total, post_blue, next_steps,
                 self.runtime_env_config["simulation"]["max_steps"],
             )
+            hta_next_options=None
+            if hta_enabled:
+                for env_id in range(self.num_envs):
+                    macro=macros[env_id]
+                    macro["reward"] += (self.trainer.gamma ** macro["duration"]) * result.rewards[env_id]
+                    macro["duration"] += 1
+                hta_next_options=current_options.copy()
+                next_current_options=current_options.copy()
+                last_step=rollout_index==rollout_length-1
+                spawned=np.asarray([bool(row.get("spawned_next_wave",False)) for row in result.infos])
+                periodic=np.asarray([macro["duration"]>=self.trainer.hierarchical_temporal_abstraction.decision_interval_steps for macro in macros])
+                boundary=done|spawned|periodic|last_step
+                for env_id in np.flatnonzero(boundary):
+                    terminal=bool(done[env_id]);wave_end=bool(spawned[env_id]) and not terminal
+                    rollout_end=bool(last_step) and not terminal
+                    reason=("episode_terminal" if terminal else "wave_transition" if wave_end else
+                            "rollout_truncation" if rollout_end else "periodic")
+                    macro=macros[env_id];next_alive=np.asarray(result.next_alive_masks[env_id],dtype=np.float32)
+                    bootstrap,trace=smdp_boundary_masks(next_alive,episode_terminal=terminal,rollout_truncation=last_step and not terminal)
+                    completed_hta_macros.append({"env_id":int(env_id),"observation":macro["observation"],
+                        "alive_mask":macro["alive"],"options":macro["options"],"old_log_probs":macro["old_log_probs"],
+                        "reward":macro["reward"],"next_observation":np.asarray(result.transition_next_observations[env_id]).copy(),
+                        "next_alive_mask":next_alive,"duration":int(macro["duration"]),"bootstrap_mask":bootstrap,
+                        "trace_mask":trace,"end_reason":reason,"decision_reason":macro["decision_reason"]})
+                if last_step:
+                    live=np.flatnonzero(~done)
+                    if live.size:
+                        sampled=self.trainer.manager_act(result.transition_next_observations[live],result.next_alive_masks[live],False,False)
+                        hta_next_options[live]=sampled
+                        next_current_options[live]=sampled
+                    hta_next_options[done]=0
+                else:
+                    for env_id in np.flatnonzero(boundary):
+                        decision_obs=(result.observations[env_id] if done[env_id] else result.transition_next_observations[env_id])
+                        decision_alive=(self.vector.current_alive_masks[env_id] if done[env_id] else result.next_alive_masks[env_id])
+                        option,new_log,_,_=self.trainer.manager_act(decision_obs[None],decision_alive[None],False,True)
+                        next_current_options[env_id]=option[0]
+                        hta_next_options[env_id]=0 if done[env_id] else option[0]
+                        macros[env_id]={"observation":np.asarray(decision_obs).copy(),"alive":np.asarray(decision_alive).copy(),
+                            "options":option[0].copy(),"old_log_probs":new_log[0].copy(),
+                            "reward":np.zeros(self.alive.shape[1],dtype=np.float32),"duration":0,
+                            "decision_reason":"episode_reset" if done[env_id] else ("wave_transition" if spawned[env_id] else "periodic")}
             for k in (1, 2, 3):
                 transition = pre_wave == k
                 rollout_transition[k - 1] += int(transition.sum())
@@ -509,7 +569,9 @@ class ModularMAPPOTrainingRunner:
                       result.next_alive_masks, pre_wave, self.total.copy(), context,
                       next_context, actor_before, critic_before, self.episode_mask.copy(),
                       remaining_horizon, next_remaining_horizon,
-                      np.asarray([bool(row.get("spawned_next_wave", False)) for row in result.infos], dtype=np.float32))
+                      np.asarray([bool(row.get("spawned_next_wave", False)) for row in result.infos], dtype=np.float32),
+                      None if not hta_enabled else current_options.copy(),
+                      None if not hta_enabled else hta_next_options.copy())
             for key, value in zip(keys, values):
                 storage[key].append(value)
             self.raw_episode_returns += result.rewards
@@ -558,6 +620,7 @@ class ModularMAPPOTrainingRunner:
                 critic_hidden_norms.append(np.linalg.norm(self.critic_hidden, axis=-1))
             self.trainer.sampled_steps += self.num_envs
             self.trainer.vector_steps += 1
+            if hta_enabled:current_options=next_current_options
         transition_fraction = self._fractions(rollout_transition)
         alive_fraction = self._fractions(rollout_alive)
         self.last_rollout_metrics = {
@@ -593,6 +656,23 @@ class ModularMAPPOTrainingRunner:
         kwargs["iw_supervision_segments"] = completed_iw_segments
         kwargs["caiw_supervision_segments"] = completed_caiw_segments
         kwargs["brsc_supervision_boundaries"] = completed_brsc_boundaries
+        if hta_enabled:
+            if not completed_hta_macros or any(row["duration"]<1 or row["duration"]>16 for row in completed_hta_macros):
+                raise RuntimeError("HTA rollout produced invalid or missing closed macros")
+            kwargs["hta_manager_transitions"]=ManagerTransitionBatch(
+                observations=np.asarray([row["observation"] for row in completed_hta_macros],dtype=np.float32),
+                alive_masks=np.asarray([row["alive_mask"] for row in completed_hta_macros],dtype=np.float32),
+                options=np.asarray([row["options"] for row in completed_hta_macros],dtype=np.int64),
+                old_log_probs=np.asarray([row["old_log_probs"] for row in completed_hta_macros],dtype=np.float32),
+                rewards=np.asarray([row["reward"] for row in completed_hta_macros],dtype=np.float32),
+                next_observations=np.asarray([row["next_observation"] for row in completed_hta_macros],dtype=np.float32),
+                next_alive_masks=np.asarray([row["next_alive_mask"] for row in completed_hta_macros],dtype=np.float32),
+                durations=np.asarray([row["duration"] for row in completed_hta_macros],dtype=np.int64),
+                bootstrap_masks=np.asarray([row["bootstrap_mask"] for row in completed_hta_macros],dtype=np.float32),
+                trace_masks=np.asarray([row["trace_mask"] for row in completed_hta_macros],dtype=np.float32),
+                env_ids=np.asarray([row["env_id"] for row in completed_hta_macros],dtype=np.int64),
+                end_reasons=np.asarray([row["end_reason"] for row in completed_hta_macros]),
+                decision_reasons=np.asarray([row["decision_reason"] for row in completed_hta_macros]))
         if completed_iw_segments:
             kwargs.update({
                 "iw_supervision_observations": np.concatenate([x["observations"] for x in completed_iw_segments]),
@@ -674,6 +754,13 @@ class ModularMAPPOTrainingRunner:
                           "alpha_rel":self.trainer.actor.alpha_rel if dual else None,
                           "log_std_source":"frozen_baseline",**deepcopy(self.trainer.fbmr_branch_metadata),
                           "frozen_base_actor_sha256":self.trainer.frozen_actor_sha256()})
+        if self.trainer.hierarchical_temporal_abstraction.enabled:
+            value.update({"hta_pending_manager_actor_transitions":0,
+                          "hta_manager_actor_updates":self.trainer.manager_actor_update_count,
+                          "hta_manager_critic_updates":self.trainer.manager_critic_update_count,
+                          "hta_manager_optimizer_steps":self.trainer.manager_optimizer_step_count,
+                          "hta_option_usage_counts":self.trainer.hta_option_usage_counts.tolist(),
+                          "hta_manager_decision_reason_counts":deepcopy(self.trainer.hta_decision_reason_counts)})
         return value
 
     def save_checkpoint(self, path: str | Path, evaluation: dict[str, Any] | None = None) -> None:
@@ -983,6 +1070,12 @@ class ModularMAPPOTrainingRunner:
                            "actor_kl_guard_version":int(self.trainer.actor_kl_guard.version),
                            "actor_kl_guard_hard_kl":float(self.trainer.actor_kl_guard.hard_kl),
                            "actor_kl_guard_actor_early_stop":bool(self.trainer.actor_kl_guard.actor_early_stop)})
+        if self.trainer.hierarchical_temporal_abstraction.enabled:
+            result.update({key:architecture[key] for key in (
+                "hierarchical_temporal_abstraction_enabled","hta_version","manager_actor_class",
+                "manager_critic_class","manager_observation_dim","num_options",
+                "decision_interval_steps","worker_option_conditioning",
+                "tactical_critic_option_conditioning","deployment_requires_manager")})
         return result
 
     def run(self) -> dict[str, Any]:

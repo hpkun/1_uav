@@ -23,8 +23,12 @@ from algorithm.modules import (InterWaveCreditModule,IWSC_MAPPO_VERSION,Counterf
 from algorithm.modules import (BoundaryRedistributedSegmentCreditModule,BRSC_MAPPO_VERSION,BRSC_TASKS,
  BRSC_TASK_SOURCE_WAVE,BRSC_TASK_HEAD,W1_BOUNDARY_TO_W2,W1_BOUNDARY_TO_W3,W2_BOUNDARY_TO_W3,
  redistribute_boundary_credit)
+from algorithm.modules import (HierarchicalTemporalAbstractionModule,HTA_MAPPO_VERSION,
+ compute_smdp_gae)
+from algorithm.modules.hierarchical_temporal_abstraction import (HTA_MANAGER_TORCH_SEED_XOR,
+ HTA_MANAGER_NUMPY_SEED_XOR)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
- InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic)
+ InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
 
 # Version 2 is the formal hardened implementation. Version 1 checkpoints use
@@ -140,6 +144,7 @@ class ModularMAPPOTrainer:
   self.inter_wave_credit=InterWaveCreditModule(self.modules_config.get("inter_wave_credit"))
   self.counterfactual_inter_wave_credit=CounterfactualInterWaveCreditModule(self.modules_config.get("counterfactual_inter_wave_credit"))
   self.boundary_redistributed_segment_credit=BoundaryRedistributedSegmentCreditModule(self.modules_config.get("boundary_redistributed_segment_credit"))
+  self.hierarchical_temporal_abstraction=HierarchicalTemporalAbstractionModule(self.modules_config.get("hierarchical_temporal_abstraction"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -167,6 +172,13 @@ class ModularMAPPOTrainer:
    if not enabled.issubset(allowed):raise ValueError(f"BRSC V1 incompatible enabled modules: {sorted(enabled-allowed)}")
    if self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled:raise ValueError("BRSC, IWSC, and CAIW are mutually exclusive")
    if self.recurrent.enabled or self.wave_context.enabled or self.entity_attention_enabled:raise ValueError("BRSC V1 requires the feed-forward 52D Plain actor")
+  if self.hierarchical_temporal_abstraction.enabled:
+   enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","hierarchical_temporal_abstraction"}
+   if not enabled.issubset(allowed):raise ValueError(f"HTA V1 incompatible enabled modules: {sorted(enabled-allowed)}")
+   if any((self.inter_wave_credit.enabled,self.counterfactual_inter_wave_credit.enabled,
+           self.boundary_redistributed_segment_credit.enabled,self.recurrent.enabled,
+           self.wave_context.enabled,self.entity_attention_enabled,self.mission_film.enabled)):
+    raise ValueError("HTA V1 requires an otherwise Plain feed-forward Actor/Critic")
   if self.mission_film.enabled:
    if not (self.wave_context.enabled and self.wave_context.actor_enabled and not self.wave_context.critic_enabled
            and self.wave_context.target=="actor_only" and self.wave_context.encoding=="mission_markov"
@@ -174,16 +186,30 @@ class ModularMAPPOTrainer:
     raise ValueError("mission_film requires actor_only 5D mission_markov wave context and no critic context")
    allowed={"actor_lr_decay","wave_context","mission_film","actor_kl_guard"};enabled=set(enabled_module_names(self.modules_config))
    if not enabled.issubset(allowed):raise ValueError(f"mission_film incompatible enabled modules: {sorted(enabled-allowed)}")
-  ac=self.wave_context.context_dim if self.wave_context.actor_enabled else 0;cc=self.wave_context.context_dim if self.wave_context.critic_enabled else 0
+  ac=self.wave_context.context_dim if self.wave_context.actor_enabled else 0;cc=(self.hierarchical_temporal_abstraction.num_options if self.hierarchical_temporal_abstraction.enabled else (self.wave_context.context_dim if self.wave_context.critic_enabled else 0))
   ar=self.recurrent.hidden_dim if self.recurrent.actor_enabled else 0;cr=self.recurrent.hidden_dim if self.recurrent.critic_enabled else 0
-  critic_context_injection=("additive_zero" if self.wave_context.enabled and
+  critic_context_injection=("additive_zero" if self.hierarchical_temporal_abstraction.enabled or (self.wave_context.enabled and
    self.wave_context.encoding=="mission_markov" and self.wave_context.critic_enabled and
-   not self.wave_context.actor_enabled else "concat")
-  self.actor=ModularMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation,ac,ar,self.entity_attention_config,self.mission_film.config).to(self.device)
+   not self.wave_context.actor_enabled) else "concat")
+  self.actor=ModularMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation,ac,ar,self.entity_attention_config,self.mission_film.config,self.hierarchical_temporal_abstraction.config).to(self.device)
   self.critic=ModularCentralizedCritic(observation_dim,hidden_dim,attention_heads,critic_activation,cc,cr,critic_context_injection).to(self.device)
   trainable_actor_parameters=self.actor.trainable_policy_parameters()
   if not trainable_actor_parameters:raise RuntimeError("actor has no trainable policy parameters")
   self.actor_optimizer=torch.optim.Adam(trainable_actor_parameters,lr=actor_learning_rate);self.critic_optimizer=torch.optim.Adam(self.critic.parameters(),lr=critic_learning_rate)
+  self.manager_actor=None;self.manager_critic=None;self.manager_actor_optimizer=None;self.manager_critic_optimizer=None
+  self.hta_rng=np.random.default_rng(int(seed)^HTA_MANAGER_NUMPY_SEED_XOR)
+  generator_device=self.device if self.device.type=="cuda" else torch.device("cpu")
+  self.hta_manager_generator=torch.Generator(device=generator_device)
+  self.hta_manager_generator.manual_seed(int(seed)^HTA_MANAGER_TORCH_SEED_XOR)
+  self.manager_actor_update_count=0;self.manager_critic_update_count=0;self.manager_optimizer_step_count=0
+  self.hta_option_usage_counts=np.zeros(4,dtype=np.int64)
+  self.hta_decision_reason_counts={key:0 for key in ("rollout_start","periodic","wave_transition","episode_reset","rollout_truncation","episode_terminal")}
+  if self.hierarchical_temporal_abstraction.enabled:
+   with torch.random.fork_rng(devices=[]):
+    self.manager_actor=HierarchicalManagerActor(observation_dim,hidden_dim,self.hierarchical_temporal_abstraction.num_options,actor_activation).to(self.device)
+    self.manager_critic=ModularCentralizedCritic(observation_dim,hidden_dim,attention_heads,critic_activation,0,0,"concat").to(self.device)
+   self.manager_actor_optimizer=torch.optim.Adam(self.manager_actor.parameters(),lr=actor_learning_rate)
+   self.manager_critic_optimizer=torch.optim.Adam(self.manager_critic.parameters(),lr=critic_learning_rate)
   self.iw_critic=None;self.iw_critic_optimizer=None
   self.iw_rng=np.random.default_rng(int(seed)^0x49575343)
   self.iw_conflict_count=0;self.iw_gradient_step_count=0
@@ -220,26 +246,52 @@ class ModularMAPPOTrainer:
   active=self.wave_context.actor_enabled if actor else self.wave_context.critic_enabled
   return c if active else None
  @torch.no_grad()
- def act(self,observations,alive_mask=None,deterministic=False,return_policy_data=False,context=None,hidden=None,episode_mask=None):
+ def act(self,observations,alive_mask=None,deterministic=False,return_policy_data=False,context=None,hidden=None,episode_mask=None,option_ids=None):
   obs=torch.as_tensor(observations,dtype=torch.float32,device=self.device);mask=torch.as_tensor(alive_mask,dtype=torch.float32,device=self.device) if alive_mask is not None else None
   ctx=torch.as_tensor(context,dtype=torch.float32,device=self.device) if context is not None else None;hid=torch.as_tensor(hidden,dtype=torch.float32,device=self.device) if hidden is not None else None
   ep=torch.as_tensor(episode_mask,dtype=torch.float32,device=self.device) if episode_mask is not None else None
-  dist,new_h=self.actor.distribution_step(obs,self._ctx(ctx,True),hid,ep,mask);raw=dist.mean if deterministic else dist.rsample();actions=torch.tanh(raw);log=self.actor._squashed_log_prob(dist,raw,actions)
+  options=None if option_ids is None else torch.as_tensor(option_ids,dtype=torch.long,device=self.device)
+  dist,new_h=self.actor.distribution_step(obs,self._ctx(ctx,True),hid,ep,mask,option_ids=options);raw=dist.mean if deterministic else dist.rsample();actions=torch.tanh(raw);log=self.actor._squashed_log_prob(dist,raw,actions)
   if mask is not None:actions*=mask[...,None];raw*=mask[...,None];log*=mask
   out=(actions.cpu().numpy(),raw.cpu().numpy(),log.cpu().numpy(),None if new_h is None else new_h.cpu().numpy())
   return out if return_policy_data else (out[0],out[3])
  @torch.no_grad()
- def values_step(self,obs,alive,context=None,hidden=None,episode_mask=None,raw=True):
+ def _tactical_option_context(self,option_ids):
+  if not self.hierarchical_temporal_abstraction.enabled:return None
+  if option_ids is None:raise ValueError("HTA tactical critic requires option_ids")
+  value=torch.as_tensor(option_ids,dtype=torch.long,device=self.device)
+  return torch.nn.functional.one_hot(value,self.hierarchical_temporal_abstraction.num_options).to(torch.float32)
+ @torch.no_grad()
+ def manager_act(self,observations,alive_mask,deterministic=False,return_policy_data=False):
+  if not self.hierarchical_temporal_abstraction.enabled:raise RuntimeError("HTA manager is disabled")
+  obs=torch.as_tensor(observations,dtype=torch.float32,device=self.device);mask=torch.as_tensor(alive_mask,dtype=torch.float32,device=self.device)
+  logits=self.manager_actor.logits(obs);probs=torch.softmax(logits,-1)
+  if deterministic:options=probs.argmax(-1)
+  else:options=torch.multinomial(probs.reshape(-1,probs.shape[-1]),1,generator=self.hta_manager_generator).reshape(probs.shape[:-1])
+  log_probs=torch.log_softmax(logits,-1).gather(-1,options[...,None]).squeeze(-1)
+  options=torch.where(mask>.5,options,torch.zeros_like(options));log_probs=log_probs*mask
+  out=(options.cpu().numpy(),log_probs.cpu().numpy(),logits.cpu().numpy(),probs.cpu().numpy())
+  return out if return_policy_data else out[0]
+ @torch.no_grad()
+ def manager_values_step(self,obs,alive):
+  if not self.hierarchical_temporal_abstraction.enabled:raise RuntimeError("HTA manager is disabled")
+  value,_=self.manager_critic.forward_step(torch.as_tensor(obs,dtype=torch.float32,device=self.device),torch.as_tensor(alive,dtype=torch.float32,device=self.device))
+  return value.cpu().numpy()
+ @torch.no_grad()
+ def values_step(self,obs,alive,context=None,hidden=None,episode_mask=None,raw=True,option_ids=None):
   conv=lambda x:None if x is None else torch.as_tensor(x,dtype=torch.float32,device=self.device)
-  value,new_h=self.critic.forward_step(conv(obs),conv(alive),self._ctx(conv(context),False),conv(hidden),conv(episode_mask))
+  critic_context=self._tactical_option_context(option_ids) if self.hierarchical_temporal_abstraction.enabled else self._ctx(conv(context),False)
+  value,new_h=self.critic.forward_step(conv(obs),conv(alive),critic_context,conv(hidden),conv(episode_mask))
   if raw and self.popart.enabled:value=self.popart.denormalize_values(value)
   return value.cpu().numpy(),None if new_h is None else new_h.cpu().numpy()
  def _value_rollout(self,r,obs,next_obs):
   T,E=obs.shape[:2];values=[];next_values=[]
   for t in range(T):
    h=None if r.critic_hidden_before_step is None else r.critic_hidden_before_step[t]
-   v,nh=self.values_step(obs[t],r.alive_masks[t],r.contexts[t],h,r.episode_masks[t] if r.episode_masks is not None else None)
-   nv,_=self.values_step(next_obs[t],r.next_alive_masks[t],r.next_contexts[t],nh,1-r.dones[t])
+   current_options=None if r.hta_options is None else r.hta_options[t]
+   next_options=None if r.hta_next_options is None else r.hta_next_options[t]
+   v,nh=self.values_step(obs[t],r.alive_masks[t],r.contexts[t],h,r.episode_masks[t] if r.episode_masks is not None else None,option_ids=current_options)
+   nv,_=self.values_step(next_obs[t],r.next_alive_masks[t],r.next_contexts[t],nh,1-r.dones[t],option_ids=next_options)
    values.append(v);next_values.append(nv)
   return torch.as_tensor(np.asarray(values),device=self.device),torch.as_tensor(np.asarray(next_values),device=self.device)
  def update(self,r:ModularRolloutBatch):
@@ -275,14 +327,24 @@ class ModularMAPPOTrainer:
   if self.boundary_redistributed_segment_credit.enabled:
    brsc_adv,brsc_active,credit_metrics=self._brsc_rollout_credit(r,nobs,alive,nalive,dones,waves)
    brsc_metrics.update(credit_metrics)
+  hta_prepared=None
+  if self.hierarchical_temporal_abstraction.enabled:
+   if r.hta_options is None or r.hta_next_options is None or r.hta_manager_transitions is None:
+    raise RuntimeError("HTA rollout lacks option or manager-transition data")
+   hta_prepared=self._prepare_hta_manager_batch(r.hta_manager_transitions)
   # All actor priorities are frozen from the complete raw-GAE rollout.
   if self.actor_lr_decay.enabled:
    self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   if self.hierarchical_temporal_abstraction.enabled:
+    self.actor_lr_decay.apply(self.manager_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
   elif self.ppo_stabilization.enabled:
    lr=self.ppo_stabilization.actor_learning_rate(self.sampled_steps,self.total_sampled_steps)
    for group in self.actor_optimizer.param_groups:group["lr"]=lr
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
-  if self.recurrent.actor_enabled and not self.recurrent.critic_enabled:
+  if self.hierarchical_temporal_abstraction.enabled:
+   options=torch.as_tensor(r.hta_options,dtype=torch.long,device=self.device)
+   metrics=self._update_flat_hta(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,options)
+  elif self.recurrent.actor_enabled and not self.recurrent.critic_enabled:
    metrics=self._update_actor_recurrent_critic_flat(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
   elif self.recurrent.actor_enabled or self.recurrent.critic_enabled:
    metrics=self._update_recurrent(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
@@ -305,6 +367,9 @@ class ModularMAPPOTrainer:
    self.boundary_redistributed_segment_credit.ingest(r.brsc_supervision_boundaries)
    brsc_metrics.update(self._train_brsc_critic())
    brsc_metrics.update(self._validate_brsc_tasks())
+  if self.hierarchical_temporal_abstraction.enabled:
+   metrics.update(self._update_hta_manager(hta_prepared))
+   metrics.update(self._hta_worker_diagnostics(obs,torch.as_tensor(r.hta_options,dtype=torch.long,device=self.device)))
   live_mask=alive>.5;rv=returns[live_mask];vv=values[live_mask];variance=torch.var(rv,unbiased=False)
   metrics["explained_variance"]=float((1-torch.var(rv-vv,unbiased=False)/variance.clamp_min(1e-8)).detach())
   metrics["actor_optimizer_steps_this_update"]=float(self.actor_update_count-actor_before);metrics["critic_optimizer_steps_this_update"]=float(self.critic_update_count-critic_before)
@@ -318,6 +383,78 @@ class ModularMAPPOTrainer:
   metrics.update({"popart_mean":float(self.popart.mean),"popart_std":float(self.popart.std),"popart_count":float(self.popart.count),"actor_learning_rate":float(self.actor_optimizer.param_groups[0]["lr"]),"critic_learning_rate":float(self.critic_optimizer.param_groups[0]["lr"]),"kl_hard_stop_count":float(self.kl_hard_stop_count),"cumulative_kl_hard_stop_count":float(self.kl_hard_stop_count),"actor_kl_guard_hard_stop_count":float(self.actor_kl_guard_hard_stop_count),"actor_kl_guard_hard_stop_fraction":float(self.actor_kl_guard_hard_stop_count/self.ppo_update_count)})
   if not np.all(np.isfinite(list(metrics.values()))):raise FloatingPointError(f"non-finite modular update: {metrics}")
   return metrics
+
+ def _prepare_hta_manager_batch(self,batch):
+  tt=lambda x,d=torch.float32:torch.as_tensor(x,dtype=d,device=self.device)
+  obs=tt(batch.observations);alive=tt(batch.alive_masks);nobs=tt(batch.next_observations);nalive=tt(batch.next_alive_masks)
+  with torch.no_grad():
+   values,_=self.manager_critic.forward_step(obs,alive)
+   next_values,_=self.manager_critic.forward_step(nobs,nalive)
+   advantages,returns,deltas=compute_smdp_gae(tt(batch.rewards),values,next_values,tt(batch.durations),
+    tt(batch.bootstrap_masks),tt(batch.trace_masks),self.gamma,self.gae_lambda,batch.env_ids)
+   if self.normalize_advantages:
+    live=advantages[alive>.5];advantages=((advantages-live.mean())/live.std(unbiased=False).clamp_min(1e-8))*alive
+  return {"obs":obs,"alive":alive,"options":tt(batch.options,torch.long),"oldlog":tt(batch.old_log_probs),
+          "oldvalue":values,"returns":returns,"advantages":advantages,"durations":tt(batch.durations),
+          "env_ids":np.asarray(batch.env_ids),"end_reasons":np.asarray(batch.end_reasons),
+          "decision_reasons":np.asarray(batch.decision_reasons) if batch.decision_reasons is not None else None,"deltas":deltas}
+
+ def _update_hta_manager(self,data):
+  O,M,Z,L,OV,TG,ADV=(data[k] for k in ("obs","alive","options","oldlog","oldvalue","returns","advantages"))
+  states=O.shape[0];states_per_minibatch=max(1,self.minibatch_size//self.num_agents)
+  actor_losses=[];value_losses=[];entropies=[];kls=[];clips=[]
+  for _ in range(self.ppo_epochs):
+   permutation=self.hta_rng.permutation(states)
+   for start in range(0,states,states_per_minibatch):
+    ix=torch.as_tensor(permutation[start:start+states_per_minibatch],dtype=torch.long,device=self.device)
+    mask=M[ix];dist=self.manager_actor.distribution(O[ix]);newlog=dist.log_prob(Z[ix]);logratio,ratio=stable_ratio_terms(newlog,L[ix])
+    surrogate=torch.minimum(ratio*ADV[ix],ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*ADV[ix])
+    actor_loss=-masked_mean(surrogate,mask);entropy=masked_mean(dist.entropy(),mask)
+    self.manager_actor_optimizer.zero_grad();(actor_loss-self.entropy_coefficient*entropy).backward()
+    nn.utils.clip_grad_norm_(self.manager_actor.parameters(),self.max_grad_norm);self.manager_actor_optimizer.step();self.manager_actor_update_count+=1
+    value,_=self.manager_critic.forward_step(O[ix],mask);clipped=OV[ix]+(value-OV[ix]).clamp(-self.clip_ratio,self.clip_ratio)
+    error=torch.maximum((value-TG[ix]).square(),(clipped-TG[ix]).square()) if self.clip_value_loss else (value-TG[ix]).square()
+    value_loss=.5*masked_mean(error,mask)
+    self.manager_critic_optimizer.zero_grad();(self.value_loss_coefficient*value_loss).backward()
+    nn.utils.clip_grad_norm_(self.manager_critic.parameters(),self.max_grad_norm);self.manager_critic_optimizer.step();self.manager_critic_update_count+=1
+    live=mask>.5;kl=((ratio-1)-logratio)[live]
+    actor_losses.append(float(actor_loss.detach()));value_losses.append(float(value_loss.detach()));entropies.append(float(entropy.detach()))
+    kls.append(float(kl.mean().detach()));clips.append(float((torch.abs(ratio[live]-1)>self.clip_ratio).float().mean().detach()))
+  self.manager_optimizer_step_count+=1
+  alive_np=M.detach().cpu().numpy()>0.5;options_np=Z.detach().cpu().numpy();counts=np.asarray([(options_np[alive_np]==i).sum() for i in range(4)],dtype=np.int64)
+  self.hta_option_usage_counts+=counts;total=max(1,int(counts.sum()));fractions=counts/total
+  reasons=np.asarray(data["end_reasons"],dtype=str)
+  for key in self.hta_decision_reason_counts:self.hta_decision_reason_counts[key]+=int((reasons==key).sum())
+  if data["decision_reasons"] is not None:
+   starts=np.asarray(data["decision_reasons"],dtype=str)
+   for key in self.hta_decision_reason_counts:self.hta_decision_reason_counts[key]+=int((starts==key).sum())
+  switches=[];last={}
+  for env,options,mask in zip(data["env_ids"],options_np,alive_np):
+   env=int(env)
+   if env in last:
+    valid=mask & last[env][1]
+    if valid.any():switches.extend((options[valid]!=last[env][0][valid]).tolist())
+   last[env]=(options,mask)
+  rv=TG[M>.5];vv=OV[M>.5];variance=torch.var(rv,unbiased=False)
+  durations=data["durations"].detach().cpu().numpy()
+  result={"hta_manager_actor_loss":float(np.mean(actor_losses)),"hta_manager_value_loss":float(np.mean(value_losses)),
+   "hta_manager_entropy":float(np.mean(entropies)),"hta_manager_approx_kl":float(np.mean(kls)),
+   "hta_manager_clip_fraction":float(np.mean(clips)),"hta_manager_explained_variance":float(1-torch.var(rv-vv,unbiased=False)/variance.clamp_min(1e-8)),
+   "hta_manager_actor_lr":float(self.manager_actor_optimizer.param_groups[0]["lr"]),"hta_macro_count":float(states),
+   "hta_macro_duration_mean":float(np.mean(durations)),"hta_macro_duration_p50":float(np.quantile(durations,.5)),"hta_macro_duration_p90":float(np.quantile(durations,.9)),
+   "hta_option_switch_fraction":float(np.mean(switches)) if switches else 0.,"hta_manager_max_option_fraction":float(fractions.max())}
+  for i in range(4):result[f"hta_option_{i}_fraction"]=float(fractions[i])
+  reason_names={"periodic":"hta_periodic_end_fraction","wave_transition":"hta_wave_end_fraction","rollout_truncation":"hta_rollout_truncation_fraction","episode_terminal":"hta_episode_terminal_fraction"}
+  for reason,key in reason_names.items():result[key]=float(np.mean(reasons==reason))
+  return result
+
+ @torch.no_grad()
+ def _hta_worker_diagnostics(self,obs,options):
+  flat=obs.reshape(-1,obs.shape[-1]);h=self.actor.backbone(flat)
+  residuals=torch.stack([head(h) for head in self.actor.option_mean_residuals],1)
+  selected=torch.gather(residuals,1,options.reshape(-1)[:,None,None].expand(-1,1,residuals.shape[-1])).squeeze(1)
+  return {"hta_option_residual_abs_mean":float(selected.abs().mean()),"hta_option_residual_abs_max":float(selected.abs().max()),
+          **{f"hta_option_{i}_residual_norm":float(torch.linalg.vector_norm(residuals[:,i],dim=-1).mean()) for i in range(4)}}
 
  def _iw_default_metrics(self):
   keys=("iw_actor_active","iw_active_wave1","iw_active_wave2","iw_q_current_mean","iw_q_next_mean",
@@ -673,14 +810,15 @@ class ModularMAPPOTrainer:
   for key in brows[0]:out[key]=float(np.mean([row[key] for row in brows]))
   count=max(1,self.brsc_gradient_step_count);out["brsc_cumulative_conflict_fraction"]=self.brsc_conflict_count/count;out["brsc_cumulative_trust_cap_fraction"]=self.brsc_trust_cap_count/count;out["brsc_cumulative_aux_induced_clip_fraction"]=self.brsc_aux_induced_clip_count/count;return out
 
- def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None):
-  dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask);newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
+ def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None,options=None):
+  dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask,option_ids=options);newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
   logratio,ratio=stable_ratio_terms(newlog,oldlog);sur=torch.minimum(ratio*adv,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*adv)
   weights=weights.unsqueeze(-1) if weights.ndim==mask.ndim-1 else weights
   aw=actor_weights if actor_weights is not None else (weights if self.wave_balance.actor_enabled else torch.ones_like(weights))
   aw=aw.unsqueeze(-1) if aw.ndim==mask.ndim-1 else aw
   actor_loss=-masked_mean(sur*aw,mask)
-  value,newch=self.critic.forward_step(obs,mask,self._ctx(ctx,False),ch,ep)
+  critic_context=(torch.nn.functional.one_hot(options.long(),self.hierarchical_temporal_abstraction.num_options).to(obs.dtype) if self.hierarchical_temporal_abstraction.enabled else self._ctx(ctx,False))
+  value,newch=self.critic.forward_step(obs,mask,critic_context,ch,ep)
   clipped=oldvalue+(value-oldvalue).clamp(-self.clip_ratio,self.clip_ratio);err=torch.maximum((value-target).square(),(clipped-target).square()) if self.clip_value_loss else (value-target).square()
   vw=weights if self.wave_balance.critic_enabled else torch.ones_like(weights);value_loss=.5*masked_mean(err*vw,mask);ent=masked_mean(entropy,mask)
   anchor_loss=torch.zeros((),device=self.device);akl=0.
@@ -712,6 +850,16 @@ class ModularMAPPOTrainer:
    permutation=self.rng.permutation(N)
    for start in range(0,N,self.minibatch_size):
     ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args,actor_weights=None if flat_actor is None else flat_actor[ix]);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
+  return aggregate_update_rows(rows,self.clip_ratio)
+
+ def _update_flat_hta(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,options):
+  flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:])
+  arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,options)));N=arrays[0].shape[0];rows=[]
+  for _ in range(self.ppo_epochs):
+   permutation=self.rng.permutation(N)
+   for start in range(0,N,self.minibatch_size):
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device);args=[x[ix] for x in arrays]
+    loss=self._loss_step(*args[:10],options=args[10]);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
   return aggregate_update_rows(rows,self.clip_ratio)
 
  def _critic_loss_step(self,obs,mask,oldvalue,target,weights,ctx):
@@ -921,9 +1069,11 @@ class ModularMAPPOTrainer:
   for t in range(obs.shape[0]):
    hidden=None if r.actor_hidden_before_step is None else torch.as_tensor(r.actor_hidden_before_step[t],dtype=torch.float32,device=self.device)
    ep=None if r.episode_masks is None else torch.as_tensor(r.episode_masks[t],dtype=torch.float32,device=self.device)
+   saved_options=getattr(r,"hta_options",None)
+   options=None if saved_options is None else torch.as_tensor(saved_options[t],dtype=torch.long,device=self.device)
    if self.entity_attention_enabled or self.mission_film.enabled:
-    dist,_,diag=self.actor.distribution_step(obs[t],self._ctx(ctx[t],True),hidden,ep,alive[t],return_attention=True);attention.append(diag)
-   else:dist,_=self.actor.distribution_step(obs[t],self._ctx(ctx[t],True),hidden,ep,alive[t])
+    dist,_,diag=self.actor.distribution_step(obs[t],self._ctx(ctx[t],True),hidden,ep,alive[t],return_attention=True,option_ids=options);attention.append(diag)
+   else:dist,_=self.actor.distribution_step(obs[t],self._ctx(ctx[t],True),hidden,ep,alive[t],option_ids=options)
    logstd.append(dist.scale.log())
   logs=torch.stack(logstd);live=alive>.5;live_actions=actions[live];live_logs=logs[live];result={}
   for index,name in enumerate(("psi","theta","v")):
@@ -1039,6 +1189,9 @@ class ModularMAPPOTrainer:
   if self.inter_wave_credit.enabled:value["iw_replay_rng_state"]=deepcopy(self.iw_rng.bit_generator.state)
   if self.counterfactual_inter_wave_credit.enabled:value["caiw_rng_state"]=deepcopy(self.caiw_rng.bit_generator.state)
   if self.boundary_redistributed_segment_credit.enabled:value["brsc_rng_state"]=deepcopy(self.brsc_rng.bit_generator.state)
+  if self.hierarchical_temporal_abstraction.enabled:
+   value["hta_rng_state"]=deepcopy(self.hta_rng.bit_generator.state)
+   value["hta_manager_generator_state"]=self.hta_manager_generator.get_state().cpu()
   return value
  def restore_rng_state(self,state):
   saved=state.get("rng_state") if isinstance(state,dict) else None
@@ -1052,6 +1205,8 @@ class ModularMAPPOTrainer:
   if saved.get("iw_replay_rng_state") is not None:self.iw_rng.bit_generator.state=deepcopy(saved["iw_replay_rng_state"])
   if saved.get("caiw_rng_state") is not None:self.caiw_rng.bit_generator.state=deepcopy(saved["caiw_rng_state"])
   if saved.get("brsc_rng_state") is not None:self.brsc_rng.bit_generator.state=deepcopy(saved["brsc_rng_state"])
+  if saved.get("hta_rng_state") is not None:self.hta_rng.bit_generator.state=deepcopy(saved["hta_rng_state"])
+  if saved.get("hta_manager_generator_state") is not None:self.hta_manager_generator.set_state(saved["hta_manager_generator_state"].cpu())
   cuda_saved=saved.get("torch_cuda_rng_state_all",[]);cuda_restored=False
   if torch.cuda.is_available() and cuda_saved:
    torch.cuda.set_rng_state_all([value.cpu() for value in cuda_saved]);cuda_restored=True
@@ -1059,7 +1214,7 @@ class ModularMAPPOTrainer:
   return True
  def checkpoint_state(self,extra=None):
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -1068,7 +1223,7 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -1077,8 +1232,17 @@ class ModularMAPPOTrainer:
    if self.inter_wave_credit.enabled and versions.get("inter_wave_credit")!=IWSC_MAPPO_VERSION:raise RuntimeError("checkpoint IWSC feature version mismatch")
    if self.counterfactual_inter_wave_credit.enabled and versions.get("counterfactual_inter_wave_credit")!=CAIW_MAPPO_VERSION:raise RuntimeError("checkpoint CAIW feature version mismatch")
    if self.boundary_redistributed_segment_credit.enabled and versions.get("boundary_redistributed_segment_credit")!=BRSC_MAPPO_VERSION:raise RuntimeError("checkpoint BRSC feature version mismatch")
+   if self.hierarchical_temporal_abstraction.enabled and versions.get("hierarchical_temporal_abstraction")!=HTA_MAPPO_VERSION:raise RuntimeError("checkpoint HTA feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
+  if self.hierarchical_temporal_abstraction.enabled:
+   required=("manager_actor","manager_critic","manager_actor_optimizer","manager_critic_optimizer")
+   if any(state.get(key) is None for key in required):raise RuntimeError("HTA checkpoint lacks manager state")
+   self.manager_actor.load_state_dict(state["manager_actor"]);self.manager_critic.load_state_dict(state["manager_critic"])
+   self.manager_actor_optimizer.load_state_dict(state["manager_actor_optimizer"]);self.manager_critic_optimizer.load_state_dict(state["manager_critic_optimizer"])
+   self.manager_actor_update_count=int(state.get("manager_actor_updates",0));self.manager_critic_update_count=int(state.get("manager_critic_updates",0));self.manager_optimizer_step_count=int(state.get("manager_optimizer_steps",0))
+   self.hta_option_usage_counts=np.asarray(state.get("hta_option_usage_counts",[0,0,0,0]),dtype=np.int64)
+   self.hta_decision_reason_counts={key:int(state.get("hta_decision_reason_counts",{}).get(key,0)) for key in self.hta_decision_reason_counts}
   if self.inter_wave_credit.enabled:
    if state.get("iw_critic") is None or state.get("iw_critic_optimizer") is None:raise RuntimeError("IWSC checkpoint lacks quality critic state")
    self.iw_critic.load_state_dict(state["iw_critic"]);self.iw_critic_optimizer.load_state_dict(state["iw_critic_optimizer"])
@@ -1109,6 +1273,7 @@ class ModularMAPPOTrainer:
   self.actor_kl_guard_actor_epochs_min=state.get("actor_kl_guard_actor_epochs_min")
   if self.actor_lr_decay.enabled:
    self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   if self.hierarchical_temporal_abstraction.enabled:self.actor_lr_decay.apply(self.manager_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
   elif self.ppo_stabilization.enabled:
    lr=self.ppo_stabilization.actor_learning_rate(self.sampled_steps,self.total_sampled_steps)
    for group in self.actor_optimizer.param_groups:group["lr"]=lr

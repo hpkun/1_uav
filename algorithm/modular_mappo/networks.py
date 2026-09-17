@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import torch
 from torch import nn
-from torch.distributions import Normal
+from torch.distributions import Categorical, Normal
 from algorithm.mappo.networks import SharedMAPPOActor, CentralizedValueCritic
 
 
@@ -11,7 +11,8 @@ class ModularMAPPOActor(SharedMAPPOActor):
     def __init__(self, observation_dim=52, action_dim=3, hidden_dim=256,
                  log_std_min=-5.0, log_std_max=2.0, activation="relu",
                  context_dim=0, recurrent_hidden_dim=0,
-                 entity_attention_config=None, mission_film_config=None):
+                 entity_attention_config=None, mission_film_config=None,
+                 hierarchical_temporal_abstraction_config=None):
         self.base_observation_dim=int(observation_dim); self.context_dim=int(context_dim)
         self.recurrent_hidden_dim=int(recurrent_hidden_dim)
         film=dict(mission_film_config or {});self.mission_film_enabled=bool(film.get("enabled",False))
@@ -91,6 +92,20 @@ class ModularMAPPOActor(SharedMAPPOActor):
                 self.gru=nn.GRUCell(hidden_dim, self.recurrent_hidden_dim)
                 self.mean=nn.Linear(self.recurrent_hidden_dim, action_dim)
                 self.log_std=nn.Linear(self.recurrent_hidden_dim, action_dim)
+        hta=dict(hierarchical_temporal_abstraction_config or {})
+        self.hierarchical_temporal_abstraction_enabled=bool(hta.get("enabled",False))
+        self.num_options=int(hta.get("num_options",4))
+        if self.hierarchical_temporal_abstraction_enabled:
+            if self.context_dim or self.recurrent_hidden_dim or self.entity_attention_enabled or self.mission_film_enabled:
+                raise ValueError("HTA V1 requires the feed-forward 52D Plain worker")
+            if self.num_options!=4:raise ValueError("HTA V1 requires four options")
+            # Extra heads must not advance the global stream subsequently used
+            # to initialize the matched Plain tactical critic.
+            with torch.random.fork_rng(devices=[]):
+                self.option_mean_residuals=nn.ModuleList(
+                    nn.Linear(hidden_dim,action_dim) for _ in range(self.num_options))
+                for head in self.option_mean_residuals:
+                    nn.init.zeros_(head.weight);nn.init.zeros_(head.bias)
 
     @staticmethod
     def split_entities(observations):
@@ -169,7 +184,7 @@ class ModularMAPPOActor(SharedMAPPOActor):
         return [(name,parameter) for name,parameter in self.named_parameters()
                 if name.startswith(("backbone.","mean.","log_std."))]
 
-    def distribution_step(self, observations, context=None, hidden=None, episode_mask=None, alive_mask=None,return_attention=False):
+    def distribution_step(self, observations, context=None, hidden=None, episode_mask=None, alive_mask=None,return_attention=False,option_ids=None):
         diagnostics=None
         if self.entity_attention_enabled:
             h_entity,diagnostics=self._entity_encode(observations)
@@ -229,14 +244,38 @@ class ModularMAPPOActor(SharedMAPPOActor):
             new_hidden=self.gru(encoded.reshape(-1,encoded.shape[-1]),hidden.reshape(-1,hidden.shape[-1])).view(*encoded.shape[:-1],-1)
             if alive_mask is not None:new_hidden=new_hidden*alive_mask[...,None]
             encoded=new_hidden
-        mean=self.mean(encoded); std=self.log_std(encoded).clamp(self.log_std_min,self.log_std_max).exp()
+        mean=self.mean(encoded)
+        if self.hierarchical_temporal_abstraction_enabled:
+            if option_ids is None:raise ValueError("HTA worker requires option_ids")
+            option_ids=torch.as_tensor(option_ids,dtype=torch.long,device=encoded.device)
+            if option_ids.shape!=encoded.shape[:-1]:raise ValueError("HTA option_ids shape mismatch")
+            residuals=torch.stack([head(encoded) for head in self.option_mean_residuals],dim=-2)
+            selected=torch.gather(residuals,-2,option_ids[...,None,None].expand(*option_ids.shape,1,residuals.shape[-1])).squeeze(-2)
+            mean=mean+selected
+            if diagnostics is None:diagnostics={}
+            diagnostics.update({"hta_option_residual":selected,"hta_option_residuals":residuals})
+        std=self.log_std(encoded).clamp(self.log_std_min,self.log_std_max).exp()
         result=(Normal(mean,std),new_hidden)
         return (*result,diagnostics) if return_attention else result
 
-    def distribution(self, observations, context=None,return_attention=False):
+    def distribution(self, observations, context=None,return_attention=False,option_ids=None):
         if self.recurrent_hidden_dim: raise RuntimeError("recurrent actor requires distribution_step")
-        result=self.distribution_step(observations,context,return_attention=return_attention)
+        result=self.distribution_step(observations,context,return_attention=return_attention,option_ids=option_ids)
         return (result[0],result[2]) if return_attention else result[0]
+
+
+class HierarchicalManagerActor(nn.Module):
+    """Shared low-frequency categorical actor over latent tactical options."""
+    def __init__(self,observation_dim=52,hidden_dim=256,num_options=4,activation="relu"):
+        super().__init__();self.observation_dim=int(observation_dim);self.hidden_dim=int(hidden_dim);self.num_options=int(num_options)
+        act={"relu":nn.ReLU,"leaky_relu":nn.LeakyReLU}[activation]
+        self.backbone=nn.Sequential(nn.Linear(observation_dim,hidden_dim),act(),nn.Linear(hidden_dim,hidden_dim),act())
+        self.logits_head=nn.Linear(hidden_dim,num_options)
+        nn.init.zeros_(self.logits_head.weight);nn.init.zeros_(self.logits_head.bias)
+
+    def logits(self,observations):return self.logits_head(self.backbone(observations))
+    def probabilities(self,observations):return torch.softmax(self.logits(observations),dim=-1)
+    def distribution(self,observations):return Categorical(logits=self.logits(observations))
 
 
 class ModularCentralizedCritic(CentralizedValueCritic):
@@ -389,4 +428,4 @@ class BoundaryStateOutcomeCritic(nn.Module):
         return (per_agent*mask).sum(1)/mask.sum(1).clamp_min(1.0)
 
 
-__all__=["ModularMAPPOActor","ModularCentralizedCritic","InterWaveStateQualityCritic","InterWaveActionOutcomeCritic","BoundaryStateOutcomeCritic"]
+__all__=["ModularMAPPOActor","ModularCentralizedCritic","HierarchicalManagerActor","InterWaveStateQualityCritic","InterWaveActionOutcomeCritic","BoundaryStateOutcomeCritic"]
