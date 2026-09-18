@@ -25,6 +25,8 @@ from algorithm.modules import (BoundaryRedistributedSegmentCreditModule,BRSC_MAP
  redistribute_boundary_credit)
 from algorithm.modules import (HierarchicalTemporalAbstractionModule,HTA_MAPPO_VERSION,
  compute_smdp_gae)
+from algorithm.modules import (HTAWorkerConsolidationModule,
+ HTA_WORKER_CONSOLIDATION_VERSION)
 from algorithm.modules.hierarchical_temporal_abstraction import (HTA_MANAGER_TORCH_SEED_XOR,
  HTA_MANAGER_NUMPY_SEED_XOR)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
@@ -145,6 +147,7 @@ class ModularMAPPOTrainer:
   self.counterfactual_inter_wave_credit=CounterfactualInterWaveCreditModule(self.modules_config.get("counterfactual_inter_wave_credit"))
   self.boundary_redistributed_segment_credit=BoundaryRedistributedSegmentCreditModule(self.modules_config.get("boundary_redistributed_segment_credit"))
   self.hierarchical_temporal_abstraction=HierarchicalTemporalAbstractionModule(self.modules_config.get("hierarchical_temporal_abstraction"))
+  self.hta_worker_consolidation=HTAWorkerConsolidationModule(self.modules_config.get("hta_worker_consolidation"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -174,11 +177,18 @@ class ModularMAPPOTrainer:
    if self.recurrent.enabled or self.wave_context.enabled or self.entity_attention_enabled:raise ValueError("BRSC V1 requires the feed-forward 52D Plain actor")
   if self.hierarchical_temporal_abstraction.enabled:
    enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","hierarchical_temporal_abstraction"}
+   if self.hta_worker_consolidation.enabled:allowed.add("hta_worker_consolidation")
    if not enabled.issubset(allowed):raise ValueError(f"HTA V1 incompatible enabled modules: {sorted(enabled-allowed)}")
    if any((self.inter_wave_credit.enabled,self.counterfactual_inter_wave_credit.enabled,
            self.boundary_redistributed_segment_credit.enabled,self.recurrent.enabled,
            self.wave_context.enabled,self.entity_attention_enabled,self.mission_film.enabled)):
     raise ValueError("HTA V1 requires an otherwise Plain feed-forward Actor/Critic")
+  if self.hta_worker_consolidation.enabled:
+   if not self.hierarchical_temporal_abstraction.enabled:raise ValueError("hta_worker_consolidation requires hierarchical_temporal_abstraction")
+   if not self.actor_lr_decay.enabled:raise ValueError("hta_worker_consolidation requires actor_lr_decay")
+   enabled=set(enabled_module_names(self.modules_config))
+   required={"actor_lr_decay","hierarchical_temporal_abstraction","hta_worker_consolidation"}
+   if enabled!=required:raise ValueError(f"HTA Worker consolidation requires exact enabled modules: {sorted(required)}")
   if self.mission_film.enabled:
    if not (self.wave_context.enabled and self.wave_context.actor_enabled and not self.wave_context.critic_enabled
            and self.wave_context.target=="actor_only" and self.wave_context.encoding=="mission_markov"
@@ -333,14 +343,19 @@ class ModularMAPPOTrainer:
     raise RuntimeError("HTA rollout lacks option or manager-transition data")
    hta_prepared=self._prepare_hta_manager_batch(r.hta_manager_transitions)
   # All actor priorities are frozen from the complete raw-GAE rollout.
+  consolidation_lr={"effective_lr":float(self.actor_optimizer.param_groups[0]["lr"]),"multiplier":1.0}
   if self.actor_lr_decay.enabled:
-   self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   worker_baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.hierarchical_temporal_abstraction.enabled:
     self.actor_lr_decay.apply(self.manager_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   if self.hta_worker_consolidation.enabled:
+    consolidation_lr=self.hta_worker_consolidation.apply(self.actor_optimizer,self.sampled_steps,worker_baseline_lr)
   elif self.ppo_stabilization.enabled:
    lr=self.ppo_stabilization.actor_learning_rate(self.sampled_steps,self.total_sampled_steps)
    for group in self.actor_optimizer.param_groups:group["lr"]=lr
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
+  worker_parameters=self.actor.trainable_policy_parameters() if self.hta_worker_consolidation.enabled else []
+  worker_before=[parameter.detach().clone() for parameter in worker_parameters]
   if self.hierarchical_temporal_abstraction.enabled:
    options=torch.as_tensor(r.hta_options,dtype=torch.long,device=self.device)
    metrics=self._update_flat_hta(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,options)
@@ -363,6 +378,18 @@ class ModularMAPPOTrainer:
    metrics=self._update_flat_brsc(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,brsc_adv,brsc_active)
   else:
    metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w if self.advantage_priority.enabled else None)
+  if self.hta_worker_consolidation.enabled:
+   with torch.no_grad():
+    norm_before=torch.sqrt(sum(value.double().square().sum() for value in worker_before))
+    norm_after=torch.sqrt(sum(parameter.detach().double().square().sum() for parameter in worker_parameters))
+    delta=torch.sqrt(sum((parameter.detach().double()-before.double()).square().sum() for parameter,before in zip(worker_parameters,worker_before)))
+   metrics.update({"hta_worker_consolidation_multiplier":float(consolidation_lr["multiplier"]),
+    "hta_worker_actor_lr":float(self.actor_optimizer.param_groups[0]["lr"]),
+    "hta_manager_actor_lr":float(self.manager_actor_optimizer.param_groups[0]["lr"]),
+    "hta_manager_worker_lr_ratio":float(self.manager_actor_optimizer.param_groups[0]["lr"]/(self.actor_optimizer.param_groups[0]["lr"]+1e-30)),
+    "hta_worker_parameter_norm_before":float(norm_before),"hta_worker_parameter_norm_after":float(norm_after),
+    "hta_worker_parameter_delta_l2":float(delta),
+    "hta_worker_relative_parameter_update":float(delta/(norm_before+1e-12))})
   if self.boundary_redistributed_segment_credit.enabled:
    self.boundary_redistributed_segment_credit.ingest(r.brsc_supervision_boundaries)
    brsc_metrics.update(self._train_brsc_critic())
@@ -1214,7 +1241,7 @@ class ModularMAPPOTrainer:
   return True
  def checkpoint_state(self,extra=None):
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION,"hta_worker_consolidation":HTA_WORKER_CONSOLIDATION_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -1233,6 +1260,7 @@ class ModularMAPPOTrainer:
    if self.counterfactual_inter_wave_credit.enabled and versions.get("counterfactual_inter_wave_credit")!=CAIW_MAPPO_VERSION:raise RuntimeError("checkpoint CAIW feature version mismatch")
    if self.boundary_redistributed_segment_credit.enabled and versions.get("boundary_redistributed_segment_credit")!=BRSC_MAPPO_VERSION:raise RuntimeError("checkpoint BRSC feature version mismatch")
    if self.hierarchical_temporal_abstraction.enabled and versions.get("hierarchical_temporal_abstraction")!=HTA_MAPPO_VERSION:raise RuntimeError("checkpoint HTA feature version mismatch")
+   if self.hta_worker_consolidation.enabled and versions.get("hta_worker_consolidation")!=HTA_WORKER_CONSOLIDATION_VERSION:raise RuntimeError("checkpoint HTA Worker consolidation feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.hierarchical_temporal_abstraction.enabled:
@@ -1272,8 +1300,9 @@ class ModularMAPPOTrainer:
   self.actor_kl_guard_actor_epochs_total=int(state.get("actor_kl_guard_actor_epochs_total",0))
   self.actor_kl_guard_actor_epochs_min=state.get("actor_kl_guard_actor_epochs_min")
   if self.actor_lr_decay.enabled:
-   self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.hierarchical_temporal_abstraction.enabled:self.actor_lr_decay.apply(self.manager_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   if self.hta_worker_consolidation.enabled:self.hta_worker_consolidation.apply(self.actor_optimizer,self.sampled_steps,baseline_lr)
   elif self.ppo_stabilization.enabled:
    lr=self.ppo_stabilization.actor_learning_rate(self.sampled_steps,self.total_sampled_steps)
    for group in self.actor_optimizer.param_groups:group["lr"]=lr

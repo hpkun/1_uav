@@ -57,6 +57,16 @@ def checkpoint_architecture(trainer):
    "counterfactual":False,"auxiliary_credit_redistribution":False,"reward_shaping":False,
    "deployment_requires_manager":True,"manager_actor_parameter_count":sum(p.numel() for p in trainer.manager_actor.parameters()),
    "manager_critic_parameter_count":sum(p.numel() for p in trainer.manager_critic.parameters())})
+  if trainer.hta_worker_consolidation.enabled:
+   consolidation=trainer.hta_worker_consolidation
+   result.update({"hta_worker_consolidation_enabled":True,
+    "hta_worker_consolidation_version":consolidation.version,
+    "worker_learning_timescale":"progressive_linear_lr_multiplier",
+    "worker_consolidation_start_step":consolidation.start_step,
+    "worker_consolidation_end_step":consolidation.end_step,
+    "worker_final_lr_multiplier":consolidation.final_lr_multiplier,
+    "manager_learning_schedule":"unchanged_actor_lr_decay",
+    "tactical_critic_learning_schedule":"unchanged_constant"})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):

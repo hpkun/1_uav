@@ -1,0 +1,64 @@
+{
+  "method": "HTA-MAPPO V2",
+  "role": "development",
+  "from_scratch": true,
+  "training_seeds": [5301, 5302, 5303],
+  "primary_baseline": {
+    "method": "Plain MAPPO",
+    "endpoint": 3000000,
+    "directories": [
+      "outputs/diag_mappo_learnability/l3_seed5301",
+      "outputs/diag_mappo_learnability/l3_seed5302",
+      "outputs/diag_mappo_learnability/l3_seed5303"
+    ]
+  },
+  "secondary_predecessor": {
+    "method": "HTA-MAPPO V1",
+    "status": "HTA_V1_PRIMARY_GATE_FAILED",
+    "directories": [
+      "outputs/dev_hta_mappo_v1_3m/seed5301",
+      "outputs/dev_hta_mappo_v1_3m/seed5302",
+      "outputs/dev_hta_mappo_v1_3m/seed5303"
+    ]
+  },
+  "mechanism_basis": "CASE_E_MIXED_WORKER_RETENTION_FAILURE",
+  "intervention": "progressive_two_timescale_worker_consolidation",
+  "worker_schedule": {
+    "schedule": "progressive_linear",
+    "start_step": 1500000,
+    "end_step": 2500000,
+    "final_multiplier": 0.25
+  },
+  "manager_schedule": "unchanged_actor_lr_decay",
+  "critic_schedule": "unchanged_constant_0.0003",
+  "primary_endpoint": 3000000,
+  "primary_gate": {
+    "mean_delta_average_waves_min": 0.15,
+    "paired_average_waves_wins_min": 2,
+    "mean_delta_w1_min": -0.05,
+    "mean_delta_q2_strict_positive": true,
+    "mean_delta_q3_strict_positive": true,
+    "max_mean_delta_q2_q3_min": 0.05
+  },
+  "development_evaluation": {
+    "seed_start": 44000000,
+    "seed_end": 44000049,
+    "episodes": 50,
+    "deterministic": true,
+    "common_scenarios": true
+  },
+  "future_final": {
+    "seed_start": 45000000,
+    "seed_end": 45000199,
+    "executed": false
+  },
+  "closure_rule": {
+    "if_primary_gate_fails": "HTA_ROUTE_CLOSED",
+    "forbidden_followups": [
+      "HTA V3", "KL anchor", "Worker freeze", "adaptive K",
+      "option diversity", "boundary shaping", "additional LR sweep"
+    ]
+  },
+  "formal_training_executed": false
+}
+

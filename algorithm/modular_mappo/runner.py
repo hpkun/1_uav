@@ -1076,6 +1076,12 @@ class ModularMAPPOTrainingRunner:
                 "manager_critic_class","manager_observation_dim","num_options",
                 "decision_interval_steps","worker_option_conditioning",
                 "tactical_critic_option_conditioning","deployment_requires_manager")})
+        if self.trainer.hta_worker_consolidation.enabled:
+            result.update({key:architecture[key] for key in (
+                "hta_worker_consolidation_enabled","hta_worker_consolidation_version",
+                "worker_learning_timescale","worker_consolidation_start_step",
+                "worker_consolidation_end_step","worker_final_lr_multiplier",
+                "manager_learning_schedule","tactical_critic_learning_schedule")})
         return result
 
     def run(self) -> dict[str, Any]:
