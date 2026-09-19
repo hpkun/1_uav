@@ -19,6 +19,9 @@ def combat_environment_worker(connection: Any, config: Any) -> None:
                 environment, "environment_variant", "direct_v2_3"
             ),
             "fixed_policy_class": environment.fixed_policy.__class__.__name__,
+            "observation_dim": int(environment.observation_dim),
+            "action_dim": int(environment.action_dim),
+            "team_size": int(environment.team_size),
         }))
         while True:
             command, payload = connection.recv()

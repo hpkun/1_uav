@@ -7,6 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 from env.config import ENVIRONMENT_VERSION
 from env.combat_env import MultiUAVCombatEnv
+from env.observation import observation_dim_from_config
 from algorithm.common.protocol import config_sha256
 from algorithm.modular_mappo.evaluation import evaluate_modular
 from algorithm.modular_mappo.factory import build_modular_mappo_trainer
@@ -36,7 +37,7 @@ def main():
  env_path=resolved(a.env_config);env=yaml.safe_load(env_path.read_text(encoding="utf-8"));source_variant=str(extra.get("environment_variant","unknown"));target_variant=str(env.get("environment_variant","direct_v2_3"));cross=source_variant!=target_variant
  if cross and not a.allow_cross_variant:raise RuntimeError("source/target environment variant mismatch; pass --allow-cross-variant explicitly")
  if str(env.get("environment_version",ENVIRONMENT_VERSION))!=str(extra.get("environment_version")):raise RuntimeError("target environment version mismatch")
- dimensions=(int(config["network"]["observation_dim"]),int(config["network"]["action_dim"]),int(config["network"]["num_agents"]));expected=(MultiUAVCombatEnv.observation_dim,MultiUAVCombatEnv.action_dim,MultiUAVCombatEnv.team_size)
+ dimensions=(int(config["network"]["observation_dim"]),int(config["network"]["action_dim"]),int(config["network"]["num_agents"]));expected=(observation_dim_from_config(env.get("observation",{})),MultiUAVCombatEnv.action_dim,int(env.get("scenario",{}).get("team_size",MultiUAVCombatEnv.team_size)))
  if dimensions!=expected:raise RuntimeError("checkpoint static dimensions mismatch")
  if protocol_complete and not cross:validate_modular_checkpoint(state,env,config)
  hidden=checkpoint_hidden_dim(state,extra);trainer=build_modular_mappo_trainer(config,a.device,hidden,int(extra.get("training_total_sampled_steps",config["training"]["total_sampled_steps"])))

@@ -1,0 +1,25 @@
+{
+  "method": "fire_ready_plain",
+  "research_question": "Does exposing each Red UAV's own current fire-ready state remove a material self-state alias and improve persistent multi-wave performance?",
+  "environment": "configs/persistent_wave_v2_fire_ready_environment.yaml",
+  "baseline": "Plain MAPPO exact-3M 5301/5302/5303",
+  "single_intervention": "52D -> 53D by appending own FireState.armed",
+  "unchanged": ["reward", "weapon mechanics", "Blue", "spawn", "arena", "gamma", "lambda", "PPO", "network hidden topology", "training budget"],
+  "training_seeds": [5301, 5302, 5303],
+  "from_scratch": true,
+  "paired_initialization_note": "Same training seeds are paired stochastic controls, but 52D and 53D first-layer shapes imply non-identical parameter initialization.",
+  "evaluation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "deterministic": true, "common_scenarios": true},
+  "future_final": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
+  "observation_schema": "fire_ready_v1",
+  "explicit_nonclaims": [
+    "not a fully Markov observation",
+    "does not resolve mission-stage alias",
+    "does not change weapon semantics",
+    "does not change reward semantics"
+  ],
+  "outputs": {
+    "5301": "outputs/dev_fire_ready_plain_3m/seed5301",
+    "5302": "outputs/dev_fire_ready_plain_3m/seed5302",
+    "5303": "outputs/dev_fire_ready_plain_3m/seed5303"
+  }
+}

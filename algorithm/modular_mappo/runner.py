@@ -218,6 +218,20 @@ class ModularMAPPOTrainingRunner:
             self.num_envs, self.runtime_env_config, self.seed,
             range(self.eval_base, self.eval_base + self.eval_episodes),
         )
+        configured_dimensions = (
+            int(self.algorithm_config["network"]["observation_dim"]),
+            int(self.algorithm_config["network"]["action_dim"]),
+            int(self.algorithm_config["network"]["num_agents"]),
+        )
+        runtime_dimensions = (
+            self.vector.observation_dim, self.vector.action_dim, self.vector.team_size,
+        )
+        if configured_dimensions != runtime_dimensions:
+            self.vector.close()
+            raise RuntimeError(
+                "algorithm/runtime environment dimensions mismatch: "
+                f"configured={configured_dimensions}, runtime={runtime_dimensions}"
+            )
         if episode_indices is not None:
             self.vector.episode_indices = np.asarray(episode_indices, dtype=np.int64)
         self.observations = self.vector.reset()
@@ -1054,6 +1068,11 @@ class ModularMAPPOTrainingRunner:
         architecture = checkpoint_architecture(self.trainer)
         result = {
             "development_method": self.algorithm_config.get("development_method", "modular_mappo"),
+            "observation_schema": (
+                "fire_ready_v1"
+                if bool(getattr(self, "env_config", {}).get("observation", {}).get("include_own_fire_ready", False))
+                else "legacy_paper_52d"
+            ),
             "wave_context_target": self.trainer.wave_context.target if self.trainer.wave_context.enabled else "disabled",
             "wave_context_encoding": self.trainer.wave_context.encoding if self.trainer.wave_context.enabled else "disabled",
             "mission_context_dim": int(self.trainer.wave_context.context_dim),

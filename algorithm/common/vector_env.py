@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 
-from env.observation import OBSERVATION_DIM
 from env.process_worker import combat_environment_worker
 
 
@@ -47,7 +46,6 @@ class ParallelVectorEnv:
         self.forbidden_seeds = set(map(int, forbidden_seeds))
         self.used_training_seeds: set[int] = set()
         self.episode_indices = np.zeros(num_envs, dtype=np.int64)
-        self.current_observations = np.zeros((num_envs, 4, OBSERVATION_DIM), dtype=np.float32)
         self.current_alive_masks = np.ones((num_envs, 4), dtype=np.float32)
         self.last_reset_seeds = np.zeros(num_envs, dtype=np.int64)
         self._closed = False
@@ -81,6 +79,16 @@ class ParallelVectorEnv:
             self.worker_fixed_policy_classes = [
                 str(row["fixed_policy_class"]) for row in self.worker_metadata
             ]
+            dimensions = {
+                (int(row["observation_dim"]), int(row["action_dim"]), int(row["team_size"]))
+                for row in self.worker_metadata
+            }
+            if len(dimensions) != 1:
+                raise RuntimeError(f"environment workers disagree on dimensions: {sorted(dimensions)}")
+            self.observation_dim, self.action_dim, self.team_size = dimensions.pop()
+            self.current_observations = np.zeros(
+                (num_envs, self.team_size, self.observation_dim), dtype=np.float32
+            )
         except BaseException:
             self.close()
             raise
@@ -126,22 +134,28 @@ class ParallelVectorEnv:
     def reset(self) -> np.ndarray:
         self._ensure_open()
         results = self._reset_many(list(range(self.num_envs)))
-        self.current_observations = np.stack([result[0] for result in results])
+        self.current_observations = self._validate_observations(
+            np.stack([result[0] for result in results]), "reset"
+        )
         self.current_alive_masks = np.stack([result[1] for result in results])
         return self.current_observations.copy()
 
     def step_batch(self, actions: np.ndarray, auto_reset: bool = True) -> VectorStep:
         self._ensure_open()
         actions = np.asarray(actions, dtype=np.float32)
-        if actions.shape != (self.num_envs, 4, 3):
-            raise ValueError("vector actions must be [env, 4, 3]")
+        if actions.shape != (self.num_envs, self.team_size, self.action_dim):
+            raise ValueError(
+                f"vector actions must be [env, {self.team_size}, {self.action_dim}]"
+            )
         alive_before = self.current_alive_masks.copy()
         for env_id, connection in enumerate(self._connections):
             connection.send(("step", actions[env_id]))
         results = [
             self._receive(connection, "step") for connection in self._connections
         ]
-        transition_next = np.stack([result[0] for result in results])
+        transition_next = self._validate_observations(
+            np.stack([result[0] for result in results]), "step"
+        )
         rewards = np.stack([result[1] for result in results])
         terminated = np.asarray([result[2] for result in results])
         truncated = np.asarray([result[3] for result in results])
@@ -160,6 +174,15 @@ class ParallelVectorEnv:
             current.copy(), transition_next, rewards, terminated, truncated,
             infos, alive_before, next_alive,
         )
+
+    def _validate_observations(self, values: np.ndarray, operation: str) -> np.ndarray:
+        expected = (self.num_envs, self.team_size, self.observation_dim)
+        values = np.asarray(values, dtype=np.float32)
+        if values.shape != expected or not np.all(np.isfinite(values)):
+            raise RuntimeError(
+                f"invalid {operation} observations: expected finite {expected}, got {values.shape}"
+            )
+        return values
 
     def step(self, actions: np.ndarray):
         result = self.step_batch(actions)

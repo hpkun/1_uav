@@ -5,6 +5,7 @@ from typing import Any
 
 from env.config import ENVIRONMENT_VERSION
 from env.combat_env import MultiUAVCombatEnv
+from env.observation import observation_dim_from_config
 from algorithm.common.protocol import config_sha256
 
 
@@ -76,9 +77,9 @@ def _validate_common_checkpoint_contract(
         )
     configured = _configured_dimensions(algorithm_config)
     environment = (
-        MultiUAVCombatEnv.observation_dim,
+        observation_dim_from_config(env_config.get("observation", {})),
         MultiUAVCombatEnv.action_dim,
-        MultiUAVCombatEnv.team_size,
+        int(env_config.get("scenario", {}).get("team_size", MultiUAVCombatEnv.team_size)),
     )
     if configured != environment:
         raise RuntimeError(
