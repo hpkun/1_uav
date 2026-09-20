@@ -1,6 +1,7 @@
 """Actor-only deterministic or stochastic MADSAC evaluation."""
 from __future__ import annotations
 
+import hashlib
 import numpy as np
 import torch
 from algorithm.common.evaluator import episode_return_metrics, persistent_mission_metrics
@@ -11,6 +12,12 @@ def evaluation_generator(device, seed: int) -> torch.Generator:
     generator = torch.Generator(device=torch.device(device))
     generator.manual_seed(int(seed))
     return generator
+
+
+def evaluation_episode_policy_seed(base_policy_seed: int, environment_seed: int) -> int:
+    """Stable per-scenario policy-noise seed, independent of episode ordering/length."""
+    payload = f"madsac:{int(base_policy_seed)}:{int(environment_seed)}".encode("ascii")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "little") & ((1 << 63) - 1)
 
 
 def evaluate_madsac_episode(trainer, env_config, seed: int, mode="stochastic",
@@ -59,9 +66,14 @@ def aggregate_madsac_records(records):
 def evaluate_madsac(trainer, env_config, seeds, mode="stochastic", policy_seed=770001,
                     progress=None):
     before = trainer.policy_generator.get_state().clone()
-    generator = None if mode == "deterministic" else evaluation_generator(trainer.device, policy_seed)
     records = []
     for index, seed in enumerate(seeds, 1):
+        generator = None
+        if mode == "stochastic":
+            generator = evaluation_generator(
+                trainer.device,
+                evaluation_episode_policy_seed(policy_seed, int(seed)),
+            )
         records.append(evaluate_madsac_episode(trainer, env_config, seed, mode, generator))
         if progress is not None:
             progress(index, len(seeds))
@@ -72,5 +84,5 @@ def evaluate_madsac(trainer, env_config, seeds, mode="stochastic", policy_seed=7
 
 __all__ = [
     "aggregate_madsac_records", "evaluate_madsac", "evaluate_madsac_episode",
-    "evaluation_generator",
+    "evaluation_episode_policy_seed", "evaluation_generator",
 ]

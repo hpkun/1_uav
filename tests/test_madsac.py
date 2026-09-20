@@ -5,14 +5,20 @@ import pytest
 import torch
 
 from algorithm.common.vector_env import VectorStep
-from algorithm.madsac.evaluation import evaluate_madsac
+from algorithm.madsac.evaluation import (
+    evaluate_madsac,
+    evaluation_episode_policy_seed,
+    evaluation_generator,
+)
 from algorithm.madsac.networks import CentralizedAttentionQCritic, SharedMADSACActor
 from algorithm.madsac.replay_buffer import JointReplayBuffer, ReplayBatch
 from algorithm.madsac.runner import MADSACTrainingRunner, advance_sampled_steps
 from algorithm.madsac.trainer import (
     MADSACTrainer,
     actor_objective,
+    batch_mean_agent_sum,
     critic_target,
+    joint_actions_with_own_gradient,
     masked_mean,
     polyak_update,
 )
@@ -144,12 +150,36 @@ def test_death_transition_current_alive_remains_in_critic_loss():
     assert critic_target(target, torch.tensor([0.0]), next_alive, predicted, predicted, predicted, .99, .1)[0, 0] == 2
 
 
+def test_paper_objective_reduction_sums_agents_then_means_batch():
+    ones = torch.ones(3, 4)
+    alive = torch.ones(3, 4)
+    assert masked_mean(ones, alive).item() == 1.0
+    assert batch_mean_agent_sum(ones, alive).item() == 4.0
+    values = torch.tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+    mixed = torch.tensor([[1.0, 0.0, 1.0, 0.0], [0.0, 1.0, 1.0, 0.0]])
+    assert batch_mean_agent_sum(values, mixed).item() == pytest.approx((4.0 + 13.0) / 2.0)
+
+
 def test_actor_objective_sign():
     loss = actor_objective(
         torch.tensor([[-2.0, -4.0]]), torch.tensor([[3.0, 1.0]]),
         torch.tensor([[2.0, 5.0]]), torch.ones(1, 2), alpha=.1,
     )
-    assert loss.item() == pytest.approx(((-.2 - 2.0) + (-.4 - 1.0)) / 2)
+    assert loss.item() == pytest.approx((-.2 - 2.0) + (-.4 - 1.0))
+
+
+def test_q_i_backward_has_only_own_action_gradient():
+    torch.manual_seed(14)
+    critic = CentralizedAttentionQCritic(hidden_dim=16, attention_heads=2)
+    observations = torch.randn(3, 4, 52)
+    actions = torch.randn(3, 4, 3, requires_grad=True)
+    alive = torch.ones(3, 4)
+    agent_index = 2
+    own_only = joint_actions_with_own_gradient(actions, agent_index)
+    critic(observations, own_only, alive)[:, agent_index].sum().backward()
+    assert actions.grad[:, agent_index].abs().sum().item() > 0
+    other = torch.cat((actions.grad[:, :agent_index], actions.grad[:, agent_index + 1:]), dim=1)
+    assert torch.count_nonzero(other).item() == 0
 
 
 def test_delayed_actor_and_targets_update_only_on_delay_and_critics_not_actor_optimized():
@@ -229,6 +259,40 @@ def test_evaluation_modes_and_rng_isolation(monkeypatch):
     assert stochastic1 == stochastic2
     assert stochastic1["average_return"] != deterministic["average_return"]
     assert torch.equal(training_rng_before, trainer.policy_generator.get_state())
+
+
+def test_per_scenario_policy_rng_is_stable_distinct_and_order_independent(monkeypatch):
+    trainer = tiny_trainer(seed=32)
+    seed_a, seed_b = 44_000_017, 44_000_018
+    derived_a = evaluation_episode_policy_seed(770001, seed_a)
+    derived_b = evaluation_episode_policy_seed(770001, seed_b)
+    assert derived_a == evaluation_episode_policy_seed(770001, seed_a)
+    assert derived_a != derived_b
+    sequence_a = torch.rand(8, generator=evaluation_generator("cpu", derived_a))
+    sequence_b = torch.rand(8, generator=evaluation_generator("cpu", derived_b))
+    assert not torch.equal(sequence_a, sequence_b)
+
+    first_draws = {}
+
+    def fake_episode(_trainer, _config, seed, _mode, generator):
+        first_draws.setdefault(seed, []).append(float(torch.rand((), generator=generator)))
+        if seed == seed_a:
+            torch.rand(137, generator=generator)  # scenario A length/consumption cannot shift B
+        return {
+            "episode_return": 0.0, "mean_agent_episode_return": 0.0,
+            "red_success": 0.0, "blue_win": 0.0, "draw": 1.0,
+            "termination_reason": "red_failure_timeout", "red_losses": 0,
+            "blue_losses": 0, "red_boundary_exits": 0, "red_ground_losses": 0,
+            "episode_length": 1, "waves_cleared": 0, "total_waves": 3,
+            "per_wave_metrics": [],
+        }
+
+    monkeypatch.setattr("algorithm.madsac.evaluation.evaluate_madsac_episode", fake_episode)
+    training_before = trainer.policy_generator.get_state().clone()
+    evaluate_madsac(trainer, {}, (seed_a, seed_b), "stochastic", 770001)
+    evaluate_madsac(trainer, {}, (seed_b,), "stochastic", 770001)
+    assert first_draws[seed_b][0] == first_draws[seed_b][1]
+    assert torch.equal(training_before, trainer.policy_generator.get_state())
 
 
 def test_wave_transition_not_done_but_terminated_or_truncated_are_done():

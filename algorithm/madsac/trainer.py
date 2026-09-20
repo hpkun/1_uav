@@ -12,11 +12,41 @@ from .networks import CentralizedAttentionQCritic, SharedMADSACActor
 from .replay_buffer import ReplayBatch
 
 
-MADSAC_IMPL_VERSION = 1
+MADSAC_IMPL_VERSION = 2
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (values * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def batch_mean_agent_sum(values: torch.Tensor, alive: torch.Tensor) -> torch.Tensor:
+    """Eq. (19)/(20) reduction: sum agents inside each replay item, then mean batch."""
+    if values.ndim != 2 or alive.shape != values.shape:
+        raise ValueError("values and alive must have identical [batch, agents] shapes")
+    return (values * alive).sum(dim=1).mean()
+
+
+def joint_actions_with_own_gradient(actions: torch.Tensor, agent_index: int) -> torch.Tensor:
+    """Keep joint-action values while allowing gradients only through one agent action."""
+    if actions.ndim != 3:
+        raise ValueError("actions must have shape [batch, agents, action_dim]")
+    if not 0 <= int(agent_index) < actions.shape[1]:
+        raise IndexError("agent_index is outside the joint action")
+    detached = actions.detach()
+    own_mask = torch.zeros_like(actions)
+    own_mask[:, int(agent_index), :] = 1.0
+    return detached + own_mask * (actions - detached)
+
+
+def own_action_twin_q(critic1, critic2, observations, actions, alive):
+    """Evaluate each Q_i with only a_i connected to the shared actor graph."""
+    per_agent = []
+    for agent_index in range(actions.shape[1]):
+        joint_actions = joint_actions_with_own_gradient(actions, agent_index)
+        q1_i = critic1(observations, joint_actions, alive)[:, agent_index]
+        q2_i = critic2(observations, joint_actions, alive)[:, agent_index]
+        per_agent.append(torch.minimum(q1_i, q2_i))
+    return torch.stack(per_agent, dim=1)
 
 
 def critic_target(rewards, dones, next_alive, q1_target, q2_target,
@@ -28,7 +58,9 @@ def critic_target(rewards, dones, next_alive, q1_target, q2_target,
 
 
 def actor_objective(log_prob, q1, q2, alive, alpha):
-    return masked_mean(float(alpha) * log_prob - torch.minimum(q1, q2), alive)
+    return batch_mean_agent_sum(
+        float(alpha) * log_prob - torch.minimum(q1, q2), alive
+    )
 
 
 @torch.no_grad()
@@ -121,8 +153,8 @@ class MADSACTrainer:
 
         q1 = self.critic1(obs, actions, alive)
         q2 = self.critic2(obs, actions, alive)
-        critic1_loss = masked_mean((q1 - target).square(), alive)
-        critic2_loss = masked_mean((q2 - target).square(), alive)
+        critic1_loss = batch_mean_agent_sum((q1 - target).square(), alive)
+        critic2_loss = batch_mean_agent_sum((q2 - target).square(), alive)
         self.critic1_optimizer.zero_grad(set_to_none=True)
         critic1_loss.backward()
         critic1_grad = gradient_norm(self.critic1.parameters())
@@ -138,20 +170,31 @@ class MADSACTrainer:
         entropy = mean_log_prob = qmin_mean = 0.0
         sampled_actions = actions.detach()
         if actor_updated:
-            for critic in (self.critic1, self.critic2):
+            critics = (self.critic1, self.critic2)
+            requires_grad = [
+                [parameter.requires_grad for parameter in critic.parameters()]
+                for critic in critics
+            ]
+            for critic in critics:
                 critic.requires_grad_(False)
-            sampled_actions, _, log_prob = self.actor.sample(obs, self.policy_generator)
-            sampled_actions = sampled_actions * alive.unsqueeze(-1)
-            log_prob = log_prob * alive
-            actor_q1 = self.critic1(obs, sampled_actions, alive)
-            actor_q2 = self.critic2(obs, sampled_actions, alive)
-            actor_loss = actor_objective(log_prob, actor_q1, actor_q2, alive, self.alpha)
-            self.actor_optimizer.zero_grad(set_to_none=True)
-            actor_loss.backward()
-            actor_grad = gradient_norm(self.actor.parameters())
-            self.actor_optimizer.step()
-            for critic in (self.critic1, self.critic2):
-                critic.requires_grad_(True)
+            try:
+                sampled_actions, _, log_prob = self.actor.sample(obs, self.policy_generator)
+                sampled_actions = sampled_actions * alive.unsqueeze(-1)
+                log_prob = log_prob * alive
+                actor_qmin = own_action_twin_q(
+                    self.critic1, self.critic2, obs, sampled_actions, alive
+                )
+                actor_loss = actor_objective(
+                    log_prob, actor_qmin, actor_qmin, alive, self.alpha
+                )
+                self.actor_optimizer.zero_grad(set_to_none=True)
+                actor_loss.backward()
+                actor_grad = gradient_norm(self.actor.parameters())
+                self.actor_optimizer.step()
+            finally:
+                for critic, flags in zip(critics, requires_grad):
+                    for parameter, flag in zip(critic.parameters(), flags):
+                        parameter.requires_grad_(flag)
             polyak_update(self.target_actor, self.actor, self.tau)
             polyak_update(self.target_critic1, self.critic1, self.tau)
             polyak_update(self.target_critic2, self.critic2, self.tau)
@@ -159,7 +202,7 @@ class MADSACTrainer:
             actor_loss_value = float(actor_loss.item())
             entropy = float(masked_mean(-log_prob.detach(), alive).item())
             mean_log_prob = float(masked_mean(log_prob.detach(), alive).item())
-            qmin_mean = float(masked_mean(torch.minimum(actor_q1, actor_q2).detach(), alive).item())
+            qmin_mean = float(masked_mean(actor_qmin.detach(), alive).item())
         else:
             qmin_mean = float(masked_mean(torch.minimum(q1, q2).detach(), alive).item())
 
@@ -232,7 +275,8 @@ class MADSACTrainer:
 
 
 __all__ = [
-    "MADSAC_IMPL_VERSION", "MADSACTrainer", "actor_objective", "critic_target",
-    "gradient_norm", "masked_mean", "polyak_update",
+    "MADSAC_IMPL_VERSION", "MADSACTrainer", "actor_objective",
+    "batch_mean_agent_sum", "critic_target", "gradient_norm",
+    "joint_actions_with_own_gradient", "masked_mean", "own_action_twin_q",
+    "polyak_update",
 ]
-

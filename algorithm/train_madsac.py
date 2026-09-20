@@ -61,6 +61,9 @@ def main():
         "formal_exact_resume_supported": False, "replay_buffer_in_checkpoint": False,
         "sampled_steps_unit": "environment_transitions_not_agent_transitions",
         "primary_evaluation_mode": "stochastic", "evaluation_policy_seed": 770001,
+        "actor_policy_gradient": "own_action_only_other_joint_actions_detached",
+        "objective_reduction": "per_transition_agent_sum_then_replay_batch_mean",
+        "evaluation_policy_rng": "independent_deterministic_stream_per_environment_seed",
         "future_final_45m_untouched": True,
         "paper_reported": algorithm_config["metadata"]["paper_reported"],
         "project_implementation_choice": algorithm_config["metadata"]["project_implementation_choice"],
@@ -78,4 +81,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
