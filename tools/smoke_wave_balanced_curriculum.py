@@ -35,18 +35,24 @@ def entry_snapshot(env_config: dict, wave: int, seed: int) -> dict:
 def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is mandatory for Wave-Entry Curriculum smoke")
-    output = ROOT / "outputs/dev_wave_balanced_curriculum_tiny_smoke"
+    output = ROOT / "outputs/dev_wave_balanced_curriculum_combined_tiny_smoke_mixed"
     if output.exists():
         raise FileExistsError(f"smoke output already exists: {output}")
     env_config = load_env_config(ROOT / "configs/persistent_wave_v2_environment.yaml")
-    algorithm = load_config(ROOT / "configs/dev_wave_entry_curriculum_3m.yaml")
+    algorithm = load_config(ROOT / "configs/dev_wave_balanced_curriculum_3m.yaml")
     runner = ModularMAPPOTrainingRunner(
-        env_config, algorithm, num_envs=1, total_sampled_steps=4,
+        env_config, algorithm, num_envs=3, total_sampled_steps=12,
         device="cuda", seed=SMOKE_SEED, output_dir=output, smoke=True,
     )
     clone = None
     try:
         module = runner.trainer.wave_entry_curriculum
+        enabled_modules = runner.trainer.module_protocol()["enabled_modules"]
+        expected_modules = ["actor_lr_decay", "wave_balancing", "wave_entry_curriculum"]
+        if enabled_modules != expected_modules:
+            raise RuntimeError(
+                f"combined smoke module mismatch: expected {expected_modules}, got {enabled_modules}"
+            )
         snapshots = {wave: entry_snapshot(env_config, wave, SMOKE_SEED + wave) for wave in (2, 3)}
         for wave in (2, 3):
             for index in range(module.min_bank_entries):
@@ -58,7 +64,8 @@ def main() -> None:
         for _ in range(32):
             runner.episode_start_wave[0] = 1
             restored = runner._apply_wave_entry_curriculum_resets(
-                np.asarray([True]), [{"waves_cleared": 0}]
+                np.asarray([True, False, False]),
+                [{"waves_cleared": 0}, {}, {}],
             )
             if restored: break
         if not restored:
@@ -72,14 +79,32 @@ def main() -> None:
         runner.episode_steps[0] = metadata["steps"]
         runner.episode_mask[0] = 0.0
         rollout = runner.collect_rollout(4)
+        if not np.all(np.isfinite(rollout.actions)) or not np.all(np.isfinite(rollout.old_log_probs)):
+            raise FloatingPointError("current actor did not produce finite on-policy rollout data")
+        if rollout.wave_indices.shape != (4, 3) or rollout.alive_masks.shape != (4, 3, 4):
+            raise RuntimeError("combined smoke rollout lacks real wave/alive tensors")
         metrics = runner.trainer.update(rollout)
         required = ("actor_loss", "value_loss", "entropy", "approx_kl")
         if not all(math.isfinite(float(metrics[key])) for key in required):
             raise FloatingPointError("non-finite PPO metric in WEC smoke")
+        weight_metrics = {key: float(metrics[key]) for key in (
+            "weight_wave_1", "weight_wave_2", "weight_wave_3",
+            "effective_wave_weight_mean",
+        )}
+        for wave in (1, 2, 3):
+            count = float(metrics[f"alive_agent_samples_wave_{wave}"])
+            weight = weight_metrics[f"weight_wave_{wave}"]
+            if count > 0 and (not math.isfinite(weight) or not 0.0 < weight <= 3.0):
+                raise FloatingPointError(f"invalid weight for present wave {wave}: {weight}")
+        if not math.isclose(
+            weight_metrics["effective_wave_weight_mean"], 1.0,
+            rel_tol=1e-6, abs_tol=1e-6,
+        ):
+            raise RuntimeError("effective wave weight mean is not one")
         checkpoint = output / "smoke_checkpoint.pt"
         runner.save_checkpoint(checkpoint)
         clone = ModularMAPPOTrainingRunner(
-            env_config, algorithm, num_envs=1, total_sampled_steps=8,
+            env_config, algorithm, num_envs=3, total_sampled_steps=24,
             device="cuda", seed=SMOKE_SEED, output_dir=output / "resume_clone",
             smoke=True, resume_mode=True,
         )
@@ -91,8 +116,22 @@ def main() -> None:
         evaluation = evaluate_modular_episode(
             runner.trainer, evaluation_env, SMOKE_SEED + 98, include_trace=True
         )
+        if int(evaluation["wave_trace"][0]) != 1:
+            raise RuntimeError("combined smoke evaluation did not start from W1")
+        if restored_sizes[2] <= 0 or restored_sizes[3] <= 0:
+            raise RuntimeError("checkpoint/resume lost a wave-entry bank")
+        wec = module.diagnostics()
+        rollout_metrics = runner.last_rollout_metrics
         report = {"status": "PASS", "device": torch.cuda.get_device_name(0),
             "seed": SMOKE_SEED, "bank_sizes": {wave: len(module.bank[wave]) for wave in (2,3)},
+            "enabled_modules": enabled_modules,
+            **{f"transition_fraction_wave_{wave}": float(rollout_metrics[f"transition_fraction_wave_{wave}"]) for wave in (1,2,3)},
+            **{f"alive_agent_fraction_wave_{wave}": float(rollout_metrics[f"alive_agent_fraction_wave_{wave}"]) for wave in (1,2,3)},
+            **weight_metrics,
+            **{key: float(wec[key]) for key in (
+                "wec_probability_w1", "wec_probability_w2", "wec_probability_w3",
+                "wec_bank_size_w2", "wec_bank_size_w3",
+            )},
             "curriculum_restore_wave": int(metadata["wave_index"]),
             "restored_global_steps": int(metadata["steps"]),
             "ppo_metrics": {key: float(metrics[key]) for key in required},
