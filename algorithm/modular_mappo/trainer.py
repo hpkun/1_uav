@@ -10,7 +10,8 @@ from torch import nn
 from torch.distributions import kl_divergence
 from algorithm.mappo.trainer import compute_gae,masked_mean,MAPPO_IMPL_VERSION
 from algorithm.modules import (WaveContextModule,RecurrentMemoryModule,PopArtValueNormalizer,
- MultiWaveRewardAdapter,WaveBalancingModule,WarmStartInitializer,CurriculumController,PolicyAnchorRegularizer,enabled_module_names)
+ MultiWaveRewardAdapter,WaveBalancingModule,WarmStartInitializer,CurriculumController,
+ WaveEntryCurriculumModule,WAVE_ENTRY_CURRICULUM_VERSION,PolicyAnchorRegularizer,enabled_module_names)
 from algorithm.modules import (AdvantagePriorityModule,PPOStabilizationModule,
  ADVANTAGE_PRIORITY_VERSION,PPO_STABILIZATION_VERSION)
 from algorithm.modules import ActorLRDecayModule,ACTOR_LR_DECAY_VERSION
@@ -138,6 +139,7 @@ class ModularMAPPOTrainer:
   self.wave_survival_pbrs=WaveSurvivalPotentialShapingModule(self.modules_config.get("wave_survival_pbrs"),self.gamma)
   self.wave_balance=WaveBalancingModule(self.modules_config.get("wave_balancing"));self.warm_start=WarmStartInitializer(self.modules_config.get("warm_start"))
   self.curriculum=CurriculumController(self.modules_config.get("curriculum"));self.anchor=PolicyAnchorRegularizer(self.modules_config.get("policy_anchor"))
+  self.wave_entry_curriculum=WaveEntryCurriculumModule(self.modules_config.get("wave_entry_curriculum"),seed)
   self.advantage_priority=AdvantagePriorityModule(self.modules_config.get("advantage_priority"))
   self.ppo_stabilization=PPOStabilizationModule(self.modules_config.get("ppo_stabilization"))
   self.actor_lr_decay=ActorLRDecayModule(self.modules_config.get("actor_lr_decay"))
@@ -161,6 +163,10 @@ class ModularMAPPOTrainer:
   if self.actor_kl_guard.enabled and self.ppo_stabilization.enabled:raise ValueError("actor_kl_guard and ppo_stabilization are mutually exclusive")
   if self.actor_lr_decay.enabled and self.ppo_stabilization.enabled:raise ValueError("actor_lr_decay and ppo_stabilization are mutually exclusive")
   if self.actor_lr_decay.enabled and abs(self.actor_lr_decay.start_lr-float(actor_learning_rate))>1e-15:raise ValueError("actor_lr_decay start_lr must match the configured base actor learning rate")
+  if self.curriculum.enabled and self.wave_entry_curriculum.enabled:raise ValueError("curriculum and wave_entry_curriculum are mutually exclusive")
+  if self.wave_entry_curriculum.enabled:
+   enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","wave_balancing","wave_entry_curriculum"}
+   if not enabled.issubset(allowed):raise ValueError(f"wave_entry_curriculum incompatible enabled modules: {sorted(enabled-allowed)}")
   if self.inter_wave_credit.enabled:
    enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","inter_wave_credit"}
    if not enabled.issubset(allowed):raise ValueError(f"IWSC v1 incompatible enabled modules: {sorted(enabled-allowed)}")

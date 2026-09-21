@@ -82,6 +82,10 @@ def write_run_config(path: Path, runner: ModularMAPPOTrainingRunner,
         "warm_start_provenance":runner.trainer.warm_start_provenance,
         "policy_anchor_provenance":runner.trainer.anchor_provenance,
         "curriculum_config":runner.algorithm_config.get("modules",{}).get("curriculum",{}),
+        "wave_entry_curriculum_version":runner.trainer.wave_entry_curriculum.version,
+        "wave_entry_curriculum_config":deepcopy(
+            runner.algorithm_config.get("modules",{}).get("wave_entry_curriculum",{})
+        ),
         "output_dir":str(runner.output_dir.resolve()),
         "start_timestamp":datetime.now().astimezone().isoformat(),
         "baseline_mappo_impl_version":MAPPO_IMPL_VERSION,

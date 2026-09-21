@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from copy import deepcopy
 import numpy as np
 
 from .math_utils import wrap_angle
@@ -19,6 +20,7 @@ PERSISTENT_WAVE_VARIANTS = frozenset({
 })
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PERSISTENT_CONFIG = PROJECT_ROOT / "configs/persistent_wave_environment.yaml"
+CURRICULUM_SNAPSHOT_VERSION = 1
 
 
 class PersistentWaveCombatEnv(MultiUAVCombatEnv):
@@ -77,6 +79,152 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         self._begin_wave_record()
         info.update(self._wave_info(False, False, None))
         return observation, info
+
+    def _curriculum_metadata(self) -> dict[str, Any]:
+        return {
+            "snapshot_version": CURRICULUM_SNAPSHOT_VERSION,
+            "environment_version": self.environment_version,
+            "environment_variant": self.environment_variant,
+            "wave_index": int(self.wave_index),
+            "waves_cleared": int(self.waves_cleared),
+            "steps": int(self.steps),
+            "total_waves": int(self.total_waves),
+            "max_steps": int(self.max_steps),
+            "observation_dim": int(self.observation_dim),
+            "action_dim": int(self.action_dim),
+            "team_size": int(self.team_size),
+        }
+
+    def export_curriculum_state(self) -> dict[str, Any]:
+        """Export one exact, legal post-spawn W2/W3 entry state."""
+        if self.wave_index not in (2, 3):
+            raise RuntimeError("curriculum snapshots are only legal at W2/W3 entry")
+        if self.waves_cleared != self.wave_index - 1:
+            raise RuntimeError("curriculum snapshot has inconsistent wave progress")
+        if self.steps != self._wave_start_step:
+            raise RuntimeError("curriculum snapshot must be exported immediately post-spawn")
+        if self.steps >= self.max_steps or not self.red_alive_mask.any():
+            raise RuntimeError("curriculum snapshot cannot be terminal")
+        if int(self.blue_alive_mask.sum()) != self.team_size:
+            raise RuntimeError("curriculum snapshot requires a complete fresh Blue wave")
+        fixed_policy_state = None
+        if isinstance(self.fixed_policy, GroundAwareNearestTargetPursuitPolicy):
+            fixed_policy_state = {
+                "total_decision_steps": int(self.fixed_policy.total_decision_steps),
+                "override_steps": int(self.fixed_policy.override_steps),
+                "activation_count": int(self.fixed_policy.activation_count),
+                "maximum_activation_duration_steps": int(
+                    self.fixed_policy.maximum_activation_duration_steps
+                ),
+                "_previous_override": self.fixed_policy._previous_override.copy(),
+                "_current_duration": self.fixed_policy._current_duration.copy(),
+                "last_override_mask": self.fixed_policy.last_override_mask.copy(),
+            }
+        return deepcopy({
+            "metadata": self._curriculum_metadata(),
+            "red": [state.copy() for state in self.red],
+            "blue": [state.copy() for state in self.blue],
+            "red_fire_states": [FireState(state.armed) for state in self.red_fire_states],
+            "blue_fire_states": [FireState(state.armed) for state in self.blue_fire_states],
+            "red_last_executed_phi": self.red_last_executed_phi.copy(),
+            "blue_last_executed_phi": self.blue_last_executed_phi.copy(),
+            "rng_state": deepcopy(self.rng.bit_generator.state),
+            "steps": int(self.steps),
+            "combat_counts": deepcopy(self.combat_counts),
+            "first_steps": deepcopy(self.first_steps),
+            "episode_reward_components": {
+                key: value.copy() for key, value in self.episode_reward_components.items()
+            },
+            "wave_index": int(self.wave_index),
+            "waves_cleared": int(self.waves_cleared),
+            "last_spawn_candidate_index": self.last_spawn_candidate_index,
+            "last_minimum_spawn_distance": self.last_minimum_spawn_distance,
+            "wave_records": deepcopy(self.wave_records),
+            "_wave_start_step": int(self._wave_start_step),
+            "_wave_start_red_survivors": int(self._wave_start_red_survivors),
+            "_wave_start_counts": deepcopy(self._wave_start_counts),
+            "_wave_start_rewards": deepcopy(self._wave_start_rewards),
+            "_wave_record_open": bool(self._wave_record_open),
+            "fixed_policy_state": fixed_policy_state,
+        })
+
+    def restore_curriculum_state(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Restore a validated dynamic state without changing task semantics."""
+        state = deepcopy(snapshot)
+        metadata = state.get("metadata", {})
+        expected = self._curriculum_metadata()
+        for key in (
+            "snapshot_version", "environment_version", "environment_variant",
+            "total_waves", "max_steps", "observation_dim", "action_dim", "team_size",
+        ):
+            if metadata.get(key) != expected[key]:
+                raise ValueError(
+                    f"curriculum snapshot {key} mismatch: "
+                    f"expected {expected[key]!r}, got {metadata.get(key)!r}"
+                )
+        wave = int(metadata.get("wave_index", 0))
+        cleared = int(metadata.get("waves_cleared", -1))
+        steps = int(metadata.get("steps", -1))
+        if wave not in (2, 3) or cleared != wave - 1:
+            raise ValueError("curriculum snapshot is not a legal W2/W3 entry")
+        if not 0 <= steps < self.max_steps:
+            raise ValueError("curriculum snapshot has invalid global step")
+        if len(state.get("red", [])) != self.team_size or len(state.get("blue", [])) != self.team_size:
+            raise ValueError("curriculum snapshot team size mismatch")
+        self.red = [item.copy() for item in state["red"]]
+        self.blue = [item.copy() for item in state["blue"]]
+        self.red_fire_states = [FireState(item.armed) for item in state["red_fire_states"]]
+        self.blue_fire_states = [FireState(item.armed) for item in state["blue_fire_states"]]
+        self.red_last_executed_phi = np.asarray(
+            state["red_last_executed_phi"], dtype=np.float32
+        ).copy()
+        self.blue_last_executed_phi = np.asarray(
+            state["blue_last_executed_phi"], dtype=np.float32
+        ).copy()
+        self.rng = np.random.default_rng()
+        self.rng.bit_generator.state = deepcopy(state["rng_state"])
+        self.steps = int(state["steps"])
+        self.combat_counts = deepcopy(state["combat_counts"])
+        self.first_steps = deepcopy(state["first_steps"])
+        self.episode_reward_components = {
+            key: np.asarray(value, dtype=np.float64).copy()
+            for key, value in state["episode_reward_components"].items()
+        }
+        self.wave_index = int(state["wave_index"])
+        self.waves_cleared = int(state["waves_cleared"])
+        self.last_spawn_candidate_index = state["last_spawn_candidate_index"]
+        self.last_minimum_spawn_distance = state["last_minimum_spawn_distance"]
+        self.wave_records = deepcopy(state["wave_records"])
+        self._wave_start_step = int(state["_wave_start_step"])
+        self._wave_start_red_survivors = int(state["_wave_start_red_survivors"])
+        self._wave_start_counts = deepcopy(state["_wave_start_counts"])
+        self._wave_start_rewards = deepcopy(state["_wave_start_rewards"])
+        self._wave_record_open = bool(state["_wave_record_open"])
+        fixed = state.get("fixed_policy_state")
+        if isinstance(self.fixed_policy, GroundAwareNearestTargetPursuitPolicy):
+            if not isinstance(fixed, dict):
+                raise ValueError("curriculum snapshot is missing fixed-policy state")
+            for key in (
+                "total_decision_steps", "override_steps", "activation_count",
+                "maximum_activation_duration_steps",
+            ):
+                setattr(self.fixed_policy, key, int(fixed[key]))
+            for key in ("_previous_override", "_current_duration", "last_override_mask"):
+                setattr(self.fixed_policy, key, np.asarray(fixed[key]).copy())
+        if self.steps != self._wave_start_step or not self.red_alive_mask.any():
+            raise ValueError("restored curriculum state is not a live post-spawn entry")
+        if int(self.blue_alive_mask.sum()) != self.team_size:
+            raise ValueError("restored curriculum state has an incomplete Blue wave")
+        return {
+            "observation": self._observations().copy(),
+            "red_alive_mask": self.red_alive_mask.copy(),
+            "blue_alive_mask": self.blue_alive_mask.copy(),
+            "wave_index": int(self.wave_index),
+            "waves_cleared": int(self.waves_cleared),
+            "total_waves": int(self.total_waves),
+            "steps": int(self.steps),
+            "combat_counts": deepcopy(self.combat_counts),
+        }
 
     def _begin_wave_record(self) -> None:
         self._wave_record_open = True
@@ -306,6 +454,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
 
 
 __all__ = [
+    "CURRICULUM_SNAPSHOT_VERSION",
     "PERSISTENT_WAVE_VARIANT", "PERSISTENT_WAVE_V2_VARIANT",
     "PERSISTENT_WAVE_VARIANTS", "PersistentWaveCombatEnv",
 ]

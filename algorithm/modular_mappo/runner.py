@@ -107,6 +107,10 @@ class ModularMAPPOTrainingRunner:
         if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled):
             self.effective_hidden_dim = 64
         self.trainer = build_modular_mappo_trainer(configured, self.device, self.effective_hidden_dim,self.total_sampled_steps)
+        if self.trainer.wave_entry_curriculum.enabled:
+            if (self.declared_env_config.get("environment_variant") != "persistent_wave_v2"
+                    or int(self.declared_env_config.get("persistent_waves", {}).get("total_waves", 0)) != 3):
+                raise ValueError("wave_entry_curriculum requires persistent_wave_v2 with exactly three waves")
         self.rollout_steps = 4 if self.smoke else int(training["rollout_steps"])
         self.eval_episodes = min(2, int(training["evaluation_episodes"])) if self.smoke else int(training["evaluation_episodes"])
         self.eval_base = int(implementation["evaluation_seed_base"])
@@ -241,6 +245,10 @@ class ModularMAPPOTrainingRunner:
         self.total = np.full(self.num_envs, self.current_waves, dtype=np.int64)
         self.episode_steps = np.zeros(self.num_envs, dtype=np.int64)
         self.episode_mask = np.zeros(self.num_envs, dtype=np.float32)
+        self.episode_start_wave = np.ones(self.num_envs, dtype=np.int64)
+        self.curriculum_source_wave = np.zeros(self.num_envs, dtype=np.int64)
+        self.curriculum_snapshot_id = np.full(self.num_envs, None, dtype=object)
+        self.episode_reset_seed = self.vector.last_reset_seeds.copy()
         self.actor_hidden, self.critic_hidden = self.trainer.initial_hidden(self.num_envs)
         (self.output_dir / "runtime_env_config.yaml").write_text(
             yaml.safe_dump(self.runtime_env_config, sort_keys=False), encoding="utf-8"
@@ -268,6 +276,9 @@ class ModularMAPPOTrainingRunner:
 
     def _write_episode(self, info: dict[str, Any], raw_return: np.ndarray,
                        training_return: np.ndarray, sampled_steps: int,
+                       episode_start_wave: int = 1,
+                       curriculum_source_wave: int = 0,
+                       curriculum_snapshot_id: str | None = None,
                        paper_blue: float = 0.0, paper_red: float = 0.0,
                        paper_by_wave: np.ndarray | None = None,
                        pbrs_sum: float = 0.0, pbrs_abs_sum: float = 0.0,
@@ -306,6 +317,15 @@ class ModularMAPPOTrainingRunner:
             "blue_boundary_deaths": int(info["blue_boundary_exits"]),
             "blue_ground_deaths": int(info["blue_ground_losses"]),
             "waves_cleared": waves,
+            "episode_start_wave": int(episode_start_wave),
+            "curriculum_episode": bool(int(episode_start_wave) > 1),
+            "curriculum_source_wave": (
+                int(curriculum_source_wave) if int(curriculum_source_wave) > 0 else None
+            ),
+            "curriculum_snapshot_id": curriculum_snapshot_id,
+            "additional_waves_cleared": max(
+                0, waves - (int(episode_start_wave) - 1)
+            ),
             "total_waves": int(info.get("total_waves", 1)),
             **{f"wave_{k}_cleared": float(waves >= k) for k in (1, 2, 3)},
             "red_survivors_enter_wave2": float(wave_records[2]["red_survivors_start"]) if 2 in wave_records else None,
@@ -394,6 +414,66 @@ class ModularMAPPOTrainingRunner:
                 completed.append(self.trainer.boundary_redistributed_segment_credit.complete_boundary(
                     pending,waves_cleared,group_id,int(env_id)))
         self.brsc_pending_episode[int(env_id)]={1:None,2:None};return completed
+
+    def _collect_wave_entry_snapshots(
+        self, infos: list[dict[str, Any]], sampled_steps: int
+    ) -> None:
+        module = self.trainer.wave_entry_curriculum
+        if not module.enabled:
+            return
+        env_ids = [
+            env_id for env_id, info in enumerate(infos)
+            if bool(info.get("spawned_next_wave", False))
+            and int(self.episode_start_wave[env_id]) == 1
+        ]
+        if not env_ids:
+            return
+        snapshots = self.vector.export_curriculum_states(env_ids)
+        for env_id in env_ids:
+            info = infos[env_id]
+            module.add_natural_entry(
+                int(info["wave_index"]), snapshots[env_id],
+                source_sampled_steps=int(sampled_steps),
+                source_training_seed=self.seed,
+                source_env_id=env_id,
+                source_episode_reset_seed=int(self.episode_reset_seed[env_id]),
+                red_survivors=int(info["red_survivors"]),
+            )
+
+    def _cause_baseline_from_restore(self, result: dict[str, Any]) -> np.ndarray:
+        counts = result["combat_counts"]
+        return np.asarray([
+            counts["blue"]["attack_kills"], counts["red"]["boundary_exits"],
+            counts["red"]["ground_losses"], counts["red"]["attack_kills"],
+            counts["blue"]["boundary_exits"], counts["blue"]["ground_losses"],
+        ], dtype=np.int64)
+
+    def _apply_wave_entry_curriculum_resets(
+        self, done: np.ndarray, infos: list[dict[str, Any]]
+    ) -> dict[int, dict[str, Any]]:
+        """Replace selected auto-resets and synchronize every runner baseline."""
+        module = self.trainer.wave_entry_curriculum
+        done_ids = np.flatnonzero(done).tolist()
+        if not module.enabled or not done_ids:
+            return {}
+        for env_id in done_ids:
+            if int(self.episode_start_wave[env_id]) == 1:
+                module.record_natural_episode(int(infos[env_id].get("waves_cleared", 0)))
+        selected: dict[int, dict[str, Any]] = {}
+        entries: dict[int, dict[str, Any]] = {}
+        for env_id in done_ids:
+            wave, entry = module.sample_reset()
+            self.episode_start_wave[env_id] = wave
+            self.curriculum_source_wave[env_id] = 0 if entry is None else int(entry["entry_wave"])
+            self.curriculum_snapshot_id[env_id] = None if entry is None else str(entry["snapshot_id"])
+            self.episode_reset_seed[env_id] = int(self.vector.last_reset_seeds[env_id])
+            if entry is not None:
+                selected[env_id] = entry["snapshot"]
+                entries[env_id] = entry
+        restored = self.vector.restore_curriculum_states(selected) if selected else {}
+        for env_id, result in restored.items():
+            self.previous_cause_counts[env_id] = self._cause_baseline_from_restore(result)
+        return restored
 
     def collect_rollout(self, steps: int | None = None) -> ModularRolloutBatch:
         keys = ("observations", "actions", "raw_actions", "old_log_probs", "rewards",
@@ -578,6 +658,7 @@ class ModularMAPPOTrainingRunner:
                     info.get("spawned_next_wave",False),self.trainer.sampled_steps+self.num_envs)
                 if info.get("wave_cleared_this_step", False):
                     self.wave_clear_transition_counts[max(1, min(3, int(pre_wave[env_id]))) - 1] += 1
+            self._collect_wave_entry_snapshots(result.infos, self.trainer.sampled_steps + self.num_envs)
             values = (obs, actions, raw, log_prob, training_reward, result.rewards.copy(),
                       done.astype(np.float32), alive, result.transition_next_observations,
                       result.next_alive_masks, pre_wave, self.total.copy(), context,
@@ -598,11 +679,18 @@ class ModularMAPPOTrainingRunner:
                     completed_brsc_boundaries.extend(self._brsc_finalize_episode(env_id,result.infos[env_id].get("waves_cleared",0)))
                     self._write_episode(result.infos[env_id], self.raw_episode_returns[env_id],
                                         self.training_episode_returns[env_id], step_after,
-                                        self.paper_episode_blue[env_id], self.paper_episode_red[env_id],
-                                        self.paper_episode_by_wave[env_id], self.pbrs_episode_sum[env_id],
-                                        self.pbrs_episode_abs_sum[env_id], self.pbrs_episode_by_wave[env_id],
-                                        self.pbrs_episode_phi_pre[env_id], self.pbrs_episode_phi_next[env_id],
-                                        int(self.pbrs_episode_samples[env_id]))
+                                        episode_start_wave=int(self.episode_start_wave[env_id]),
+                                        curriculum_source_wave=int(self.curriculum_source_wave[env_id]),
+                                        curriculum_snapshot_id=self.curriculum_snapshot_id[env_id],
+                                        paper_blue=self.paper_episode_blue[env_id],
+                                        paper_red=self.paper_episode_red[env_id],
+                                        paper_by_wave=self.paper_episode_by_wave[env_id],
+                                        pbrs_sum=self.pbrs_episode_sum[env_id],
+                                        pbrs_abs_sum=self.pbrs_episode_abs_sum[env_id],
+                                        pbrs_by_wave=self.pbrs_episode_by_wave[env_id],
+                                        pbrs_phi_pre=self.pbrs_episode_phi_pre[env_id],
+                                        pbrs_phi_next=self.pbrs_episode_phi_next[env_id],
+                                        pbrs_samples=int(self.pbrs_episode_samples[env_id]))
                     self.raw_episode_returns[env_id].fill(0)
                     self.training_episode_returns[env_id].fill(0)
                     self.paper_episode_blue[env_id] = 0.0
@@ -614,12 +702,20 @@ class ModularMAPPOTrainingRunner:
                     self.pbrs_episode_phi_pre[env_id] = 0.0
                     self.pbrs_episode_phi_next[env_id] = 0.0
                     self.pbrs_episode_samples[env_id] = 0
+            restored = self._apply_wave_entry_curriculum_resets(done, result.infos)
             self.observations = result.observations
+            if restored:
+                self.observations = self.vector.current_observations.copy()
             self.alive = self.vector.current_alive_masks.copy()
             self.blue_alive = np.where(done[:, None], np.ones_like(post_blue), post_blue)
             self.wave = np.where(done, 1, next_wave)
             self.total = np.where(done, self.current_waves, next_total)
             self.episode_steps = np.where(done, 0, next_steps)
+            for env_id, metadata in restored.items():
+                self.blue_alive[env_id] = np.asarray(metadata["blue_alive_mask"], dtype=np.float32)
+                self.wave[env_id] = int(metadata["wave_index"])
+                self.total[env_id] = int(metadata["total_waves"])
+                self.episode_steps[env_id] = int(metadata["steps"])
             self.episode_mask = (~done).astype(np.float32)
             self.actor_hidden = self.trainer.recurrent.apply_alive(new_actor, self.alive)
             self.critic_hidden = self.trainer.recurrent.apply_alive(new_critic, self.alive)
@@ -666,6 +762,8 @@ class ModularMAPPOTrainingRunner:
         if reward_rows:
             for key in reward_rows[0]:
                 self.last_rollout_metrics[key] = float(np.mean([row[key] for row in reward_rows]))
+        if self.trainer.wave_entry_curriculum.enabled:
+            self.last_rollout_metrics.update(self.trainer.wave_entry_curriculum.diagnostics())
         kwargs = {key: (None if not values or values[0] is None else np.asarray(values)) for key, values in storage.items()}
         kwargs["iw_supervision_segments"] = completed_iw_segments
         kwargs["caiw_supervision_segments"] = completed_caiw_segments
@@ -732,6 +830,11 @@ class ModularMAPPOTrainingRunner:
             "curriculum_stage": self.current_stage,
             "current_total_waves": self.current_waves,
             "curriculum_config": self.algorithm_config.get("modules", {}).get("curriculum", {}),
+            "wave_entry_curriculum_version": self.trainer.wave_entry_curriculum.version,
+            "wave_entry_curriculum_config": deepcopy(
+                self.algorithm_config.get("modules", {}).get("wave_entry_curriculum", {})
+            ),
+            "wave_entry_curriculum_state": self.trainer.wave_entry_curriculum.state_dict(),
             "episode_indices": self.vector.episode_indices.tolist(),
             "evaluation_history": self.evaluation_history,
             "best_evaluation": self.best_evaluation,
@@ -874,6 +977,11 @@ class ModularMAPPOTrainingRunner:
         self.brsc_completed_episode_counter=int(extra.get("brsc_completed_episode_counter",0))
         self.brsc_pending_episode=[{1:None,2:None} for _ in range(self.num_envs)]
         self._make_vector(previous)
+        if self.trainer.wave_entry_curriculum.enabled:
+            saved_wec = extra.get("wave_entry_curriculum_state")
+            if saved_wec is None:
+                raise RuntimeError("wave-entry curriculum checkpoint is missing its state")
+            self.trainer.wave_entry_curriculum.load_state_dict(saved_wec)
         self.trainer.restore_rng_state(state)
         if branch_intervention in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
             restored=bool(self.trainer.rng_restore_metadata["rng_state_restored"])
@@ -961,6 +1069,15 @@ class ModularMAPPOTrainingRunner:
         if self.trainer.wave_survival_pbrs.enabled:extras.append(f"shaping={self.pbrs_totals[0]:.2f}")
         if self.trainer.anchor.enabled:extras.append(f"anchor_KL={self.last_metrics.get('anchor_kl',0):.4f}")
         if self.curriculum_enabled:extras.append(f"stage={self.current_stage} waves={self.current_waves}")
+        wave_entry_curriculum = getattr(self.trainer, "wave_entry_curriculum", None)
+        if wave_entry_curriculum is not None and wave_entry_curriculum.enabled:
+            diagnostics=wave_entry_curriculum.diagnostics()
+            extras.append(
+                f"natural_waves={diagnostics['wec_recent_natural_aw']:.2f} "
+                f"reset_mix={diagnostics['wec_reset_fraction_w1']:.2f}/"
+                f"{diagnostics['wec_reset_fraction_w2']:.2f}/"
+                f"{diagnostics['wec_reset_fraction_w3']:.2f}"
+            )
         return line+(" | "+" | ".join(extras) if extras else "")
 
     def optimization_warning_line(self) -> str | None:
@@ -1031,6 +1148,10 @@ class ModularMAPPOTrainingRunner:
             "warm_start_provenance": self.trainer.warm_start_provenance,
             "anchor_provenance": self.trainer.anchor_provenance,
             "curriculum_transitions": self.curriculum_transitions,
+            "wave_entry_curriculum": (
+                self.trainer.wave_entry_curriculum.diagnostics()
+                if self.trainer.wave_entry_curriculum.enabled else {"enabled": False}
+            ),
             "resume_count": self.resume_count,
             "branch_provenance": self.branch_provenance,
             "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
@@ -1089,6 +1210,16 @@ class ModularMAPPOTrainingRunner:
                            "actor_kl_guard_version":int(self.trainer.actor_kl_guard.version),
                            "actor_kl_guard_hard_kl":float(self.trainer.actor_kl_guard.hard_kl),
                            "actor_kl_guard_actor_early_stop":bool(self.trainer.actor_kl_guard.actor_early_stop)})
+        if self.trainer.wave_entry_curriculum.enabled:
+            result.update({
+                "wave_entry_curriculum_enabled": True,
+                "wave_entry_curriculum_version": int(self.trainer.wave_entry_curriculum.version),
+                "wave_entry_curriculum_config": deepcopy(self.trainer.wave_entry_curriculum.config),
+                "bank_capacity": int(self.trainer.wave_entry_curriculum.capacity_per_wave),
+                "adaptive_target_reach_w2": float(self.trainer.wave_entry_curriculum.target_reach_w2),
+                "adaptive_target_reach_w3": float(self.trainer.wave_entry_curriculum.target_reach_w3),
+                "max_curriculum_fraction": float(self.trainer.wave_entry_curriculum.max_curriculum_fraction),
+            })
         if self.trainer.hierarchical_temporal_abstraction.enabled:
             result.update({key:architecture[key] for key in (
                 "hierarchical_temporal_abstraction_enabled","hta_version","manager_actor_class",

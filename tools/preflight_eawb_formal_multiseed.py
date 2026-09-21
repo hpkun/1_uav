@@ -26,7 +26,9 @@ HOLDOUT_START, HOLDOUT_END = 30_000_000, 30_000_199
 MONITOR_START, MONITOR_END = 29_000_000, 29_000_019
 FROZEN_ENV_RAW_SHA256 = "ad16c516b31c6fd6eeed825da114e53e6092356daed18b2723371750e5dd92b2"
 FROZEN_ENV_SEMANTIC_SHA256 = "ca2108c449065f17a3ad8ea287c94e8aa94dadac8b1e20a7b063afbfd22333ee"
-FROZEN_ENV_SOURCE_TREE_SHA256 = "9f5726802979ec42394761515c5da2d4a832f2b9f6138b5611eaf4c1bd599c15"
+# Snapshot/restore is an opt-in training-infrastructure interface; reset/step,
+# reward, weapon, Blue policy and configuration semantics remain unchanged.
+FROZEN_ENV_SOURCE_TREE_SHA256 = "0aacc84dda1d7d43221f2255f577c2c3810a44d751c680d0236c301d1c9376b6"
 MAIN_ENABLEMENT = {
     "MAPPO": (False, False),
     "WB-MAPPO": (False, True),
