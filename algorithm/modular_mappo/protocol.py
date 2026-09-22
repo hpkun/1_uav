@@ -161,6 +161,38 @@ def validate_modular_branch(state,env_config,algorithm_config,expected_runtime=N
  if missing:raise RuntimeError("branch checkpoint lacks required state: "+", ".join(missing))
  return {"intervention":"actor_lr_decay" if source_decay!=destination_decay else "fixed_lr_control","source_actor_lr_decay":deepcopy(source_decay),"destination_actor_lr_decay":deepcopy(destination_decay)}
 
+def _swgp_branch_comparable_config(config):
+ value=deepcopy(config);value.pop("development_method",None);value.pop("development_branch",None)
+ value.get("training",{}).pop("total_sampled_steps",None)
+ value.get("modules",{}).pop("sequential_wave_gradient_projection",None)
+ return value
+
+def validate_swgp_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate a matched Plain checkpoint continuation into Control or SWGP V1."""
+ if state.get("algorithm")!="modular_mappo":raise RuntimeError("SWGP branch source must be modular_mappo")
+ if state.get("modular_mappo_impl_version")!=MODULAR_MAPPO_IMPL_VERSION or state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("SWGP branch source implementation mismatch")
+ extra=state.get("extra",{});source_env=extra.get("environment_config");source=extra.get("algorithm_config")
+ if not isinstance(source_env,dict) or not isinstance(source,dict):raise RuntimeError("SWGP branch source lacks embedded configs")
+ if source_env!=env_config or extra.get("environment_config_sha256")!=config_sha256(env_config):raise RuntimeError("SWGP branch environment mismatch")
+ if _swgp_branch_comparable_config(source)!=_swgp_branch_comparable_config(algorithm_config):raise RuntimeError("SWGP branch differs outside the intervention whitelist")
+ source_enabled=set(state.get("enabled_modules",[]));destination_enabled=set(name for name,value in algorithm_config.get("modules",{}).items() if isinstance(value,dict) and value.get("enabled",False))
+ if source_enabled!={"actor_lr_decay"}:raise RuntimeError("SWGP branch source must be exact Plain actor_lr_decay")
+ allowed=({"actor_lr_decay"},{"actor_lr_decay","sequential_wave_gradient_projection"})
+ if destination_enabled not in allowed:raise RuntimeError("SWGP destination enabled modules mismatch")
+ intervention=algorithm_config.get("development_branch",{}).get("intervention")
+ branch=algorithm_config.get("development_branch",{})
+ expected=("sequential_wave_gradient_projection" if "sequential_wave_gradient_projection" in destination_enabled else "sequential_wave_gradient_projection_control")
+ if intervention!=expected:raise RuntimeError("SWGP branch intervention/config mismatch")
+ if int(branch.get("source_training_seed",-1))!=int(extra.get("training_seed",-2)):raise RuntimeError("SWGP branch source training seed mismatch")
+ if int(branch.get("source_sampled_steps",-1))!=int(state.get("sampled_steps",-2)):raise RuntimeError("SWGP branch source sampled_steps mismatch")
+ if expected_runtime:
+  for key,value in expected_runtime.items():
+   if extra.get(key)!=value:raise RuntimeError(f"SWGP branch checkpoint {key} mismatch")
+ required=("actor","critic","actor_optimizer","critic_optimizer","rng_state","sampled_steps","ppo_updates","actor_updates","critic_updates")
+ missing=[key for key in required if key not in state]
+ if missing:raise RuntimeError("SWGP branch source lacks required state: "+", ".join(missing))
+ return {"intervention":intervention,"source_enabled_modules":sorted(source_enabled),"destination_enabled_modules":sorted(destination_enabled),"matched_causal_continuation":True,"historical_plain_bitwise_continuation":False,"reason":"environment episode state is not checkpointed"}
+
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
  for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)

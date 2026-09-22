@@ -1232,6 +1232,12 @@ class ModularMAPPOTrainingRunner:
                 "worker_learning_timescale","worker_consolidation_start_step",
                 "worker_consolidation_end_step","worker_final_lr_multiplier",
                 "manager_learning_schedule","tactical_critic_learning_schedule")})
+        if self.trainer.sequential_wave_gradient_projection.enabled:
+            module=self.trainer.sequential_wave_gradient_projection
+            result.update({"sequential_wave_gradient_projection_enabled":True,
+                           "swgp_version":1,"swgp_mode":module.mode,"swgp_epsilon":module.epsilon,
+                           "swgp_actor_only":True,"swgp_natural_wave_frequency":True,
+                           "swgp_critic_unchanged":True})
         return result
 
     def run(self) -> dict[str, Any]:
