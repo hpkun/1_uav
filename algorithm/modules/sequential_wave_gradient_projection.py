@@ -33,8 +33,24 @@ def project_nonconflicting(gradient: Sequence[torch.Tensor], reference: Sequence
     applied = bool((dot < 0).detach()) and bool((reference_norm_sq > epsilon).detach())
     if not applied:
         return list(gradient), dot, False
-    return [value - dot / (reference_norm_sq + epsilon) * ref
-            for value, ref in zip(gradient, reference)], dot, True
+    projected = [value - dot / (reference_norm_sq + epsilon) * ref
+                 for value, ref in zip(gradient, reference)]
+
+    # The stabilising epsilon in the nominal projection leaves a small negative
+    # component along ``reference``.  Usually that component is below float32
+    # resolution, but high-dimensional PPO gradients can expose it when the
+    # projected norm is close to zero.  Remove that numerical residue and add a
+    # one-ULP inward margin so the half-space invariant survives float32
+    # accumulation.  This is not an extra optimisation mechanism: it is only a
+    # numerically robust implementation of <projected, reference> >= 0.
+    residual = gradient_dot(projected, reference)
+    if bool((residual < 0).detach()):
+        dtype = dot.dtype if dot.is_floating_point() else projected[0].dtype
+        inward_margin = torch.finfo(dtype).eps * reference_norm_sq
+        correction = (residual - inward_margin) / reference_norm_sq
+        projected = [value - correction * ref
+                     for value, ref in zip(projected, reference)]
+    return projected, dot, True
 
 
 def ordered_upstream_pairwise(

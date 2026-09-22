@@ -175,3 +175,32 @@ def test_28_mixed_wave_metrics_are_finite_and_projection_counters_match():
 def test_29_module_state_requires_version_and_config():
     module=SequentialWaveGradientProjectionModule(SWGP);state=module.state_dict();state["version"]=99
     with pytest.raises(RuntimeError,match="version"):module.load_state_dict(state)
+
+
+def test_30_projection_removes_float32_residual_conflict():
+    # A near-collinear, high-dimensional case exercises the same cancellation
+    # regime as the first real branch update that originally tripped the guard.
+    generator=torch.Generator().manual_seed(5302)
+    reference=[torch.randn(80902,generator=generator,dtype=torch.float32)]
+    orthogonal=torch.randn(80902,generator=generator,dtype=torch.float32)
+    orthogonal-=gradient_dot([orthogonal],reference)/gradient_dot(reference,reference)*reference[0]
+    source=[-2.75*reference[0]+1e-5*orthogonal]
+    projected,_,applied=project_nonconflicting(source,reference)
+    assert applied
+    dot=float(gradient_dot(projected,reference))
+    tolerance=-1e-7*float(torch.linalg.vector_norm(projected[0]))*float(torch.linalg.vector_norm(reference[0]))
+    assert dot>=tolerance
+    assert all(torch.isfinite(value).all() for value in projected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA unavailable")
+def test_31_projection_residual_guard_on_cuda():
+    generator=torch.Generator().manual_seed(5302)
+    reference=[torch.randn(80902,generator=generator,dtype=torch.float32).cuda()]
+    orthogonal=torch.randn(80902,generator=generator,dtype=torch.float32).cuda()
+    orthogonal-=gradient_dot([orthogonal],reference)/gradient_dot(reference,reference)*reference[0]
+    source=[-2.75*reference[0]+1e-5*orthogonal]
+    projected,_,applied=project_nonconflicting(source,reference)
+    dot=float(gradient_dot(projected,reference))
+    tolerance=-1e-7*float(torch.linalg.vector_norm(projected[0]))*float(torch.linalg.vector_norm(reference[0]))
+    assert applied and dot>=tolerance
