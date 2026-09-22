@@ -162,6 +162,8 @@ def main() -> None:
     env_config=yaml.safe_load(env_path.read_text(encoding="utf-8"));algorithm_config=load_config(algorithm_path)
     resume_path=resolved(args.resume).resolve() if args.resume else None
     branch_path=resolved(args.branch_from).resolve() if args.branch_from else None
+    if algorithm_config.get("development_method")=="delayed_swgp_mappo" and branch_path is not None:
+        raise RuntimeError("Delayed-SWGP is a fresh 0-to-3M protocol and forbids --branch-from")
     state=None;run_config=None;rollback={};branch_validation=None;branch_provenance={};resume_point={}
     if resume_path is None and branch_path is None:
         if algorithm_config.get("development_branch",{}).get("intervention"):

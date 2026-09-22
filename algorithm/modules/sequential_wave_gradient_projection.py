@@ -101,10 +101,13 @@ class SequentialWaveGradientProjectionModule(CapabilityModule):
         super().__init__(config)
         self.mode = str(self.config.get("mode", "ordered_upstream_pairwise"))
         self.epsilon = float(self.config.get("epsilon", 1e-12))
+        self.activation_start_step = int(self.config.get("activation_start_step", 0))
         if self.mode != "ordered_upstream_pairwise":
             raise ValueError("SWGP V1 requires mode=ordered_upstream_pairwise")
         if self.epsilon <= 0:
             raise ValueError("SWGP epsilon must be positive")
+        if ("activation_start_step" in self.config and self.activation_start_step <= 0) or self.activation_start_step < 0:
+            raise ValueError("SWGP activation_start_step must be positive when configured")
         self.reset_counters()
 
     def reset_counters(self) -> None:
@@ -114,6 +117,44 @@ class SequentialWaveGradientProjectionModule(CapabilityModule):
         self.w3_w2_projection_count = 0
         self.no_projection_count = 0
         self.single_wave_minibatch_count = 0
+        self.first_activation_sampled_steps: int | None = None
+        self.activation_update_count = 0
+        self.pre_activation_plain_update_count = 0
+
+    def is_active(self, sampled_steps: int) -> bool:
+        return self.enabled and int(sampled_steps) >= self.activation_start_step
+
+    def record_update_start(self, sampled_steps: int) -> tuple[bool, bool]:
+        """Record one rollout-level routing decision without touching any RNG."""
+        active = self.is_active(sampled_steps)
+        first_activation = False
+        if active:
+            if self.first_activation_sampled_steps is None:
+                self.first_activation_sampled_steps = int(sampled_steps)
+                first_activation = True
+            self.activation_update_count += 1
+        else:
+            self.pre_activation_plain_update_count += 1
+        return active, first_activation
+
+    def activation_diagnostics(self, currently_active: bool,
+                               activated_this_update: bool = False) -> dict[str, float]:
+        return {
+            "swgp_configured": float(self.enabled),
+            "swgp_currently_active": float(currently_active),
+            "swgp_activation_start_step": float(self.activation_start_step),
+            # Optimization JSONL is numeric-only. -1 denotes "not activated yet";
+            # the checkpoint module state retains the canonical None value.
+            "swgp_first_activation_sampled_steps": float(
+                -1 if self.first_activation_sampled_steps is None
+                else self.first_activation_sampled_steps
+            ),
+            "swgp_pre_activation_plain_update_count": float(
+                self.pre_activation_plain_update_count
+            ),
+            "swgp_activation_update_count": float(self.activation_update_count),
+            "swgp_activated_this_update": float(activated_this_update),
+        }
 
     def record(self, available_waves: int, diagnostics: dict[str, Any]) -> None:
         self.total_swgp_minibatches += 1
@@ -127,6 +168,10 @@ class SequentialWaveGradientProjectionModule(CapabilityModule):
     def state_dict(self) -> dict[str, Any]:
         return {
             "version": SWGP_MAPPO_VERSION, "config": deepcopy(self.config),
+            "activation_start_step": self.activation_start_step,
+            "first_activation_sampled_steps": self.first_activation_sampled_steps,
+            "activation_update_count": self.activation_update_count,
+            "pre_activation_plain_update_count": self.pre_activation_plain_update_count,
             "total_swgp_minibatches": self.total_swgp_minibatches,
             "w2_projection_count": self.w2_projection_count,
             "w3_w1_projection_count": self.w3_w1_projection_count,
@@ -144,6 +189,14 @@ class SequentialWaveGradientProjectionModule(CapabilityModule):
             raise RuntimeError("SWGP checkpoint version mismatch")
         if state.get("config") != self.config:
             raise RuntimeError("SWGP checkpoint config mismatch")
+        if int(state.get("activation_start_step", self.activation_start_step)) != self.activation_start_step:
+            raise RuntimeError("SWGP checkpoint activation_start_step mismatch")
+        first = state.get("first_activation_sampled_steps")
+        self.first_activation_sampled_steps = None if first is None else int(first)
+        self.activation_update_count = int(state.get("activation_update_count", 0))
+        self.pre_activation_plain_update_count = int(
+            state.get("pre_activation_plain_update_count", 0)
+        )
         for name in ("total_swgp_minibatches", "w2_projection_count", "w3_w1_projection_count",
                      "w3_w2_projection_count", "no_projection_count", "single_wave_minibatch_count"):
             setattr(self, name, int(state.get(name, 0)))

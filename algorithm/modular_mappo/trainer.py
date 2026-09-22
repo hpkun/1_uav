@@ -390,7 +390,13 @@ class ModularMAPPOTrainer:
   elif self.actor_kl_guard.enabled:
    metrics=self._update_flat_actor_kl_guard(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w if self.advantage_priority.enabled else None)
   elif self.sequential_wave_gradient_projection.enabled:
-   metrics=self._update_flat_swgp(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,waves)
+   swgp_active,swgp_first_activation=self.sequential_wave_gradient_projection.record_update_start(self.sampled_steps)
+   if swgp_active:
+    metrics=self._update_flat_swgp(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,waves)
+   else:
+    # Delayed-SWGP must be literally Plain before activation: do not enter the
+    # SWGP routine, compute per-wave gradients, or consume any extra RNG.
+    metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx)
   elif self.inter_wave_credit.enabled and iw_active is not None and bool(iw_active.any()):
    self._iw_source_waves=waves.reshape(-1)
    metrics=self._update_flat_iwsc(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,iw_adv,iw_active)
@@ -431,6 +437,28 @@ class ModularMAPPOTrainer:
   for key,value in iw_metrics.items():metrics.setdefault(key,value)
   for key,value in caiw_metrics.items():metrics.setdefault(key,value)
   for key,value in brsc_metrics.items():metrics.setdefault(key,value)
+  if self.sequential_wave_gradient_projection.enabled:
+   module=self.sequential_wave_gradient_projection
+   for key in ("swgp_active","swgp_wave1_alive_fraction","swgp_wave2_alive_fraction",
+               "swgp_wave3_alive_fraction","swgp_wave1_grad_norm","swgp_wave2_grad_norm",
+               "swgp_wave3_grad_norm","swgp_raw_cos_w1_w2","swgp_raw_cos_w1_w3",
+               "swgp_raw_cos_w2_w3","swgp_w2_projection_applied_fraction",
+               "swgp_w2_dot_before","swgp_w2_dot_after","swgp_w2_cos_before",
+               "swgp_w2_cos_after","swgp_w3_w1_projection_applied_fraction",
+               "swgp_w3_w1_dot_before","swgp_w3_w1_dot_after",
+               "swgp_w3_w2_projection_applied_fraction","swgp_w3_w2_dot_before",
+               "swgp_w3_w2_dot_after","swgp_surrogate_grad_norm_plain",
+               "swgp_surrogate_grad_norm_projected","swgp_entropy_grad_norm",
+               "swgp_actor_grad_norm_pre_clip","swgp_actor_grad_norm_post_clip",
+               "swgp_no_projection_fraction","swgp_single_wave_minibatch_fraction"):
+    metrics.setdefault(key,0.0)
+   metrics.update({"swgp_total_minibatches":float(module.total_swgp_minibatches),
+    "swgp_w2_projection_count":float(module.w2_projection_count),
+    "swgp_w3_w1_projection_count":float(module.w3_w1_projection_count),
+    "swgp_w3_w2_projection_count":float(module.w3_w2_projection_count),
+    "swgp_no_projection_count":float(module.no_projection_count),
+    "swgp_single_wave_minibatch_count":float(module.single_wave_minibatch_count)})
+   metrics.update(module.activation_diagnostics(swgp_active,swgp_first_activation))
   metrics.update({"popart_mean":float(self.popart.mean),"popart_std":float(self.popart.std),"popart_count":float(self.popart.count),"actor_learning_rate":float(self.actor_optimizer.param_groups[0]["lr"]),"critic_learning_rate":float(self.critic_optimizer.param_groups[0]["lr"]),"kl_hard_stop_count":float(self.kl_hard_stop_count),"cumulative_kl_hard_stop_count":float(self.kl_hard_stop_count),"actor_kl_guard_hard_stop_count":float(self.actor_kl_guard_hard_stop_count),"actor_kl_guard_hard_stop_fraction":float(self.actor_kl_guard_hard_stop_count/self.ppo_update_count)})
   if not np.all(np.isfinite(list(metrics.values()))):raise FloatingPointError(f"non-finite modular update: {metrics}")
   return metrics

@@ -1236,6 +1236,10 @@ class ModularMAPPOTrainingRunner:
             module=self.trainer.sequential_wave_gradient_projection
             result.update({"sequential_wave_gradient_projection_enabled":True,
                            "swgp_version":1,"swgp_mode":module.mode,"swgp_epsilon":module.epsilon,
+                           "swgp_activation_start_step":module.activation_start_step,
+                           "swgp_first_activation_sampled_steps":module.first_activation_sampled_steps,
+                           "swgp_pre_activation_plain_update_count":module.pre_activation_plain_update_count,
+                           "swgp_activation_update_count":module.activation_update_count,
                            "swgp_actor_only":True,"swgp_natural_wave_frequency":True,
                            "swgp_critic_unchanged":True})
         return result
@@ -1250,6 +1254,9 @@ class ModularMAPPOTrainingRunner:
                 self.last_metrics = {**self.trainer.update(rollout), **self.last_rollout_metrics,
                                      "curriculum_stage":float(self.current_stage),
                                      "current_total_waves":float(self.current_waves)}
+                if self.last_metrics.get("swgp_activated_this_update",0.0)>0.5:
+                    print(f"[SWGP_ACTIVATE] configured_step={int(self.last_metrics['swgp_activation_start_step'])} "
+                          f"actual_step={int(self.last_metrics['swgp_first_activation_sampled_steps'])}",flush=True)
                 if (self.trainer.actor_kl_guard.enabled and
                         self.last_metrics.get("kl_hard_stop_triggered", 0.0) > 0.5):
                     print(f"[KL_GUARD] steps={self.trainer.sampled_steps} | "
