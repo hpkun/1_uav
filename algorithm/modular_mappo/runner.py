@@ -16,7 +16,7 @@ import yaml
 
 from env.config import ENVIRONMENT_VERSION
 from algorithm.common.checkpoint import evaluation_selection_key
-from algorithm.common.protocol import config_sha256
+from algorithm.common.protocol import config_sha256, runtime_source_manifest
 from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.mappo.networks import SharedMAPPOActor
 from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
@@ -80,13 +80,19 @@ class ModularMAPPOTrainingRunner:
                  warm_start_checkpoint: str | None = None,
                  reference_checkpoint: str | None = None,
                  resume_mode: bool = False,
-                 branch_provenance: dict[str, Any] | None = None) -> None:
+                 branch_provenance: dict[str, Any] | None = None,
+                 runtime_source_manifest_data: dict[str, Any] | None = None) -> None:
         self.declared_env_config = deepcopy(env_config)
         self.env_config = self.declared_env_config  # compatibility alias: always declared/source
         self.evaluation_env_config = deepcopy(env_config)
         self.algorithm_config = deepcopy(algorithm_config)
         self.output_dir = Path(output_dir)
         self.branch_provenance = deepcopy(branch_provenance or {})
+        self.runtime_source_manifest = deepcopy(
+            runtime_source_manifest_data
+            if runtime_source_manifest_data is not None
+            else runtime_source_manifest(Path(__file__).resolve().parents[2])
+        )
         self.output_dir.mkdir(parents=True, exist_ok=True)
         for name in ("training_metrics.jsonl", "optimization_metrics.jsonl"):
             (self.output_dir / name).touch(exist_ok=True)
@@ -861,6 +867,7 @@ class ModularMAPPOTrainingRunner:
             "curriculum_transitions": self.curriculum_transitions,
             "resume_count": self.resume_count,
             "branch_provenance": self.branch_provenance,
+            **self.runtime_source_checkpoint_provenance(),
             "rng_resume_metadata": deepcopy(self.trainer.rng_restore_metadata),
             "last_optimization_metrics": deepcopy(self.last_metrics),
             "iw_pending_segments_dropped_on_resume": self.iw_pending_segments_dropped_on_resume,
@@ -889,6 +896,13 @@ class ModularMAPPOTrainingRunner:
                           "hta_option_usage_counts":self.trainer.hta_option_usage_counts.tolist(),
                           "hta_manager_decision_reason_counts":deepcopy(self.trainer.hta_decision_reason_counts)})
         return value
+
+    def runtime_source_checkpoint_provenance(self) -> dict[str, Any]:
+        """Compact runtime-source identity embedded in every checkpoint."""
+        return {
+            "runtime_source_manifest_sha256": self.runtime_source_manifest["runtime_source_manifest_sha256"],
+            "runtime_source_manifest_file_count": self.runtime_source_manifest["runtime_source_manifest_file_count"],
+        }
 
     def save_checkpoint(self, path: str | Path, evaluation: dict[str, Any] | None = None) -> None:
         self.trainer.save(path, self.checkpoint_extra(evaluation))

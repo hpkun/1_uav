@@ -5,10 +5,15 @@ import argparse
 import csv
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from algorithm.common.protocol import aggregate_runtime_source_manifest
+
 SEEDS = (5301, 5302, 5303)
 SOURCE = 1_505_280
 TARGET = 1_805_280
@@ -112,6 +117,38 @@ def w2_entry_sample_status(control_count: float, treatment_count: float) -> str:
     return "INSUFFICIENT_ENTRY_SAMPLES"
 
 
+def verify_six_branch_runtime_source_consistency(
+    run_configs: list[tuple[str, dict[str, Any]]]
+) -> dict[str, Any]:
+    if len(run_configs) != 6:
+        raise RuntimeError(f"expected six formal runtime manifests, got {len(run_configs)}")
+    identities: list[tuple[str, int]] = []
+    for label, run_config in run_configs:
+        manifest_sha = run_config.get("runtime_source_manifest_sha256")
+        file_count = run_config.get("runtime_source_manifest_file_count")
+        files = run_config.get("runtime_source_manifest_files")
+        if not isinstance(manifest_sha, str) or len(manifest_sha) != 64:
+            raise RuntimeError(f"{label}: runtime source manifest SHA missing")
+        if not isinstance(file_count, int) or isinstance(file_count, bool) or file_count <= 0:
+            raise RuntimeError(f"{label}: runtime source manifest file_count invalid")
+        if not isinstance(files, list) or not files or len(files) != file_count:
+            raise RuntimeError(f"{label}: runtime source manifest files incomplete")
+        paths = [item.get("path") for item in files if isinstance(item, dict)]
+        if len(paths) != file_count or paths != sorted(paths) or len(set(paths)) != file_count:
+            raise RuntimeError(f"{label}: runtime source manifest paths are not canonical")
+        if aggregate_runtime_source_manifest(files) != manifest_sha:
+            raise RuntimeError(f"{label}: runtime source manifest aggregate mismatch")
+        identities.append((manifest_sha, file_count))
+    if len(set(identities)) != 1:
+        raise RuntimeError("FORMAL_RUNTIME_SOURCE_MISMATCH")
+    manifest_sha, file_count = identities[0]
+    return {
+        "runtime_source_manifest_sha256": manifest_sha,
+        "runtime_source_manifest_file_count": file_count,
+        "runtime_source_consistency_verified": True,
+    }
+
+
 def verify_runtime_intervention(
     branch: str,
     run_config: dict[str, Any],
@@ -202,6 +239,16 @@ def _load_branch(seed: int, branch: str) -> dict[str, Any]:
         raise RuntimeError(f"{directory}: source training seed mismatch")
     if provenance.get("source_checkpoint_unchanged") is not True:
         raise RuntimeError(f"{directory}: source checkpoint unchanged evidence missing")
+    destination_sha = run_config.get("runtime_source_manifest_sha256")
+    if provenance.get("destination_runtime_source_manifest_sha256") != destination_sha:
+        raise RuntimeError(f"{directory}: destination runtime source provenance mismatch")
+    source_runtime_sha = provenance.get("source_runtime_source_manifest_sha256")
+    source_runtime_available = provenance.get("source_runtime_source_provenance_available")
+    if source_runtime_sha is None:
+        if source_runtime_available is not False:
+            raise RuntimeError(f"{directory}: historical source provenance availability mismatch")
+    elif source_runtime_available is not True:
+        raise RuntimeError(f"{directory}: source runtime source provenance availability mismatch")
 
     endpoint_metrics = endpoint(directory / "evaluation_history.csv")
     if endpoint_metrics["evaluation_episodes"] != EVALUATION_EPISODES or (
@@ -245,8 +292,10 @@ def main() -> None:
     output = ROOT / args.output_dir
     records: list[dict[str, Any]] = []
     mechanism: list[dict[str, Any]] = []
+    runtime_configs: list[tuple[str, dict[str, Any]]] = []
     for seed in SEEDS:
         pair = {branch: _load_branch(seed, branch) for branch in ("control", "teammean")}
+        runtime_configs.extend((f"seed{seed}/{branch}", pair[branch]["run"]) for branch in ("control", "teammean"))
         if pair["control"]["source_sha256"] != pair["teammean"]["source_sha256"]:
             raise RuntimeError(f"seed {seed}: unmatched source SHA")
         control_endpoint = pair["control"]["endpoint"]
@@ -292,6 +341,7 @@ def main() -> None:
     gate_d = all(row["AverageWaves"] > -0.50 and row["W1"] > -0.25 for row in records)
     decision = ("SAFETY_FAIL" if not gate_d else "NOT_SUPPORTED" if not gate_a
                 else "MECHANISM_INCONCLUSIVE" if not (gate_b and gate_c) else "PROMISING")
+    runtime_source = verify_six_branch_runtime_source_consistency(runtime_configs)
     result = {
         "TEAM_CREDIT_300K_SCREEN": decision,
         "protocol": {
@@ -302,6 +352,7 @@ def main() -> None:
             "evaluation_episodes": EVALUATION_EPISODES,
             "min_W2_entry_count_per_branch": MIN_W2_ENTRY_COUNT_PER_BRANCH,
             "training_seed_is_replication_unit": True,
+            **runtime_source,
         },
         "runtime_intervention_verified": True,
         "primary_endpoint": TARGET, "training_seed_replication_n": 3,

@@ -22,7 +22,11 @@ from algorithm.train_mappo import (
     prepare_resume_rollback, reject_stale_resume_checkpoint,
     resolve_runtime_settings, validate_resume_config_snapshots,
 )
-from algorithm.common.protocol import config_sha256
+from algorithm.common.protocol import (
+    config_sha256,
+    runtime_source_branch_provenance,
+    runtime_source_manifest,
+)
 from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from algorithm.modular_mappo.protocol import (
     checkpoint_architecture, validate_modular_branch, validate_fbmr_stage2_branch,
@@ -92,6 +96,7 @@ def write_run_config(path: Path, runner: ModularMAPPOTrainingRunner,
         "start_timestamp":datetime.now().astimezone().isoformat(),
         "baseline_mappo_impl_version":MAPPO_IMPL_VERSION,
         "modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,
+        **deepcopy(runner.runtime_source_manifest),
         "branch_provenance":runner.branch_provenance,
         "development_branch":deepcopy(runner.algorithm_config.get("development_branch",{})),
     }
@@ -159,6 +164,7 @@ def main() -> None:
     source_group=parser.add_mutually_exclusive_group();source_group.add_argument("--resume");source_group.add_argument("--branch-from")
     parser.add_argument("--warm-start-checkpoint");parser.add_argument("--reference-checkpoint")
     args=parser.parse_args()
+    runtime_manifest=runtime_source_manifest(ROOT)
     env_path, algorithm_path = resolved(args.env_config), resolved(args.algorithm_config)
     env_config=yaml.safe_load(env_path.read_text(encoding="utf-8"));algorithm_config=load_config(algorithm_path)
     resume_path=resolved(args.resume).resolve() if args.resume else None
@@ -202,7 +208,7 @@ def main() -> None:
                  ["total_sampled_steps","development_method","development_branch","team_mean_credit","branch_metadata"] if intervention in {"team_mean_credit","team_mean_credit_control"} else
                  ["total_sampled_steps","development_method","development_branch","sequential_wave_gradient_projection","branch_metadata"] if intervention in {"sequential_wave_gradient_projection","sequential_wave_gradient_projection_control"} else
                  ["total_sampled_steps","development_branch","entity_attention","actor_trainable_parameter_set","actor_optimizer_reset","actor_effective_lr","evaluation_seed_base","development_protocol"])
-        branch_provenance={"branch_creation_mode":"explicit_branch_from","parent_checkpoint_path":str(branch_path),"parent_checkpoint_sha256":parent_digest,"parent_sampled_steps":int(state["sampled_steps"]),"source_training_seed":int(state.get("extra",{}).get("training_seed")),"destination_algorithm_config_sha256":config_sha256(algorithm_config),"destination_module_config_sha256":config_sha256(algorithm_config.get("modules",{})),"source_algorithm_config_sha256":state.get("extra",{}).get("algorithm_config_sha256"),"source_module_config_sha256":state.get("module_config_sha256"),"allowed_differences":allowed,**branch_validation}
+        branch_provenance={"branch_creation_mode":"explicit_branch_from","parent_checkpoint_path":str(branch_path),"parent_checkpoint_sha256":parent_digest,"parent_sampled_steps":int(state["sampled_steps"]),"source_training_seed":int(state.get("extra",{}).get("training_seed")),"destination_algorithm_config_sha256":config_sha256(algorithm_config),"destination_module_config_sha256":config_sha256(algorithm_config.get("modules",{})),"source_algorithm_config_sha256":state.get("extra",{}).get("algorithm_config_sha256"),"source_module_config_sha256":state.get("module_config_sha256"),"allowed_differences":allowed,**runtime_source_branch_provenance(state,runtime_manifest),**branch_validation}
     if branch_path is None:
         runtime=resolve_runtime_settings(algorithm_config,seed=args.seed,num_envs=args.num_envs,
             total_sampled_steps=args.total_sampled_steps,device=args.device,smoke=args.smoke,
@@ -217,7 +223,7 @@ def main() -> None:
         truncated_counts=future_row_counts(output_dir,int(state["sampled_steps"]))
         resume_point=preserve_resume_start_checkpoint(output_dir,resume_path,state)
         rollback=prepare_resume_rollback(output_dir,resume_path,int(state["sampled_steps"]))
-    runner=ModularMAPPOTrainingRunner(env_config,algorithm_config,runtime["num_envs"],runtime["total_sampled_steps"],runtime["device"],runtime["seed"],output_dir,runtime["smoke"],args.warm_start_checkpoint,args.reference_checkpoint,resume_mode=state is not None,branch_provenance=branch_provenance)
+    runner=ModularMAPPOTrainingRunner(env_config,algorithm_config,runtime["num_envs"],runtime["total_sampled_steps"],runtime["device"],runtime["seed"],output_dir,runtime["smoke"],args.warm_start_checkpoint,args.reference_checkpoint,resume_mode=state is not None,branch_provenance=branch_provenance,runtime_source_manifest_data=runtime_manifest)
     if state is None or branch_path is not None:
         write_snapshots(output_dir,env_config,algorithm_config)
         write_run_config(output_dir/"run_config.json",runner,env_path,algorithm_path)

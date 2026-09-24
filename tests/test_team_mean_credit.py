@@ -1,5 +1,7 @@
 from copy import deepcopy
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -7,18 +9,24 @@ import torch
 import yaml
 
 from algorithm.mappo.trainer import compute_gae
+from algorithm.common.protocol import (
+    aggregate_runtime_source_manifest,
+    runtime_source_branch_provenance,
+    runtime_source_manifest,
+)
 from algorithm.modular_mappo.buffer import ModularRolloutBatch
 from algorithm.modular_mappo.protocol import validate_team_credit_branch
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from algorithm.modular_mappo.trainer import ModularMAPPOTrainer
 from algorithm.modules import TeamMeanCreditModule
-from algorithm.train_modular_mappo import load_config
+from algorithm.train_modular_mappo import load_config, write_run_config
 from tools.analyze_team_credit_screen import (
     MIN_W2_ENTRY_COUNT_PER_BRANCH,
     assert_finite_numeric_tree,
     check_text_failure_markers,
     optional_delta,
     verify_runtime_intervention,
+    verify_six_branch_runtime_source_consistency,
     w2_entry_sample_status,
 )
 
@@ -188,3 +196,69 @@ def test_treatment_method_identity_metadata():
  assert identity["team_mean_credit_mode"]=="alive_sum_preserving_mean"
  assert identity["team_mean_credit_reward_scope"]=="training_credit_only"
  assert identity["team_mean_credit_sum_preserving"] is True
+
+
+def test_runtime_source_manifest_determinism_scope_content_and_mtime(tmp_path):
+ (tmp_path/"algorithm").mkdir();(tmp_path/"env").mkdir();(tmp_path/"tests").mkdir();(tmp_path/"tools").mkdir();(tmp_path/"outputs").mkdir()
+ (tmp_path/"algorithm"/"a.py").write_text("A=1\n",encoding="utf-8")
+ (tmp_path/"env"/"b.py").write_text("B=2\n",encoding="utf-8")
+ (tmp_path/"algorithm"/"note.txt").write_text("ignored",encoding="utf-8")
+ (tmp_path/"tests"/"test_x.py").write_text("ignored",encoding="utf-8")
+ (tmp_path/"tools"/"tool.py").write_text("ignored",encoding="utf-8")
+ (tmp_path/"outputs"/"artifact.py").write_text("ignored",encoding="utf-8")
+ (tmp_path/"algorithm"/"__pycache__").mkdir();(tmp_path/"algorithm"/"__pycache__"/"hidden.py").write_text("ignored",encoding="utf-8")
+ first=runtime_source_manifest(tmp_path);second=runtime_source_manifest(tmp_path)
+ assert first==second
+ assert [row["path"] for row in first["runtime_source_manifest_files"]]==["algorithm/a.py","env/b.py"]
+ assert aggregate_runtime_source_manifest(list(reversed(first["runtime_source_manifest_files"])))==first["runtime_source_manifest_sha256"]
+ a=tmp_path/"algorithm"/"a.py";stat=a.stat();os.utime(a,(stat.st_atime+10,stat.st_mtime+10))
+ assert runtime_source_manifest(tmp_path)["runtime_source_manifest_sha256"]==first["runtime_source_manifest_sha256"]
+ a.write_text("A=changed\n",encoding="utf-8")
+ assert runtime_source_manifest(tmp_path)["runtime_source_manifest_sha256"]!=first["runtime_source_manifest_sha256"]
+
+
+def test_runtime_source_manifest_contains_required_core_files():
+ manifest=runtime_source_manifest(ROOT);paths={row["path"] for row in manifest["runtime_source_manifest_files"]}
+ required={"algorithm/modular_mappo/trainer.py","algorithm/modular_mappo/runner.py","algorithm/modular_mappo/protocol.py","algorithm/train_modular_mappo.py","algorithm/modules/team_mean_credit.py","algorithm/mappo/trainer.py","env/persistent_env.py","env/combat_env.py","env/reward.py","env/observation.py","env/weapon.py"}
+ assert required<=paths and manifest["runtime_source_manifest_file_count"]==len(manifest["runtime_source_manifest_files"])
+
+
+def test_analyzer_six_branch_runtime_source_consistency_and_mismatch():
+ manifest=runtime_source_manifest(ROOT);runs=[(f"branch-{index}",deepcopy(manifest)) for index in range(6)]
+ result=verify_six_branch_runtime_source_consistency(runs)
+ assert result["runtime_source_consistency_verified"] is True
+ changed=deepcopy(manifest);changed["runtime_source_manifest_files"][0]["sha256"]="0"*64
+ changed["runtime_source_manifest_sha256"]=aggregate_runtime_source_manifest(changed["runtime_source_manifest_files"])
+ runs[-1]=(runs[-1][0],changed)
+ with pytest.raises(RuntimeError,match="FORMAL_RUNTIME_SOURCE_MISMATCH"):verify_six_branch_runtime_source_consistency(runs)
+
+
+def test_runtime_source_branch_provenance_historical_missing_and_destination_required():
+ manifest=runtime_source_manifest(ROOT);provenance=runtime_source_branch_provenance({"extra":{}},manifest)
+ assert provenance["source_runtime_source_manifest_sha256"] is None
+ assert provenance["source_runtime_source_provenance_available"] is False
+ assert provenance["destination_runtime_source_manifest_sha256"]==manifest["runtime_source_manifest_sha256"]
+ with pytest.raises(RuntimeError,match="destination"):runtime_source_branch_provenance({"extra":{}},{})
+
+
+def test_run_config_full_manifest_and_checkpoint_compact_manifest(tmp_path,monkeypatch):
+ import algorithm.train_modular_mappo as train_module
+ manifest=runtime_source_manifest(ROOT)
+ trainer=SimpleNamespace(
+  module_protocol=lambda:{"enabled_modules":["actor_lr_decay"],"module_config_sha256":"module"},
+  warm_start_provenance={},anchor_provenance={},wave_entry_curriculum=SimpleNamespace(version=1),
+ )
+ runner=SimpleNamespace(
+  seed=5301,device="cuda",num_envs=24,total_sampled_steps=1805280,smoke=False,
+  env_config={"environment_variant":"persistent_wave_v2","environment_version":"2.3"},
+  algorithm_config={"modules":{"curriculum":{},"wave_entry_curriculum":{}},"development_branch":{}},
+  output_dir=tmp_path,trainer=trainer,branch_provenance={},runtime_source_manifest=manifest,
+  environment_provenance=lambda:{},method_identity=lambda:{},
+ )
+ monkeypatch.setattr(train_module,"checkpoint_architecture",lambda _: {})
+ value=write_run_config(tmp_path/"run_config.json",runner,Path("env.yaml"),Path("algorithm.yaml"))
+ assert value["runtime_source_manifest_files"]==manifest["runtime_source_manifest_files"]
+ assert value["runtime_source_manifest_file_count"]>0
+ checkpoint_runner=object.__new__(ModularMAPPOTrainingRunner);checkpoint_runner.runtime_source_manifest=manifest
+ compact=checkpoint_runner.runtime_source_checkpoint_provenance()
+ assert compact=={"runtime_source_manifest_sha256":manifest["runtime_source_manifest_sha256"],"runtime_source_manifest_file_count":manifest["runtime_source_manifest_file_count"]}

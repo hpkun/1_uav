@@ -6,6 +6,7 @@ import torch,yaml
 ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 from algorithm.train_modular_mappo import load_config
+from algorithm.common.protocol import runtime_source_manifest
 from algorithm.modular_mappo.protocol import validate_team_credit_branch
 from tools.analyze_team_credit_screen import MIN_W2_ENTRY_COUNT_PER_BRANCH
 
@@ -21,6 +22,15 @@ def digest(path):
 
 def main():
  if not torch.cuda.is_available():raise RuntimeError('CUDA is mandatory for team-credit preflight')
+ manifest=runtime_source_manifest(ROOT)
+ required_runtime_sources={
+  'algorithm/modular_mappo/trainer.py','algorithm/modular_mappo/runner.py','algorithm/modular_mappo/protocol.py',
+  'algorithm/train_modular_mappo.py','algorithm/modules/team_mean_credit.py','algorithm/mappo/trainer.py',
+  'env/persistent_env.py','env/combat_env.py','env/reward.py','env/observation.py','env/weapon.py',
+ }
+ manifest_paths={item['path'] for item in manifest['runtime_source_manifest_files']}
+ missing_runtime_sources=sorted(required_runtime_sources-manifest_paths)
+ if missing_runtime_sources:raise RuntimeError(f'core runtime sources absent from manifest: {missing_runtime_sources}')
  env=yaml.safe_load(ENV.read_text());configs={k:load_config(v) for k,v in CONFIGS.items()}
  identity=(env['environment_variant'],env['persistent_waves']['total_waves'],env['simulation']['max_steps'],env['scenario']['team_size'])
  if identity!=('persistent_wave_v2',3,3000,4):raise RuntimeError(f'environment mismatch: {identity}')
@@ -53,6 +63,6 @@ def main():
  outputs=[ROOT/f'outputs/dev_team_credit_{kind}_seed{seed}_300k' for seed in SEEDS for kind in ('control','teammean')]
  existing=[str(p) for p in outputs if p.exists()]
  if existing:raise RuntimeError(f'formal output directories already exist: {existing}')
- result={'status':'READY_FOR_MATCHED_TEAM_MEAN_CREDIT_300K_SCREEN','cuda':torch.cuda.get_device_name(0),'source_checkpoint_hashes':hashes,'validations':validations,'target_sampled_steps':TARGET,'additional_sampled_steps':300000,'evaluation_seed_range':[44000000,44000049],'evaluation_episodes':50,'evaluation_interval_sampled_steps':100000,'min_W2_entry_count_per_branch':MIN_W2_ENTRY_COUNT_PER_BRANCH,'reserved_45m_executed':False,'formal_outputs_absent':True}
+ result={'status':'READY_FOR_MATCHED_TEAM_MEAN_CREDIT_300K_SCREEN','cuda':torch.cuda.get_device_name(0),'runtime_source_manifest_sha256':manifest['runtime_source_manifest_sha256'],'runtime_source_manifest_file_count':manifest['runtime_source_manifest_file_count'],'runtime_source_core_files_verified':True,'source_checkpoint_hashes':hashes,'validations':validations,'target_sampled_steps':TARGET,'additional_sampled_steps':300000,'evaluation_seed_range':[44000000,44000049],'evaluation_episodes':50,'evaluation_interval_sampled_steps':100000,'min_W2_entry_count_per_branch':MIN_W2_ENTRY_COUNT_PER_BRANCH,'reserved_45m_executed':False,'formal_outputs_absent':True}
  print(json.dumps(result,indent=2))
 if __name__=='__main__':main()
