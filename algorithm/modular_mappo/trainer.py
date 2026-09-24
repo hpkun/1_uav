@@ -35,9 +35,9 @@ from algorithm.modules.hierarchical_temporal_abstraction import (HTA_MANAGER_TOR
  HTA_MANAGER_NUMPY_SEED_XOR)
 from algorithm.modules import TeamMeanCreditModule,TEAM_MEAN_CREDIT_VERSION
 from algorithm.modules import (PersistentWaveTrajectoryReplayModule,PWTR_MAPPO_VERSION,
- replay_batch_budget,clipped_importance_weights,normalized_ess_and_freshness,
+ replay_batch_budget,replay_budget_fill_fraction,clipped_importance_weights,normalized_ess_and_freshness,
  vtrace_targets_and_advantages,W2_INTERNAL,W3_INTERNAL,BRIDGE_12,BRIDGE_23,
- PWTR_ACTOR_MAX_AGE_UPDATES)
+ transition_actor_age_mask)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
@@ -933,6 +933,7 @@ class ModularMAPPOTrainer:
    "rewards":tt("rewards"),"dones":tt("dones"),"alive_masks":tt("alive_masks"),
    "next_alive_masks":tt("next_alive_masks"),"valid_time_mask":tt("valid_time_mask"),
    "wave_indices":tt("wave_indices",torch.long),
+   "collection_ppo_update_ids":tt("collection_ppo_update_ids",torch.long),
    "segment_generations":tt("segment_generations",torch.long)}
 
  def _pwtr_policy_values(self,tensors):
@@ -964,6 +965,7 @@ class ModularMAPPOTrainer:
   result=module.default_metrics(None);budget=replay_batch_budget(module.current_later_states)
   for wave in (1,2,3):result.pop(f"pwtr_fresh_w{wave}_states",None)
   result["pwtr_replay_batches_budget"]=float(budget)
+  result["pwtr_replay_budget_fill_fraction"]=replay_budget_fill_fraction(0,budget)
   if module.fresh_rollout_count<=1 or budget==0:return result
   rows=[];type_states={name:0 for name in (W2_INTERNAL,W3_INTERNAL,BRIDGE_12,BRIDGE_23)}
   actor_steps_before=module.replay_actor_optimizer_steps;critic_steps_before=module.replay_critic_optimizer_steps
@@ -988,9 +990,9 @@ class ModularMAPPOTrainer:
     self.critic_optimizer.zero_grad();(self.value_loss_coefficient*critic_loss).backward()
     critic_grad=float(nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm));self.critic_optimizer.step()
     self.critic_update_count+=1;module.replay_critic_optimizer_steps+=1
-   ages=generation-tensors["segment_generations"]
-   age_mask=(ages<=PWTR_ACTOR_MAX_AGE_UPDATES).to(torch.float32)[:,None,None]
-   actor_mask=valid_alive*age_mask;actor_loss=values.new_zeros(());actor_grad=0.
+   transition_ages,actor_mask=transition_actor_age_mask(tensors["collection_ppo_update_ids"],generation,
+    tensors["valid_time_mask"],tensors["alive_masks"])
+   actor_loss=values.new_zeros(());actor_grad=0.
    if module.actor_replay and bool((actor_mask>.5).any()):
     actor_loss=-(individual_rho*advantages*newlog*actor_mask).sum()/actor_mask.sum().clamp_min(1)
     self.actor_optimizer.zero_grad();actor_loss.backward()
@@ -999,7 +1001,8 @@ class ModularMAPPOTrainer:
    valid_state=tensors["valid_time_mask"]*(tensors["alive_masks"].sum(-1)>0).to(torch.float32)
    rho_values=joint_rho[valid_state>.5]
    rows.append({"valid_states":float(tensors["valid_time_mask"].sum()),"alive_samples":float(valid_alive.sum()),
-    "mean_age":float(ages.float().mean()),"max_age":float(ages.max()),
+    "mean_transition_age":float((transition_ages.float()*tensors["valid_time_mask"]).sum()/tensors["valid_time_mask"].sum().clamp_min(1)),
+    "max_transition_age":float(transition_ages[tensors["valid_time_mask"]>.5].max()),
     "learning":float(np.mean([row["learning_potential"] for row in diagnostics])),
     "freshness":float(np.mean([row["freshness"] for row in diagnostics])),
     "priority":float(np.mean([row["priority"] for row in diagnostics])),
@@ -1012,6 +1015,8 @@ class ModularMAPPOTrainer:
   if not rows:return result
   module.replay_phase_count+=1;total_states=sum(type_states.values())
   mean=lambda key:float(np.mean([row[key] for row in rows]))
+  mean_transition_age=float(sum(row["mean_transition_age"]*row["valid_states"] for row in rows)/sum(row["valid_states"] for row in rows))
+  max_transition_age=max(row["max_transition_age"] for row in rows)
   result.update(module.memory_counts());result.update({
    "pwtr_replay_batches":float(len(rows)),"pwtr_replay_valid_states":float(sum(row["valid_states"] for row in rows)),
    "pwtr_replay_alive_samples":float(sum(row["alive_samples"] for row in rows)),
@@ -1019,7 +1024,8 @@ class ModularMAPPOTrainer:
    "pwtr_replay_w3_fraction":type_states[W3_INTERNAL]/max(total_states,1),
    "pwtr_replay_bridge12_fraction":type_states[BRIDGE_12]/max(total_states,1),
    "pwtr_replay_bridge23_fraction":type_states[BRIDGE_23]/max(total_states,1),
-   "pwtr_mean_segment_age":mean("mean_age"),"pwtr_max_segment_age":max(row["max_age"] for row in rows),
+   "pwtr_mean_segment_age":mean_transition_age,"pwtr_max_segment_age":max_transition_age,
+   "pwtr_mean_transition_age":mean_transition_age,"pwtr_max_transition_age":max_transition_age,
    "pwtr_mean_learning_potential":mean("learning"),"pwtr_mean_freshness":mean("freshness"),
    "pwtr_mean_priority":mean("priority"),"pwtr_mean_joint_abs_log_ratio":mean("joint_abs_log_ratio"),
    "pwtr_mean_normalized_ess":mean("normalized_ess"),"pwtr_actor_eligible_fraction":mean("actor_eligible_fraction"),
@@ -1031,7 +1037,8 @@ class ModularMAPPOTrainer:
    "pwtr_replay_critic_optimizer_steps":float(module.replay_critic_optimizer_steps),
    "pwtr_replay_actor_optimizer_steps_this_phase":float(module.replay_actor_optimizer_steps-actor_steps_before),
    "pwtr_replay_critic_optimizer_steps_this_phase":float(module.replay_critic_optimizer_steps-critic_steps_before),
-   "pwtr_replay_phase_count":float(module.replay_phase_count)})
+   "pwtr_replay_phase_count":float(module.replay_phase_count),
+   "pwtr_replay_budget_fill_fraction":replay_budget_fill_fraction(len(rows),budget)})
   return result
 
  def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None,options=None):

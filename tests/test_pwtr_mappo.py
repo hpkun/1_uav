@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import csv
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,11 +13,12 @@ import torch
 from algorithm.modules.persistent_wave_trajectory_replay import (
     BRIDGE_12, BRIDGE_23, PWTR_PARTITION_CAPACITY, W2_INTERNAL, W3_INTERNAL,
     PersistentWaveTrajectoryReplayModule, clipped_importance_weights,
-    normalized_ess_and_freshness, replay_batch_budget,
+    normalized_ess_and_freshness, replay_batch_budget, replay_budget_fill_fraction,
+    transition_actor_age_mask, valid_collection_generations,
     vtrace_targets_and_advantages, wave_stratified_permutation,
 )
 from algorithm.train_modular_mappo import load_config
-from tools.analyze_pwtr_ablation import classify_full_gate, descriptive
+from tools.analyze_pwtr_ablation import classify_full_gate, descriptive, endpoint, TARGET
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -181,3 +184,96 @@ def test_analyzer_frozen_gates_and_descriptive_labels():
     assert classify_full_gate(unsafe)[0] == "SAFETY_FAIL"
     label, _ = descriptive([{"AverageWaves": .1, "W3": .1, "Q2": .1, "Q3": .1}] * 3)
     assert label == "POSITIVE"
+
+
+def test_mixed_generation_eligibility_is_transition_exact():
+    module = PersistentWaveTrajectoryReplayModule(cfg(replay_source="current"), 10)
+    module.ingest_rollout(rollout([2] * 30), 100)
+    module.ingest_rollout(rollout([2] * 98), 101)
+    segment = module.partitions[W2_INTERNAL][-1]
+    assert set(valid_collection_generations(segment).tolist()) == {100, 101}
+    assert module.eligible(101) == {}
+    module.replay_source = "recent_uniform"
+    assert module.eligible(102)[W2_INTERNAL] == [segment]
+    pure = PersistentWaveTrajectoryReplayModule(cfg(replay_source="current"), 11)
+    pure.ingest_rollout(rollout([2] * 128), 101)
+    assert pure.eligible(101)[W2_INTERNAL][0]["segment_id"] == 0
+
+
+def test_actor_age_is_transition_level_and_old_prefix_is_masked():
+    ids = torch.tensor([[100, 101, 102]])
+    valid = torch.ones(1, 3)
+    alive = torch.ones(1, 3, 4)
+    ages, mask = transition_actor_age_mask(ids, 103, valid, alive)
+    assert ages.tolist() == [[3, 2, 1]]
+    assert mask[0, 0].sum() == 0
+    assert mask[0, 1].sum() == 4 and mask[0, 2].sum() == 4
+
+
+def test_pending_discard_preserves_completed_memory_and_rng():
+    module = PersistentWaveTrajectoryReplayModule(cfg(), 44)
+    module.ingest_rollout(rollout([2] * 128), 1)
+    completed_id = module.partitions[W2_INTERNAL][0]["segment_id"]
+    module.ingest_rollout(rollout([1] * 70, transitions=[0] * 69 + [1]), 2)
+    module.ingest_rollout(rollout([2] * 12), 2)
+    rng_before = deepcopy(module.rng.bit_generator.state)
+    dropped = module.discard_pending_after_environment_restart()
+    assert dropped >= 3
+    assert module.partitions[W2_INTERNAL][0]["segment_id"] == completed_id
+    assert module.pending_internal == {} and module.source_tails == {}
+    assert module.pending_bridges == {} and module.entry_survivors == {}
+    assert module.rng.bit_generator.state == rng_before
+    assert module.pending_dropped_on_resume == dropped
+
+
+def test_short_w2_immediately_finalizes_bridge12_at_w3_transition():
+    module = PersistentWaveTrajectoryReplayModule(cfg(), 45)
+    module.ingest_rollout(rollout([1] * 70, transitions=[0] * 69 + [1]), 1)
+    module.ingest_rollout(rollout([2] * 40, transitions=[0] * 39 + [1]), 1)
+    assert len(module.partitions[BRIDGE_12]) == 1
+    assert module.partitions[BRIDGE_12][0]["actual_length"] == 104
+    assert 1 not in module.pending_bridges[0]
+    assert 2 in module.pending_bridges[0]
+
+
+def _write_analyzer_fixture(path: Path, final_steps: int = TARGET):
+    path.mkdir()
+    (path / "run_summary.json").write_text(json.dumps({"sampled_steps": TARGET}))
+    (path / "run_config.json").write_text(json.dumps({"seed": 5301, "development_method": "pwtr_plain_matched_control", "enabled_modules": ["actor_lr_decay"]}))
+    (path / "algorithm_config.yaml").write_text("development_method: pwtr_plain_matched_control\nmodules:\n  actor_lr_decay: {enabled: true}\n")
+    columns = {"sampled_steps": TARGET, "evaluation_episodes": 50, "evaluation_seed_base": 44_000_000, "evaluation_seed_end": 44_000_049}
+    for column in set(METRICS_FOR_FIXTURE.values()): columns[column] = 0.0
+    with (path / "evaluation_history.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(columns)); writer.writeheader(); writer.writerow(columns)
+    (path / "optimization_metrics.jsonl").write_text(json.dumps({"sampled_steps": TARGET, "actor_loss": 0.0}) + "\n")
+    (path / "training_metrics.jsonl").write_text("{}\n")
+    (path / "train.log").write_text("[DONE]\n")
+    for name in ("latest.pt", "final.pt"):
+        torch.save({"algorithm": "modular_mappo", "sampled_steps": final_steps,
+                    "enabled_modules": ["actor_lr_decay"],
+                    "extra": {"development_method": "pwtr_plain_matched_control"}}, path / name)
+
+
+# Kept local so the fixture remains independent of analyzer implementation details.
+METRICS_FOR_FIXTURE = {
+    "W1": "clear_wave_1_probability", "W2": "clear_wave_2_probability", "W3": "clear_wave_3_probability",
+    "AW": "average_waves_cleared", "Return": "average_return", "Red": "average_red_loss",
+    "Blue": "average_blue_loss", "Boundary": "average_red_boundary_exits", "Ground": "average_red_ground_losses",
+    "Length": "average_episode_length", "S2": "average_red_survivors_after_wave_1_conditional_on_clear",
+    "S3": "average_red_survivors_after_wave_2_conditional_on_clear",
+}
+
+
+def test_analyzer_accepts_no_exact_step_periodic_checkpoint_and_validates_final(tmp_path):
+    run = tmp_path / "run"; _write_analyzer_fixture(run)
+    endpoint(run, "plain")
+    assert not (run / f"checkpoint_{TARGET}.pt").exists()
+    bad = tmp_path / "bad"; _write_analyzer_fixture(bad, TARGET - 1)
+    with pytest.raises(RuntimeError, match="checkpoint identity/endpoint mismatch"):
+        endpoint(bad, "plain")
+
+
+def test_budget_fill_fraction_definition():
+    assert replay_budget_fill_fraction(0, 0) == 1.0
+    assert replay_budget_fill_fraction(2, 2) == 1.0
+    assert replay_budget_fill_fraction(1, 2) == .5

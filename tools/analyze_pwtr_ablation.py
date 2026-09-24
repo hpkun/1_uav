@@ -9,6 +9,9 @@ import math
 from pathlib import Path
 from statistics import mean
 
+import torch
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 SEEDS = (5301, 5302, 5303)
 BRANCHES = ("plain", "stratified", "current_extra", "uniform_recent", "priority_recent", "full")
@@ -21,6 +24,14 @@ METRICS = {
     "Ground": "average_red_ground_losses", "EpisodeLength": "average_episode_length",
     "W2EntrySurvivors": "average_red_survivors_after_wave_1_conditional_on_clear",
     "W3EntrySurvivors": "average_red_survivors_after_wave_2_conditional_on_clear",
+}
+EXPECTED_IDENTITY = {
+    "plain": ("pwtr_plain_matched_control", ["actor_lr_decay"], None),
+    "stratified": ("pwtr_stratified", ["actor_lr_decay", "persistent_wave_trajectory_replay"], (True, False, "recent_uniform", False, False, False, False)),
+    "current_extra": ("pwtr_current_extra", ["actor_lr_decay", "persistent_wave_trajectory_replay"], (True, True, "current", False, False, True, True)),
+    "uniform_recent": ("pwtr_uniform_recent", ["actor_lr_decay", "persistent_wave_trajectory_replay"], (True, True, "recent_uniform", False, False, True, True)),
+    "priority_recent": ("pwtr_priority_recent", ["actor_lr_decay", "persistent_wave_trajectory_replay"], (True, True, "recent_priority", True, False, True, True)),
+    "full": ("pwtr_full", ["actor_lr_decay", "persistent_wave_trajectory_replay"], (True, True, "recent_priority", True, True, True, True)),
 }
 
 
@@ -43,9 +54,31 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def endpoint(run: Path):
+def validate_branch_identity(run: Path, branch: str, config: dict) -> None:
+    method, modules, expected_mode = EXPECTED_IDENTITY[branch]
+    if config.get("development_method") != method or sorted(config.get("enabled_modules", [])) != sorted(modules):
+        raise RuntimeError(f"{run}: branch identity mismatch")
+    algorithm = yaml.safe_load((run / "algorithm_config.yaml").read_text(encoding="utf-8"))
+    if algorithm.get("development_method") != method:
+        raise RuntimeError(f"{run}: algorithm snapshot method mismatch")
+    module = algorithm.get("modules", {}).get("persistent_wave_trajectory_replay", {})
+    if expected_mode is None:
+        if module.get("enabled", False): raise RuntimeError(f"{run}: Plain unexpectedly enables PWTR")
+        return
+    actual = (bool(module.get("fresh_wave_stratification")), bool(module.get("replay_enabled")),
+              module.get("replay_source"), bool(module.get("priority_enabled")),
+              bool(module.get("bridge_enabled")), bool(module.get("actor_replay")),
+              bool(module.get("critic_replay")))
+    fixed = tuple(int(module.get(key, -1)) for key in (
+        "sequence_length", "bridge_half_length", "min_segment_length",
+        "partition_capacity", "actor_max_age_updates"))
+    if actual != expected_mode or fixed != (128, 64, 32, 32, 2):
+        raise RuntimeError(f"{run}: frozen PWTR mode mismatch")
+
+
+def endpoint(run: Path, branch: str):
     required = ("run_summary.json", "run_config.json", "evaluation_history.csv", "optimization_metrics.jsonl",
-                "training_metrics.jsonl", "train.log", "latest.pt", "final.pt", f"checkpoint_{TARGET}.pt")
+                "training_metrics.jsonl", "train.log", "algorithm_config.yaml", "latest.pt", "final.pt")
     missing = [name for name in required if not (run / name).is_file()]
     if missing:
         raise RuntimeError(f"{run}: missing {missing}")
@@ -66,6 +99,15 @@ def endpoint(run: Path):
     config = read_json(run / "run_config.json")
     if int(config.get("training_seed", config.get("seed", -1))) not in SEEDS:
         raise RuntimeError(f"{run}: seed mismatch")
+    validate_branch_identity(run, branch, config)
+    for name in ("latest.pt", "final.pt"):
+        checkpoint = torch.load(run / name, map_location="cpu", weights_only=False)
+        expected_method, expected_modules, _ = EXPECTED_IDENTITY[branch]
+        if (checkpoint.get("algorithm") != "modular_mappo"
+                or int(checkpoint.get("sampled_steps", -1)) != TARGET
+                or sorted(checkpoint.get("enabled_modules", [])) != sorted(expected_modules)
+                or checkpoint.get("extra", {}).get("development_method") != expected_method):
+            raise RuntimeError(f"{run}/{name}: checkpoint identity/endpoint mismatch")
     opt = []
     for line in (run / "optimization_metrics.jsonl").read_text(encoding="utf-8").splitlines():
         if line.strip():
@@ -121,7 +163,7 @@ def main():
     for seed in SEEDS:
         for branch in BRANCHES:
             run = ROOT / f"outputs/dev_pwtr_{branch}_seed{seed}_300k"
-            data[seed, branch], configs[seed, branch], opt_data[seed, branch], sources[seed, branch] = endpoint(run)
+            data[seed, branch], configs[seed, branch], opt_data[seed, branch], sources[seed, branch] = endpoint(run, branch)
     # Provenance checks are deliberately based only on saved run artifacts.
     for seed in SEEDS:
         source_hashes = {sources[seed, branch].get("parent_checkpoint_sha256") for branch in BRANCHES}
@@ -152,7 +194,13 @@ def main():
     for seed in SEEDS:
         for branch in BRANCHES:
             rows = opt_data[seed, branch]
-            mechanism.append({"seed": seed, "branch": branch, **{key: mean(float(row[key]) for row in rows if isinstance(row.get(key), (int, float))) for key in pwtr_keys if any(isinstance(row.get(key), (int, float)) for row in rows)}})
+            numeric = {key: [float(row[key]) for row in rows if isinstance(row.get(key), (int, float))] for key in pwtr_keys}
+            mechanism.append({"seed": seed, "branch": branch,
+                "final_cumulative_replay_actor_optimizer_steps": float(rows[-1].get("pwtr_replay_actor_optimizer_steps", 0.0)),
+                "final_cumulative_replay_critic_optimizer_steps": float(rows[-1].get("pwtr_replay_critic_optimizer_steps", 0.0)),
+                "mean_replay_batches_per_update": mean(numeric.get("pwtr_replay_batches", [0.0])) if numeric.get("pwtr_replay_batches") else 0.0,
+                "mean_replay_budget_fill_fraction": mean(numeric.get("pwtr_replay_budget_fill_fraction", [1.0])) if numeric.get("pwtr_replay_budget_fill_fraction") else 1.0,
+                **{key: mean(values) for key, values in numeric.items() if values}})
     report = {"status": decision, "training_seed_replication_n": 3, "exact_endpoint": TARGET,
               "gate_A": gate_a, "gate_B": gate_b, "safety_gate_C": gate_c,
               "historical_reuse_effect": reuse_label, "historical_reuse_aw_wins": reuse_wins, "historical_reuse_mean_delta_aw": reuse_mean,

@@ -89,6 +89,34 @@ def replay_batch_budget(later_wave_environment_states: int) -> int:
     return int(math.ceil(count / PWTR_REPLAY_BATCH_STATES)) if count else 0
 
 
+def replay_budget_fill_fraction(actual_batches: int, budget: int) -> float:
+    if int(actual_batches) < 0 or int(budget) < 0 or int(actual_batches) > int(budget):
+        raise ValueError("invalid PWTR replay budget accounting")
+    return 1.0 if int(budget) == 0 else float(actual_batches) / float(budget)
+
+
+def valid_collection_generations(segment: dict[str, Any]) -> np.ndarray:
+    """Return the true collection generation of every valid transition."""
+    valid = np.asarray(segment["valid_time_mask"]) > 0.5
+    generations = np.asarray(segment["collection_ppo_update_ids"], dtype=np.int64)
+    if generations.shape != valid.shape:
+        raise ValueError("PWTR collection generations/valid mask shape mismatch")
+    return generations[valid]
+
+
+def transition_actor_age_mask(
+    collection_ppo_update_ids: torch.Tensor,
+    current_generation: int,
+    valid_time_mask: torch.Tensor,
+    alive_masks: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return transition ages and the exact valid/alive Actor replay mask."""
+    ages = int(current_generation) - collection_ppo_update_ids
+    mask = (ages <= PWTR_ACTOR_MAX_AGE_UPDATES).to(alive_masks.dtype)
+    mask = mask.unsqueeze(-1) * valid_time_mask.unsqueeze(-1) * alive_masks
+    return ages, mask
+
+
 def clipped_importance_weights(
     new_log_probs: torch.Tensor,
     behavior_log_probs: torch.Tensor,
@@ -211,6 +239,7 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
         self.replay_phase_count = 0
         self.replay_actor_optimizer_steps = 0
         self.replay_critic_optimizer_steps = 0
+        self.pending_dropped_on_resume = 0
         self.current_rollout_generation = -1
         self.current_later_states = 0
 
@@ -330,6 +359,10 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
                     survivors = int(np.asarray(row["next_alive_masks"]).sum())
                     self.entry_survivors[env_id][target_wave] = survivors
                     if wave == 2:
+                        # W2 is the immutable target head of an older Bridge12.
+                        # Once W2 ends, that bridge can never receive more head
+                        # transitions and must be finalized immediately.
+                        self._finish_bridge(env_id, 1)
                         self._finish_internal(env_id, 2)
                     if self.bridge_enabled:
                         self.pending_bridges[env_id][wave] = {
@@ -361,9 +394,15 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
             if partition.startswith("BRIDGE") and not self.bridge_enabled:
                 continue
             if self.replay_source == "current":
-                candidates = [row for row in rows if int(row["segment_generation"]) == int(generation)]
+                candidates = [row for row in rows if (
+                    valid_collection_generations(row).size > 0
+                    and np.all(valid_collection_generations(row) == int(generation))
+                )]
             else:
-                candidates = [row for row in rows if int(row["segment_generation"]) < int(generation)]
+                candidates = [row for row in rows if (
+                    valid_collection_generations(row).size > 0
+                    and np.all(valid_collection_generations(row) < int(generation))
+                )]
             if candidates:
                 result[partition] = candidates
         return result
@@ -448,6 +487,7 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
             }[self.replay_source]),
             "pwtr_priority_enabled": float(self.enabled and self.priority_enabled),
             "pwtr_bridge_enabled": float(self.enabled and self.bridge_enabled),
+            "pwtr_pending_dropped_on_resume": float(self.pending_dropped_on_resume),
             **self.memory_counts(),
             **{f"pwtr_fresh_w{wave}_states": float(counts[wave]) for wave in (1, 2, 3)},
             "pwtr_replay_batches": 0.0, "pwtr_replay_valid_states": 0.0,
@@ -455,6 +495,7 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
             "pwtr_replay_w3_fraction": 0.0, "pwtr_replay_bridge12_fraction": 0.0,
             "pwtr_replay_bridge23_fraction": 0.0, "pwtr_mean_segment_age": 0.0,
             "pwtr_max_segment_age": 0.0, "pwtr_mean_learning_potential": 0.0,
+            "pwtr_mean_transition_age": 0.0, "pwtr_max_transition_age": 0.0,
             "pwtr_mean_freshness": 0.0, "pwtr_mean_priority": 0.0,
             "pwtr_mean_joint_abs_log_ratio": 0.0, "pwtr_mean_normalized_ess": 0.0,
             "pwtr_actor_eligible_fraction": 0.0, "pwtr_vtrace_rho_mean": 0.0,
@@ -465,7 +506,23 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
             "pwtr_replay_actor_optimizer_steps": float(self.replay_actor_optimizer_steps),
             "pwtr_replay_critic_optimizer_steps": float(self.replay_critic_optimizer_steps),
             "pwtr_replay_phase_count": float(self.replay_phase_count),
+            "pwtr_replay_budget_fill_fraction": 1.0,
         }
+
+    def discard_pending_after_environment_restart(self) -> int:
+        """Drop only trajectory fragments that belong to the old physical env."""
+        dropped = 0
+        for rows in self.pending_internal.values():
+            dropped += sum(bool(values) for values in rows.values())
+        for tails in self.source_tails.values():
+            dropped += sum(bool(values) for values in tails.values())
+        dropped += sum(len(values) for values in self.pending_bridges.values())
+        self.pending_internal = {}
+        self.source_tails = {}
+        self.pending_bridges = {}
+        self.entry_survivors = {}
+        self.pending_dropped_on_resume += int(dropped)
+        return int(dropped)
 
     def state_dict(self) -> dict[str, Any]:
         return deepcopy({
@@ -481,6 +538,7 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
             "replay_phase_count": self.replay_phase_count,
             "replay_actor_optimizer_steps": self.replay_actor_optimizer_steps,
             "replay_critic_optimizer_steps": self.replay_critic_optimizer_steps,
+            "pending_dropped_on_resume": self.pending_dropped_on_resume,
             "current_rollout_generation": self.current_rollout_generation,
             "current_later_states": self.current_later_states,
             "rng_state": self.rng.bit_generator.state,
@@ -507,6 +565,7 @@ class PersistentWaveTrajectoryReplayModule(CapabilityModule):
         for name in (
             "segment_id_counter", "fresh_rollout_count", "replay_phase_count",
             "replay_actor_optimizer_steps", "replay_critic_optimizer_steps",
+            "pending_dropped_on_resume",
             "current_rollout_generation", "current_later_states",
         ):
             setattr(self, name, int(state.get(name, getattr(self, name))))
@@ -518,6 +577,8 @@ __all__ = [
     "PWTR_MIN_SEGMENT_LENGTH", "PWTR_PARTITION_CAPACITY", "PWTR_ACTOR_MAX_AGE_UPDATES",
     "PWTR_REPLAY_BATCH_STATES", "PWTR_SEGMENTS_PER_BATCH", "W2_INTERNAL", "W3_INTERNAL",
     "BRIDGE_12", "BRIDGE_23", "PWTR_PARTITIONS", "PersistentWaveTrajectoryReplayModule",
-    "wave_stratified_permutation", "replay_batch_budget", "clipped_importance_weights",
+    "wave_stratified_permutation", "replay_batch_budget", "replay_budget_fill_fraction",
+    "clipped_importance_weights",
+    "valid_collection_generations", "transition_actor_age_mask",
     "normalized_ess_and_freshness", "vtrace_targets_and_advantages",
 ]

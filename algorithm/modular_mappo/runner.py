@@ -275,6 +275,8 @@ class ModularMAPPOTrainingRunner:
             curriculum_enabled=True,
         )
         self._make_vector(previous)
+        if self.trainer.persistent_wave_trajectory_replay.enabled:
+            self.trainer.persistent_wave_trajectory_replay.discard_pending_after_environment_restart()
 
     @staticmethod
     def _fractions(counts: np.ndarray) -> np.ndarray:
