@@ -1,0 +1,100 @@
+from copy import deepcopy
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+import yaml
+
+from algorithm.mappo.trainer import compute_gae
+from algorithm.modular_mappo.buffer import ModularRolloutBatch
+from algorithm.modular_mappo.protocol import validate_team_credit_branch
+from algorithm.modular_mappo.trainer import ModularMAPPOTrainer
+from algorithm.modules import TeamMeanCreditModule
+from algorithm.train_modular_mappo import load_config
+
+ROOT=Path(__file__).resolve().parents[1]
+
+def rollout(trainer):
+ rng=np.random.default_rng(91);t,e,n=4,2,4
+ obs=rng.normal(size=(t,e,n,52)).astype("f");alive=np.ones((t,e,n),"f");alive[2:,1,3]=0
+ raw=rng.normal(size=(t,e,n,3)).astype("f");actions=np.tanh(raw).astype("f")
+ with torch.no_grad():old=trainer.actor._squashed_log_prob(trainer.actor.distribution(torch.from_numpy(obs)),torch.from_numpy(raw),torch.from_numpy(actions)).numpy()*alive
+ rewards=np.zeros((t,e,n),"f");rewards[...,0]=10;rewards[...,1]=-2;rewards[2:,1,3]=99
+ z=np.zeros((t,e,0),"f")
+ return ModularRolloutBatch(obs,actions,raw,old,rewards,rewards.copy(),np.zeros((t,e),"f"),alive,obs.copy(),alive.copy(),np.tile(np.arange(1,5)[:,None],(1,e)).clip(max=3),np.full((t,e),3),z,z,episode_masks=np.ones((t,e),"f"))
+
+def nested_equal(a,b):
+ if torch.is_tensor(a):return torch.equal(a,b)
+ if isinstance(a,dict):return a.keys()==b.keys() and all(nested_equal(a[k],b[k]) for k in a)
+ if isinstance(a,(list,tuple)):return len(a)==len(b) and all(nested_equal(x,y) for x,y in zip(a,b))
+ if isinstance(a,np.ndarray):return np.array_equal(a,b)
+ return a==b
+
+@pytest.mark.parametrize("rewards,alive,expected",[
+ ([10,0,-10,0],[1,1,1,1],[0,0,0,0]),
+ ([10,0,0,0],[1,1,1,1],[2.5,2.5,2.5,2.5]),
+ ([10,-10,0,0],[1,1,0,0],[0,0,0,0]),
+ ([-10,0,0,0],[1,1,1,0],[-10/3,-10/3,-10/3,0]),
+])
+def test_transform_examples_and_sum_preservation(rewards,alive,expected):
+ module=TeamMeanCreditModule({"enabled":True,"mode":"alive_sum_preserving_mean"})
+ r=torch.tensor(rewards,dtype=torch.float32).view(1,1,4);m=torch.tensor(alive,dtype=torch.float32).view(1,1,4);w=torch.ones((1,1),dtype=torch.long)
+ out,metrics=module.transform(r,m,w)
+ assert torch.allclose(out,torch.tensor(expected,dtype=r.dtype).view(1,1,4),atol=1e-6)
+ assert torch.allclose(out.sum(-1),(r*m).sum(-1),atol=1e-6)
+ assert torch.equal(out[m==0],torch.zeros_like(out[m==0]));assert metrics["team_credit_sum_abs_error_max"]<=1e-6
+ assert out.dtype==r.dtype and out.device==r.device and torch.isfinite(out).all()
+
+def test_zero_alive_death_semantics_disabled_and_validation():
+ module=TeamMeanCreditModule({"enabled":True,"mode":"alive_sum_preserving_mean"})
+ rewards=torch.tensor([[[5.,-2.,8.,1.]],[[1.,2.,3.,4.]]]);alive=torch.tensor([[[1.,1.,1.,1.]],[[0.,0.,0.,0.]]])
+ out,_=module.transform(rewards,alive,torch.ones((2,1),dtype=torch.long));assert torch.equal(out[1],torch.zeros_like(out[1]))
+ # alive-before includes an agent dying on this transition; next_alive is not an input.
+ assert out[0,0,0]!=0
+ disabled=TeamMeanCreditModule({"enabled":False,"mode":"alive_sum_preserving_mean"});same,_=disabled.transform(rewards,alive,torch.ones((2,1),dtype=torch.long));assert same is rewards
+ with pytest.raises(ValueError):TeamMeanCreditModule({"enabled":True,"mode":"bad"})
+ with pytest.raises(ValueError):TeamMeanCreditModule({"enabled":True,"mode":"alive_sum_preserving_mean","alpha":.5})
+
+def test_control_update_bitwise_plain_and_treatment_diverges():
+ modules={"actor_lr_decay":{"enabled":True,"schedule":"delayed_linear","start_step":600000,"end_step":900000,"start_lr":3e-4,"end_lr":1e-4}}
+ plain=ModularMAPPOTrainer(hidden_dim=32,ppo_epochs=1,minibatch_size=32,seed=7,modules_config=deepcopy(modules))
+ control=ModularMAPPOTrainer(hidden_dim=32,ppo_epochs=1,minibatch_size=32,seed=7,modules_config={**deepcopy(modules),"team_mean_credit":{"enabled":False,"mode":"alive_sum_preserving_mean"}})
+ treatment=ModularMAPPOTrainer(hidden_dim=32,ppo_epochs=1,minibatch_size=32,seed=7,modules_config={**deepcopy(modules),"team_mean_credit":{"enabled":True,"mode":"alive_sum_preserving_mean"}})
+ batch=rollout(plain);rng=torch.get_rng_state();mp=plain.update(batch);torch.set_rng_state(rng);mc=control.update(batch);torch.set_rng_state(rng);mt=treatment.update(batch)
+ assert nested_equal(plain.actor.state_dict(),control.actor.state_dict());assert nested_equal(plain.critic.state_dict(),control.critic.state_dict())
+ assert nested_equal(plain.actor_optimizer.state_dict(),control.actor_optimizer.state_dict());assert nested_equal(plain.critic_optimizer.state_dict(),control.critic_optimizer.state_dict())
+ for key in ("actor_loss","value_loss","entropy","approx_kl","actor_optimizer_steps_this_update","critic_optimizer_steps_this_update"):assert mp[key]==mc[key]
+ assert not nested_equal(control.actor.state_dict(),treatment.actor.state_dict());assert not nested_equal(control.critic.state_dict(),treatment.critic.state_dict())
+ assert mt["team_credit_enabled"]==1 and mt["team_credit_sum_abs_error_max"]<=1e-6
+ assert mt["actor_optimizer_steps_this_update"]==mc["actor_optimizer_steps_this_update"] and mt["critic_optimizer_steps_this_update"]==mc["critic_optimizer_steps_this_update"]
+
+def test_treatment_changes_gae_and_returns():
+ r=torch.tensor([[[10.,0.,0.,0.]],[[0.,0.,0.,0.]]]);alive=torch.ones_like(r);done=torch.zeros((2,1));v=torch.zeros_like(r)
+ team,_=TeamMeanCreditModule({"enabled":True,"mode":"alive_sum_preserving_mean"}).transform(r,alive,torch.ones((2,1),dtype=torch.long))
+ al,rl=compute_gae(r,v,v,done,alive,alive,.999,.95);at,rt=compute_gae(team,v,v,done,alive,alive,.999,.95)
+ assert not torch.equal(al,at) and not torch.equal(rl,rt)
+
+def test_branch_validator_control_treatment_and_rejections():
+ source=ROOT/'outputs/diag_mappo_learnability/l3_seed5301/checkpoint_1505280.pt'
+ if not source.exists():pytest.skip("formal source checkpoint unavailable")
+ state=torch.load(source,map_location="cpu",weights_only=False);env=yaml.safe_load((ROOT/'configs/persistent_wave_v2_environment.yaml').read_text())
+ control=load_config(ROOT/'configs/dev_team_credit_control_300k.yaml');treatment=load_config(ROOT/'configs/dev_team_credit_teammean_300k.yaml')
+ assert validate_team_credit_branch(state,env,control,{"training_seed":5301,"training_num_envs":24,"training_smoke":False})["intervention"]=="team_mean_credit_control"
+ assert validate_team_credit_branch(state,env,treatment,{"training_seed":5301,"training_num_envs":24,"training_smoke":False})["intervention"]=="team_mean_credit"
+ mutations=[lambda c:c["development_branch"].update(source_sampled_steps=1),lambda c:c["development_branch"].update(target_sampled_steps=2),lambda c:c["training"].update(gamma=.99),lambda c:c["modules"]["wave_balancing"].update(enabled=True)]
+ for mutate in mutations:
+  bad=deepcopy(treatment);mutate(bad)
+  with pytest.raises(RuntimeError):validate_team_credit_branch(state,env,bad)
+ bad=deepcopy(treatment);bad['development_branch']['actor_optimizer_restore']=False
+ with pytest.raises(RuntimeError,match='restore'):validate_team_credit_branch(state,env,bad)
+ bad_env=deepcopy(env);bad_env['reward']['kill_reward']=999
+ with pytest.raises(RuntimeError,match='environment'):validate_team_credit_branch(state,bad_env,treatment)
+ with pytest.raises(RuntimeError):validate_team_credit_branch(state,env,treatment,{"training_seed":999,"training_num_envs":24,"training_smoke":False})
+ bad=deepcopy(state);bad.pop("rng_state")
+ with pytest.raises(RuntimeError,match="required state"):validate_team_credit_branch(bad,env,treatment)
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA unavailable")
+def test_cuda_transform():
+ r=torch.randn(3,2,4,device="cuda");m=torch.tensor([1,1,1,0],device="cuda").expand_as(r);w=torch.ones((3,2),dtype=torch.long,device="cuda")
+ out,metrics=TeamMeanCreditModule({"enabled":True}).transform(r,m,w);assert out.is_cuda and torch.isfinite(out).all() and metrics["team_credit_sum_abs_error_max"]<=1e-6

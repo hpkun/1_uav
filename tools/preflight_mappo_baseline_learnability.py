@@ -46,6 +46,15 @@ DECLARATIONS = {p.resolve() for p in [MANIFEST, SEED_REGISTRY, ALGORITHM, Path(_
     ROOT / "experiments/mission_aware_film_development_manifest.json",
     ROOT / "tools/preflight_mission_aware_film.py", ROOT / "tools/run_mission_aware_film_3m.sh",
     ROOT / "tools/analyze_mission_aware_film.py", ROOT / "tests/test_mission_aware_film.py"]}
+DECLARATIONS.update(p.resolve() for p in [
+    ROOT / "configs/dev_team_credit_control_300k.yaml",
+    ROOT / "configs/dev_team_credit_teammean_300k.yaml",
+    ROOT / "tools/preflight_team_credit_screen.py",
+    ROOT / "tools/smoke_team_credit_screen.py",
+    ROOT / "tools/analyze_team_credit_screen.py",
+    ROOT / "tools/run_team_credit_screen_300k.sh",
+    ROOT / "tests/test_team_mean_credit.py",
+])
 
 
 def load_yaml(path: Path) -> dict:

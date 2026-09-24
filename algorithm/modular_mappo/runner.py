@@ -501,6 +501,8 @@ class ModularMAPPOTrainingRunner:
                     "reward":np.zeros(self.alive.shape[1],dtype=np.float32),"duration":0,"decision_reason":"rollout_start"})
         rollout_transition = np.zeros(3, dtype=np.int64)
         rollout_alive = np.zeros(3, dtype=np.int64)
+        natural_entry_count = np.zeros(2, dtype=np.int64)
+        natural_entry_survivor_sum = np.zeros(2, dtype=np.int64)
         reward_rows: list[dict[str, float]] = []
         actor_hidden_norms: list[np.ndarray] = []
         critic_hidden_norms: list[np.ndarray] = []
@@ -649,6 +651,10 @@ class ModularMAPPOTrainingRunner:
                 self.alive_agent_counts[k - 1] += int(alive[transition].sum())
             for env_id, info in enumerate(result.infos):
                 source_wave = int(pre_wave[env_id])
+                if bool(info.get("spawned_next_wave",False)) and source_wave in (1,2):
+                    index=source_wave-1
+                    natural_entry_count[index]+=1
+                    natural_entry_survivor_sum[index]+=int(info["red_survivors"])
                 self._iw_record_transition(env_id,source_wave,obs[env_id],alive[env_id],remaining_horizon[env_id],
                     result.transition_next_observations[env_id],result.next_alive_masks[env_id],next_remaining_horizon[env_id],
                     info.get("spawned_next_wave",False))
@@ -758,6 +764,10 @@ class ModularMAPPOTrainingRunner:
             **{name: float(rollout_causes[index]) for index, name in enumerate(self.death_cause_names)},
             "red_death_cause_unattributed": float(rollout_death_indices[1].sum() - rollout_causes[:3].sum()),
             "blue_death_cause_unattributed": float(rollout_death_indices[0].sum() - rollout_causes[3:].sum()),
+            "natural_entry_count_wave2":float(natural_entry_count[0]),
+            "natural_entry_survivor_sum_wave2":float(natural_entry_survivor_sum[0]),
+            "natural_entry_count_wave3":float(natural_entry_count[1]),
+            "natural_entry_survivor_sum_wave3":float(natural_entry_survivor_sum[1]),
         }
         if reward_rows:
             for key in reward_rows[0]:

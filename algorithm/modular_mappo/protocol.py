@@ -193,6 +193,49 @@ def validate_swgp_branch(state,env_config,algorithm_config,expected_runtime=None
  if missing:raise RuntimeError("SWGP branch source lacks required state: "+", ".join(missing))
  return {"intervention":intervention,"source_enabled_modules":sorted(source_enabled),"destination_enabled_modules":sorted(destination_enabled),"matched_causal_continuation":True,"historical_plain_bitwise_continuation":False,"reason":"environment episode state is not checkpointed"}
 
+def _team_credit_comparable_config(config):
+ value=deepcopy(config);value.pop("development_method",None);value.pop("development_branch",None)
+ value.get("training",{}).pop("total_sampled_steps",None)
+ value.get("modules",{}).pop("team_mean_credit",None)
+ return value
+
+def validate_team_credit_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate the matched 1,505,280 -> 1,805,280 team-credit causal branch."""
+ if state.get("algorithm")!="modular_mappo":raise RuntimeError("team-credit source algorithm must be modular_mappo")
+ if state.get("modular_mappo_impl_version")!=MODULAR_MAPPO_IMPL_VERSION or state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("team-credit source implementation version mismatch")
+ extra=state.get("extra",{});source_env=extra.get("environment_config");source=extra.get("algorithm_config")
+ if not isinstance(source_env,dict) or not isinstance(source,dict):raise RuntimeError("team-credit source lacks embedded configs")
+ if source_env!=env_config or extra.get("environment_config_sha256")!=config_sha256(env_config):raise RuntimeError("team-credit branch environment mismatch")
+ if _team_credit_comparable_config(source)!=_team_credit_comparable_config(algorithm_config):raise RuntimeError("team-credit branch differs outside the registered intervention whitelist")
+ source_enabled=set(state.get("enabled_modules",[]));destination_enabled=set(name for name,value in algorithm_config.get("modules",{}).items() if isinstance(value,dict) and value.get("enabled",False))
+ if source_enabled!={"actor_lr_decay"}:raise RuntimeError("team-credit source must enable actor_lr_decay only")
+ allowed=({"actor_lr_decay"},{"actor_lr_decay","team_mean_credit"})
+ if destination_enabled not in allowed:raise RuntimeError("team-credit destination enabled modules mismatch")
+ branch=algorithm_config.get("development_branch",{});intervention=branch.get("intervention")
+ expected_intervention="team_mean_credit" if "team_mean_credit" in destination_enabled else "team_mean_credit_control"
+ if intervention!=expected_intervention:raise RuntimeError("team-credit intervention/config mismatch")
+ if int(state.get("sampled_steps",-1))!=1_505_280 or int(branch.get("source_sampled_steps",-1))!=1_505_280:raise RuntimeError("team-credit source sampled_steps must be 1505280")
+ if int(branch.get("additional_sampled_steps",-1))!=300_000 or int(branch.get("target_sampled_steps",-1))!=1_805_280:raise RuntimeError("team-credit branch budget mismatch")
+ if int(algorithm_config.get("training",{}).get("total_sampled_steps",-1))!=1_805_280:raise RuntimeError("team-credit training target must be exact 1805280")
+ if branch.get("actor_optimizer_restore") is not True or branch.get("critic_optimizer_restore") is not True or branch.get("rng_restore") is not True:raise RuntimeError("team-credit branch must restore both optimizers and RNG")
+ source_decay=source.get("modules",{}).get("actor_lr_decay",{});destination_decay=algorithm_config.get("modules",{}).get("actor_lr_decay",{})
+ if source_decay!=destination_decay:raise RuntimeError("team-credit branch changed actor_lr_decay")
+ if float(state.get("actor_optimizer",{}).get("param_groups",[{}])[0].get("lr",-1))!=1e-4:raise RuntimeError("team-credit source actor LR must be 1e-4")
+ required=("actor","critic","actor_optimizer","critic_optimizer","rng_state","sampled_steps","vector_steps","ppo_updates","actor_updates","critic_updates","module_config_sha256")
+ missing=[key for key in required if key not in state]
+ if missing:raise RuntimeError("team-credit source lacks required state: "+", ".join(missing))
+ rng=state.get("rng_state",{});rng_required=("python_random_state","numpy_random_state","torch_cpu_rng_state","torch_cuda_rng_state_all","trainer_permutation_rng_state")
+ if any(key not in rng for key in rng_required):raise RuntimeError("team-credit source RNG state incomplete")
+ if not state["actor_optimizer"].get("state") or not state["critic_optimizer"].get("state"):raise RuntimeError("team-credit source optimizer state incomplete")
+ if expected_runtime:
+  for key,value in expected_runtime.items():
+   if extra.get(key)!=value:raise RuntimeError(f"team-credit branch checkpoint {key} mismatch")
+ return {"intervention":intervention,"source_enabled_modules":sorted(source_enabled),"destination_enabled_modules":sorted(destination_enabled),
+  "source_sampled_steps":1_505_280,"additional_sampled_steps":300_000,"target_sampled_steps":1_805_280,
+  "optimizer_restored":True,"actor_optimizer_restored":True,"critic_optimizer_restored":True,"RNG_restored":True,
+  "matched_checkpoint_continuation":True,"identical_branch_reset_protocol":True,
+  "historical_plain_bitwise_physical_continuation":False,"reason":"vector environment physical state is not checkpointed"}
+
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
  for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)
@@ -291,4 +334,4 @@ def is_formal_v2_checkpoint(state):
          state.get("baseline_mappo_impl_version")==MAPPO_IMPL_VERSION and
          all(key in extra for key in required))
 
-__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]
+__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]
