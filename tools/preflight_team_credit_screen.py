@@ -7,6 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 from algorithm.train_modular_mappo import load_config
 from algorithm.modular_mappo.protocol import validate_team_credit_branch
+from tools.analyze_team_credit_screen import MIN_W2_ENTRY_COUNT_PER_BRANCH
 
 SEEDS=(5301,5302,5303);SOURCE_STEP=1_505_280;TARGET=1_805_280
 ENV=ROOT/'configs/persistent_wave_v2_environment.yaml'
@@ -27,6 +28,7 @@ def main():
  for name,cfg in configs.items():
   if any(cfg['training'][k]!=v for k,v in expected.items()):raise RuntimeError(f'{name} training hyperparameter mismatch')
   if (cfg['network']['observation_dim'],cfg['network']['action_dim'],cfg['network']['num_agents'])!=(52,3,4):raise RuntimeError(f'{name} network mismatch')
+  if (int(cfg['training']['evaluation_episodes']),int(cfg['training']['evaluation_interval_sampled_steps']),int(cfg['implementation']['evaluation_seed_base']))!=(50,100000,44000000):raise RuntimeError(f'{name} evaluation protocol mismatch')
   b=cfg['development_branch']
   if (cfg['training']['total_sampled_steps'],b['source_sampled_steps'],b['additional_sampled_steps'],b['target_sampled_steps'])!=(TARGET,SOURCE_STEP,300000,TARGET):raise RuntimeError(f'{name} budget mismatch')
  expected_modules={'control':['actor_lr_decay'],'teammean':['actor_lr_decay','team_mean_credit']}
@@ -47,9 +49,10 @@ def main():
   if enabled!=expected_modules[name]:raise RuntimeError(f'{name} enabled modules mismatch: {enabled}')
  registry=json.loads((ROOT/'experiments/current_seed_provenance.json').read_text())['evaluation_ranges']['45000000..45000199']
  if registry.get('executed') is not False or registry.get('status')!='CURRENT_FUTURE_FINAL_BLOCK':raise RuntimeError('45M is not registered untouched')
+ if MIN_W2_ENTRY_COUNT_PER_BRANCH!=30:raise RuntimeError('analyzer W2 entry threshold drifted from preregistered value 30')
  outputs=[ROOT/f'outputs/dev_team_credit_{kind}_seed{seed}_300k' for seed in SEEDS for kind in ('control','teammean')]
  existing=[str(p) for p in outputs if p.exists()]
  if existing:raise RuntimeError(f'formal output directories already exist: {existing}')
- result={'status':'READY_FOR_MATCHED_TEAM_MEAN_CREDIT_300K_SCREEN','cuda':torch.cuda.get_device_name(0),'source_checkpoint_hashes':hashes,'validations':validations,'target_sampled_steps':TARGET,'additional_sampled_steps':300000,'evaluation_seed_range':[44000000,44000049],'evaluation_episodes':50,'reserved_45m_executed':False,'formal_outputs_absent':True}
+ result={'status':'READY_FOR_MATCHED_TEAM_MEAN_CREDIT_300K_SCREEN','cuda':torch.cuda.get_device_name(0),'source_checkpoint_hashes':hashes,'validations':validations,'target_sampled_steps':TARGET,'additional_sampled_steps':300000,'evaluation_seed_range':[44000000,44000049],'evaluation_episodes':50,'evaluation_interval_sampled_steps':100000,'min_W2_entry_count_per_branch':MIN_W2_ENTRY_COUNT_PER_BRANCH,'reserved_45m_executed':False,'formal_outputs_absent':True}
  print(json.dumps(result,indent=2))
 if __name__=='__main__':main()

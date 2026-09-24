@@ -9,9 +9,18 @@ import yaml
 from algorithm.mappo.trainer import compute_gae
 from algorithm.modular_mappo.buffer import ModularRolloutBatch
 from algorithm.modular_mappo.protocol import validate_team_credit_branch
+from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from algorithm.modular_mappo.trainer import ModularMAPPOTrainer
 from algorithm.modules import TeamMeanCreditModule
 from algorithm.train_modular_mappo import load_config
+from tools.analyze_team_credit_screen import (
+    MIN_W2_ENTRY_COUNT_PER_BRANCH,
+    assert_finite_numeric_tree,
+    check_text_failure_markers,
+    optional_delta,
+    verify_runtime_intervention,
+    w2_entry_sample_status,
+)
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -98,3 +107,84 @@ def test_branch_validator_control_treatment_and_rejections():
 def test_cuda_transform():
  r=torch.randn(3,2,4,device="cuda");m=torch.tensor([1,1,1,0],device="cuda").expand_as(r);w=torch.ones((3,2),dtype=torch.long,device="cuda")
  out,metrics=TeamMeanCreditModule({"enabled":True}).transform(r,m,w);assert out.is_cuda and torch.isfinite(out).all() and metrics["team_credit_sum_abs_error_max"]<=1e-6
+
+
+@pytest.mark.parametrize(
+    "control_count,treatment_count,expected",
+    [
+        (0, 0, "INSUFFICIENT_ENTRY_SAMPLES"),
+        (1, 1, "INSUFFICIENT_ENTRY_SAMPLES"),
+        (29, 29, "INSUFFICIENT_ENTRY_SAMPLES"),
+        (30, 30, "VALID"),
+        (30, 29, "INSUFFICIENT_ENTRY_SAMPLES"),
+    ],
+)
+def test_w2_entry_minimum_sample_rule(control_count, treatment_count, expected):
+ assert MIN_W2_ENTRY_COUNT_PER_BRANCH == 30
+ assert w2_entry_sample_status(control_count, treatment_count) == expected
+
+
+def test_optional_q2_q3_delta():
+ assert optional_delta(.75, .5) == pytest.approx(.25)
+ assert optional_delta(None, .5) is None
+ assert optional_delta(.5, None) is None
+
+
+def _analysis_protocol(branch):
+ treatment=branch=="teammean"
+ run={
+  "development_method":"team_credit_matched_teammean" if treatment else "team_credit_matched_control",
+  "enabled_modules":["actor_lr_decay","team_mean_credit"] if treatment else ["actor_lr_decay"],
+ }
+ if treatment:run.update({"team_mean_credit_enabled":True,"team_mean_credit_version":1,"team_mean_credit_mode":"alive_sum_preserving_mean","team_mean_credit_reward_scope":"training_credit_only","team_mean_credit_sum_preserving":True})
+ provenance={
+  "intervention":"team_mean_credit" if treatment else "team_mean_credit_control",
+  "parent_sampled_steps":1505280,"source_sampled_steps":1505280,
+  "target_sampled_steps":1805280,"additional_sampled_steps":300000,
+ }
+ row={
+  "sampled_steps":1530000,"team_credit_enabled":1 if treatment else 0,
+  "team_credit_live_sample_count":10 if treatment else 0,
+  "team_credit_original_live_reward_sum":1.0,
+  "team_credit_transformed_live_reward_sum":1.0,
+  "team_credit_sum_abs_error_max":0.0,
+  "team_credit_mean_abs_redistribution":.25 if treatment else 0.0,
+ }
+ return run,provenance,[row]
+
+
+def test_analysis_runtime_identity_and_activation_rejections():
+ for branch in ("control","teammean"):
+  run,provenance,rows=_analysis_protocol(branch)
+  result=verify_runtime_intervention(branch,run,provenance,rows,branch)
+  assert result["runtime_intervention_verified"] is True
+ run,provenance,rows=_analysis_protocol("teammean");run["enabled_modules"]=["actor_lr_decay"]
+ with pytest.raises(RuntimeError,match="enabled_modules"):verify_runtime_intervention("teammean",run,provenance,rows,"treatment")
+ run,provenance,rows=_analysis_protocol("teammean");rows[0]["team_credit_enabled"]=0
+ with pytest.raises(RuntimeError,match="team_credit_enabled"):verify_runtime_intervention("teammean",run,provenance,rows,"treatment")
+ run,provenance,rows=_analysis_protocol("control");rows[0]["team_credit_enabled"]=1
+ with pytest.raises(RuntimeError,match="team_credit_enabled"):verify_runtime_intervention("control",run,provenance,rows,"control")
+
+
+def test_analysis_rejects_zero_treatment_redistribution():
+ run,provenance,rows=_analysis_protocol("teammean");rows[0]["team_credit_mean_abs_redistribution"]=0.0
+ with pytest.raises(RuntimeError,match="zero throughout"):verify_runtime_intervention("teammean",run,provenance,rows,"treatment")
+
+
+def test_numeric_nonfinite_scan_and_info_string():
+ for value in (float("nan"),float("inf"),float("-inf")):
+  with pytest.raises(RuntimeError,match="sampled_steps=17"):
+   assert_finite_numeric_tree({"sampled_steps":17,"metric":value},"optimization_metrics.jsonl")
+ assert_finite_numeric_tree({"sampled_steps":17,"message":"ordinary info message"},"optimization_metrics.jsonl")
+ check_text_failure_markers("ordinary info message", "train.log")
+
+
+def test_treatment_method_identity_metadata():
+ trainer=ModularMAPPOTrainer(hidden_dim=32,ppo_epochs=1,minibatch_size=32,seed=7,modules_config={"actor_lr_decay":{"enabled":True},"team_mean_credit":{"enabled":True,"mode":"alive_sum_preserving_mean"}})
+ runner=object.__new__(ModularMAPPOTrainingRunner);runner.trainer=trainer;runner.algorithm_config={"development_method":"team_credit_matched_teammean"};runner.env_config={"observation":{"include_own_fire_ready":False}}
+ identity=runner.method_identity()
+ assert identity["team_mean_credit_enabled"] is True
+ assert identity["team_mean_credit_version"]==1
+ assert identity["team_mean_credit_mode"]=="alive_sum_preserving_mean"
+ assert identity["team_mean_credit_reward_scope"]=="training_credit_only"
+ assert identity["team_mean_credit_sum_preserving"] is True

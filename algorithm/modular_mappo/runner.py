@@ -1252,6 +1252,15 @@ class ModularMAPPOTrainingRunner:
                            "swgp_activation_update_count":module.activation_update_count,
                            "swgp_actor_only":True,"swgp_natural_wave_frequency":True,
                            "swgp_critic_unchanged":True})
+        if self.trainer.team_mean_credit.enabled:
+            module = self.trainer.team_mean_credit
+            result.update({
+                "team_mean_credit_enabled": True,
+                "team_mean_credit_version": int(module.version),
+                "team_mean_credit_mode": module.mode,
+                "team_mean_credit_reward_scope": "training_credit_only",
+                "team_mean_credit_sum_preserving": True,
+            })
         return result
 
     def run(self) -> dict[str, Any]:

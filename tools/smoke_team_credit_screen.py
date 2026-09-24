@@ -1,7 +1,7 @@
 """CUDA-only tiny matched-branch smoke; never launches the 300k screen."""
 from __future__ import annotations
 from copy import deepcopy
-import hashlib,json,sys
+import argparse,hashlib,json,sys
 from pathlib import Path
 import numpy as np,torch,yaml
 ROOT=Path(__file__).resolve().parents[1]
@@ -14,7 +14,6 @@ from algorithm.mappo.trainer import compute_gae
 from algorithm.modules import TeamMeanCreditModule
 
 SOURCE=ROOT/'outputs/diag_mappo_learnability/l3_seed5302/checkpoint_1505280.pt'
-OUT=ROOT/'outputs/smoke_team_credit_screen_final'
 
 def file_hash(path):
  h=hashlib.sha256()
@@ -43,6 +42,9 @@ def fingerprint(trainer):
   'torch_cuda_rng':state_hash(rng['torch_cuda_rng_state_all'])}
 
 def main():
+ global OUT
+ parser=argparse.ArgumentParser();parser.add_argument('--output-dir',default='outputs/smoke_team_credit_screen_final');args=parser.parse_args()
+ OUT=ROOT/args.output_dir
  if not torch.cuda.is_available():raise RuntimeError('CUDA is mandatory')
  if OUT.exists() and (OUT/'smoke_report.json').exists():raise FileExistsError(OUT)
  OUT.mkdir(parents=True,exist_ok=True);before=file_hash(SOURCE);source=torch.load(SOURCE,map_location='cpu',weights_only=False)
