@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from algorithm.modules.persistent_wave_trajectory_replay import (
     BRIDGE_12, BRIDGE_23, PWTR_PARTITION_CAPACITY, W2_INTERNAL, W3_INTERNAL,
@@ -18,6 +19,7 @@ from algorithm.modules.persistent_wave_trajectory_replay import (
     vtrace_targets_and_advantages, wave_stratified_permutation,
 )
 from algorithm.train_modular_mappo import load_config
+from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from tools.analyze_pwtr_ablation import classify_full_gate, descriptive, endpoint, TARGET
 
 
@@ -277,3 +279,33 @@ def test_budget_fill_fraction_definition():
     assert replay_budget_fill_fraction(0, 0) == 1.0
     assert replay_budget_fill_fraction(2, 2) == 1.0
     assert replay_budget_fill_fraction(1, 2) == .5
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is mandatory for runner resume integration")
+def test_runner_resume_discards_pending_but_preserves_completed_memory_and_pwtr_rng(tmp_path):
+    env = yaml.safe_load((ROOT / "configs/persistent_wave_v2_environment.yaml").read_text(encoding="utf-8"))
+    config = load_config(ROOT / "configs/dev_pwtr_full_300k.yaml")
+    source = ModularMAPPOTrainingRunner(env, config, 1, 1_805_280, "cuda", 5301,
+                                        tmp_path / "source", True, resume_mode=False)
+    module = source.trainer.persistent_wave_trajectory_replay
+    module.ingest_rollout(rollout([2] * 128), 1)
+    completed_id = module.partitions[W2_INTERNAL][0]["segment_id"]
+    module.ingest_rollout(rollout([1] * 70, transitions=[0] * 69 + [1]), 2)
+    module.ingest_rollout(rollout([2] * 12), 2)
+    saved_rng = deepcopy(module.rng.bit_generator.state)
+    checkpoint = tmp_path / "resume.pt"
+    source.save_checkpoint(checkpoint)
+    source.vector.close()
+
+    resumed = ModularMAPPOTrainingRunner(env, config, 1, 1_805_280, "cuda", 5301,
+                                         tmp_path / "resumed", True, resume_mode=True)
+    resumed.resume(checkpoint)
+    restored = resumed.trainer.persistent_wave_trajectory_replay
+    assert restored.partitions[W2_INTERNAL][0]["segment_id"] == completed_id
+    assert restored.pending_internal == {}
+    assert restored.source_tails == {}
+    assert restored.pending_bridges == {}
+    assert restored.entry_survivors == {}
+    assert restored.pending_dropped_on_resume > 0
+    assert restored.rng.bit_generator.state == saved_rng
+    resumed.vector.close()

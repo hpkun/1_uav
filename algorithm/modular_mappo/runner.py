@@ -275,8 +275,6 @@ class ModularMAPPOTrainingRunner:
             curriculum_enabled=True,
         )
         self._make_vector(previous)
-        if self.trainer.persistent_wave_trajectory_replay.enabled:
-            self.trainer.persistent_wave_trajectory_replay.discard_pending_after_environment_restart()
 
     @staticmethod
     def _fractions(counts: np.ndarray) -> np.ndarray:
@@ -1008,6 +1006,8 @@ class ModularMAPPOTrainingRunner:
         self.brsc_completed_episode_counter=int(extra.get("brsc_completed_episode_counter",0))
         self.brsc_pending_episode=[{1:None,2:None} for _ in range(self.num_envs)]
         self._make_vector(previous)
+        if self.trainer.persistent_wave_trajectory_replay.enabled:
+            self.trainer.persistent_wave_trajectory_replay.discard_pending_after_environment_restart()
         if self.trainer.wave_entry_curriculum.enabled:
             saved_wec = extra.get("wave_entry_curriculum_state")
             if saved_wec is None:
