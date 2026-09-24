@@ -34,6 +34,10 @@ from algorithm.modules import (SequentialWaveGradientProjectionModule,SWGP_MAPPO
 from algorithm.modules.hierarchical_temporal_abstraction import (HTA_MANAGER_TORCH_SEED_XOR,
  HTA_MANAGER_NUMPY_SEED_XOR)
 from algorithm.modules import TeamMeanCreditModule,TEAM_MEAN_CREDIT_VERSION
+from algorithm.modules import (PersistentWaveTrajectoryReplayModule,PWTR_MAPPO_VERSION,
+ replay_batch_budget,clipped_importance_weights,normalized_ess_and_freshness,
+ vtrace_targets_and_advantages,W2_INTERNAL,W3_INTERNAL,BRIDGE_12,BRIDGE_23,
+ PWTR_ACTOR_MAX_AGE_UPDATES)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
@@ -156,6 +160,7 @@ class ModularMAPPOTrainer:
   self.hta_worker_consolidation=HTAWorkerConsolidationModule(self.modules_config.get("hta_worker_consolidation"))
   self.sequential_wave_gradient_projection=SequentialWaveGradientProjectionModule(self.modules_config.get("sequential_wave_gradient_projection"))
   self.team_mean_credit=TeamMeanCreditModule(self.modules_config.get("team_mean_credit"))
+  self.persistent_wave_trajectory_replay=PersistentWaveTrajectoryReplayModule(self.modules_config.get("persistent_wave_trajectory_replay"),seed)
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -186,6 +191,18 @@ class ModularMAPPOTrainer:
    enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","team_mean_credit"}
    if enabled!=required:raise ValueError(f"team_mean_credit requires exact enabled modules: {sorted(required)}")
    if not self.actor_lr_decay.enabled:raise ValueError("team_mean_credit requires actor_lr_decay")
+  if self.persistent_wave_trajectory_replay.enabled:
+   enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","persistent_wave_trajectory_replay"}
+   if enabled!=required:raise ValueError(f"PWTR V1 requires exact enabled modules: {sorted(required)}")
+   if not self.actor_lr_decay.enabled:raise ValueError("PWTR V1 requires actor_lr_decay")
+   if any((self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
+           self.wave_entry_curriculum.enabled,self.actor_kl_guard.enabled,self.inter_wave_credit.enabled,
+           self.counterfactual_inter_wave_credit.enabled,self.boundary_redistributed_segment_credit.enabled,
+           self.mission_film.enabled,self.wave_context.enabled,self.entity_attention_enabled,
+           self.advantage_priority.enabled,self.ppo_stabilization.enabled,self.popart.enabled,
+           self.curriculum.enabled,self.anchor.enabled,self.warm_start.enabled,
+           self.reward_adapter.enabled,self.wave_survival_pbrs.enabled,self.team_mean_credit.enabled)):
+    raise ValueError("PWTR V1 requires an otherwise Plain feed-forward Actor/Critic")
   if self.wave_entry_curriculum.enabled:
    enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","wave_balancing","wave_entry_curriculum"}
    if not enabled.issubset(allowed):raise ValueError(f"wave_entry_curriculum incompatible enabled modules: {sorted(enabled-allowed)}")
@@ -417,7 +434,8 @@ class ModularMAPPOTrainer:
    self._brsc_source_waves=waves.reshape(-1)
    metrics=self._update_flat_brsc(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,brsc_adv,brsc_active)
   else:
-   metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,actor_w if self.advantage_priority.enabled else None)
+   metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,
+    actor_w if self.advantage_priority.enabled else None,waves if self.persistent_wave_trajectory_replay.enabled else None)
   if self.hta_worker_consolidation.enabled:
    with torch.no_grad():
     norm_before=torch.sqrt(sum(value.double().square().sum() for value in worker_before))
@@ -437,6 +455,13 @@ class ModularMAPPOTrainer:
   if self.hierarchical_temporal_abstraction.enabled:
    metrics.update(self._update_hta_manager(hta_prepared))
    metrics.update(self._hta_worker_diagnostics(obs,torch.as_tensor(r.hta_options,dtype=torch.long,device=self.device)))
+  fresh_actor_steps=self.actor_update_count-actor_before;fresh_critic_steps=self.critic_update_count-critic_before
+  pwtr_metrics=self.persistent_wave_trajectory_replay.default_metrics(r.wave_indices)
+  if self.persistent_wave_trajectory_replay.enabled and self.persistent_wave_trajectory_replay.replay_enabled:
+   pwtr_metrics.update(self._pwtr_replay_phase())
+  metrics.update(pwtr_metrics)
+  metrics["pwtr_fresh_actor_optimizer_steps"]=float(fresh_actor_steps)
+  metrics["pwtr_fresh_critic_optimizer_steps"]=float(fresh_critic_steps)
   live_mask=alive>.5;rv=returns[live_mask];vv=values[live_mask];variance=torch.var(rv,unbiased=False)
   metrics["explained_variance"]=float((1-torch.var(rv-vv,unbiased=False)/variance.clamp_min(1e-8)).detach())
   metrics["actor_optimizer_steps_this_update"]=float(self.actor_update_count-actor_before);metrics["critic_optimizer_steps_this_update"]=float(self.critic_update_count-critic_before)
@@ -901,6 +926,114 @@ class ModularMAPPOTrainer:
   for key in brows[0]:out[key]=float(np.mean([row[key] for row in brows]))
   count=max(1,self.brsc_gradient_step_count);out["brsc_cumulative_conflict_fraction"]=self.brsc_conflict_count/count;out["brsc_cumulative_trust_cap_fraction"]=self.brsc_trust_cap_count/count;out["brsc_cumulative_aux_induced_clip_fraction"]=self.brsc_aux_induced_clip_count/count;return out
 
+ def _pwtr_tensors(self,batch):
+  tt=lambda key,dtype=torch.float32:torch.as_tensor(batch[key],dtype=dtype,device=self.device)
+  return {"observations":tt("observations"),"next_observations":tt("next_observations"),
+   "raw_actions":tt("raw_actions"),"behavior_log_probs":tt("behavior_log_probs"),
+   "rewards":tt("rewards"),"dones":tt("dones"),"alive_masks":tt("alive_masks"),
+   "next_alive_masks":tt("next_alive_masks"),"valid_time_mask":tt("valid_time_mask"),
+   "wave_indices":tt("wave_indices",torch.long),
+   "segment_generations":tt("segment_generations",torch.long)}
+
+ def _pwtr_policy_values(self,tensors):
+  obs=tensors["observations"];nobs=tensors["next_observations"];alive=tensors["alive_masks"];nalive=tensors["next_alive_masks"]
+  shape=obs.shape[:2];fo=obs.reshape(-1,*obs.shape[2:]);fn=nobs.reshape(-1,*nobs.shape[2:]);fa=alive.reshape(-1,alive.shape[-1]);fna=nalive.reshape(-1,nalive.shape[-1])
+  dist,_=self.actor.distribution_step(fo,None,None,None,fa)
+  raw=tensors["raw_actions"].reshape(-1,*tensors["raw_actions"].shape[2:]);actions=torch.tanh(raw)
+  newlog=self.actor._squashed_log_prob(dist,raw,actions).reshape(*shape,self.num_agents)
+  values,_=self.critic.forward_step(fo,fa,None,None,None);next_values,_=self.critic.forward_step(fn,fna,None,None,None)
+  return newlog,values.reshape(*shape,self.num_agents),next_values.reshape(*shape,self.num_agents)
+
+ @torch.no_grad()
+ def _pwtr_segment_diagnostics(self,segment):
+  stacked=self.persistent_wave_trajectory_replay.stack_segments([segment]);tensors=self._pwtr_tensors(stacked)
+  newlog,values,next_values=self._pwtr_policy_values(tensors)
+  _,_,joint_log,joint_rho=clipped_importance_weights(newlog,tensors["behavior_log_probs"],tensors["alive_masks"],tensors["valid_time_mask"])
+  valid_alive=tensors["alive_masks"]*tensors["valid_time_mask"].unsqueeze(-1)
+  continuation=(1-tensors["dones"]).unsqueeze(-1)*tensors["next_alive_masks"]
+  td=(tensors["rewards"]+self.gamma*continuation*next_values-values).abs()
+  learning=float((td*valid_alive).sum()/valid_alive.sum().clamp_min(1))
+  valid_state=tensors["valid_time_mask"]*(tensors["alive_masks"].sum(-1)>0).to(torch.float32)
+  ess,divergence,freshness=normalized_ess_and_freshness(joint_log,valid_state)
+  priority=(learning+1e-6)*float(freshness)
+  return {"learning_potential":learning,"normalized_ess":float(ess),"joint_abs_log_ratio":float(divergence),"freshness":float(freshness),"priority":priority,
+   "rho_mean":float(joint_rho[valid_state>.5].mean()) if bool((valid_state>.5).any()) else 0.}
+
+ def _pwtr_replay_phase(self):
+  module=self.persistent_wave_trajectory_replay;generation=int(module.current_rollout_generation)
+  result=module.default_metrics(None);budget=replay_batch_budget(module.current_later_states)
+  for wave in (1,2,3):result.pop(f"pwtr_fresh_w{wave}_states",None)
+  result["pwtr_replay_batches_budget"]=float(budget)
+  if module.fresh_rollout_count<=1 or budget==0:return result
+  rows=[];type_states={name:0 for name in (W2_INTERNAL,W3_INTERNAL,BRIDGE_12,BRIDGE_23)}
+  actor_steps_before=module.replay_actor_optimizer_steps;critic_steps_before=module.replay_critic_optimizer_steps
+  for _ in range(budget):
+   segments=module.sample_batch(generation,self._pwtr_segment_diagnostics if module.priority_enabled else None)
+   if not segments:break
+   diagnostics=[]
+   for segment in segments:
+    diagnostic=self._pwtr_segment_diagnostics(segment);segment["priority_cache"]=diagnostic;diagnostics.append(diagnostic)
+    type_states[segment["segment_type"]]+=int(segment["valid_time_mask"].sum())
+   batch=module.stack_segments(segments);tensors=self._pwtr_tensors(batch)
+   newlog,values,next_values=self._pwtr_policy_values(tensors)
+   logratio,individual_rho,joint_log,joint_rho=clipped_importance_weights(
+    newlog,tensors["behavior_log_probs"],tensors["alive_masks"],tensors["valid_time_mask"])
+   with torch.no_grad():
+    targets,advantages=vtrace_targets_and_advantages(tensors["rewards"],values.detach(),next_values.detach(),
+     tensors["dones"],tensors["alive_masks"],tensors["next_alive_masks"],tensors["valid_time_mask"],joint_rho,self.gamma)
+   valid_alive=tensors["alive_masks"]*tensors["valid_time_mask"].unsqueeze(-1)
+   critic_loss=((values-targets).square()*valid_alive).sum()/valid_alive.sum().clamp_min(1)
+   critic_grad=0.
+   if module.critic_replay:
+    self.critic_optimizer.zero_grad();(self.value_loss_coefficient*critic_loss).backward()
+    critic_grad=float(nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm));self.critic_optimizer.step()
+    self.critic_update_count+=1;module.replay_critic_optimizer_steps+=1
+   ages=generation-tensors["segment_generations"]
+   age_mask=(ages<=PWTR_ACTOR_MAX_AGE_UPDATES).to(torch.float32)[:,None,None]
+   actor_mask=valid_alive*age_mask;actor_loss=values.new_zeros(());actor_grad=0.
+   if module.actor_replay and bool((actor_mask>.5).any()):
+    actor_loss=-(individual_rho*advantages*newlog*actor_mask).sum()/actor_mask.sum().clamp_min(1)
+    self.actor_optimizer.zero_grad();actor_loss.backward()
+    actor_grad=float(nn.utils.clip_grad_norm_(self.actor.trainable_policy_parameters(),self.max_grad_norm));self.actor_optimizer.step()
+    self.actor_update_count+=1;module.replay_actor_optimizer_steps+=1
+   valid_state=tensors["valid_time_mask"]*(tensors["alive_masks"].sum(-1)>0).to(torch.float32)
+   rho_values=joint_rho[valid_state>.5]
+   rows.append({"valid_states":float(tensors["valid_time_mask"].sum()),"alive_samples":float(valid_alive.sum()),
+    "mean_age":float(ages.float().mean()),"max_age":float(ages.max()),
+    "learning":float(np.mean([row["learning_potential"] for row in diagnostics])),
+    "freshness":float(np.mean([row["freshness"] for row in diagnostics])),
+    "priority":float(np.mean([row["priority"] for row in diagnostics])),
+    "joint_abs_log_ratio":float(np.mean([row["joint_abs_log_ratio"] for row in diagnostics])),
+    "normalized_ess":float(np.mean([row["normalized_ess"] for row in diagnostics])),
+    "actor_eligible_fraction":float(actor_mask.sum()/valid_alive.sum().clamp_min(1)),
+    "rho_mean":float(rho_values.mean()),"rho_min":float(rho_values.min()),"rho_max":float(rho_values.max()),
+    "actor_loss":float(actor_loss.detach()),"critic_loss":float(critic_loss.detach()),
+    "actor_grad":actor_grad,"critic_grad":critic_grad})
+  if not rows:return result
+  module.replay_phase_count+=1;total_states=sum(type_states.values())
+  mean=lambda key:float(np.mean([row[key] for row in rows]))
+  result.update(module.memory_counts());result.update({
+   "pwtr_replay_batches":float(len(rows)),"pwtr_replay_valid_states":float(sum(row["valid_states"] for row in rows)),
+   "pwtr_replay_alive_samples":float(sum(row["alive_samples"] for row in rows)),
+   "pwtr_replay_w2_fraction":type_states[W2_INTERNAL]/max(total_states,1),
+   "pwtr_replay_w3_fraction":type_states[W3_INTERNAL]/max(total_states,1),
+   "pwtr_replay_bridge12_fraction":type_states[BRIDGE_12]/max(total_states,1),
+   "pwtr_replay_bridge23_fraction":type_states[BRIDGE_23]/max(total_states,1),
+   "pwtr_mean_segment_age":mean("mean_age"),"pwtr_max_segment_age":max(row["max_age"] for row in rows),
+   "pwtr_mean_learning_potential":mean("learning"),"pwtr_mean_freshness":mean("freshness"),
+   "pwtr_mean_priority":mean("priority"),"pwtr_mean_joint_abs_log_ratio":mean("joint_abs_log_ratio"),
+   "pwtr_mean_normalized_ess":mean("normalized_ess"),"pwtr_actor_eligible_fraction":mean("actor_eligible_fraction"),
+   "pwtr_vtrace_rho_mean":mean("rho_mean"),"pwtr_vtrace_rho_min":min(row["rho_min"] for row in rows),
+   "pwtr_vtrace_rho_max":max(row["rho_max"] for row in rows),"pwtr_actor_replay_loss":mean("actor_loss"),
+   "pwtr_critic_replay_loss":mean("critic_loss"),"pwtr_actor_replay_grad_norm_preclip":mean("actor_grad"),
+   "pwtr_critic_replay_grad_norm_preclip":mean("critic_grad"),
+   "pwtr_replay_actor_optimizer_steps":float(module.replay_actor_optimizer_steps),
+   "pwtr_replay_critic_optimizer_steps":float(module.replay_critic_optimizer_steps),
+   "pwtr_replay_actor_optimizer_steps_this_phase":float(module.replay_actor_optimizer_steps-actor_steps_before),
+   "pwtr_replay_critic_optimizer_steps_this_phase":float(module.replay_critic_optimizer_steps-critic_steps_before),
+   "pwtr_replay_phase_count":float(module.replay_phase_count)})
+  return result
+
  def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None,options=None):
   dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask,option_ids=options);newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
   logratio,ratio=stable_ratio_terms(newlog,oldlog);sur=torch.minimum(ratio*adv,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*adv)
@@ -935,10 +1068,12 @@ class ModularMAPPOTrainer:
   if live.numel()==0:raise FloatingPointError("no valid alive PPO samples")
   kl=(ratio-1)-logratio
   return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"actor_gru_grad_norm":float(arg),"critic_gru_grad_norm":float(crg),"gru_gradient_norm":float(np.hypot(arg,crg)),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
- def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None):
+ def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None,fresh_waves=None):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));flat_actor=None if actor_weights is None else flat(actor_weights);N=arrays[0].shape[0];rows=[]
   for _ in range(self.ppo_epochs):
-   permutation=self.rng.permutation(N)
+   permutation=(self.persistent_wave_trajectory_replay.fresh_epoch_permutation(
+    fresh_waves.detach().cpu().numpy().reshape(-1),self.minibatch_size,self.rng)
+    if fresh_waves is not None else self.rng.permutation(N))
    for start in range(0,N,self.minibatch_size):
     ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args,actor_weights=None if flat_actor is None else flat_actor[ix]);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
   return aggregate_update_rows(rows,self.clip_ratio)
@@ -1367,7 +1502,7 @@ class ModularMAPPOTrainer:
   return True
  def checkpoint_state(self,extra=None):
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION,"hta_worker_consolidation":HTA_WORKER_CONSOLIDATION_VERSION,"sequential_wave_gradient_projection":SWGP_MAPPO_VERSION,"team_mean_credit":TEAM_MEAN_CREDIT_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"sequential_wave_gradient_projection_state":self.sequential_wave_gradient_projection.state_dict() if self.sequential_wave_gradient_projection.enabled else None,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION,"hta_worker_consolidation":HTA_WORKER_CONSOLIDATION_VERSION,"sequential_wave_gradient_projection":SWGP_MAPPO_VERSION,"team_mean_credit":TEAM_MEAN_CREDIT_VERSION,"persistent_wave_trajectory_replay":PWTR_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"sequential_wave_gradient_projection_state":self.sequential_wave_gradient_projection.state_dict() if self.sequential_wave_gradient_projection.enabled else None,"persistent_wave_trajectory_replay_state":self.persistent_wave_trajectory_replay.state_dict() if self.persistent_wave_trajectory_replay.enabled else None,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
   state=torch.load(path,map_location=self.device,weights_only=False)
@@ -1376,7 +1511,7 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -1389,6 +1524,7 @@ class ModularMAPPOTrainer:
    if self.hta_worker_consolidation.enabled and versions.get("hta_worker_consolidation")!=HTA_WORKER_CONSOLIDATION_VERSION:raise RuntimeError("checkpoint HTA Worker consolidation feature version mismatch")
    if self.sequential_wave_gradient_projection.enabled and versions.get("sequential_wave_gradient_projection")!=SWGP_MAPPO_VERSION:raise RuntimeError("checkpoint SWGP feature version mismatch")
    if self.team_mean_credit.enabled and versions.get("team_mean_credit")!=TEAM_MEAN_CREDIT_VERSION:raise RuntimeError("checkpoint team_mean_credit feature version mismatch")
+   if self.persistent_wave_trajectory_replay.enabled and versions.get("persistent_wave_trajectory_replay")!=PWTR_MAPPO_VERSION:raise RuntimeError("checkpoint PWTR feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.hierarchical_temporal_abstraction.enabled:
@@ -1429,6 +1565,8 @@ class ModularMAPPOTrainer:
   self.actor_kl_guard_actor_epochs_min=state.get("actor_kl_guard_actor_epochs_min")
   if self.sequential_wave_gradient_projection.enabled:
    self.sequential_wave_gradient_projection.load_state_dict(state.get("sequential_wave_gradient_projection_state"),branch_from_plain=not strict_protocol)
+  if self.persistent_wave_trajectory_replay.enabled:
+   self.persistent_wave_trajectory_replay.load_state_dict(state.get("persistent_wave_trajectory_replay_state"),branch_from_plain=not strict_protocol)
   if self.actor_lr_decay.enabled:
    baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.hierarchical_temporal_abstraction.enabled:self.actor_lr_decay.apply(self.manager_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)

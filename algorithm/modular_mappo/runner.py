@@ -811,7 +811,12 @@ class ModularMAPPOTrainingRunner:
                 "iw_supervision_segment_ids": np.concatenate([np.full(len(x["horizons"]),x["segment_id"]) for x in completed_iw_segments]),
                 "iw_supervision_boundary_flags": np.concatenate([x["boundary_flags"] for x in completed_iw_segments]),
             })
-        return ModularRolloutBatch(**kwargs)
+        batch = ModularRolloutBatch(**kwargs)
+        if self.trainer.persistent_wave_trajectory_replay.enabled:
+            self.trainer.persistent_wave_trajectory_replay.ingest_rollout(
+                batch, self.trainer.ppo_update_count
+            )
+        return batch
 
     def checkpoint_extra(self, evaluation: dict[str, Any] | None = None) -> dict[str, Any]:
         network = self.algorithm_config["network"]
@@ -1274,6 +1279,19 @@ class ModularMAPPOTrainingRunner:
                 "team_mean_credit_mode": module.mode,
                 "team_mean_credit_reward_scope": "training_credit_only",
                 "team_mean_credit_sum_preserving": True,
+            })
+        if self.trainer.persistent_wave_trajectory_replay.enabled:
+            module = self.trainer.persistent_wave_trajectory_replay
+            result.update({
+                "pwtr_enabled": True,
+                "pwtr_version": int(module.version),
+                "pwtr_fresh_wave_stratification": module.fresh_wave_stratification,
+                "pwtr_replay_enabled": module.replay_enabled,
+                "pwtr_replay_source": module.replay_source,
+                "pwtr_priority_enabled": module.priority_enabled,
+                "pwtr_bridge_enabled": module.bridge_enabled,
+                "pwtr_natural_trajectory_only": True,
+                "pwtr_reward_scope": "original_local_environment_reward",
             })
         return result
 

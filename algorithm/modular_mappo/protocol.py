@@ -236,6 +236,65 @@ def validate_team_credit_branch(state,env_config,algorithm_config,expected_runti
   "matched_checkpoint_continuation":True,"identical_branch_reset_protocol":True,
   "historical_plain_bitwise_physical_continuation":False,"reason":"vector environment physical state is not checkpointed"}
 
+def _pwtr_comparable_config(config):
+ value=deepcopy(config);value.pop("development_method",None);value.pop("development_branch",None)
+ value.get("training",{}).pop("total_sampled_steps",None)
+ value.get("modules",{}).pop("persistent_wave_trajectory_replay",None)
+ return value
+
+def validate_pwtr_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate one exact Plain 1,505,280 -> PWTR ablation 1,805,280 branch."""
+ if state.get("algorithm")!="modular_mappo":raise RuntimeError("PWTR source algorithm must be modular_mappo")
+ if state.get("modular_mappo_impl_version")!=MODULAR_MAPPO_IMPL_VERSION or state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("PWTR source implementation version mismatch")
+ extra=state.get("extra",{});source_env=extra.get("environment_config");source=extra.get("algorithm_config")
+ if not isinstance(source_env,dict) or not isinstance(source,dict):raise RuntimeError("PWTR source lacks embedded configs")
+ if source_env!=env_config or extra.get("environment_config_sha256")!=config_sha256(env_config):raise RuntimeError("PWTR branch environment mismatch")
+ if _pwtr_comparable_config(source)!=_pwtr_comparable_config(algorithm_config):raise RuntimeError("PWTR branch differs outside its registered intervention whitelist")
+ source_enabled=set(state.get("enabled_modules",[]));destination_enabled=set(name for name,value in algorithm_config.get("modules",{}).items() if isinstance(value,dict) and value.get("enabled",False))
+ if source_enabled!={"actor_lr_decay"}:raise RuntimeError("PWTR source must enable actor_lr_decay only")
+ if destination_enabled not in ({"actor_lr_decay"},{"actor_lr_decay","persistent_wave_trajectory_replay"}):raise RuntimeError("PWTR destination enabled modules mismatch")
+ branch=algorithm_config.get("development_branch",{});intervention=branch.get("intervention")
+ methods={
+  "pwtr_plain_control":"pwtr_plain_matched_control","pwtr_stratified":"pwtr_stratified",
+  "pwtr_current_extra":"pwtr_current_extra","pwtr_uniform_recent":"pwtr_uniform_recent",
+  "pwtr_priority_recent":"pwtr_priority_recent","pwtr_full":"pwtr_full"}
+ if intervention not in methods or algorithm_config.get("development_method")!=methods[intervention]:raise RuntimeError("PWTR intervention/development identity mismatch")
+ module=algorithm_config.get("modules",{}).get("persistent_wave_trajectory_replay",{})
+ expected_modes={
+  "pwtr_plain_control":None,
+  "pwtr_stratified":(True,False,"recent_uniform",False,False,False,False),
+  "pwtr_current_extra":(True,True,"current",False,False,True,True),
+  "pwtr_uniform_recent":(True,True,"recent_uniform",False,False,True,True),
+  "pwtr_priority_recent":(True,True,"recent_priority",True,False,True,True),
+  "pwtr_full":(True,True,"recent_priority",True,True,True,True)}
+ expected=expected_modes[intervention]
+ if expected is None:
+  if "persistent_wave_trajectory_replay" in destination_enabled:raise RuntimeError("PWTR Plain control enabled replay")
+ else:
+  actual=(bool(module.get("fresh_wave_stratification")),bool(module.get("replay_enabled")),module.get("replay_source"),bool(module.get("priority_enabled")),bool(module.get("bridge_enabled")),bool(module.get("actor_replay")),bool(module.get("critic_replay")))
+  if actual!=expected:raise RuntimeError(f"PWTR ablation mode mismatch: {actual}")
+  fixed=(int(module.get("sequence_length",-1)),int(module.get("bridge_half_length",-1)),int(module.get("min_segment_length",-1)),int(module.get("partition_capacity",-1)),int(module.get("actor_max_age_updates",-1)))
+  if fixed!=(128,64,32,32,2):raise RuntimeError("PWTR fixed constants mismatch")
+ if int(state.get("sampled_steps",-1))!=1_505_280 or int(branch.get("source_sampled_steps",-1))!=1_505_280:raise RuntimeError("PWTR source sampled_steps must be 1505280")
+ if int(branch.get("additional_sampled_steps",-1))!=300_000 or int(branch.get("target_sampled_steps",-1))!=1_805_280 or int(algorithm_config.get("training",{}).get("total_sampled_steps",-1))!=1_805_280:raise RuntimeError("PWTR branch budget mismatch")
+ if branch.get("actor_optimizer_restore") is not True or branch.get("critic_optimizer_restore") is not True or branch.get("rng_restore") is not True:raise RuntimeError("PWTR branch must restore both optimizers and RNG")
+ if source.get("modules",{}).get("actor_lr_decay")!=algorithm_config.get("modules",{}).get("actor_lr_decay"):raise RuntimeError("PWTR branch changed actor_lr_decay")
+ if float(state.get("actor_optimizer",{}).get("param_groups",[{}])[0].get("lr",-1))!=1e-4:raise RuntimeError("PWTR source actor LR must be 1e-4")
+ required=("actor","critic","actor_optimizer","critic_optimizer","rng_state","sampled_steps","vector_steps","ppo_updates","actor_updates","critic_updates","module_config_sha256")
+ missing=[key for key in required if key not in state]
+ if missing:raise RuntimeError("PWTR source lacks required state: "+", ".join(missing))
+ rng=state.get("rng_state",{});rng_required=("python_random_state","numpy_random_state","torch_cpu_rng_state","torch_cuda_rng_state_all","trainer_permutation_rng_state")
+ if any(key not in rng for key in rng_required):raise RuntimeError("PWTR source RNG state incomplete")
+ if not state["actor_optimizer"].get("state") or not state["critic_optimizer"].get("state"):raise RuntimeError("PWTR source optimizer state incomplete")
+ if expected_runtime:
+  for key,value in expected_runtime.items():
+   if extra.get(key)!=value:raise RuntimeError(f"PWTR branch checkpoint {key} mismatch")
+ return {"intervention":intervention,"source_enabled_modules":sorted(source_enabled),"destination_enabled_modules":sorted(destination_enabled),
+  "source_sampled_steps":1_505_280,"additional_sampled_steps":300_000,"target_sampled_steps":1_805_280,
+  "optimizer_restored":True,"actor_optimizer_restored":True,"critic_optimizer_restored":True,"RNG_restored":True,
+  "matched_checkpoint_continuation":True,"identical_branch_reset_protocol":True,
+  "historical_plain_bitwise_physical_continuation":False,"reason":"vector environment physical state is not checkpointed"}
+
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
  for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)
@@ -334,4 +393,4 @@ def is_formal_v2_checkpoint(state):
          state.get("baseline_mappo_impl_version")==MAPPO_IMPL_VERSION and
          all(key in extra for key in required))
 
-__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]
+__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_pwtr_branch","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]

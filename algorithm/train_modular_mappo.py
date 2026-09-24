@@ -34,6 +34,7 @@ from algorithm.modular_mappo.protocol import (
     validate_modular_checkpoint,
     validate_swgp_branch,
     validate_team_credit_branch,
+    validate_pwtr_branch,
 )
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
@@ -197,8 +198,10 @@ def main() -> None:
         intervention=algorithm_config.get("development_branch",{}).get("intervention")
         if intervention and (runtime["total_sampled_steps"]!=int(algorithm_config["training"]["total_sampled_steps"]) or runtime["device"]!="cuda"):
             raise RuntimeError("development branch requires its exact configured target and CUDA runtime")
+        pwtr_interventions={"pwtr_plain_control","pwtr_stratified","pwtr_current_extra","pwtr_uniform_recent","pwtr_priority_recent","pwtr_full"}
         validator=(validate_fbmr_v2_stage2_branch if intervention=="frozen_base_dual_bounded_mean_residual"
                    else validate_team_credit_branch if intervention in {"team_mean_credit","team_mean_credit_control"}
+                   else validate_pwtr_branch if intervention in pwtr_interventions
                    else validate_swgp_branch if intervention in {"sequential_wave_gradient_projection","sequential_wave_gradient_projection_control"}
                    else validate_fbmr_stage2_branch if intervention else validate_modular_branch)
         branch_validation=validator(state,env_config,algorithm_config,{"training_seed":runtime["seed"],"training_num_envs":runtime["num_envs"],"training_smoke":runtime["smoke"]})
@@ -206,6 +209,7 @@ def main() -> None:
         output_dir=resolved(args.output_dir).resolve();ensure_fresh_output_directory(output_dir)
         allowed=(["actor_lr_decay","total_sampled_steps","output_directory","branch_metadata"] if not intervention else
                  ["total_sampled_steps","development_method","development_branch","team_mean_credit","branch_metadata"] if intervention in {"team_mean_credit","team_mean_credit_control"} else
+                 ["total_sampled_steps","development_method","development_branch","persistent_wave_trajectory_replay","branch_metadata"] if intervention in pwtr_interventions else
                  ["total_sampled_steps","development_method","development_branch","sequential_wave_gradient_projection","branch_metadata"] if intervention in {"sequential_wave_gradient_projection","sequential_wave_gradient_projection_control"} else
                  ["total_sampled_steps","development_branch","entity_attention","actor_trainable_parameter_set","actor_optimizer_reset","actor_effective_lr","evaluation_seed_base","development_protocol"])
         branch_provenance={"branch_creation_mode":"explicit_branch_from","parent_checkpoint_path":str(branch_path),"parent_checkpoint_sha256":parent_digest,"parent_sampled_steps":int(state["sampled_steps"]),"source_training_seed":int(state.get("extra",{}).get("training_seed")),"destination_algorithm_config_sha256":config_sha256(algorithm_config),"destination_module_config_sha256":config_sha256(algorithm_config.get("modules",{})),"source_algorithm_config_sha256":state.get("extra",{}).get("algorithm_config_sha256"),"source_module_config_sha256":state.get("module_config_sha256"),"allowed_differences":allowed,**runtime_source_branch_provenance(state,runtime_manifest),**branch_validation}
