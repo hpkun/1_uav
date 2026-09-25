@@ -25,13 +25,18 @@ OLD = ("stratified", "current_extra", "uniform_recent")
 CORE = (
     "algorithm/modules/persistent_wave_trajectory_replay.py",
     "algorithm/modular_mappo/trainer.py", "algorithm/modular_mappo/runner.py",
-    "algorithm/modular_mappo/networks.py", "env/combat_env.py",
+    "algorithm/modular_mappo/networks.py", "env/combat_env.py", "env/persistent_env.py",
 )
 EXPECTED = {
     "current_actor_only": (True, True, "current", False, False, True, False),
     "current_critic_only": (True, True, "current", False, False, False, True),
     "recent_actor_only": (True, True, "recent_uniform", False, False, True, False),
     "recent_critic_only": (True, True, "recent_uniform", False, False, False, True),
+}
+OLD_EXPECTED = {
+    "stratified": ("pwtr_stratified", True, False, "recent_uniform", False, False, False, False),
+    "current_extra": ("pwtr_current_extra", True, True, "current", False, False, True, True),
+    "uniform_recent": ("pwtr_uniform_recent", True, True, "recent_uniform", False, False, True, True),
 }
 
 
@@ -47,9 +52,10 @@ def exact_mode(config: dict) -> tuple:
             bool(module["critic_replay"]))
 
 
-def validate_old_reference(path: Path, branch: str, seed: int) -> dict:
+def validate_old_reference(path: Path, branch: str, seed: int, parent_checkpoint_sha256: str) -> dict:
     required = ("run_summary.json", "run_config.json", "evaluation_history.csv",
-                "training_metrics.jsonl", "optimization_metrics.jsonl", "latest.pt", "final.pt")
+                "training_metrics.jsonl", "optimization_metrics.jsonl", "algorithm_config.yaml",
+                "latest.pt", "final.pt")
     missing = [name for name in required if not (path / name).is_file()]
     if missing: raise RuntimeError(f"{path}: missing {missing}")
     summary = json.loads((path / "run_summary.json").read_text(encoding="utf-8"))
@@ -57,6 +63,19 @@ def validate_old_reference(path: Path, branch: str, seed: int) -> dict:
     run = json.loads((path / "run_config.json").read_text(encoding="utf-8"))
     if (int(run.get("seed", -1)), run.get("environment_variant")) != (seed, "persistent_wave_v2"):
         raise RuntimeError(f"{path}: identity mismatch")
+    provenance = run.get("branch_provenance")
+    if not isinstance(provenance, dict) or provenance.get("parent_checkpoint_sha256") != parent_checkpoint_sha256:
+        raise RuntimeError(f"{path}: parent checkpoint SHA mismatch or missing")
+    algorithm = yaml.safe_load((path / "algorithm_config.yaml").read_text(encoding="utf-8"))
+    module = algorithm.get("modules", {}).get("persistent_wave_trajectory_replay", {})
+    actual = (algorithm.get("development_method"), bool(module.get("fresh_wave_stratification")),
+              bool(module.get("replay_enabled")), module.get("replay_source"),
+              bool(module.get("priority_enabled")), bool(module.get("bridge_enabled")),
+              bool(module.get("actor_replay")), bool(module.get("critic_replay")))
+    if actual != OLD_EXPECTED[branch]: raise RuntimeError(f"{path}: old reference branch identity mismatch: {actual}")
+    fixed = tuple(int(module.get(key, -1)) for key in ("sequence_length", "bridge_half_length",
+                  "min_segment_length", "partition_capacity", "actor_max_age_updates"))
+    if fixed != (128, 64, 32, 32, 2): raise RuntimeError(f"{path}: old reference fixed constants mismatch: {fixed}")
     with (path / "evaluation_history.csv").open(newline="", encoding="utf-8-sig") as stream:
         rows = list(csv.DictReader(stream))
     exact = [row for row in rows if int(float(row["sampled_steps"])) == TARGET]
@@ -73,7 +92,9 @@ def validate_old_reference(path: Path, branch: str, seed: int) -> dict:
                 if isinstance(value, (int, float)) and not math.isfinite(float(value)):
                     raise RuntimeError(f"{path}/{filename}: non-finite")
     return {"branch": branch, "seed": seed, "sampled_steps": TARGET,
-            "evaluation_episodes": 50, "evaluation_seed_range": [44_000_000, 44_000_049]}
+            "evaluation_episodes": 50, "evaluation_seed_range": [44_000_000, 44_000_049],
+            "parent_checkpoint_sha256": parent_checkpoint_sha256,
+            "parent_checkpoint_sha256_match": True, "branch_identity_match": True}
 
 
 def main() -> None:
@@ -115,7 +136,8 @@ def main() -> None:
         validations[str(seed)] = {name: validate_pwtr_branch(state, env, config,
             {"training_seed": seed, "training_num_envs": 24, "training_smoke": False}) for name, config in configs.items()}
 
-    references = [validate_old_reference(ROOT / f"outputs/dev_pwtr_{branch}_seed{seed}_300k", branch, seed)
+    references = [validate_old_reference(ROOT / f"outputs/dev_pwtr_{branch}_seed{seed}_300k", branch, seed,
+                  source_rows[str(seed)]["sha256"])
                   for seed in SEEDS for branch in OLD]
     historical = json.loads((ROOT / "outputs/dev_pwtr_stratified_seed5301_300k/run_config.json").read_text(encoding="utf-8"))
     old_hashes = {row["path"]: row["sha256"] for row in historical["runtime_source_manifest_files"]}

@@ -10,6 +10,7 @@ import yaml
 from algorithm.modular_mappo.protocol import validate_pwtr_branch
 from algorithm.train_modular_mappo import load_config
 from tools.analyze_pwtr_actor_critic_decomposition import direction_label, interaction, main_effects
+from tools.preflight_pwtr_actor_critic_decomposition import CORE, OLD, SEEDS, sha, validate_old_reference
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "outputs/diag_mappo_learnability/l3_seed5301/checkpoint_1505280.pt"
@@ -75,3 +76,26 @@ def test_launcher_is_serial_exact_and_analyzer_does_not_use_45m():
     analyzer = (ROOT / "tools/analyze_pwtr_actor_critic_decomposition.py").read_text(encoding="utf-8")
     assert "45_000_000" not in analyzer
     assert "evaluate" not in analyzer
+
+
+def test_preflight_checks_both_environment_sources_and_all_reference_parent_shas_and_identities():
+    assert "env/combat_env.py" in CORE
+    assert "env/persistent_env.py" in CORE
+    rows = []
+    for seed in SEEDS:
+        source = ROOT / f"outputs/diag_mappo_learnability/l3_seed{seed}/checkpoint_1505280.pt"
+        expected_sha = sha(source)
+        for branch in OLD:
+            run = ROOT / f"outputs/dev_pwtr_{branch}_seed{seed}_300k"
+            rows.append(validate_old_reference(run, branch, seed, expected_sha))
+    assert len(rows) == 9
+    assert all(row["parent_checkpoint_sha256_match"] and row["branch_identity_match"] for row in rows)
+
+
+def test_preflight_rejects_wrong_reference_parent_sha_and_branch_identity():
+    run = ROOT / "outputs/dev_pwtr_stratified_seed5301_300k"
+    with pytest.raises(RuntimeError, match="parent checkpoint SHA mismatch"):
+        validate_old_reference(run, "stratified", 5301, "0" * 64)
+    source = ROOT / "outputs/diag_mappo_learnability/l3_seed5301/checkpoint_1505280.pt"
+    with pytest.raises(RuntimeError, match="branch identity mismatch"):
+        validate_old_reference(run, "uniform_recent", 5301, sha(source))
