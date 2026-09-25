@@ -257,7 +257,11 @@ def validate_pwtr_branch(state,env_config,algorithm_config,expected_runtime=None
  methods={
   "pwtr_plain_control":"pwtr_plain_matched_control","pwtr_stratified":"pwtr_stratified",
   "pwtr_current_extra":"pwtr_current_extra","pwtr_uniform_recent":"pwtr_uniform_recent",
-  "pwtr_priority_recent":"pwtr_priority_recent","pwtr_full":"pwtr_full"}
+  "pwtr_priority_recent":"pwtr_priority_recent","pwtr_full":"pwtr_full",
+  "pwtr_current_actor_only":"pwtr_current_actor_only",
+  "pwtr_current_critic_only":"pwtr_current_critic_only",
+  "pwtr_recent_actor_only":"pwtr_recent_actor_only",
+  "pwtr_recent_critic_only":"pwtr_recent_critic_only"}
  if intervention not in methods or algorithm_config.get("development_method")!=methods[intervention]:raise RuntimeError("PWTR intervention/development identity mismatch")
  module=algorithm_config.get("modules",{}).get("persistent_wave_trajectory_replay",{})
  expected_modes={
@@ -266,7 +270,11 @@ def validate_pwtr_branch(state,env_config,algorithm_config,expected_runtime=None
   "pwtr_current_extra":(True,True,"current",False,False,True,True),
   "pwtr_uniform_recent":(True,True,"recent_uniform",False,False,True,True),
   "pwtr_priority_recent":(True,True,"recent_priority",True,False,True,True),
-  "pwtr_full":(True,True,"recent_priority",True,True,True,True)}
+  "pwtr_full":(True,True,"recent_priority",True,True,True,True),
+  "pwtr_current_actor_only":(True,True,"current",False,False,True,False),
+  "pwtr_current_critic_only":(True,True,"current",False,False,False,True),
+  "pwtr_recent_actor_only":(True,True,"recent_uniform",False,False,True,False),
+  "pwtr_recent_critic_only":(True,True,"recent_uniform",False,False,False,True)}
  expected=expected_modes[intervention]
  if expected is None:
   if "persistent_wave_trajectory_replay" in destination_enabled:raise RuntimeError("PWTR Plain control enabled replay")

@@ -198,7 +198,8 @@ def main() -> None:
         intervention=algorithm_config.get("development_branch",{}).get("intervention")
         if intervention and (runtime["total_sampled_steps"]!=int(algorithm_config["training"]["total_sampled_steps"]) or runtime["device"]!="cuda"):
             raise RuntimeError("development branch requires its exact configured target and CUDA runtime")
-        pwtr_interventions={"pwtr_plain_control","pwtr_stratified","pwtr_current_extra","pwtr_uniform_recent","pwtr_priority_recent","pwtr_full"}
+        pwtr_interventions={"pwtr_plain_control","pwtr_stratified","pwtr_current_extra","pwtr_uniform_recent","pwtr_priority_recent","pwtr_full",
+                            "pwtr_current_actor_only","pwtr_current_critic_only","pwtr_recent_actor_only","pwtr_recent_critic_only"}
         validator=(validate_fbmr_v2_stage2_branch if intervention=="frozen_base_dual_bounded_mean_residual"
                    else validate_team_credit_branch if intervention in {"team_mean_credit","team_mean_credit_control"}
                    else validate_pwtr_branch if intervention in pwtr_interventions
