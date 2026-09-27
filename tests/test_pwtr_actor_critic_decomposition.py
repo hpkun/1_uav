@@ -9,7 +9,10 @@ import yaml
 
 from algorithm.modular_mappo.protocol import validate_pwtr_branch
 from algorithm.train_modular_mappo import load_config
-from tools.analyze_pwtr_actor_critic_decomposition import direction_label, interaction, main_effects
+from tools.analyze_pwtr_actor_critic_decomposition import (
+    direction_label, factorial_metric_rows, interaction, main_effects,
+    paired_metric_deltas, qmetrics,
+)
 from tools.preflight_pwtr_actor_critic_decomposition import CORE, OLD, SEEDS, sha, validate_old_reference
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +69,44 @@ def test_factorial_interaction_and_main_effect_formulas():
     assert direction_label([.1, .2, -.1]) == "POSITIVE"
     assert direction_label([-.1, -.2, .1]) == "NEGATIVE"
     assert direction_label([.1, -.2, 0.0]) == "MIXED"
+
+
+def test_undefined_conditional_ratio_and_paired_aggregation_are_explicit():
+    values = qmetrics({"W1": .12, "W2": 0.0, "W3": 0.0})
+    assert values["Q2"] == 0.0
+    assert values["Q3"] is None
+    data = {
+        ("Method", 1): {"endpoint": {"Q3": .5}}, ("Control", 1): {"endpoint": {"Q3": .2}},
+        ("Method", 2): {"endpoint": {"Q3": None}}, ("Control", 2): {"endpoint": {"Q3": .4}},
+        ("Method", 3): {"endpoint": {"Q3": .7}}, ("Control", 3): {"endpoint": {"Q3": .3}},
+    }
+    result = paired_metric_deltas(data, "Method", "Control", "Q3", seeds=(1, 2, 3))
+    assert result["values"] == pytest.approx([.3, .4])
+    assert result["n_defined"] == 2
+    assert result["undefined_seeds"] == [2]
+
+
+def test_factorial_undefined_q3_skips_only_that_seed_and_reports_coverage():
+    data = {}
+    for seed in (1, 2, 3):
+        for method, value in (("Stratified", .2), ("Actor", .3), ("Critic", .4), ("Both", .45)):
+            data[method, seed] = {"endpoint": {"Q3": value}}
+    data["Actor", 2]["endpoint"]["Q3"] = None
+    rows, coverage = factorial_metric_rows(data, "current", "Actor", "Critic", "Both", "Q3", seeds=(1, 2, 3))
+    assert [row["seed"] for row in rows] == [1, 3]
+    assert coverage == {"n_defined": 2, "undefined_seeds": [2]}
+    assert all(row["interaction"] == pytest.approx(-.05) for row in rows)
+
+
+def test_aw_primary_label_uses_all_three_seeds_independent_of_q3_coverage():
+    aw_deltas = [.1, .2, -.05]
+    assert direction_label(aw_deltas) == "POSITIVE"
+    # Undefined Q3 is intentionally irrelevant to the pre-registered AW label.
+    assert paired_metric_deltas({
+        ("M", 1): {"endpoint": {"Q3": .5}}, ("C", 1): {"endpoint": {"Q3": .4}},
+        ("M", 2): {"endpoint": {"Q3": None}}, ("C", 2): {"endpoint": {"Q3": .4}},
+        ("M", 3): {"endpoint": {"Q3": .5}}, ("C", 3): {"endpoint": {"Q3": .4}},
+    }, "M", "C", "Q3", seeds=(1, 2, 3))["n_defined"] == 2
 
 
 def test_launcher_is_serial_exact_and_analyzer_does_not_use_45m():

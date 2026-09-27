@@ -123,6 +123,37 @@ def delta(high: dict, low: dict) -> dict:
             for key in (*METRICS, "Q2", "Q3")}
 
 
+def paired_metric_deltas(data: dict, method: str, control: str, metric: str,
+                         seeds=SEEDS) -> dict:
+    """Aggregate only mathematically defined paired deltas and report omissions."""
+    values, undefined_seeds = [], []
+    for seed in seeds:
+        high = data[method, seed]["endpoint"].get(metric)
+        low = data[control, seed]["endpoint"].get(metric)
+        if high is None or low is None:
+            undefined_seeds.append(seed)
+        else:
+            values.append(high - low)
+    return {"values": values, "n_defined": len(values), "undefined_seeds": undefined_seeds}
+
+
+def factorial_metric_rows(data: dict, source: str, actor: str, critic: str,
+                          both: str, metric: str, seeds=SEEDS) -> tuple[list[dict], dict]:
+    """Return defined per-seed factorial effects plus explicit coverage metadata."""
+    rows, undefined_seeds = [], []
+    for seed in seeds:
+        values = [data[name, seed]["endpoint"].get(metric)
+                  for name in ("Stratified", actor, critic, both)]
+        if any(value is None for value in values):
+            undefined_seeds.append(seed)
+            continue
+        effect_actor, effect_critic = main_effects(*values)
+        rows.append({"source": source, "seed": seed, "metric": metric,
+            "actor_main_effect": effect_actor, "critic_main_effect": effect_critic,
+            "interaction": interaction(*values)})
+    return rows, {"n_defined": len(rows), "undefined_seeds": undefined_seeds}
+
+
 def write_csv(path: Path, rows: list[dict]) -> None:
     fields = list(dict.fromkeys(key for row in rows for key in row))
     with path.open("w", newline="", encoding="utf-8") as stream:
@@ -180,23 +211,16 @@ def main() -> None:
         for seed in SEEDS: paired.append({"comparison": comparison, "seed": seed, **{f"delta_{k}": v for k, v in delta(data[high, seed]["endpoint"], data[low, seed]["endpoint"]).items()}})
     factorial, interaction_aw = [], {"current": [], "recent": []}
     for source, actor, critic, both in (("current", "CurrentActor", "CurrentCritic", "CurrentBoth"), ("recent", "RecentActor", "RecentCritic", "RecentBoth")):
-        for seed in SEEDS:
-            for metric in (*METRICS, "Q2", "Q3"):
-                values = [data[name, seed]["endpoint"].get(metric) for name in ("Stratified", actor, critic, both)]
-                if any(value is None for value in values): continue
-                effect_actor, effect_critic = main_effects(*values)
-                value = interaction(*values)
-                factorial.append({"source": source, "seed": seed, "metric": metric,
-                    "actor_main_effect": effect_actor, "critic_main_effect": effect_critic, "interaction": value})
-                if metric == "AW": interaction_aw[source].append(value)
-    # Add across-seed descriptive mean ± sample SD without inferential tests.
-    for source in ("current", "recent"):
         for metric in (*METRICS, "Q2", "Q3"):
-            subset = [row for row in factorial if row["source"] == source and row["metric"] == metric and isinstance(row["seed"], int)]
-            if subset:
-                factorial.append({"source": source, "seed": "mean_sd", "metric": metric,
-                    **{f"{field}_{stat}": value for field in ("actor_main_effect", "critic_main_effect", "interaction")
-                       for stat, value in sample_stats([row[field] for row in subset]).items()}})
+            rows, coverage = factorial_metric_rows(data, source, actor, critic, both, metric)
+            factorial.extend(rows)
+            if metric == "AW": interaction_aw[source].extend(row["interaction"] for row in rows)
+            summary = {"source": source, "seed": "mean_sd", "metric": metric, **coverage}
+            for field in ("actor_main_effect", "critic_main_effect", "interaction"):
+                values = [row[field] for row in rows]
+                stats = sample_stats(values) if values else {"mean": None, "sample_sd": None, "min": None, "max": None}
+                summary.update({f"{field}_{stat}": value for stat, value in stats.items()})
+            factorial.append(summary)
     dynamics = []
     for method in NEW:
         for seed in SEEDS:
@@ -222,14 +246,20 @@ def main() -> None:
                         "window_end": end, "metric": key, "count": len(values), **distribution(values)})
     direct = {method: [data[method, seed]["endpoint"]["AW"] - data["Stratified", seed]["endpoint"]["AW"] for seed in SEEDS] for method in NEW}
     labels = {method: direction_label(values) for method, values in direct.items()}
+    direct_secondary = {method: {metric: paired_metric_deltas(data, method, "Stratified", metric)
+                        for metric in ("W3", "Q2", "Q3")} for method in NEW}
     safety = {method: "SAFETY_SIGNAL" if any(
         data[method, seed]["endpoint"]["AW"] - data["Stratified", seed]["endpoint"]["AW"] <= -.50 or
         data[method, seed]["endpoint"]["W1"] - data["Stratified", seed]["endpoint"]["W1"] <= -.25 for seed in SEEDS) else "NO_SAFETY_SIGNAL" for method in NEW}
     report = {"status": "PWTR_ACTOR_CRITIC_DECOMPOSITION_ANALYSIS_COMPLETE", "primary_endpoint": TARGET,
         "primary_metric": "AverageWaves", "training_seed_replication_n": 3,
         "direct_component_labels": {method: {"label": labels[method], "delta_AW": sample_stats(direct[method]),
-            **{f"mean_delta_{metric}": statistics.mean(data[method, seed]["endpoint"][metric] - data["Stratified", seed]["endpoint"][metric] for seed in SEEDS)
-               for metric in ("W3", "Q2", "Q3")}, "safety": safety[method]} for method in NEW},
+            **{f"mean_delta_{metric}": (statistics.mean(direct_secondary[method][metric]["values"])
+                                        if direct_secondary[method][metric]["values"] else None)
+               for metric in ("W3", "Q2", "Q3")},
+            **{f"n_defined_{metric}": direct_secondary[method][metric]["n_defined"] for metric in ("Q2", "Q3")},
+            **{f"undefined_{metric}_seeds": direct_secondary[method][metric]["undefined_seeds"] for metric in ("Q2", "Q3")},
+            "safety": safety[method]} for method in NEW},
         "interaction_AW": {source: {"values": values, **sample_stats(values)} for source, values in interaction_aw.items()},
         "mechanism": mechanism_decision(labels, interaction_aw),
         "old_reference_methods": ["Stratified", "CurrentBoth", "RecentBoth"],

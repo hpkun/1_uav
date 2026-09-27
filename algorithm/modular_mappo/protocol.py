@@ -301,7 +301,21 @@ def validate_pwtr_branch(state,env_config,algorithm_config,expected_runtime=None
   "source_sampled_steps":1_505_280,"additional_sampled_steps":300_000,"target_sampled_steps":1_805_280,
   "optimizer_restored":True,"actor_optimizer_restored":True,"critic_optimizer_restored":True,"RNG_restored":True,
   "matched_checkpoint_continuation":True,"identical_branch_reset_protocol":True,
-  "historical_plain_bitwise_physical_continuation":False,"reason":"vector environment physical state is not checkpointed"}
+ "historical_plain_bitwise_physical_continuation":False,"reason":"vector environment physical state is not checkpointed"}
+
+def validate_w1sg_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate the sole W1SG V1 continuation: exact PWTR CurrentActor plus gating."""
+ branch=algorithm_config.get("development_branch",{})
+ if algorithm_config.get("development_method")!="w1sg_current_actor" or branch.get("intervention")!="w1sg_current_actor":raise RuntimeError("W1SG development identity mismatch")
+ shadow=deepcopy(algorithm_config);shadow["development_method"]="pwtr_current_actor_only";shadow["development_branch"]["intervention"]="pwtr_current_actor_only";shadow.get("modules",{}).pop("wave1_sensitivity_gating",None)
+ base=validate_pwtr_branch(state,env_config,shadow,expected_runtime)
+ enabled=set(name for name,value in algorithm_config.get("modules",{}).items() if isinstance(value,dict) and value.get("enabled",False))
+ required={"actor_lr_decay","persistent_wave_trajectory_replay","wave1_sensitivity_gating"}
+ if enabled!=required:raise RuntimeError(f"W1SG destination enabled modules mismatch: {sorted(enabled)}")
+ expected={"enabled":True,"source_wave":1,"importance_objective":"ppo_surrogate","importance_chunk_states":512,"gate_transform":"inverse_sqrt","preserve_global_gradient_norm":True,"epsilon":1e-12}
+ if algorithm_config["modules"].get("wave1_sensitivity_gating")!=expected:raise RuntimeError("W1SG fixed config mismatch")
+ base.update({"intervention":"w1sg_current_actor","destination_enabled_modules":sorted(enabled),"w1sg_version":1})
+ return base
 
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
