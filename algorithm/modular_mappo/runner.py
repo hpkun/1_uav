@@ -536,7 +536,7 @@ class ModularMAPPOTrainingRunner:
             critic_before = None if self.critic_hidden is None else self.critic_hidden.copy()
             actions, raw, log_prob, new_actor = self.trainer.act(
                 obs, alive, False, True, context, self.actor_hidden, self.episode_mask,
-                option_ids=current_options
+                option_ids=current_options, wave_indices=pre_wave
             )
             _, new_critic = self.trainer.values_step(
                 obs, alive, context, self.critic_hidden, self.episode_mask,
@@ -1295,6 +1295,13 @@ class ModularMAPPOTrainingRunner:
                 "pwtr_natural_trajectory_only": True,
                 "pwtr_reward_scope": "original_local_environment_reward",
             })
+        if self.trainer.wave_specific_actor_isolation.enabled:
+            module=self.trainer.wave_specific_actor_isolation
+            result.update({"wave_specific_actor_isolation_enabled":True,"wsai_version":int(module.version),
+                           "wave_actor_count":3,"wave_actor_parameter_sharing":False,
+                           "wave_actor_routing":"environment_wave","shared_critic":True,
+                           "wsai_natural_wave_weighting":True,
+                           "wsai_global_actor_grad_clip":True})
         return result
 
     def run(self) -> dict[str, Any]:

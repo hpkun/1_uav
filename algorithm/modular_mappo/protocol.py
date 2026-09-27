@@ -67,6 +67,14 @@ def checkpoint_architecture(trainer):
     "worker_final_lr_multiplier":consolidation.final_lr_multiplier,
     "manager_learning_schedule":"unchanged_actor_lr_decay",
     "tactical_critic_learning_schedule":"unchanged_constant"})
+ if trainer.wave_specific_actor_isolation.enabled:
+  result.update({"wave_specific_actor_isolation_enabled":True,"wsai_version":1,
+   "wave_actor_count":3,"wave_actor_parameter_sharing":False,"wave_actor_routing":"environment_wave","shared_critic":True,
+   "natural_wave_weighting":True,"global_actor_grad_clip":True,
+   "actor1_trainable_parameter_count":sum(p.numel() for p in trainer.actor.trainable_policy_parameters()),
+   "actor2_trainable_parameter_count":sum(p.numel() for p in trainer.wave2_actor.trainable_policy_parameters()),
+   "actor3_trainable_parameter_count":sum(p.numel() for p in trainer.wave3_actor.trainable_policy_parameters()),
+   "total_actor_parameter_count":sum(sum(p.numel() for p in actor.parameters()) for actor in trainer._wsai_actors())})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):
@@ -317,6 +325,21 @@ def validate_w1sg_branch(state,env_config,algorithm_config,expected_runtime=None
  base.update({"intervention":"w1sg_current_actor","destination_enabled_modules":sorted(enabled),"w1sg_version":1})
  return base
 
+def validate_wsai_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate the sole WSAI continuation from the matched Plain checkpoint."""
+ branch=algorithm_config.get("development_branch",{})
+ if algorithm_config.get("development_method")!="wsai_mappo" or branch.get("intervention")!="wave_specific_actor_isolation":raise RuntimeError("WSAI development identity mismatch")
+ shadow=deepcopy(algorithm_config);shadow["development_method"]="pwtr_plain_matched_control";shadow["development_branch"]["intervention"]="pwtr_plain_control";shadow.get("modules",{}).pop("wave_specific_actor_isolation",None)
+ base=validate_pwtr_branch(state,env_config,shadow,expected_runtime)
+ enabled=set(name for name,value in algorithm_config.get("modules",{}).items() if isinstance(value,dict) and value.get("enabled",False))
+ required={"actor_lr_decay","wave_specific_actor_isolation"}
+ if enabled!=required:raise RuntimeError(f"WSAI destination enabled modules mismatch: {sorted(enabled)}")
+ from algorithm.modules.wave_specific_actor_isolation import EXPECTED_WSAI_CONFIG
+ if algorithm_config["modules"].get("wave_specific_actor_isolation")!=EXPECTED_WSAI_CONFIG:raise RuntimeError("WSAI fixed config mismatch")
+ base.update({"intervention":"wave_specific_actor_isolation","destination_enabled_modules":sorted(enabled),
+  "wsai_version":1,"isolated_actor_count":3,"shared_critic":True,"natural_wave_weighting":True})
+ return base
+
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
  for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)
@@ -415,4 +438,4 @@ def is_formal_v2_checkpoint(state):
          state.get("baseline_mappo_impl_version")==MAPPO_IMPL_VERSION and
          all(key in extra for key in required))
 
-__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_pwtr_branch","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]
+__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_pwtr_branch","validate_w1sg_branch","validate_wsai_branch","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]

@@ -46,10 +46,10 @@ def evaluate_modular_episode(trainer, env_config, seed, include_trace=False):
    trainer,np.asarray([wave]),np.asarray([total]),env.blue_alive_mask[None],
    np.asarray([env.steps]),env.max_steps)
   if hta:
-   actions,ah=trainer.act(obs[None],alive[None],True,False,ctx,ah,ep,option_ids=options)
+   actions,ah=trainer.act(obs[None],alive[None],True,False,ctx,ah,ep,option_ids=options,wave_indices=np.asarray([wave]))
    _,ch=trainer.values_step(obs[None],alive[None],ctx,ch,ep,option_ids=options)
   else:
-   actions,ah=trainer.act(obs[None],alive[None],True,False,ctx,ah,ep)
+   actions,ah=trainer.act(obs[None],alive[None],True,False,ctx,ah,ep,wave_indices=np.asarray([wave]))
    _,ch=trainer.values_step(obs[None],alive[None],ctx,ch,ep)
   if include_trace:
    actions_trace.append(actions[0].copy());wave_trace.append(wave)
