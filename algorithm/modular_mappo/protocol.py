@@ -83,6 +83,11 @@ def checkpoint_architecture(trainer):
    "mean3_parameter_count":sum(p.numel() for p in heads[2].parameters()),"base_actor_parameter_count":base,
    "additional_mean_parameter_count":additional,"additional_wave_mean_parameters":additional,
    "total_policy_parameter_count":base+additional,"parameter_overhead_fraction":additional/base})
+ if trainer.actor_gradient_clipping.enabled:
+  module=trainer.actor_gradient_clipping
+  result.update({"actor_gradient_clipping_enabled":True,"actor_grad_clip_version":module.version,
+   "actor_grad_clip_mode":module.mode,"actor_max_grad_norm":module.actor_max_grad_norm,
+   "critic_max_grad_norm":trainer.max_grad_norm,"actor_clip_only_intervention":True,"network_topology_unchanged":True})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):
@@ -363,6 +368,30 @@ def validate_wsmh_branch(state,env_config,algorithm_config,expected_runtime=None
   "wave_mean_head_count":3,"shared_backbone":True,"shared_log_std":True,"shared_critic":True,"natural_wave_weighting":True})
  return base
 
+def validate_actor_grad_clip_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate either fixed Actor-only clipping branch against matched Plain."""
+ branch=algorithm_config.get("development_branch",{});intervention=branch.get("intervention");method=algorithm_config.get("development_method")
+ allowed={"actor_grad_clip_05_control":.5,"actor_grad_clip_10":1.0}
+ if intervention not in allowed or method!=intervention:raise RuntimeError("Actor gradient clipping branch identity mismatch")
+ shadow=deepcopy(algorithm_config);shadow["development_method"]="pwtr_plain_matched_control";shadow["development_branch"]["intervention"]="pwtr_plain_control";shadow.get("modules",{}).pop("actor_gradient_clipping",None)
+ base=validate_pwtr_branch(state,env_config,shadow,expected_runtime)
+ enabled=set(name for name,value in algorithm_config.get("modules",{}).items() if isinstance(value,dict) and value.get("enabled",False));required={"actor_lr_decay","actor_gradient_clipping"}
+ if enabled!=required:raise RuntimeError(f"Actor gradient clipping destination modules mismatch: {sorted(enabled)}")
+ expected={"enabled":True,"mode":"actor_only_fixed_norm","actor_max_grad_norm":allowed[intervention],"critic_max_grad_norm_unchanged":True,"critic_max_grad_norm":.5}
+ if algorithm_config["modules"].get("actor_gradient_clipping")!=expected:raise RuntimeError("Actor gradient clipping fixed config mismatch")
+ if float(algorithm_config["training"]["max_grad_norm"])!=.5:raise RuntimeError("training.max_grad_norm must remain the critic/default limit 0.5")
+ base.update({"intervention":intervention,"destination_enabled_modules":sorted(enabled),"actor_grad_clip_version":1,
+  "actor_max_grad_norm":allowed[intervention],"critic_max_grad_norm":.5,"actor_clip_only_intervention":True})
+ return base
+
+def validate_actor_grad_clip_config_pair(control,treatment):
+ """Require exactly branch identity plus the Actor limit to differ."""
+ left=deepcopy(control);right=deepcopy(treatment);left.pop("development_method",None);right.pop("development_method",None)
+ left.get("development_branch",{}).pop("intervention",None);right.get("development_branch",{}).pop("intervention",None)
+ left["modules"]["actor_gradient_clipping"].pop("actor_max_grad_norm",None);right["modules"]["actor_gradient_clipping"].pop("actor_max_grad_norm",None)
+ if left!=right:raise RuntimeError("Actor gradient clipping configs differ beyond branch identity and Actor limit")
+ return True
+
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
  for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)
@@ -461,4 +490,4 @@ def is_formal_v2_checkpoint(state):
          state.get("baseline_mappo_impl_version")==MAPPO_IMPL_VERSION and
          all(key in extra for key in required))
 
-__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_pwtr_branch","validate_w1sg_branch","validate_wsai_branch","validate_wsmh_branch","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]
+__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_pwtr_branch","validate_w1sg_branch","validate_wsai_branch","validate_wsmh_branch","validate_actor_grad_clip_branch","validate_actor_grad_clip_config_pair","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]

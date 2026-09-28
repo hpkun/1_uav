@@ -1308,6 +1308,12 @@ class ModularMAPPOTrainingRunner:
                            "wave_mean_head_count":3,"shared_backbone":True,"shared_log_std":True,
                            "wave_actor_routing":"environment_wave","shared_critic":True,
                            "wsmh_natural_wave_weighting":True,"wsmh_global_actor_grad_clip":True})
+        if self.trainer.actor_gradient_clipping.enabled:
+            module=self.trainer.actor_gradient_clipping
+            result.update({"actor_gradient_clipping_enabled":True,"actor_grad_clip_version":int(module.version),
+                           "actor_grad_clip_mode":module.mode,"actor_max_grad_norm":module.actor_max_grad_norm,
+                           "critic_max_grad_norm":self.trainer.max_grad_norm,"actor_clip_only_intervention":True,
+                           "network_topology_unchanged":True})
         return result
 
     def run(self) -> dict[str, Any]:

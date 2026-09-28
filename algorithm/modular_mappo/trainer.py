@@ -43,6 +43,7 @@ from algorithm.modules import (WaveSpecificActorIsolationModule,WSAI_MAPPO_VERSI
  pairwise_actor_l2_distances)
 from algorithm.modules import (WaveSpecificMeanHeadsModule,WSMH_MAPPO_VERSION,
  pairwise_mean_l2_distances)
+from algorithm.modules import (ActorGradientClippingModule,ACTOR_GRAD_CLIP_VERSION)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
@@ -169,6 +170,7 @@ class ModularMAPPOTrainer:
   self.wave1_sensitivity_gating=Wave1SensitivityGatingModule(self.modules_config.get("wave1_sensitivity_gating"))
   self.wave_specific_actor_isolation=WaveSpecificActorIsolationModule(self.modules_config.get("wave_specific_actor_isolation"))
   self.wave_specific_mean_heads=WaveSpecificMeanHeadsModule(self.modules_config.get("wave_specific_mean_heads"))
+  self.actor_gradient_clipping=ActorGradientClippingModule(self.modules_config.get("actor_gradient_clipping"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -242,6 +244,20 @@ class ModularMAPPOTrainer:
     self.persistent_wave_trajectory_replay.enabled,self.sequential_wave_gradient_projection.enabled,
     self.wave1_sensitivity_gating.enabled)
    if any(forbidden):raise ValueError("WSMH V1 requires an otherwise Plain feed-forward Actor/Critic")
+  if self.actor_gradient_clipping.enabled:
+   enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","actor_gradient_clipping"}
+   if enabled!=required:raise ValueError(f"Actor gradient clipping V1 requires exact enabled modules: {sorted(required)}")
+   if not self.actor_lr_decay.enabled:raise ValueError("Actor gradient clipping V1 requires actor_lr_decay")
+   forbidden=(self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
+    self.wave_entry_curriculum.enabled,self.actor_kl_guard.enabled,self.inter_wave_credit.enabled,
+    self.counterfactual_inter_wave_credit.enabled,self.boundary_redistributed_segment_credit.enabled,
+    self.mission_film.enabled,self.wave_context.enabled,self.entity_attention_enabled,self.advantage_priority.enabled,
+    self.ppo_stabilization.enabled,self.popart.enabled,self.curriculum.enabled,self.anchor.enabled,self.warm_start.enabled,
+    self.reward_adapter.enabled,self.wave_survival_pbrs.enabled,self.team_mean_credit.enabled,
+    self.persistent_wave_trajectory_replay.enabled,self.sequential_wave_gradient_projection.enabled,
+    self.wave1_sensitivity_gating.enabled,self.wave_specific_actor_isolation.enabled,self.wave_specific_mean_heads.enabled)
+   if any(forbidden):raise ValueError("Actor gradient clipping V1 requires an otherwise Plain feed-forward Actor/Critic")
+   if abs(self.max_grad_norm-.5)>1e-15 or abs(self.actor_gradient_clipping.critic_max_grad_norm-self.max_grad_norm)>1e-15:raise ValueError("Actor gradient clipping V1 requires unchanged critic max_grad_norm=0.5")
   if self.wave_entry_curriculum.enabled:
    enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","wave_balancing","wave_entry_curriculum"}
    if not enabled.issubset(allowed):raise ValueError(f"wave_entry_curriculum incompatible enabled modules: {sorted(enabled-allowed)}")
@@ -351,6 +367,7 @@ class ModularMAPPOTrainer:
  def _ctx(self,c,actor):
   active=self.wave_context.actor_enabled if actor else self.wave_context.critic_enabled
   return c if active else None
+ def _actor_grad_clip_limit(self):return self.actor_gradient_clipping.actor_max_grad_norm if self.actor_gradient_clipping.enabled else self.max_grad_norm
  def _wsai_actors(self):return [self.actor,self.wave2_actor,self.wave3_actor]
  def _wsai_actor_optimizers(self):return [self.actor_optimizer,self.wave2_actor_optimizer,self.wave3_actor_optimizer]
  def _wsmh_means(self):return [self.actor.mean,self.wave2_mean,self.wave3_mean]
@@ -1166,8 +1183,18 @@ class ModularMAPPOTrainer:
   return float(total.sqrt())
  def _opt(self,losses):
   al,vl,en,anchor,*_=losses
-  self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();arg=self._gradient_norm(self.actor.gru.parameters()) if self.recurrent.actor_enabled else 0.;ag=nn.utils.clip_grad_norm_(self.actor.trainable_policy_parameters(),self.max_grad_norm);self.actor_optimizer.step()
-  self.critic_optimizer.zero_grad();(self.value_loss_coefficient*vl).backward();crg=self._gradient_norm(self.critic.gru.parameters()) if self.recurrent.critic_enabled else 0.;cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.actor_update_count+=1;self.critic_update_count+=1
+  self.actor_optimizer.zero_grad();(al-self.entropy_coefficient*en+anchor).backward();arg=self._gradient_norm(self.actor.gru.parameters()) if self.recurrent.actor_enabled else 0.;actor_parameters=self.actor.trainable_policy_parameters();actor_limit=self._actor_grad_clip_limit();ag=nn.utils.clip_grad_norm_(actor_parameters,actor_limit)
+  actor_post=self._gradient_norm(actor_parameters) if self.actor_gradient_clipping.enabled else 0.;self.actor_optimizer.step()
+  self.critic_optimizer.zero_grad();(self.value_loss_coefficient*vl).backward();crg=self._gradient_norm(self.critic.gru.parameters()) if self.recurrent.critic_enabled else 0.;critic_parameters=list(self.critic.parameters());cg=nn.utils.clip_grad_norm_(critic_parameters,self.max_grad_norm)
+  critic_post=self._gradient_norm(critic_parameters) if self.actor_gradient_clipping.enabled else 0.;self.critic_optimizer.step();self.actor_update_count+=1;self.critic_update_count+=1
+  if self.actor_gradient_clipping.enabled:
+   actor_pre=float(ag);critic_pre=float(cg);self.actor_gradient_clipping.record_step(actor_pre)
+   self._last_actor_grad_clip_metrics={"actor_grad_clip_enabled":1.,"actor_grad_clip_limit":actor_limit,
+    "actor_grad_clip_preclip_norm":actor_pre,"actor_grad_clip_postclip_norm":actor_post,
+    "actor_grad_clip_exact_scale":actor_post/max(actor_pre,1e-30),"actor_grad_clip_pressure_fraction":float(actor_pre>actor_limit),
+    "actor_grad_clip_critic_limit":self.max_grad_norm,"actor_grad_clip_critic_preclip_norm":critic_pre,
+    "actor_grad_clip_critic_postclip_norm":critic_post,"actor_grad_clip_critic_exact_scale":critic_post/max(critic_pre,1e-30),
+    "actor_grad_clip_critic_pressure_fraction":float(critic_pre>self.max_grad_norm)}
   return ag,cg,arg,crg
  def _row(self,losses,mask,ag,cg,arg=0.,crg=0.):
   al,vl,en,anchor,ratio,logratio,newlog,oldlog,_,_,akl=losses
@@ -1175,7 +1202,9 @@ class ModularMAPPOTrainer:
   live_mask=mask>.5;live=ratio[live_mask];live_logratio=logratio[live_mask]
   if live.numel()==0:raise FloatingPointError("no valid alive PPO samples")
   kl=(ratio-1)-logratio
-  return {"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"actor_gru_grad_norm":float(arg),"critic_gru_grad_norm":float(crg),"gru_gradient_norm":float(np.hypot(arg,crg)),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
+  row={"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"actor_gru_grad_norm":float(arg),"critic_gru_grad_norm":float(crg),"gru_gradient_norm":float(np.hypot(arg,crg)),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
+  if self.actor_gradient_clipping.enabled:row.update(self._last_actor_grad_clip_metrics)
+  return row
  def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None,fresh_waves=None):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));flat_actor=None if actor_weights is None else flat(actor_weights);N=arrays[0].shape[0];rows=[]
   for _ in range(self.ppo_epochs):
@@ -1727,6 +1756,7 @@ class ModularMAPPOTrainer:
   state=self._base_checkpoint_state(extra)
   state["development_feature_versions"]["wave_specific_actor_isolation"]=WSAI_MAPPO_VERSION
   state["development_feature_versions"]["wave_specific_mean_heads"]=WSMH_MAPPO_VERSION
+  state["development_feature_versions"]["actor_gradient_clipping"]=ACTOR_GRAD_CLIP_VERSION
   state.update({"wave2_actor_state":None if self.wave2_actor is None else self.wave2_actor.state_dict(),
    "wave3_actor_state":None if self.wave3_actor is None else self.wave3_actor.state_dict(),
    "wave2_actor_optimizer_state":None if self.wave2_actor_optimizer is None else self.wave2_actor_optimizer.state_dict(),
@@ -1737,6 +1767,7 @@ class ModularMAPPOTrainer:
    "wave2_mean_optimizer_state":None if self.wave2_mean_optimizer is None else self.wave2_mean_optimizer.state_dict(),
    "wave3_mean_optimizer_state":None if self.wave3_mean_optimizer is None else self.wave3_mean_optimizer.state_dict(),
    "wave_specific_mean_heads_state":self.wave_specific_mean_heads.state_dict() if self.wave_specific_mean_heads.enabled else None})
+  state["actor_gradient_clipping_state"]=self.actor_gradient_clipping.state_dict() if self.actor_gradient_clipping.enabled else None
   return state
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
@@ -1746,7 +1777,7 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -1763,6 +1794,7 @@ class ModularMAPPOTrainer:
    if self.wave1_sensitivity_gating.enabled and versions.get("wave1_sensitivity_gating")!=W1SG_MAPPO_VERSION:raise RuntimeError("checkpoint W1SG feature version mismatch")
    if self.wave_specific_actor_isolation.enabled and versions.get("wave_specific_actor_isolation")!=WSAI_MAPPO_VERSION:raise RuntimeError("checkpoint WSAI feature version mismatch")
    if self.wave_specific_mean_heads.enabled and versions.get("wave_specific_mean_heads")!=WSMH_MAPPO_VERSION:raise RuntimeError("checkpoint WSMH feature version mismatch")
+   if self.actor_gradient_clipping.enabled and versions.get("actor_gradient_clipping")!=ACTOR_GRAD_CLIP_VERSION:raise RuntimeError("checkpoint actor gradient clipping feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.wave_specific_actor_isolation.enabled:
@@ -1830,6 +1862,8 @@ class ModularMAPPOTrainer:
    self.wave_specific_actor_isolation.load_state_dict(state.get("wave_specific_actor_isolation_state"),branch_from_plain=not strict_protocol)
   if self.wave_specific_mean_heads.enabled:
    self.wave_specific_mean_heads.load_state_dict(state.get("wave_specific_mean_heads_state"),branch_from_plain=not strict_protocol)
+  if self.actor_gradient_clipping.enabled:
+   self.actor_gradient_clipping.load_state_dict(state.get("actor_gradient_clipping_state"),branch_from_plain=not strict_protocol)
   if self.actor_lr_decay.enabled:
    baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.wave_specific_actor_isolation.enabled:
