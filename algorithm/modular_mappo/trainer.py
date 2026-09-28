@@ -1207,13 +1207,26 @@ class ModularMAPPOTrainer:
   return row
  def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None,fresh_waves=None):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));flat_actor=None if actor_weights is None else flat(actor_weights);N=arrays[0].shape[0];rows=[]
+  actor_updates_before=self.actor_update_count;critic_updates_before=self.critic_update_count
+  minibatches_per_epoch=(N+self.minibatch_size-1)//self.minibatch_size
+  expected_total_minibatches=self.ppo_epochs*minibatches_per_epoch
   for _ in range(self.ppo_epochs):
    permutation=(self.persistent_wave_trajectory_replay.fresh_epoch_permutation(
     fresh_waves.detach().cpu().numpy().reshape(-1),self.minibatch_size,self.rng)
     if fresh_waves is not None else self.rng.permutation(N))
    for start in range(0,N,self.minibatch_size):
     ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args,actor_weights=None if flat_actor is None else flat_actor[ix]);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
-   return aggregate_update_rows(rows,self.clip_ratio)
+  actor_steps=self.actor_update_count-actor_updates_before;critic_steps=self.critic_update_count-critic_updates_before
+  if len(rows)!=expected_total_minibatches or actor_steps!=expected_total_minibatches or critic_steps!=expected_total_minibatches:
+   raise RuntimeError("flat PPO epoch execution mismatch: "
+    f"rows={len(rows)}, actor_steps={actor_steps}, critic_steps={critic_steps}, "
+    f"expected={expected_total_minibatches}, epochs={self.ppo_epochs}, minibatches_per_epoch={minibatches_per_epoch}")
+  result=aggregate_update_rows(rows,self.clip_ratio)
+  executed_epochs=(len(rows)//minibatches_per_epoch if minibatches_per_epoch else 0)
+  result.update({"ppo_epochs_configured":float(self.ppo_epochs),"ppo_epochs_executed":float(executed_epochs),
+   "ppo_minibatches_per_epoch":float(minibatches_per_epoch),"ppo_minibatches_executed":float(len(rows)),
+   "actor_optimizer_steps_this_update":float(actor_steps),"critic_optimizer_steps_this_update":float(critic_steps)})
+  return result
 
  def _update_flat_wsai(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,ctx,waves):
   """Plain PPO objective with environment-wave routing to isolated actors."""

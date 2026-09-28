@@ -15,7 +15,7 @@ def configs():return tuple(load_config(ROOT/name) for name in ("configs/dev_pwtr
 def trainer(config):
  value=build_modular_mappo_trainer(config,"cpu",256,1_805_280)
  if SOURCE.is_file():value.load(SOURCE,strict_protocol=False,restore_rng=False)
- value.ppo_epochs=1;return value
+ return value
 def state(module):return {k:v.detach().clone() for k,v in module.state_dict().items()}
 def equal(a,b):return a.keys()==b.keys() and all(torch.equal(a[k],b[k]) for k in a)
 def digest(value):
@@ -52,6 +52,10 @@ def test_clip05_is_bitwise_plain_noop_and_clip10_only_changes_actor():
  rng=torch.get_rng_state();plain_metrics=plain._update_flat(*payload);torch.set_rng_state(rng);control_metrics=control._update_flat(*payload);torch.set_rng_state(rng);treatment_metrics=treatment._update_flat(*payload)
  assert equal(state(plain.actor),state(control.actor));assert equal(state(plain.critic),state(control.critic))
  assert digest(plain.actor_optimizer.state_dict())==digest(control.actor_optimizer.state_dict());assert digest(plain.critic_optimizer.state_dict())==digest(control.critic_optimizer.state_dict())
+ assert digest(plain.capture_rng_state())==digest(control.capture_rng_state())
+ assert plain.ppo_epochs==control.ppo_epochs==treatment.ppo_epochs==10
+ assert plain.actor_update_count==control.actor_update_count and plain.critic_update_count==control.critic_update_count
+ assert plain_metrics["ppo_epochs_executed"]==control_metrics["ppo_epochs_executed"]==treatment_metrics["ppo_epochs_executed"]==10
  assert plain_metrics["actor_loss"]==control_metrics["actor_loss"] and plain_metrics["value_loss"]==control_metrics["value_loss"]
  assert plain_metrics["actor_grad_norm"]==control_metrics["actor_grad_norm"] and plain_metrics["critic_grad_norm"]==control_metrics["critic_grad_norm"]
  assert not equal(state(control.actor),state(treatment.actor));assert equal(state(control.critic),state(treatment.critic))
