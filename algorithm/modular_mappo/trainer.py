@@ -41,6 +41,8 @@ from algorithm.modules import (PersistentWaveTrajectoryReplayModule,PWTR_MAPPO_V
 from algorithm.modules import Wave1SensitivityGatingModule,W1SG_MAPPO_VERSION
 from algorithm.modules import (WaveSpecificActorIsolationModule,WSAI_MAPPO_VERSION,
  pairwise_actor_l2_distances)
+from algorithm.modules import (WaveSpecificMeanHeadsModule,WSMH_MAPPO_VERSION,
+ pairwise_mean_l2_distances)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
@@ -166,6 +168,7 @@ class ModularMAPPOTrainer:
   self.persistent_wave_trajectory_replay=PersistentWaveTrajectoryReplayModule(self.modules_config.get("persistent_wave_trajectory_replay"),seed)
   self.wave1_sensitivity_gating=Wave1SensitivityGatingModule(self.modules_config.get("wave1_sensitivity_gating"))
   self.wave_specific_actor_isolation=WaveSpecificActorIsolationModule(self.modules_config.get("wave_specific_actor_isolation"))
+  self.wave_specific_mean_heads=WaveSpecificMeanHeadsModule(self.modules_config.get("wave_specific_mean_heads"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -225,6 +228,20 @@ class ModularMAPPOTrainer:
            self.wave_survival_pbrs.enabled,self.team_mean_credit.enabled,self.persistent_wave_trajectory_replay.enabled,
            self.sequential_wave_gradient_projection.enabled,self.wave1_sensitivity_gating.enabled)):
     raise ValueError("WSAI V1 requires an otherwise Plain feed-forward Actor/Critic")
+  if self.wave_specific_mean_heads.enabled:
+   enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","wave_specific_mean_heads"}
+   if enabled!=required:raise ValueError(f"WSMH V1 requires exact enabled modules: {sorted(required)}")
+   if not self.actor_lr_decay.enabled:raise ValueError("WSMH V1 requires actor_lr_decay")
+   if self.wave_specific_actor_isolation.enabled:raise ValueError("WSMH and WSAI are mutually exclusive")
+   forbidden=(self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
+    self.wave_entry_curriculum.enabled,self.actor_kl_guard.enabled,self.inter_wave_credit.enabled,
+    self.counterfactual_inter_wave_credit.enabled,self.boundary_redistributed_segment_credit.enabled,
+    self.mission_film.enabled,self.wave_context.enabled,self.entity_attention_enabled,self.advantage_priority.enabled,
+    self.ppo_stabilization.enabled,self.popart.enabled,self.curriculum.enabled,self.anchor.enabled,self.warm_start.enabled,
+    self.reward_adapter.enabled,self.wave_survival_pbrs.enabled,self.team_mean_credit.enabled,
+    self.persistent_wave_trajectory_replay.enabled,self.sequential_wave_gradient_projection.enabled,
+    self.wave1_sensitivity_gating.enabled)
+   if any(forbidden):raise ValueError("WSMH V1 requires an otherwise Plain feed-forward Actor/Critic")
   if self.wave_entry_curriculum.enabled:
    enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","wave_balancing","wave_entry_curriculum"}
    if not enabled.issubset(allowed):raise ValueError(f"wave_entry_curriculum incompatible enabled modules: {sorted(enabled-allowed)}")
@@ -279,6 +296,12 @@ class ModularMAPPOTrainer:
    self.wave2_actor=deepcopy(self.actor).to(self.device);self.wave3_actor=deepcopy(self.actor).to(self.device)
    self.wave2_actor_optimizer=torch.optim.Adam(self.wave2_actor.trainable_policy_parameters(),lr=actor_learning_rate)
    self.wave3_actor_optimizer=torch.optim.Adam(self.wave3_actor.trainable_policy_parameters(),lr=actor_learning_rate)
+  self.wave2_mean=self.wave3_mean=None;self.wave2_mean_optimizer=self.wave3_mean_optimizer=None
+  if self.wave_specific_mean_heads.enabled:
+   # deepcopy preserves the exact source mean without consuming any RNG.
+   self.wave2_mean=deepcopy(self.actor.mean).to(self.device);self.wave3_mean=deepcopy(self.actor.mean).to(self.device)
+   self.wave2_mean_optimizer=torch.optim.Adam(self.wave2_mean.parameters(),lr=actor_learning_rate)
+   self.wave3_mean_optimizer=torch.optim.Adam(self.wave3_mean.parameters(),lr=actor_learning_rate)
   self.manager_actor=None;self.manager_critic=None;self.manager_actor_optimizer=None;self.manager_critic_optimizer=None
   self.hta_rng=np.random.default_rng(int(seed)^HTA_MANAGER_NUMPY_SEED_XOR)
   generator_device=self.device if self.device.type=="cuda" else torch.device("cpu")
@@ -330,6 +353,29 @@ class ModularMAPPOTrainer:
   return c if active else None
  def _wsai_actors(self):return [self.actor,self.wave2_actor,self.wave3_actor]
  def _wsai_actor_optimizers(self):return [self.actor_optimizer,self.wave2_actor_optimizer,self.wave3_actor_optimizer]
+ def _wsmh_means(self):return [self.actor.mean,self.wave2_mean,self.wave3_mean]
+ def _wsmh_mean_optimizers(self):return [self.actor_optimizer,self.wave2_mean_optimizer,self.wave3_mean_optimizer]
+ def _clone_source_mean_optimizer_state(self,optimizer):
+  """Clone actor.mean Adam state by live Parameter identity, never integer IDs."""
+  source=list(self.actor.mean.parameters());destination=list(optimizer.param_groups[0]["params"])
+  if len(source)!=len(destination):raise RuntimeError("WSMH mean optimizer parameter mismatch")
+  source_group=self.actor_optimizer.param_groups[0];target_group=optimizer.param_groups[0]
+  for key,value in source_group.items():
+   if key!="params":target_group[key]=deepcopy(value)
+  optimizer.state.clear()
+  for source_parameter,destination_parameter in zip(source,destination):
+   if source_parameter not in self.actor_optimizer.state:raise RuntimeError("source actor mean Adam state missing")
+   optimizer.state[destination_parameter]=deepcopy(self.actor_optimizer.state[source_parameter])
+ def _wsmh_routed_distribution(self,obs,mask,wave_indices):
+  if not self.wave_specific_mean_heads.enabled:return self.actor.distribution_step(obs,None,None,None,mask)[0]
+  if wave_indices is None:raise ValueError("WSMH action routing requires explicit environment wave indices")
+  waves=torch.as_tensor(wave_indices,dtype=torch.long,device=self.device).reshape(-1)
+  if obs.shape[0]!=waves.shape[0] or bool(((waves<1)|(waves>3)).any()):raise ValueError("WSMH wave indices must align with batch and lie in 1..3")
+  self.wave_specific_mean_heads.record_routing(waves.detach().cpu().tolist())
+  encoded=self.actor.backbone(obs);means=torch.stack([head(encoded) for head in self._wsmh_means()],0)
+  batch=torch.arange(obs.shape[0],device=self.device);loc=means[waves-1,batch]
+  scale=self.actor.log_std(encoded).clamp(self.actor.log_std_min,self.actor.log_std_max).exp()
+  return torch.distributions.Normal(loc,scale)
  def _routed_actor_distribution(self,obs,mask,wave_indices):
   if not self.wave_specific_actor_isolation.enabled:return self.actor.distribution_step(obs,None,None,None,mask)[0]
   if wave_indices is None:raise ValueError("WSAI action routing requires explicit environment wave indices")
@@ -345,7 +391,8 @@ class ModularMAPPOTrainer:
   ctx=torch.as_tensor(context,dtype=torch.float32,device=self.device) if context is not None else None;hid=torch.as_tensor(hidden,dtype=torch.float32,device=self.device) if hidden is not None else None
   ep=torch.as_tensor(episode_mask,dtype=torch.float32,device=self.device) if episode_mask is not None else None
   options=None if option_ids is None else torch.as_tensor(option_ids,dtype=torch.long,device=self.device)
-  if self.wave_specific_actor_isolation.enabled:dist=self._routed_actor_distribution(obs,mask,wave_indices);new_h=None
+  if self.wave_specific_mean_heads.enabled:dist=self._wsmh_routed_distribution(obs,mask,wave_indices);new_h=None
+  elif self.wave_specific_actor_isolation.enabled:dist=self._routed_actor_distribution(obs,mask,wave_indices);new_h=None
   else:dist,new_h=self.actor.distribution_step(obs,self._ctx(ctx,True),hid,ep,mask,option_ids=options)
   raw=dist.mean if deterministic else dist.rsample();actions=torch.tanh(raw);log=self.actor._squashed_log_prob(dist,raw,actions)
   if mask is not None:actions*=mask[...,None];raw*=mask[...,None];log*=mask
@@ -436,6 +483,9 @@ class ModularMAPPOTrainer:
   consolidation_lr={"effective_lr":float(self.actor_optimizer.param_groups[0]["lr"]),"multiplier":1.0}
   if self.actor_lr_decay.enabled:
    worker_baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   if self.wave_specific_mean_heads.enabled:
+    self.actor_lr_decay.apply(self.wave2_mean_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+    self.actor_lr_decay.apply(self.wave3_mean_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.wave_specific_actor_isolation.enabled:
     self.actor_lr_decay.apply(self.wave2_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
     self.actor_lr_decay.apply(self.wave3_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
@@ -449,7 +499,9 @@ class ModularMAPPOTrainer:
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
   worker_parameters=self.actor.trainable_policy_parameters() if self.hta_worker_consolidation.enabled else []
   worker_before=[parameter.detach().clone() for parameter in worker_parameters]
-  if self.wave_specific_actor_isolation.enabled:
+  if self.wave_specific_mean_heads.enabled:
+   metrics=self._update_flat_wsmh(obs,act,raw,oldlog,alive,adv,old_values,target_returns,ctx,waves)
+  elif self.wave_specific_actor_isolation.enabled:
    metrics=self._update_flat_wsai(obs,act,raw,oldlog,alive,adv,old_values,target_returns,ctx,waves)
   elif self.hierarchical_temporal_abstraction.enabled:
    options=torch.as_tensor(r.hta_options,dtype=torch.long,device=self.device)
@@ -1184,6 +1236,68 @@ class ModularMAPPOTrainer:
   for index in range(3):out[f"wsai_wave{index+1}_actor_optimizer_steps_this_update"]=float(self.wave_specific_actor_isolation.optimizer_steps[index]-optimizer_steps_before[index])
   out.update(pairwise_actor_l2_distances(actors));return out
 
+ def _update_flat_wsmh(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,ctx,waves):
+  """Plain global PPO objective with only the Gaussian mean head routed by wave."""
+  flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:])
+  O,A,R,OL,M,AD,OV,TG,C,W=map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,ctx,waves))
+  N=O.shape[0];rows=[];heads=self._wsmh_means()
+  mean_steps_before=list(self.wave_specific_mean_heads.mean_optimizer_steps)
+  shared_steps_before=self.wave_specific_mean_heads.shared_actor_optimizer_steps
+  backbone_parameters=list(self.actor.backbone.parameters());logstd_parameters=list(self.actor.log_std.parameters())
+  head_parameters=[list(head.parameters()) for head in heads]
+  all_parameters=backbone_parameters+logstd_parameters+sum(head_parameters,[])
+  for _ in range(self.ppo_epochs):
+   permutation=self.rng.permutation(N)
+   for start in range(0,N,self.minibatch_size):
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device)
+    o,a,r,ol,m,ad,ov,t,c,w=[x[ix] for x in (O,A,R,OL,M,AD,OV,TG,C,W)]
+    dist=self._wsmh_routed_distribution(o,m,w);newlog=self.actor._squashed_log_prob(dist,r,a)
+    sample_raw=dist.rsample();entropy_values=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
+    logratio,ratio=stable_ratio_terms(newlog,ol);surrogate=torch.minimum(ratio*ad,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*ad)
+    actor_loss=-masked_mean(surrogate,m);entropy=masked_mean(entropy_values,m)
+    value,_=self.critic.forward_step(o,m,None,None,None);clipped=ov+(value-ov).clamp(-self.clip_ratio,self.clip_ratio)
+    error=torch.maximum((value-t).square(),(clipped-t).square()) if self.clip_value_loss else (value-t).square()
+    value_loss=.5*masked_mean(error,m);zero=torch.zeros((),device=self.device)
+    losses=(actor_loss,value_loss,entropy,zero,ratio,logratio,newlog,ol,None,None,0.)
+    self.actor_optimizer.zero_grad();self.wave2_mean_optimizer.zero_grad();self.wave3_mean_optimizer.zero_grad()
+    (actor_loss-self.entropy_coefficient*entropy).backward()
+    counts=[int((m*(w==wave).to(m.dtype).unsqueeze(-1)).sum().item()) for wave in (1,2,3)]
+    # None, not a zero tensor, is required to prevent Adam momentum drift.
+    if counts[0]==0:
+     for parameter in self.actor.mean.parameters():parameter.grad=None
+    backbone_pre=self._gradient_norm(backbone_parameters);logstd_pre=self._gradient_norm(logstd_parameters)
+    mean_pre=[self._gradient_norm(parameters) for parameters in head_parameters]
+    global_pre=self._gradient_norm(all_parameters);clip_scale=min(1.,self.max_grad_norm/global_pre) if global_pre>0 else 1.
+    ag=nn.utils.clip_grad_norm_(all_parameters,self.max_grad_norm)
+    global_post=self._gradient_norm(all_parameters);backbone_post=self._gradient_norm(backbone_parameters);logstd_post=self._gradient_norm(logstd_parameters)
+    mean_post=[self._gradient_norm(parameters) for parameters in head_parameters]
+    self.actor_optimizer.step();stepped=[counts[0]>0,counts[1]>0,counts[2]>0]
+    if counts[1]>0:self.wave2_mean_optimizer.step()
+    if counts[2]>0:self.wave3_mean_optimizer.step()
+    self.wave_specific_mean_heads.record_minibatch(counts,stepped);self.actor_update_count+=1
+    self.critic_optimizer.zero_grad();(self.value_loss_coefficient*value_loss).backward()
+    cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm);self.critic_optimizer.step();self.critic_update_count+=1
+    row=self._row(losses,m,ag,cg);total=max(sum(counts),1)
+    row.update({"wsmh_wave1_alive_fraction":counts[0]/total,"wsmh_wave2_alive_fraction":counts[1]/total,
+     "wsmh_wave3_alive_fraction":counts[2]/total,"wsmh_shared_backbone_grad_norm_preclip":backbone_pre,
+     "wsmh_shared_logstd_grad_norm_preclip":logstd_pre,"wsmh_shared_backbone_grad_norm_postclip":backbone_post,
+     "wsmh_shared_logstd_grad_norm_postclip":logstd_post,"wsmh_global_actor_grad_norm_preclip":global_pre,
+     "wsmh_global_actor_grad_norm_postclip":global_post,"wsmh_global_clip_scale":clip_scale,
+     "wsmh_shared_actor_lr":float(self.actor_optimizer.param_groups[0]["lr"]),
+     "wsmh_wave1_mean_lr":float(self.actor_optimizer.param_groups[0]["lr"]),
+     "wsmh_wave2_mean_lr":float(self.wave2_mean_optimizer.param_groups[0]["lr"]),
+     "wsmh_wave3_mean_lr":float(self.wave3_mean_optimizer.param_groups[0]["lr"])})
+    for index in range(3):
+     row[f"wsmh_wave{index+1}_mean_grad_norm_preclip"]=mean_pre[index]
+     row[f"wsmh_wave{index+1}_mean_grad_norm_postclip"]=mean_post[index]
+    rows.append(row)
+  out=aggregate_update_rows(rows,self.clip_ratio);out.update(self.wave_specific_mean_heads.diagnostics())
+  total_alive=float(M.sum().item())
+  for wave in (1,2,3):out[f"wsmh_wave{wave}_alive_fraction"]=float((M*(W==wave).to(M.dtype).unsqueeze(-1)).sum().item()/max(total_alive,1.))
+  for index in range(3):out[f"wsmh_wave{index+1}_mean_optimizer_steps_this_update"]=float(self.wave_specific_mean_heads.mean_optimizer_steps[index]-mean_steps_before[index])
+  out["wsmh_shared_actor_optimizer_steps_this_update"]=float(self.wave_specific_mean_heads.shared_actor_optimizer_steps-shared_steps_before)
+  out.update(pairwise_mean_l2_distances(heads));return out
+
  def _update_flat_swgp(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,waves):
   """Flat Plain PPO with ordered projection applied only to wave surrogate gradients."""
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:])
@@ -1612,11 +1726,17 @@ class ModularMAPPOTrainer:
  def checkpoint_state(self,extra=None):
   state=self._base_checkpoint_state(extra)
   state["development_feature_versions"]["wave_specific_actor_isolation"]=WSAI_MAPPO_VERSION
+  state["development_feature_versions"]["wave_specific_mean_heads"]=WSMH_MAPPO_VERSION
   state.update({"wave2_actor_state":None if self.wave2_actor is None else self.wave2_actor.state_dict(),
    "wave3_actor_state":None if self.wave3_actor is None else self.wave3_actor.state_dict(),
    "wave2_actor_optimizer_state":None if self.wave2_actor_optimizer is None else self.wave2_actor_optimizer.state_dict(),
    "wave3_actor_optimizer_state":None if self.wave3_actor_optimizer is None else self.wave3_actor_optimizer.state_dict(),
    "wave_specific_actor_isolation_state":self.wave_specific_actor_isolation.state_dict() if self.wave_specific_actor_isolation.enabled else None})
+  state.update({"wave2_mean_state":None if self.wave2_mean is None else self.wave2_mean.state_dict(),
+   "wave3_mean_state":None if self.wave3_mean is None else self.wave3_mean.state_dict(),
+   "wave2_mean_optimizer_state":None if self.wave2_mean_optimizer is None else self.wave2_mean_optimizer.state_dict(),
+   "wave3_mean_optimizer_state":None if self.wave3_mean_optimizer is None else self.wave3_mean_optimizer.state_dict(),
+   "wave_specific_mean_heads_state":self.wave_specific_mean_heads.state_dict() if self.wave_specific_mean_heads.enabled else None})
   return state
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
@@ -1626,7 +1746,7 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -1642,6 +1762,7 @@ class ModularMAPPOTrainer:
    if self.persistent_wave_trajectory_replay.enabled and versions.get("persistent_wave_trajectory_replay")!=PWTR_MAPPO_VERSION:raise RuntimeError("checkpoint PWTR feature version mismatch")
    if self.wave1_sensitivity_gating.enabled and versions.get("wave1_sensitivity_gating")!=W1SG_MAPPO_VERSION:raise RuntimeError("checkpoint W1SG feature version mismatch")
    if self.wave_specific_actor_isolation.enabled and versions.get("wave_specific_actor_isolation")!=WSAI_MAPPO_VERSION:raise RuntimeError("checkpoint WSAI feature version mismatch")
+   if self.wave_specific_mean_heads.enabled and versions.get("wave_specific_mean_heads")!=WSMH_MAPPO_VERSION:raise RuntimeError("checkpoint WSMH feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.wave_specific_actor_isolation.enabled:
@@ -1654,6 +1775,15 @@ class ModularMAPPOTrainer:
     self.wave2_actor.load_state_dict(self.actor.state_dict());self.wave3_actor.load_state_dict(self.actor.state_dict())
     self.wave2_actor_optimizer.load_state_dict(deepcopy(self.actor_optimizer.state_dict()))
     self.wave3_actor_optimizer.load_state_dict(deepcopy(self.actor_optimizer.state_dict()))
+  if self.wave_specific_mean_heads.enabled:
+   if strict_protocol:
+    required=("wave2_mean_state","wave3_mean_state","wave2_mean_optimizer_state","wave3_mean_optimizer_state")
+    if any(state.get(key) is None for key in required):raise RuntimeError("WSMH checkpoint lacks wave mean state")
+    self.wave2_mean.load_state_dict(state["wave2_mean_state"]);self.wave3_mean.load_state_dict(state["wave3_mean_state"])
+    self.wave2_mean_optimizer.load_state_dict(state["wave2_mean_optimizer_state"]);self.wave3_mean_optimizer.load_state_dict(state["wave3_mean_optimizer_state"])
+   else:
+    self.wave2_mean.load_state_dict(self.actor.mean.state_dict());self.wave3_mean.load_state_dict(self.actor.mean.state_dict())
+    self._clone_source_mean_optimizer_state(self.wave2_mean_optimizer);self._clone_source_mean_optimizer_state(self.wave3_mean_optimizer)
   if self.hierarchical_temporal_abstraction.enabled:
    required=("manager_actor","manager_critic","manager_actor_optimizer","manager_critic_optimizer")
    if any(state.get(key) is None for key in required):raise RuntimeError("HTA checkpoint lacks manager state")
@@ -1698,11 +1828,16 @@ class ModularMAPPOTrainer:
    self.wave1_sensitivity_gating.load_state_dict(state.get("wave1_sensitivity_gating_state"),branch_from_plain=not strict_protocol)
   if self.wave_specific_actor_isolation.enabled:
    self.wave_specific_actor_isolation.load_state_dict(state.get("wave_specific_actor_isolation_state"),branch_from_plain=not strict_protocol)
+  if self.wave_specific_mean_heads.enabled:
+   self.wave_specific_mean_heads.load_state_dict(state.get("wave_specific_mean_heads_state"),branch_from_plain=not strict_protocol)
   if self.actor_lr_decay.enabled:
    baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.wave_specific_actor_isolation.enabled:
     self.actor_lr_decay.apply(self.wave2_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
     self.actor_lr_decay.apply(self.wave3_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+   if self.wave_specific_mean_heads.enabled:
+    self.actor_lr_decay.apply(self.wave2_mean_optimizer,self.sampled_steps,self.base_actor_learning_rate)
+    self.actor_lr_decay.apply(self.wave3_mean_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.hierarchical_temporal_abstraction.enabled:self.actor_lr_decay.apply(self.manager_actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.hta_worker_consolidation.enabled:self.hta_worker_consolidation.apply(self.actor_optimizer,self.sampled_steps,baseline_lr)
   elif self.ppo_stabilization.enabled:

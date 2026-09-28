@@ -35,7 +35,7 @@ from algorithm.modular_mappo.protocol import (
     validate_swgp_branch,
     validate_team_credit_branch,
     validate_pwtr_branch,
-    validate_w1sg_branch, validate_wsai_branch,
+    validate_w1sg_branch, validate_wsai_branch, validate_wsmh_branch,
 )
 from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
 from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
@@ -205,6 +205,7 @@ def main() -> None:
                    else validate_team_credit_branch if intervention in {"team_mean_credit","team_mean_credit_control"}
                    else validate_w1sg_branch if intervention=="w1sg_current_actor"
                    else validate_wsai_branch if intervention=="wave_specific_actor_isolation"
+                   else validate_wsmh_branch if intervention=="wave_specific_mean_heads"
                    else validate_pwtr_branch if intervention in pwtr_interventions
                    else validate_swgp_branch if intervention in {"sequential_wave_gradient_projection","sequential_wave_gradient_projection_control"}
                    else validate_fbmr_stage2_branch if intervention else validate_modular_branch)
@@ -216,6 +217,7 @@ def main() -> None:
                  ["total_sampled_steps","development_method","development_branch","persistent_wave_trajectory_replay","branch_metadata"] if intervention in pwtr_interventions else
                  ["total_sampled_steps","development_method","development_branch","persistent_wave_trajectory_replay","wave1_sensitivity_gating","branch_metadata"] if intervention=="w1sg_current_actor" else
                  ["total_sampled_steps","development_method","development_branch","wave_specific_actor_isolation","branch_metadata"] if intervention=="wave_specific_actor_isolation" else
+                 ["total_sampled_steps","development_method","development_branch","wave_specific_mean_heads","branch_metadata"] if intervention=="wave_specific_mean_heads" else
                  ["total_sampled_steps","development_method","development_branch","sequential_wave_gradient_projection","branch_metadata"] if intervention in {"sequential_wave_gradient_projection","sequential_wave_gradient_projection_control"} else
                  ["total_sampled_steps","development_branch","entity_attention","actor_trainable_parameter_set","actor_optimizer_reset","actor_effective_lr","evaluation_seed_base","development_protocol"])
         branch_provenance={"branch_creation_mode":"explicit_branch_from","parent_checkpoint_path":str(branch_path),"parent_checkpoint_sha256":parent_digest,"parent_sampled_steps":int(state["sampled_steps"]),"source_training_seed":int(state.get("extra",{}).get("training_seed")),"destination_algorithm_config_sha256":config_sha256(algorithm_config),"destination_module_config_sha256":config_sha256(algorithm_config.get("modules",{})),"source_algorithm_config_sha256":state.get("extra",{}).get("algorithm_config_sha256"),"source_module_config_sha256":state.get("module_config_sha256"),"allowed_differences":allowed,**runtime_source_branch_provenance(state,runtime_manifest),**branch_validation}

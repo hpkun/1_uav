@@ -1302,6 +1302,12 @@ class ModularMAPPOTrainingRunner:
                            "wave_actor_routing":"environment_wave","shared_critic":True,
                            "wsai_natural_wave_weighting":True,
                            "wsai_global_actor_grad_clip":True})
+        if self.trainer.wave_specific_mean_heads.enabled:
+            module=self.trainer.wave_specific_mean_heads
+            result.update({"wave_specific_mean_heads_enabled":True,"wsmh_version":int(module.version),
+                           "wave_mean_head_count":3,"shared_backbone":True,"shared_log_std":True,
+                           "wave_actor_routing":"environment_wave","shared_critic":True,
+                           "wsmh_natural_wave_weighting":True,"wsmh_global_actor_grad_clip":True})
         return result
 
     def run(self) -> dict[str, Any]:
