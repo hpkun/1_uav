@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import shutil
 from copy import deepcopy
 from pathlib import Path
 
@@ -59,6 +60,27 @@ def test_historical_duplicate_missing_and_mismatch_fail_closed():
     mismatch = deepcopy(source); mismatch[0]["checkpoint_step"] = "1"
     with pytest.raises(RuntimeError):
         audit.validate_historical_deterministic(mismatch)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("training_seed", "9999"), ("checkpoint_role", "final"),
+    ("waves_cleared", "4"), ("reached_w2", "0"), ("reached_w3", "0"),
+])
+def test_historical_field_conflicts_fail_closed(field, value):
+    source = audit.read_csv(audit.HISTORICAL_DETERMINISTIC)
+    tampered = deepcopy(source)
+    index = next(i for i, row in enumerate(tampered) if row["policy_id"] == audit.CHECKPOINTS["Peak"]["id"] and row["waves_cleared"] == "3")
+    tampered[index][field] = value
+    with pytest.raises(RuntimeError):
+        audit.validate_historical_deterministic(tampered)
+
+
+def test_historical_audit_level_provenance_matches_current_checkpoints():
+    provenance = audit.validate_historical_provenance()
+    assert provenance["status"] == "PASS"
+    assert provenance["natural_entry_stage"] == "COMPLETE"
+    assert all(row["match"] for row in provenance["checkpoint_sha_matches"].values())
+    assert "no row-level" in provenance["row_level_checkpoint_sha_limitation"]
 
 
 def test_wave_metrics_aw_q2_q3_are_correct():
@@ -133,6 +155,23 @@ def test_smoke_cannot_be_labeled_full():
     assert audit.descriptive_label(summary, summary, full=False) == "INSUFFICIENT_EVIDENCE"
 
 
+def test_smoke_deterministic_scope_and_pair_denominators_are_one_scene():
+    historical = audit.validate_historical_deterministic(audit.read_csv(audit.HISTORICAL_DETERMINISTIC))
+    scoped = [row for row in historical if row["environment_seed"] == audit.ENVIRONMENT_SEEDS[0]]
+    assert len(scoped) == 2
+    stochastic = [_episode(1, role="Peak"), _episode(2, role="Final")]
+    pairs = audit.paired_rows(scoped, stochastic)
+    det_summary = {role: audit.aggregate([row for row in scoped if row["checkpoint_role"] == role]) for role in audit.CHECKPOINTS}
+    sto_summary = {role: audit.aggregate([row for row in stochastic if row["checkpoint_role"] == role]) for role in audit.CHECKPOINTS}
+    result = audit.paired_summary(pairs, det_summary, sto_summary)
+    assert result["deterministic"]["pair_count"] == 1
+    assert result["deterministic"]["independent_environment_scenarios"] == 1
+    assert result["stochastic"]["pair_count"] == 1
+    assert result["stochastic"]["independent_environment_scenarios"] == 1
+    assert result["deterministic"]["policy_stream_repeats_per_scenario"] == 1
+    assert result["stochastic"]["policy_stream_repeats_per_scenario"] == 1
+
+
 def test_actor_eval_no_grad_sampling_and_parameters_unchanged():
     actor = ModularMAPPOActor(52, 3, 32).eval()
     before = {key: value.clone() for key, value in actor.state_dict().items()}
@@ -145,9 +184,63 @@ def test_actor_eval_no_grad_sampling_and_parameters_unchanged():
 
 def test_actual_checkpoint_protocol_and_sha_are_valid():
     _, _, metadata = audit.validate_protocol()
+    assert metadata.pop("protocol")["modular_checkpoint_validation"] == "PASS"
     assert metadata["Peak"]["sampled_steps"] == 1_701_888
     assert metadata["Final"]["sampled_steps"] == 1_805_280
     assert metadata["Peak"]["checkpoint_sha256"] != metadata["Final"]["checkpoint_sha256"]
+
+
+@pytest.mark.parametrize("filename,key,value", [
+    ("algorithm_config.yaml", ("network", "observation_dim"), 51),
+    ("runtime_env_config.yaml", ("simulation", "max_steps"), 2999),
+])
+def test_tampered_actual_yaml_without_metadata_update_is_rejected(tmp_path, filename, key, value):
+    run = tmp_path / "run"; run.mkdir()
+    for name in ("algorithm_config.yaml", "env_config.yaml", "runtime_env_config.yaml", "run_config.json"):
+        shutil.copy2(audit.RUN_DIR / name, run / name)
+    path = run / filename
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config[key[0]][key[1]] = value
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="canonical SHA|declared/runtime"):
+        audit.validate_protocol(run)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_cuda_native_actor_sampling_reproducible_distinct_and_restores_rng():
+    if torch.cuda.device_count() != 1:
+        pytest.skip("protocol supports one visible CUDA GPU")
+    device = "cuda"
+    actor = ModularMAPPOActor(52, 3, 32).to(device).eval()
+    before_parameters = {key: value.detach().cpu().clone() for key, value in actor.state_dict().items()}
+    observations = torch.zeros(2, 4, 52, device=device)
+    alive = torch.ones(2, 4, device=device)
+    torch.cuda.manual_seed(123456)
+    before_cuda = torch.cuda.get_rng_state().clone()
+
+    def sample(seed):
+        values = []
+        with audit.isolated_policy_rng(seed, device), torch.no_grad():
+            for _ in range(4):
+                distribution, _ = actor.distribution_step(observations, None, None, None, alive)
+                values.append(torch.tanh(distribution.rsample()).cpu())
+        return torch.stack(values)
+
+    first = sample(770001); second = sample(770001); third = sample(770002)
+    assert torch.equal(first, second)
+    assert not torch.equal(first, third)
+    assert torch.equal(before_cuda, torch.cuda.get_rng_state())
+    assert all(torch.equal(value.detach().cpu(), before_parameters[key]) for key, value in actor.state_dict().items())
+    assert not actor.training and not first.requires_grad
+
+    config = yaml.safe_load((ROOT / "configs/persistent_wave_v2_environment.yaml").read_text(encoding="utf-8"))
+    resets = []
+    for seed in (770001, 770002):
+        with audit.isolated_policy_rng(seed, device):
+            _ = torch.randn(16, device=device)
+            env = make_combat_environment(deepcopy(config)); observation, _ = env.reset(88_330_000)
+            resets.append(observation)
+    assert np.array_equal(resets[0], resets[1])
 
 
 def test_tool_has_no_training_backward_or_optimizer_path():
