@@ -392,6 +392,50 @@ def validate_actor_grad_clip_config_pair(control,treatment):
  if left!=right:raise RuntimeError("Actor gradient clipping configs differ beyond branch identity and Actor limit")
  return True
 
+def validate_dawe_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate the exact Fixed10 Control05 versus DAWE V1 continuation."""
+ branch=algorithm_config.get("development_branch",{});intervention=branch.get("intervention")
+ methods={"dawe_fixed10_control":"dawe_fixed10_control",
+          "deployment_aligned_wave_exploration":"dawe_fixed10_v1"}
+ if intervention not in methods or algorithm_config.get("development_method")!=methods[intervention]:
+  raise RuntimeError("DAWE branch identity mismatch")
+ shadow=deepcopy(algorithm_config);shadow["development_method"]="actor_grad_clip_05_control"
+ shadow["development_branch"]["intervention"]="actor_grad_clip_05_control"
+ shadow.get("modules",{}).pop("deployment_aligned_wave_exploration",None)
+ base=validate_actor_grad_clip_branch(state,env_config,shadow,expected_runtime)
+ enabled=set(name for name,value in algorithm_config.get("modules",{}).items()
+             if isinstance(value,dict) and value.get("enabled",False))
+ required={"actor_lr_decay","actor_gradient_clipping"}
+ if intervention=="deployment_aligned_wave_exploration":required.add("deployment_aligned_wave_exploration")
+ if enabled!=required:raise RuntimeError(f"DAWE destination enabled modules mismatch: {sorted(enabled)}")
+ expected_module={"enabled":intervention=="deployment_aligned_wave_exploration",
+  "mode":"fixed_wave_std_multiplier","wave1_multiplier":.25,"wave2_multiplier":.25,"wave3_multiplier":1.0}
+ if algorithm_config.get("modules",{}).get("deployment_aligned_wave_exploration")!=expected_module:
+  raise RuntimeError("DAWE fixed module config mismatch")
+ clip=algorithm_config.get("modules",{}).get("actor_gradient_clipping",{})
+ if float(clip.get("actor_max_grad_norm",-1))!=.5 or float(algorithm_config["training"].get("max_grad_norm",-1))!=.5:
+  raise RuntimeError("DAWE requires Fixed10 Control05 clipping")
+ if (int(branch.get("source_sampled_steps",-1)),int(branch.get("additional_sampled_steps",-1)),
+     int(branch.get("target_sampled_steps",-1)))!=(1_505_280,300_000,1_805_280):
+  raise RuntimeError("DAWE branch budget mismatch")
+ if branch.get("actor_optimizer_restore") is not True or branch.get("critic_optimizer_restore") is not True or branch.get("rng_restore") is not True:
+  raise RuntimeError("DAWE branch must restore both optimizers and RNG")
+ base.update({"intervention":intervention,"destination_enabled_modules":sorted(enabled),
+  "dawe_version":1,"dawe_fixed_multipliers":[.25,.25,1.0],"actor_mean_unchanged":True,
+  "critic_unchanged":True,"reward_unchanged":True})
+ return base
+
+def validate_dawe_config_pair(control,treatment):
+ """Require exactly the preregistered three DAWE pair differences."""
+ left=deepcopy(control);right=deepcopy(treatment)
+ left.pop("development_method",None);right.pop("development_method",None)
+ left.get("development_branch",{}).pop("intervention",None)
+ right.get("development_branch",{}).pop("intervention",None)
+ left["modules"]["deployment_aligned_wave_exploration"].pop("enabled",None)
+ right["modules"]["deployment_aligned_wave_exploration"].pop("enabled",None)
+ if left!=right:raise RuntimeError("DAWE configs differ outside method, intervention, and enabled")
+ return True
+
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
  for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)
@@ -490,4 +534,4 @@ def is_formal_v2_checkpoint(state):
          state.get("baseline_mappo_impl_version")==MAPPO_IMPL_VERSION and
          all(key in extra for key in required))
 
-__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_pwtr_branch","validate_w1sg_branch","validate_wsai_branch","validate_wsmh_branch","validate_actor_grad_clip_branch","validate_actor_grad_clip_config_pair","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]
+__all__=["canonical_sha256","checkpoint_architecture","validate_modular_checkpoint","validate_modular_branch","validate_team_credit_branch","validate_pwtr_branch","validate_w1sg_branch","validate_wsai_branch","validate_wsmh_branch","validate_actor_grad_clip_branch","validate_actor_grad_clip_config_pair","validate_dawe_branch","validate_dawe_config_pair","validate_fbmr_stage2_branch","validate_fbmr_v2_stage2_branch","validate_fbmr_v1_v2_only_bound_diff","is_formal_v2_checkpoint"]

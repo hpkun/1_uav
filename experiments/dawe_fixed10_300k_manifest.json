@@ -1,0 +1,27 @@
+{
+  "experiment": "DAWE-MAPPO V1 Fixed10 matched 300k screen",
+  "scientific_question": "Does reducing W1/W2 training behavior variance improve persistent three-wave deterministic deployment performance?",
+  "training_seeds": [5301, 5302, 5303],
+  "replication_unit": "training_seed",
+  "replication_n": 3,
+  "source_checkpoints": [
+    "outputs/diag_mappo_learnability/l3_seed5301/checkpoint_1505280.pt",
+    "outputs/diag_mappo_learnability/l3_seed5302/checkpoint_1505280.pt",
+    "outputs/diag_mappo_learnability/l3_seed5303/checkpoint_1505280.pt"
+  ],
+  "source_sampled_steps": 1505280,
+  "additional_sampled_steps": 300000,
+  "target_sampled_steps": 1805280,
+  "control_config": "configs/dev_dawe_fixed10_control_300k.yaml",
+  "treatment_config": "configs/dev_dawe_fixed10_v1_300k.yaml",
+  "fixed_wave_std_multipliers": {"W1": 0.25, "W2": 0.25, "W3": 1.0},
+  "primary_endpoint": 1805280,
+  "development_evaluation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "deterministic": true},
+  "reserved_future_final_test": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
+  "screening_gate": {
+    "safety": "every delta_AW > -0.50; every delta_W1 > -0.25; mean(delta_W1) >= -0.05",
+    "efficacy": "at least 2/3 delta_AW > 0 and mean(delta_AW) > 0; at least 2/3 delta_W3 > 0 and mean(delta_W3) > 0",
+    "labels": ["SAFETY_FAIL", "PROMISING", "NOT_SUPPORTED"]
+  },
+  "formal_training_status": "NOT_RUN"
+}

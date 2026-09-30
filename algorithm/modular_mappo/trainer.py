@@ -44,6 +44,7 @@ from algorithm.modules import (WaveSpecificActorIsolationModule,WSAI_MAPPO_VERSI
 from algorithm.modules import (WaveSpecificMeanHeadsModule,WSMH_MAPPO_VERSION,
  pairwise_mean_l2_distances)
 from algorithm.modules import (ActorGradientClippingModule,ACTOR_GRAD_CLIP_VERSION)
+from algorithm.modules import (DeploymentAlignedWaveExplorationModule,DAWE_MAPPO_VERSION)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
@@ -171,6 +172,8 @@ class ModularMAPPOTrainer:
   self.wave_specific_actor_isolation=WaveSpecificActorIsolationModule(self.modules_config.get("wave_specific_actor_isolation"))
   self.wave_specific_mean_heads=WaveSpecificMeanHeadsModule(self.modules_config.get("wave_specific_mean_heads"))
   self.actor_gradient_clipping=ActorGradientClippingModule(self.modules_config.get("actor_gradient_clipping"))
+  self.deployment_aligned_wave_exploration=DeploymentAlignedWaveExplorationModule(
+   self.modules_config.get("deployment_aligned_wave_exploration"))
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -246,6 +249,7 @@ class ModularMAPPOTrainer:
    if any(forbidden):raise ValueError("WSMH V1 requires an otherwise Plain feed-forward Actor/Critic")
   if self.actor_gradient_clipping.enabled:
    enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","actor_gradient_clipping"}
+   if self.deployment_aligned_wave_exploration.enabled:required.add("deployment_aligned_wave_exploration")
    if enabled!=required:raise ValueError(f"Actor gradient clipping V1 requires exact enabled modules: {sorted(required)}")
    if not self.actor_lr_decay.enabled:raise ValueError("Actor gradient clipping V1 requires actor_lr_decay")
    forbidden=(self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
@@ -258,6 +262,20 @@ class ModularMAPPOTrainer:
     self.wave1_sensitivity_gating.enabled,self.wave_specific_actor_isolation.enabled,self.wave_specific_mean_heads.enabled)
    if any(forbidden):raise ValueError("Actor gradient clipping V1 requires an otherwise Plain feed-forward Actor/Critic")
    if abs(self.max_grad_norm-.5)>1e-15 or abs(self.actor_gradient_clipping.critic_max_grad_norm-self.max_grad_norm)>1e-15:raise ValueError("Actor gradient clipping V1 requires unchanged critic max_grad_norm=0.5")
+  if self.deployment_aligned_wave_exploration.enabled:
+   enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","actor_gradient_clipping","deployment_aligned_wave_exploration"}
+   if enabled!=required:raise ValueError(f"DAWE V1 requires exact enabled modules: {sorted(required)}")
+   if not self.actor_gradient_clipping.enabled or abs(self.actor_gradient_clipping.actor_max_grad_norm-.5)>1e-15:
+    raise ValueError("DAWE V1 requires Fixed10 Control05 actor clipping")
+   forbidden=(self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
+    self.wave_entry_curriculum.enabled,self.actor_kl_guard.enabled,self.inter_wave_credit.enabled,
+    self.counterfactual_inter_wave_credit.enabled,self.boundary_redistributed_segment_credit.enabled,
+    self.mission_film.enabled,self.wave_context.enabled,self.entity_attention_enabled,self.advantage_priority.enabled,
+    self.ppo_stabilization.enabled,self.popart.enabled,self.curriculum.enabled,self.anchor.enabled,self.warm_start.enabled,
+    self.reward_adapter.enabled,self.wave_survival_pbrs.enabled,self.team_mean_credit.enabled,
+    self.persistent_wave_trajectory_replay.enabled,self.sequential_wave_gradient_projection.enabled,
+    self.wave1_sensitivity_gating.enabled,self.wave_specific_actor_isolation.enabled,self.wave_specific_mean_heads.enabled)
+   if any(forbidden):raise ValueError("DAWE V1 requires an otherwise Plain feed-forward Fixed10 Actor/Critic")
   if self.wave_entry_curriculum.enabled:
    enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","wave_balancing","wave_entry_curriculum"}
    if not enabled.issubset(allowed):raise ValueError(f"wave_entry_curriculum incompatible enabled modules: {sorted(enabled-allowed)}")
@@ -402,6 +420,9 @@ class ModularMAPPOTrainer:
   distributions=[actor.distribution_step(obs,None,None,None,mask)[0] for actor in self._wsai_actors()]
   loc=torch.stack([dist.loc for dist in distributions],0);scale=torch.stack([dist.scale for dist in distributions],0)
   batch=torch.arange(obs.shape[0],device=self.device);return torch.distributions.Normal(loc[waves-1,batch],scale[waves-1,batch])
+ def _effective_actor_distribution(self,base_distribution,wave_indices):
+  """Single DAWE distribution transform shared by rollout, PPO, and entropy."""
+  return self.deployment_aligned_wave_exploration.effective_distribution(base_distribution,wave_indices)
  @torch.no_grad()
  def act(self,observations,alive_mask=None,deterministic=False,return_policy_data=False,context=None,hidden=None,episode_mask=None,option_ids=None,wave_indices=None):
   obs=torch.as_tensor(observations,dtype=torch.float32,device=self.device);mask=torch.as_tensor(alive_mask,dtype=torch.float32,device=self.device) if alive_mask is not None else None
@@ -411,7 +432,8 @@ class ModularMAPPOTrainer:
   if self.wave_specific_mean_heads.enabled:dist=self._wsmh_routed_distribution(obs,mask,wave_indices);new_h=None
   elif self.wave_specific_actor_isolation.enabled:dist=self._routed_actor_distribution(obs,mask,wave_indices);new_h=None
   else:dist,new_h=self.actor.distribution_step(obs,self._ctx(ctx,True),hid,ep,mask,option_ids=options)
-  raw=dist.mean if deterministic else dist.rsample();actions=torch.tanh(raw);log=self.actor._squashed_log_prob(dist,raw,actions)
+  effective=dist if deterministic else self._effective_actor_distribution(dist,wave_indices)
+  raw=dist.mean if deterministic else effective.rsample();actions=torch.tanh(raw);log=self.actor._squashed_log_prob(effective,raw,actions)
   if mask is not None:actions*=mask[...,None];raw*=mask[...,None];log*=mask
   out=(actions.cpu().numpy(),raw.cpu().numpy(),log.cpu().numpy(),None if new_h is None else new_h.cpu().numpy())
   return out if return_policy_data else (out[0],out[3])
@@ -458,6 +480,7 @@ class ModularMAPPOTrainer:
   tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
   obs,act,raw,oldlog,rewards,dones,alive,nobs,nalive=map(tt,(r.observations,r.actions,r.raw_actions,r.old_log_probs,r.rewards,r.dones,r.alive_masks,r.next_observations,r.next_alive_masks))
   waves=torch.as_tensor(r.wave_indices,dtype=torch.long,device=self.device);ctx=tt(r.contexts);T,E=obs.shape[:2]
+  dawe_metrics=self._dawe_diagnostics(r,obs,raw,alive,ctx,waves)
   if self.team_mean_credit.enabled:
    credit_rewards,team_credit_metrics=self.team_mean_credit.transform(rewards,alive,waves)
   else:
@@ -550,7 +573,8 @@ class ModularMAPPOTrainer:
    metrics=self._update_flat_brsc(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,brsc_adv,brsc_active)
   else:
    metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,
-    actor_w if self.advantage_priority.enabled else None,waves if self.persistent_wave_trajectory_replay.enabled else None)
+    actor_w if self.advantage_priority.enabled else None,waves if self.persistent_wave_trajectory_replay.enabled else None,
+    waves if self.deployment_aligned_wave_exploration.enabled else None)
   if self.hta_worker_consolidation.enabled:
    with torch.no_grad():
     norm_before=torch.sqrt(sum(value.double().square().sum() for value in worker_before))
@@ -585,6 +609,7 @@ class ModularMAPPOTrainer:
   recurrent_steps=(self.actor_update_count-actor_before) if (self.recurrent.actor_enabled or self.recurrent.critic_enabled) else 0
   metrics["recurrent_optimizer_steps_this_update"]=float(recurrent_steps)
   metrics.update(self._policy_diagnostics(r,obs,act,alive,ctx))
+  metrics.update(dawe_metrics)
   self.ppo_update_count+=1;metrics.update(wmetrics);metrics.update(pmetrics)
   for key,value in iw_metrics.items():metrics.setdefault(key,value)
   for key,value in caiw_metrics.items():metrics.setdefault(key,value)
@@ -1159,8 +1184,41 @@ class ModularMAPPOTrainer:
    "pwtr_replay_budget_fill_fraction":replay_budget_fill_fraction(len(rows),budget)})
   return result
 
- def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None,options=None):
-  dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask,option_ids=options);newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
+ @torch.no_grad()
+ def _dawe_diagnostics(self,r,obs,raw,alive,ctx,waves):
+  if "deployment_aligned_wave_exploration" not in self.modules_config:return {}
+  module=self.deployment_aligned_wave_exploration
+  result={"dawe_enabled":float(module.enabled),
+   "dawe_wave1_multiplier":module.multiplier(1),"dawe_wave2_multiplier":module.multiplier(2),
+   "dawe_wave3_multiplier":module.multiplier(3)}
+  base_scales=[];base_locs=[]
+  for t in range(obs.shape[0]):
+   hidden=None if r.actor_hidden_before_step is None else torch.as_tensor(r.actor_hidden_before_step[t],dtype=torch.float32,device=self.device)
+   ep=None if r.episode_masks is None else torch.as_tensor(r.episode_masks[t],dtype=torch.float32,device=self.device)
+   dist,_=self.actor.distribution_step(obs[t],self._ctx(ctx[t],True),hidden,ep,alive[t])
+   base_scales.append(dist.scale);base_locs.append(dist.loc)
+  scale=torch.stack(base_scales);loc=torch.stack(base_locs)
+  for wave in (1,2,3):
+   selected=(waves==wave).unsqueeze(-1)&(alive>.5)
+   count=int(selected.sum())
+   prefix=f"dawe_wave{wave}_"
+   result[prefix+"alive_sample_count"]=float(count)
+   if count==0:
+    for name in ("base_std_mean","effective_std_mean","base_log_std_mean",
+                 "effective_to_base_std_ratio","latent_deviation_abs_mean"):result[prefix+name]=None
+    continue
+   live_scale=scale[selected];multiplier=module.multiplier(wave) if module.enabled else 1.0
+   result.update({prefix+"base_std_mean":float(live_scale.mean()),
+    prefix+"effective_std_mean":float((live_scale*multiplier).mean()),
+    prefix+"base_log_std_mean":float(live_scale.log().mean()),
+    prefix+"effective_to_base_std_ratio":float(multiplier),
+    prefix+"latent_deviation_abs_mean":float((raw-loc)[selected].abs().mean())})
+  return result
+
+ def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None,options=None,wave_indices=None):
+  base_dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask,option_ids=options)
+  dist=self._effective_actor_distribution(base_dist,wave_indices)
+  newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
   logratio,ratio=stable_ratio_terms(newlog,oldlog);sur=torch.minimum(ratio*adv,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*adv)
   weights=weights.unsqueeze(-1) if weights.ndim==mask.ndim-1 else weights
   aw=actor_weights if actor_weights is not None else (weights if self.wave_balance.actor_enabled else torch.ones_like(weights))
@@ -1205,8 +1263,9 @@ class ModularMAPPOTrainer:
   row={"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"actor_gru_grad_norm":float(arg),"critic_gru_grad_norm":float(crg),"gru_gradient_norm":float(np.hypot(arg,crg)),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
   if self.actor_gradient_clipping.enabled:row.update(self._last_actor_grad_clip_metrics)
   return row
- def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None,fresh_waves=None):
+ def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None,fresh_waves=None,wave_indices=None):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));flat_actor=None if actor_weights is None else flat(actor_weights);N=arrays[0].shape[0];rows=[]
+  flat_waves=None if wave_indices is None else wave_indices.reshape(-1)
   actor_updates_before=self.actor_update_count;critic_updates_before=self.critic_update_count
   minibatches_per_epoch=(N+self.minibatch_size-1)//self.minibatch_size
   expected_total_minibatches=self.ppo_epochs*minibatches_per_epoch
@@ -1215,7 +1274,7 @@ class ModularMAPPOTrainer:
     fresh_waves.detach().cpu().numpy().reshape(-1),self.minibatch_size,self.rng)
     if fresh_waves is not None else self.rng.permutation(N))
    for start in range(0,N,self.minibatch_size):
-    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args,actor_weights=None if flat_actor is None else flat_actor[ix]);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device); args=[x[ix] for x in arrays];loss=self._loss_step(*args,actor_weights=None if flat_actor is None else flat_actor[ix],wave_indices=None if flat_waves is None else flat_waves[ix]);ag,cg,arg,crg=self._opt(loss);rows.append(self._row(loss,args[4],ag,cg,arg,crg))
   actor_steps=self.actor_update_count-actor_updates_before;critic_steps=self.critic_update_count-critic_updates_before
   if len(rows)!=expected_total_minibatches or actor_steps!=expected_total_minibatches or critic_steps!=expected_total_minibatches:
    raise RuntimeError("flat PPO epoch execution mismatch: "
@@ -1770,6 +1829,7 @@ class ModularMAPPOTrainer:
   state["development_feature_versions"]["wave_specific_actor_isolation"]=WSAI_MAPPO_VERSION
   state["development_feature_versions"]["wave_specific_mean_heads"]=WSMH_MAPPO_VERSION
   state["development_feature_versions"]["actor_gradient_clipping"]=ACTOR_GRAD_CLIP_VERSION
+  state["development_feature_versions"]["deployment_aligned_wave_exploration"]=DAWE_MAPPO_VERSION
   state.update({"wave2_actor_state":None if self.wave2_actor is None else self.wave2_actor.state_dict(),
    "wave3_actor_state":None if self.wave3_actor is None else self.wave3_actor.state_dict(),
    "wave2_actor_optimizer_state":None if self.wave2_actor_optimizer is None else self.wave2_actor_optimizer.state_dict(),
@@ -1781,6 +1841,8 @@ class ModularMAPPOTrainer:
    "wave3_mean_optimizer_state":None if self.wave3_mean_optimizer is None else self.wave3_mean_optimizer.state_dict(),
    "wave_specific_mean_heads_state":self.wave_specific_mean_heads.state_dict() if self.wave_specific_mean_heads.enabled else None})
   state["actor_gradient_clipping_state"]=self.actor_gradient_clipping.state_dict() if self.actor_gradient_clipping.enabled else None
+  state["deployment_aligned_wave_exploration_state"]=(self.deployment_aligned_wave_exploration.state_dict()
+   if self.deployment_aligned_wave_exploration.enabled else None)
   return state
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True):
@@ -1790,7 +1852,7 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled or self.deployment_aligned_wave_exploration.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -1808,6 +1870,7 @@ class ModularMAPPOTrainer:
    if self.wave_specific_actor_isolation.enabled and versions.get("wave_specific_actor_isolation")!=WSAI_MAPPO_VERSION:raise RuntimeError("checkpoint WSAI feature version mismatch")
    if self.wave_specific_mean_heads.enabled and versions.get("wave_specific_mean_heads")!=WSMH_MAPPO_VERSION:raise RuntimeError("checkpoint WSMH feature version mismatch")
    if self.actor_gradient_clipping.enabled and versions.get("actor_gradient_clipping")!=ACTOR_GRAD_CLIP_VERSION:raise RuntimeError("checkpoint actor gradient clipping feature version mismatch")
+   if self.deployment_aligned_wave_exploration.enabled and versions.get("deployment_aligned_wave_exploration")!=DAWE_MAPPO_VERSION:raise RuntimeError("checkpoint DAWE feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.wave_specific_actor_isolation.enabled:
@@ -1877,6 +1940,8 @@ class ModularMAPPOTrainer:
    self.wave_specific_mean_heads.load_state_dict(state.get("wave_specific_mean_heads_state"),branch_from_plain=not strict_protocol)
   if self.actor_gradient_clipping.enabled:
    self.actor_gradient_clipping.load_state_dict(state.get("actor_gradient_clipping_state"),branch_from_plain=not strict_protocol)
+  if self.deployment_aligned_wave_exploration.enabled:
+   self.deployment_aligned_wave_exploration.load_state_dict(state.get("deployment_aligned_wave_exploration_state"),branch_from_plain=not strict_protocol)
   if self.actor_lr_decay.enabled:
    baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.wave_specific_actor_isolation.enabled:
