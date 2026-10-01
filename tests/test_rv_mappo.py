@@ -10,6 +10,9 @@ from algorithm.modular_mappo.factory import build_modular_mappo_trainer
 from algorithm.modular_mappo.protocol import validate_rv_branch, validate_rv_config_pair
 from algorithm.modular_mappo.trainer import stable_ratio_terms
 from algorithm.train_modular_mappo import load_config
+from tools.analyze_rv_fixed10_300k import (METHODS,actor_state_sha256,
+ validate_rv_frozen_actor_state,validate_rv_optimization_rows,
+ validate_control_optimization_rows)
 
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/"outputs/diag_mappo_learnability/l3_seed5301/checkpoint_1505280.pt"
@@ -93,3 +96,72 @@ def test_44m_and_45m_protocol_and_formal_dirs_absent():
 def test_runner_defers_reference_creation_until_after_rng_restore():
  text=(ROOT/"algorithm/modular_mappo/runner.py").read_text()
  assert text.index("self.trainer.restore_rng_state(state)") < text.index("self.trainer.finalize_reference_variance_branch()")
+
+def test_analyzer_method_names_match_resolved_configs():
+ control,rv=configs();assert METHODS=={"Control":"rv_fixed10_control","RV":"rv_mappo_v1"}
+ assert METHODS["Control"]==control["development_method"] and METHODS["RV"]==rv["development_method"]
+
+def synthetic_rv_endpoint():
+ actor={"backbone.weight":torch.tensor([[1.,2.]]),"mean.weight":torch.tensor([[3.]]),
+        "log_std.weight":torch.tensor([[4.,5.]]),"log_std.bias":torch.tensor([6.])}
+ source={"actor":deepcopy(actor)};sha=actor_state_sha256(actor)
+ endpoint={"actor":deepcopy(actor),"reference_variance_actor_state":deepcopy(actor),
+  "reference_variance_actor_sha256":sha,"reference_variance_source_checkpoint_sha256":"parent",
+  "reference_variance_source_sampled_steps":1_505_280,"reference_variance_source_training_seed":5301,
+  "reference_variance_state":{"version":1}}
+ return endpoint,source
+
+def test_rv_endpoint_integrity_passes():
+ endpoint,source=synthetic_rv_endpoint();result=validate_rv_frozen_actor_state(endpoint,source,"parent",5301,"final.pt","parent")
+ assert all(result.values())
+
+@pytest.mark.parametrize("label,name",[("final.pt","log_std.weight"),("final.pt","log_std.bias"),("latest.pt","log_std.weight")])
+def test_rv_endpoint_logstd_mutation_fails(label,name):
+ endpoint,source=synthetic_rv_endpoint();endpoint["actor"][name].reshape(-1)[0]+=1
+ with pytest.raises(RuntimeError,match=name.replace(".",r"\.")):validate_rv_frozen_actor_state(endpoint,source,"parent",5301,label,"parent")
+
+def test_rv_reference_sha_mismatch_fails():
+ endpoint,source=synthetic_rv_endpoint();endpoint["reference_variance_actor_sha256"]="bad"
+ with pytest.raises(RuntimeError,match="reference actor/source SHA mismatch"):validate_rv_frozen_actor_state(endpoint,source,"parent",5301,"final.pt","parent")
+
+def test_rv_reference_source_checkpoint_sha_mismatch_fails():
+ endpoint,source=synthetic_rv_endpoint();endpoint["reference_variance_source_checkpoint_sha256"]="bad"
+ with pytest.raises(RuntimeError,match="source checkpoint SHA mismatch"):validate_rv_frozen_actor_state(endpoint,source,"parent",5301,"final.pt","parent")
+
+def test_rv_reference_source_seed_mismatch_fails():
+ endpoint,source=synthetic_rv_endpoint();endpoint["reference_variance_source_training_seed"]=5302
+ with pytest.raises(RuntimeError,match="source training seed mismatch"):validate_rv_frozen_actor_state(endpoint,source,"parent",5301,"final.pt","parent")
+
+def valid_rv_row():
+ row={"rv_enabled":1.,"rv_log_std_head_requires_grad":0.,"rv_log_std_head_optimizer_membership":1.,
+      "rv_log_std_head_grad_norm":0.,"rv_reference_any_grad_present":0.,"rv_reference_mutation_detected":0.}
+ for wave in (1,2,3):row[f"rv_wave{wave}_alive_sample_count"]=4.;row[f"rv_wave{wave}_behavior_vs_reference_std_max_abs_error"]=0.
+ return row
+
+def test_rv_optimization_row_passes_and_empty_wave_null_allowed():
+ row=valid_rv_row();row["rv_wave3_alive_sample_count"]=0.;row["rv_wave3_behavior_vs_reference_std_max_abs_error"]=None
+ assert validate_rv_optimization_rows([row],"RV")["rv_training_diagnostics_pass"]
+
+@pytest.mark.parametrize("key,value",[("rv_enabled",0.),("rv_log_std_head_requires_grad",1.),
+ ("rv_log_std_head_optimizer_membership",0.),("rv_log_std_head_grad_norm",.1),
+ ("rv_reference_any_grad_present",1.),("rv_reference_mutation_detected",1.)])
+def test_rv_optimization_exact_semantics_fail_closed(key,value):
+ row=valid_rv_row();row[key]=value
+ with pytest.raises(RuntimeError,match=key):validate_rv_optimization_rows([row],"RV")
+
+def test_rv_enabled_missing_fails_closed():
+ row=valid_rv_row();row.pop("rv_enabled")
+ with pytest.raises(RuntimeError,match="missing rv_enabled"):validate_rv_optimization_rows([row],"RV")
+
+def test_rv_behavior_reference_sigma_error_fails():
+ row=valid_rv_row();row["rv_wave2_behavior_vs_reference_std_max_abs_error"]=1.01e-7
+ with pytest.raises(RuntimeError,match="sigma error"):validate_rv_optimization_rows([row],"RV")
+
+def test_control_rv_enabled_zero_passes_and_nonzero_fails():
+ validate_control_optimization_rows([{"rv_enabled":0.}],"Control")
+ with pytest.raises(RuntimeError):validate_control_optimization_rows([{"rv_enabled":1.}],"Control")
+
+def test_screening_gate_constants_and_formal_protocol_checks_unchanged():
+ text=(ROOT/"tools/analyze_rv_fixed10_300k.py").read_text()
+ for token in ('> -0.50','> -0.25','>= -0.05','["wins"] >= 2','"PROMISING"','"NOT_SUPPORTED"','"SAFETY_FAIL"','5860','45_000_000'):
+  assert token in text

@@ -35,7 +35,7 @@ RUNS = {
     "Control": lambda seed: ROOT / f"outputs/dev_rv_control_seed{seed}_300k",
     "RV": lambda seed: ROOT / f"outputs/dev_rv_v1_seed{seed}_300k",
 }
-METHODS = {"Control": "rv_fixed10_control", "RV": "rv_fixed10_v1"}
+METHODS = {"Control": "rv_fixed10_control", "RV": "rv_mappo_v1"}
 ENABLED = {
     "Control": ["actor_gradient_clipping", "actor_lr_decay"],
     "RV": ["actor_gradient_clipping", "actor_lr_decay", "reference_variance"],
@@ -67,6 +67,65 @@ def actor_state_sha256(state: dict[str, torch.Tensor]) -> str:
     for name,value in sorted(state.items()):
         digest.update(name.encode());digest.update(value.detach().cpu().contiguous().numpy().tobytes())
     return digest.hexdigest()
+
+
+def validate_rv_frozen_actor_state(endpoint_state: dict[str, Any], source_state: dict[str, Any],
+                                   source_sha: str, seed: int, label: str,
+                                   branch_parent_sha: str | None = None) -> dict[str, bool]:
+    """Fail closed on every endpoint invariant that defines RV V1."""
+    required=("reference_variance_actor_state","reference_variance_actor_sha256",
+              "reference_variance_source_checkpoint_sha256","reference_variance_source_sampled_steps",
+              "reference_variance_source_training_seed","reference_variance_state")
+    missing=[key for key in required if endpoint_state.get(key) is None]
+    if missing:raise RuntimeError(f"seed{seed} {label} RV checkpoint lacks: {missing}")
+    for name in ("log_std.weight","log_std.bias"):
+        source=source_state["actor"][name];endpoint=endpoint_state["actor"][name]
+        if not torch.equal(endpoint,source):
+            maximum=float((endpoint-source).abs().max())
+            raise RuntimeError(f"seed{seed} {label} {name} is not bitwise frozen; max_abs_diff={maximum}")
+    embedded_sha=actor_state_sha256(endpoint_state["reference_variance_actor_state"])
+    source_actor_sha=actor_state_sha256(source_state["actor"])
+    stored_sha=endpoint_state["reference_variance_actor_sha256"]
+    if stored_sha!=embedded_sha or embedded_sha!=source_actor_sha:
+        raise RuntimeError(f"seed{seed} {label} RV reference actor/source SHA mismatch: stored={stored_sha}, embedded={embedded_sha}, source={source_actor_sha}")
+    reference_source_sha=endpoint_state["reference_variance_source_checkpoint_sha256"]
+    expected_parent=source_sha if branch_parent_sha is None else branch_parent_sha
+    if reference_source_sha!=source_sha or reference_source_sha!=expected_parent:
+        raise RuntimeError(f"seed{seed} {label} RV source checkpoint SHA mismatch")
+    if int(endpoint_state["reference_variance_source_sampled_steps"])!=SOURCE_STEP:
+        raise RuntimeError(f"seed{seed} {label} RV source sampled step mismatch")
+    if int(endpoint_state["reference_variance_source_training_seed"])!=seed:
+        raise RuntimeError(f"seed{seed} {label} RV source training seed mismatch")
+    return {"reference_actor_matches_source":True,"log_std_weight_bitwise_frozen":True,
+            "log_std_bias_bitwise_frozen":True,"reference_source_checkpoint_sha_match":True}
+
+
+def validate_rv_optimization_rows(rows: list[dict[str, Any]], label: str) -> dict[str, bool]:
+    exact={"rv_enabled":1.0,"rv_log_std_head_requires_grad":0.0,
+           "rv_log_std_head_optimizer_membership":1.0,"rv_log_std_head_grad_norm":0.0,
+           "rv_reference_any_grad_present":0.0,"rv_reference_mutation_detected":0.0}
+    for index,row in enumerate(rows):
+        for key,expected in exact.items():
+            if key not in row:raise RuntimeError(f"{label} row{index} missing {key}")
+            if float(row[key])!=expected:raise RuntimeError(f"{label} row{index} {key}={row[key]}, expected {expected}")
+        for wave in (1,2,3):
+            count_key=f"rv_wave{wave}_alive_sample_count";error_key=f"rv_wave{wave}_behavior_vs_reference_std_max_abs_error"
+            if count_key not in row or error_key not in row:raise RuntimeError(f"{label} row{index} missing wave{wave} RV diagnostic")
+            count=float(row[count_key]);error=row[error_key]
+            if count>0:
+                if error in (None,""):raise RuntimeError(f"{label} row{index} wave{wave} has samples but undefined sigma error")
+                if abs(float(error))>1e-7:raise RuntimeError(f"{label} row{index} wave{wave} behavior/reference sigma error={error}")
+            elif error not in (None,"") and abs(float(error))>1e-7:
+                raise RuntimeError(f"{label} row{index} wave{wave} empty-sample sigma error is nonzero")
+    return {"rv_training_diagnostics_pass":True,"reference_mutation_detected_any":False,
+            "reference_grad_present_any":False,"current_log_std_grad_present_any":False,
+            "current_log_std_optimizer_membership_all":True,"behavior_reference_sigma_match_all":True}
+
+
+def validate_control_optimization_rows(rows: list[dict[str, Any]], label: str) -> None:
+    for index,row in enumerate(rows):
+        if "rv_enabled" not in row:raise RuntimeError(f"{label} row{index} missing rv_enabled")
+        if float(row["rv_enabled"])!=0.0:raise RuntimeError(f"{label} row{index} Control rv_enabled must be 0")
 
 
 def csv_rows(path: Path) -> list[dict[str, str]]:
@@ -158,7 +217,8 @@ def validate_run_config(run: dict[str, Any], method: str, seed: int, environment
 
 
 def validate_checkpoint(state: dict[str, Any], run: dict[str, Any], seed: int,
-                        source_state: dict[str, Any], source_sha: str, label: str) -> None:
+                        source_state: dict[str, Any], source_sha: str, label: str,
+                        branch_parent_sha: str | None = None) -> dict[str, bool]:
     extra = state.get("extra", {})
     expected = {
         "algorithm": "modular_mappo",
@@ -187,18 +247,10 @@ def validate_checkpoint(state: dict[str, Any], run: dict[str, Any], seed: int,
         raise RuntimeError(f"{label} checkpoint module identity mismatch")
     rv_enabled="reference_variance" in run["enabled_modules"]
     if rv_enabled:
-        required=("reference_variance_actor_state","reference_variance_actor_sha256",
-                  "reference_variance_source_checkpoint_sha256","reference_variance_source_sampled_steps",
-                  "reference_variance_source_training_seed","reference_variance_state")
-        if any(state.get(key) is None for key in required):raise RuntimeError(f"{label} RV checkpoint is not self-contained")
-        if int(state["reference_variance_source_sampled_steps"])!=SOURCE_STEP or int(state["reference_variance_source_training_seed"])!=seed:
-            raise RuntimeError(f"{label} RV source identity mismatch")
-        if state["reference_variance_source_checkpoint_sha256"]!=source_sha:raise RuntimeError(f"{label} RV source checkpoint SHA mismatch")
-        embedded_sha=actor_state_sha256(state["reference_variance_actor_state"])
-        if embedded_sha!=state["reference_variance_actor_sha256"] or embedded_sha!=actor_state_sha256(source_state["actor"]):
-            raise RuntimeError(f"{label} RV embedded reference actor SHA mismatch")
+        integrity=validate_rv_frozen_actor_state(state,source_state,source_sha,seed,label,branch_parent_sha)
     elif state.get("reference_variance_actor_state") is not None:
         raise RuntimeError(f"{label} Control unexpectedly contains an RV reference actor")
+    else:integrity={}
     validate_plain_feedforward_architecture(extra.get("network_architecture", {}))
     deltas = {
         "ppo_updates": int(state.get("ppo_updates", -1)) - int(source_state.get("ppo_updates", -1)),
@@ -207,6 +259,7 @@ def validate_checkpoint(state: dict[str, Any], run: dict[str, Any], seed: int,
     }
     if deltas != {"ppo_updates": 49, "actor_updates": 5860, "critic_updates": 5860}:
         raise RuntimeError(f"{label} checkpoint update deltas mismatch: {deltas}")
+    return integrity
 
 
 def validate_optimization_metrics(rows: list[dict[str, Any]]) -> tuple[int, int]:
@@ -278,6 +331,12 @@ def main() -> None:
     protocol: dict[str, Any] = {}
     training_runtime_sha: str | None = None
     training_manifest: dict[str, str] | None = None
+    rv_integrity={"reference_actor_matches_source_all_runs":True,
+                  "current_log_std_bitwise_frozen_all_runs":True,
+                  "reference_mutation_detected_any":False,"reference_grad_present_any":False,
+                  "current_log_std_grad_present_any":False,
+                  "current_log_std_optimizer_membership_all":True,
+                  "behavior_reference_sigma_match_all":True}
 
     for seed in SEEDS:
         endpoint[seed] = {}
@@ -305,15 +364,15 @@ def main() -> None:
             validate_run_summary(summary, run, method)
             final_state = torch.load(path / "final.pt", map_location="cuda", weights_only=False)
             latest_state = torch.load(path / "latest.pt", map_location="cuda", weights_only=False)
-            validate_checkpoint(final_state, run, seed, source_state, source_sha, "final.pt")
-            validate_checkpoint(latest_state, run, seed, source_state, source_sha, "latest.pt")
+            final_integrity=validate_checkpoint(final_state,run,seed,source_state,source_sha,"final.pt",branch.get("parent_checkpoint_sha256"))
+            latest_integrity=validate_checkpoint(latest_state,run,seed,source_state,source_sha,"latest.pt",branch.get("parent_checkpoint_sha256"))
             if method=="RV":
-                if any(float(row.get("rv_reference_mutation_detected",1))!=0 for row in optimization):raise RuntimeError(f"RV reference mutation detected: {path}")
-                if any(float(row.get("rv_log_std_head_grad_norm",1))!=0 for row in optimization):raise RuntimeError(f"RV current log_std received gradient: {path}")
-                for row in optimization:
-                    for wave in (1,2,3):
-                        value=row.get(f"rv_wave{wave}_behavior_vs_reference_std_max_abs_error")
-                        if value not in (None,"") and abs(float(value))>1e-7:raise RuntimeError(f"RV behavior/reference sigma mismatch: {path}")
+                diagnostic_integrity=validate_rv_optimization_rows(optimization,f"RV seed{seed}")
+                if final_state["reference_variance_actor_sha256"]!=latest_state["reference_variance_actor_sha256"]:
+                    raise RuntimeError(f"seed{seed} final/latest RV reference actor SHA mismatch")
+                rv_protocol={**final_integrity,**diagnostic_integrity}
+            else:
+                validate_control_optimization_rows(optimization,f"Control seed{seed}");rv_protocol={}
             if any(final_state.get(key) != latest_state.get(key) for key in ("sampled_steps", "ppo_updates", "actor_updates", "critic_updates")):
                 raise RuntimeError(f"final.pt/latest.pt endpoint counters differ: {path}")
 
@@ -331,7 +390,7 @@ def main() -> None:
                 "status": "PASS", "runtime_source_sha": run_runtime_sha,
                 "parent_sha": source_sha, "optimization_rows": 49,
                 "actor_steps": actor_steps, "critic_steps": critic_steps,
-                "final_latest_same_endpoint": True, "uses_45m": False,
+                "final_latest_same_endpoint": True, "uses_45m": False,**rv_protocol,
             }
             windows = {"early": optimization[:10], "late": optimization[-16:], "final5": optimization[-5:]}
             for window, selected in windows.items():
@@ -381,6 +440,7 @@ def main() -> None:
         "replication_unit": "training_seed", "n": 3, "primary_endpoint": TARGET,
         "protocol": protocol, "endpoint": endpoint,
         "paired_RV_minus_Control": aggregate, "mechanism_diagnostics": mechanism,
+        "rv_integrity":rv_integrity,
         "gates": {"safety": safety, "efficacy": efficacy}, "RV_SCREEN": label,
         "evaluation_rerun": False, "uses_45m": False,
         "runtime_source_provenance": {
