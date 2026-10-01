@@ -982,7 +982,8 @@ class ModularMAPPOTrainingRunner:
         if branch_intervention in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
             extra=self.trainer.load_fbmr_branch(path,source_checkpoint_sha256,restore_rng=False)
         else:
-            extra = self.trainer.load(path, strict_protocol=not branch, restore_rng=False)
+            extra = self.trainer.load(path, strict_protocol=not branch, restore_rng=False,
+                                      defer_reference_attach=bool(branch and self.trainer.reference_variance.enabled))
         self.runtime_env_config = self.trainer.curriculum.runtime_config(self.env_config, self.trainer.sampled_steps)
         if self.curriculum_enabled:
             self.current_stage, _ = self.trainer.curriculum.stage(self.trainer.sampled_steps)
@@ -1014,6 +1015,9 @@ class ModularMAPPOTrainingRunner:
                 raise RuntimeError("wave-entry curriculum checkpoint is missing its state")
             self.trainer.wave_entry_curriculum.load_state_dict(saved_wec)
         self.trainer.restore_rng_state(state)
+        if branch and self.trainer.reference_variance.enabled:
+            if not self.trainer.finalize_reference_variance_branch():
+                raise RuntimeError("RV branch reference actor was not created after source RNG restoration")
         if branch_intervention in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}:
             restored=bool(self.trainer.rng_restore_metadata["rng_state_restored"])
             self.trainer.fbmr_branch_metadata["source_rng_restored"]=restored

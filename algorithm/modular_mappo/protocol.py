@@ -436,6 +436,32 @@ def validate_dawe_config_pair(control,treatment):
  if left!=right:raise RuntimeError("DAWE configs differ outside method, intervention, and enabled")
  return True
 
+def validate_rv_branch(state,env_config,algorithm_config,expected_runtime=None):
+ """Validate the exact Fixed10 Control versus RV-MAPPO V1 continuation."""
+ branch=algorithm_config.get("development_branch",{});intervention=branch.get("intervention")
+ methods={"rv_fixed10_control":"rv_fixed10_control","reference_variance":"rv_mappo_v1"}
+ if intervention not in methods or algorithm_config.get("development_method")!=methods[intervention]:raise RuntimeError("RV branch identity mismatch")
+ shadow=deepcopy(algorithm_config);shadow["development_method"]="actor_grad_clip_05_control";shadow["development_branch"]["intervention"]="actor_grad_clip_05_control";shadow.get("modules",{}).pop("reference_variance",None)
+ base=validate_actor_grad_clip_branch(state,env_config,shadow,expected_runtime)
+ enabled=set(name for name,value in algorithm_config.get("modules",{}).items() if isinstance(value,dict) and value.get("enabled",False))
+ required={"actor_lr_decay","actor_gradient_clipping"}
+ if intervention=="reference_variance":required.add("reference_variance")
+ if enabled!=required:raise RuntimeError(f"RV destination enabled modules mismatch: {sorted(enabled)}")
+ expected={"enabled":intervention=="reference_variance","mode":"frozen_source_state_dependent_variance","source_sampled_steps":1_505_280,"freeze_current_log_std_head":True,"behavior_uses_reference_mean":False}
+ if algorithm_config.get("modules",{}).get("reference_variance")!=expected:raise RuntimeError("RV fixed module config mismatch")
+ if algorithm_config.get("modules",{}).get("deployment_aligned_wave_exploration",{}).get("enabled",False):raise RuntimeError("RV protocol forbids DAWE")
+ if (int(branch.get("source_sampled_steps",-1)),int(branch.get("additional_sampled_steps",-1)),int(branch.get("target_sampled_steps",-1)))!=(1_505_280,300_000,1_805_280):raise RuntimeError("RV branch budget mismatch")
+ if branch.get("actor_optimizer_restore") is not True or branch.get("critic_optimizer_restore") is not True or branch.get("rng_restore") is not True:raise RuntimeError("RV branch must restore both optimizers and RNG")
+ base.update({"intervention":intervention,"destination_enabled_modules":sorted(enabled),"reference_variance_version":1,"reference_actor_created_from_branch_source":intervention=="reference_variance","current_log_std_head_frozen":intervention=="reference_variance","actor_optimizer_param_membership_preserved":True,"actor_optimizer_restore":True,"critic_optimizer_restore":True,"rng_restore":True})
+ return base
+
+def validate_rv_config_pair(control,treatment):
+ left=deepcopy(control);right=deepcopy(treatment);left.pop("development_method",None);right.pop("development_method",None)
+ left.get("development_branch",{}).pop("intervention",None);right.get("development_branch",{}).pop("intervention",None)
+ left["modules"]["reference_variance"].pop("enabled",None);right["modules"]["reference_variance"].pop("enabled",None)
+ if left!=right:raise RuntimeError("RV configs differ outside method, intervention, and enabled")
+ return True
+
 def _fbmr_comparable_config(config):
  value=deepcopy(config)
  for key in ("formal_protocol","development_protocol","development_branch"):value.pop(key,None)

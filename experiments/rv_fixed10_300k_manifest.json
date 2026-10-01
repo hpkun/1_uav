@@ -1,0 +1,25 @@
+{
+  "research_question": "Does freezing the source state-dependent variance function improve long-horizon persistent-wave stability while retaining standard PPO exploration scale?",
+  "method": "RV-MAPPO V1",
+  "source_checkpoints": {
+    "5301": "outputs/diag_mappo_learnability/l3_seed5301/checkpoint_1505280.pt",
+    "5302": "outputs/diag_mappo_learnability/l3_seed5302/checkpoint_1505280.pt",
+    "5303": "outputs/diag_mappo_learnability/l3_seed5303/checkpoint_1505280.pt"
+  },
+  "training_seeds": [5301, 5302, 5303],
+  "source_sampled_steps": 1505280,
+  "additional_sampled_steps": 300000,
+  "target_sampled_steps": 1805280,
+  "control_config": "configs/dev_rv_fixed10_control_300k.yaml",
+  "treatment_config": "configs/dev_rv_mappo_v1_300k.yaml",
+  "reference_source_semantics": "same-seed deep-copied frozen source actor supplies scale only; reference mean unused",
+  "actor_optimizer_restore": true,
+  "critic_optimizer_restore": true,
+  "rng_restore": true,
+  "development_validation": {"seed_start": 44000000, "seed_end": 44000049, "episodes": 50, "deterministic": true, "common_scenarios": true},
+  "reserved_future_final_test": {"seed_start": 45000000, "seed_end": 45000199, "executed": false},
+  "primary_exact_endpoint": 1805280,
+  "screening_gate": {"safety_per_seed_delta_aw_gt": -0.5, "safety_per_seed_delta_w1_gt": -0.25, "safety_mean_delta_w1_gte": -0.05, "efficacy_aw_positive_seeds_gte": 2, "efficacy_mean_delta_aw_gt": 0, "efficacy_w3_positive_seeds_gte": 2, "efficacy_mean_delta_w3_gt": 0},
+  "replication_unit": "training seed",
+  "replication_count": 3
+}

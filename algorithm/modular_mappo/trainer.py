@@ -45,6 +45,7 @@ from algorithm.modules import (WaveSpecificMeanHeadsModule,WSMH_MAPPO_VERSION,
  pairwise_mean_l2_distances)
 from algorithm.modules import (ActorGradientClippingModule,ACTOR_GRAD_CLIP_VERSION)
 from algorithm.modules import (DeploymentAlignedWaveExplorationModule,DAWE_MAPPO_VERSION)
+from algorithm.modules import (ReferenceVarianceModule,REFERENCE_VARIANCE_VERSION)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
@@ -174,6 +175,13 @@ class ModularMAPPOTrainer:
   self.actor_gradient_clipping=ActorGradientClippingModule(self.modules_config.get("actor_gradient_clipping"))
   self.deployment_aligned_wave_exploration=DeploymentAlignedWaveExplorationModule(
    self.modules_config.get("deployment_aligned_wave_exploration"))
+  self.reference_variance=ReferenceVarianceModule(self.modules_config.get("reference_variance"))
+  self.reference_variance_actor=None
+  self.reference_variance_initial_sha256=None
+  self.reference_variance_source_checkpoint_sha256=None
+  self.reference_variance_source_sampled_steps=None
+  self.reference_variance_source_training_seed=None
+  self._pending_reference_variance_branch=None
   self.entity_attention_config=deepcopy(self.modules_config.get("entity_attention",{}))
   self.entity_attention_enabled=bool(self.entity_attention_config.get("enabled",False))
   self.frozen_base_policy_entity_enabled=self.entity_attention_enabled and self.entity_attention_config.get("mode","replacement") in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"}
@@ -250,6 +258,7 @@ class ModularMAPPOTrainer:
   if self.actor_gradient_clipping.enabled:
    enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","actor_gradient_clipping"}
    if self.deployment_aligned_wave_exploration.enabled:required.add("deployment_aligned_wave_exploration")
+   if self.reference_variance.enabled:required.add("reference_variance")
    if enabled!=required:raise ValueError(f"Actor gradient clipping V1 requires exact enabled modules: {sorted(required)}")
    if not self.actor_lr_decay.enabled:raise ValueError("Actor gradient clipping V1 requires actor_lr_decay")
    forbidden=(self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
@@ -276,6 +285,13 @@ class ModularMAPPOTrainer:
     self.persistent_wave_trajectory_replay.enabled,self.sequential_wave_gradient_projection.enabled,
     self.wave1_sensitivity_gating.enabled,self.wave_specific_actor_isolation.enabled,self.wave_specific_mean_heads.enabled)
    if any(forbidden):raise ValueError("DAWE V1 requires an otherwise Plain feed-forward Fixed10 Actor/Critic")
+  if self.reference_variance.enabled:
+   enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","actor_gradient_clipping","reference_variance"}
+   if enabled!=required:raise ValueError(f"RV V1 requires exact enabled modules: {sorted(required)}")
+   if self.deployment_aligned_wave_exploration.enabled:raise ValueError("RV and DAWE are mutually exclusive")
+   if self.actor_kl_guard.enabled or self.ppo_stabilization.enabled:raise ValueError("RV V1 forbids actor KL guard and PPO stabilization")
+   if not self.actor_gradient_clipping.enabled or abs(self.actor_gradient_clipping.actor_max_grad_norm-.5)>1e-15:
+    raise ValueError("RV V1 requires Fixed10 actor clipping at 0.5")
   if self.wave_entry_curriculum.enabled:
    enabled=set(enabled_module_names(self.modules_config));allowed={"actor_lr_decay","wave_balancing","wave_entry_curriculum"}
    if not enabled.issubset(allowed):raise ValueError(f"wave_entry_curriculum incompatible enabled modules: {sorted(enabled-allowed)}")
@@ -324,6 +340,8 @@ class ModularMAPPOTrainer:
   trainable_actor_parameters=self.actor.trainable_policy_parameters()
   if not trainable_actor_parameters:raise RuntimeError("actor has no trainable policy parameters")
   self.actor_optimizer=torch.optim.Adam(trainable_actor_parameters,lr=actor_learning_rate);self.critic_optimizer=torch.optim.Adam(self.critic.parameters(),lr=critic_learning_rate)
+  if self.reference_variance.enabled:
+   for parameter in self.actor.log_std.parameters():parameter.requires_grad_(False)
   self.wave2_actor=self.wave3_actor=None;self.wave2_actor_optimizer=self.wave3_actor_optimizer=None
   if self.wave_specific_actor_isolation.enabled:
    # deepcopy does not advance any RNG and produces exact source-policy clones.
@@ -423,6 +441,14 @@ class ModularMAPPOTrainer:
  def _effective_actor_distribution(self,base_distribution,wave_indices):
   """Single DAWE distribution transform shared by rollout, PPO, and entropy."""
   return self.deployment_aligned_wave_exploration.effective_distribution(base_distribution,wave_indices)
+ def _behavior_actor_distribution(self,base_distribution,observations,alive_mask,wave_indices=None):
+  """The only stochastic behavior-distribution transform used by rollout/PPO."""
+  if self.reference_variance.enabled:
+   if self.reference_variance_actor is None:raise RuntimeError("RV reference actor is not attached")
+   with torch.no_grad():
+    reference,_=self.reference_variance_actor.distribution_step(observations,None,None,None,alive_mask)
+   return torch.distributions.Normal(base_distribution.loc,reference.scale.detach())
+  return self._effective_actor_distribution(base_distribution,wave_indices)
  @torch.no_grad()
  def act(self,observations,alive_mask=None,deterministic=False,return_policy_data=False,context=None,hidden=None,episode_mask=None,option_ids=None,wave_indices=None):
   obs=torch.as_tensor(observations,dtype=torch.float32,device=self.device);mask=torch.as_tensor(alive_mask,dtype=torch.float32,device=self.device) if alive_mask is not None else None
@@ -432,7 +458,7 @@ class ModularMAPPOTrainer:
   if self.wave_specific_mean_heads.enabled:dist=self._wsmh_routed_distribution(obs,mask,wave_indices);new_h=None
   elif self.wave_specific_actor_isolation.enabled:dist=self._routed_actor_distribution(obs,mask,wave_indices);new_h=None
   else:dist,new_h=self.actor.distribution_step(obs,self._ctx(ctx,True),hid,ep,mask,option_ids=options)
-  effective=dist if deterministic else self._effective_actor_distribution(dist,wave_indices)
+  effective=dist if deterministic else self._behavior_actor_distribution(dist,obs,mask,wave_indices)
   raw=dist.mean if deterministic else effective.rsample();actions=torch.tanh(raw);log=self.actor._squashed_log_prob(effective,raw,actions)
   if mask is not None:actions*=mask[...,None];raw*=mask[...,None];log*=mask
   out=(actions.cpu().numpy(),raw.cpu().numpy(),log.cpu().numpy(),None if new_h is None else new_h.cpu().numpy())
@@ -481,6 +507,7 @@ class ModularMAPPOTrainer:
   obs,act,raw,oldlog,rewards,dones,alive,nobs,nalive=map(tt,(r.observations,r.actions,r.raw_actions,r.old_log_probs,r.rewards,r.dones,r.alive_masks,r.next_observations,r.next_alive_masks))
   waves=torch.as_tensor(r.wave_indices,dtype=torch.long,device=self.device);ctx=tt(r.contexts);T,E=obs.shape[:2]
   dawe_metrics=self._dawe_diagnostics(r,obs,raw,alive,ctx,waves)
+  rv_metrics=self._reference_variance_diagnostics(obs,alive,waves)
   if self.team_mean_credit.enabled:
    credit_rewards,team_credit_metrics=self.team_mean_credit.transform(rewards,alive,waves)
   else:
@@ -574,7 +601,7 @@ class ModularMAPPOTrainer:
   else:
    metrics=self._update_flat(obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,
     actor_w if self.advantage_priority.enabled else None,waves if self.persistent_wave_trajectory_replay.enabled else None,
-    waves if self.deployment_aligned_wave_exploration.enabled else None)
+    waves if (self.deployment_aligned_wave_exploration.enabled or self.reference_variance.enabled) else None)
   if self.hta_worker_consolidation.enabled:
    with torch.no_grad():
     norm_before=torch.sqrt(sum(value.double().square().sum() for value in worker_before))
@@ -610,6 +637,7 @@ class ModularMAPPOTrainer:
   metrics["recurrent_optimizer_steps_this_update"]=float(recurrent_steps)
   metrics.update(self._policy_diagnostics(r,obs,act,alive,ctx))
   metrics.update(dawe_metrics)
+  metrics.update(rv_metrics)
   self.ppo_update_count+=1;metrics.update(wmetrics);metrics.update(pmetrics)
   for key,value in iw_metrics.items():metrics.setdefault(key,value)
   for key,value in caiw_metrics.items():metrics.setdefault(key,value)
@@ -1215,9 +1243,42 @@ class ModularMAPPOTrainer:
     prefix+"latent_deviation_abs_mean":float((raw-loc)[selected].abs().mean())})
   return result
 
+ @torch.no_grad()
+ def _reference_variance_diagnostics(self,obs,alive,waves):
+  if not self.reference_variance.enabled:return {"rv_enabled":0.0}
+  if self.reference_variance_actor is None:raise RuntimeError("RV reference actor missing")
+  flat_obs=obs.reshape(-1,*obs.shape[2:]);flat_alive=alive.reshape(-1,*alive.shape[2:]);flat_waves=waves.reshape(-1)
+  current,_=self.actor.distribution_step(flat_obs,None,None,None,flat_alive)
+  reference,_=self.reference_variance_actor.distribution_step(flat_obs,None,None,None,flat_alive)
+  optimizer_parameters={id(parameter) for group in self.actor_optimizer.param_groups for parameter in group["params"]}
+  log_std_parameters=list(self.actor.log_std.parameters())
+  result={"rv_enabled":1.0,"rv_reference_actor_sha256":self.reference_variance_actor_sha256(),
+   "rv_log_std_head_requires_grad":float(any(parameter.requires_grad for parameter in log_std_parameters)),
+   "rv_log_std_head_optimizer_membership":float(all(id(parameter) in optimizer_parameters for parameter in log_std_parameters)),
+   "rv_log_std_head_grad_norm":self._gradient_norm(log_std_parameters),
+   "rv_reference_any_grad_present":float(any(parameter.grad is not None for parameter in self.reference_variance_actor.parameters())),
+   "rv_reference_mutation_detected":float(self.reference_variance_actor_sha256()!=self.reference_variance_initial_sha256)}
+  for wave in (1,2,3):
+   selected=(flat_waves==wave).unsqueeze(-1)&(flat_alive>.5);count=int(selected.sum());prefix=f"rv_wave{wave}_"
+   result[prefix+"alive_sample_count"]=float(count)
+   if not count:
+    for key in ("reference_behavior_std_mean","current_unused_std_mean","current_unused_over_reference_std_ratio",
+                "behavior_vs_reference_std_max_abs_error","reference_log_std_mean","current_unused_log_std_mean"):
+     result[prefix+key]=None
+    continue
+   ref=reference.scale[selected];cur=current.scale[selected]
+   behavior=self._behavior_actor_distribution(current,flat_obs,flat_alive,flat_waves).scale[selected]
+   result.update({prefix+"reference_behavior_std_mean":float(ref.mean()),
+    prefix+"current_unused_std_mean":float(cur.mean()),
+    prefix+"current_unused_over_reference_std_ratio":float((cur/ref).mean()),
+    prefix+"behavior_vs_reference_std_max_abs_error":float((behavior-ref).abs().max()),
+    prefix+"reference_log_std_mean":float(ref.log().mean()),
+    prefix+"current_unused_log_std_mean":float(cur.log().mean())})
+  return result
+
  def _loss_step(self,obs,act,raw,oldlog,mask,adv,oldvalue,target,weights,ctx,ah=None,ch=None,ep=None,actor_weights=None,options=None,wave_indices=None):
   base_dist,newah=self.actor.distribution_step(obs,self._ctx(ctx,True),ah,ep,mask,option_ids=options)
-  dist=self._effective_actor_distribution(base_dist,wave_indices)
+  dist=self._behavior_actor_distribution(base_dist,obs,mask,wave_indices)
   newlog=self.actor._squashed_log_prob(dist,raw,act);sample_raw=dist.rsample();entropy=-self.actor._squashed_log_prob(dist,sample_raw,torch.tanh(sample_raw))
   logratio,ratio=stable_ratio_terms(newlog,oldlog);sur=torch.minimum(ratio*adv,ratio.clamp(1-self.clip_ratio,1+self.clip_ratio)*adv)
   weights=weights.unsqueeze(-1) if weights.ndim==mask.ndim-1 else weights
@@ -1790,6 +1851,30 @@ class ModularMAPPOTrainer:
   for name,parameter in self.actor.frozen_baseline_named_parameters():
    digest.update(name.encode());digest.update(parameter.detach().cpu().contiguous().numpy().tobytes())
   return digest.hexdigest()
+ @staticmethod
+ def _module_state_sha256(module):
+  digest=hashlib.sha256()
+  for name,value in sorted(module.state_dict().items()):
+   digest.update(name.encode());digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+  return digest.hexdigest()
+ def reference_variance_actor_sha256(self):
+  return None if self.reference_variance_actor is None else self._module_state_sha256(self.reference_variance_actor)
+ def _attach_reference_variance_actor(self,source_checkpoint_sha256,source_sampled_steps,source_training_seed):
+  cpu_rng=torch.get_rng_state().clone();cuda_rng=[value.clone() for value in torch.cuda.get_rng_state_all()] if torch.cuda.is_available() else []
+  self.reference_variance_actor=deepcopy(self.actor).to(self.device).eval()
+  for parameter in self.reference_variance_actor.parameters():parameter.requires_grad_(False);parameter.grad=None
+  for parameter in self.actor.log_std.parameters():parameter.requires_grad_(False);parameter.grad=None
+  if not torch.equal(cpu_rng,torch.get_rng_state()):raise RuntimeError("creating RV reference actor consumed CPU RNG")
+  if torch.cuda.is_available() and any(not torch.equal(a,b) for a,b in zip(cuda_rng,torch.cuda.get_rng_state_all())):raise RuntimeError("creating RV reference actor consumed CUDA RNG")
+  self.reference_variance_initial_sha256=self.reference_variance_actor_sha256()
+  if self.reference_variance_initial_sha256!=self._module_state_sha256(self.actor):raise RuntimeError("RV reference actor/source actor identity mismatch")
+  self.reference_variance_source_checkpoint_sha256=source_checkpoint_sha256
+  self.reference_variance_source_sampled_steps=int(source_sampled_steps)
+  self.reference_variance_source_training_seed=int(source_training_seed)
+ def finalize_reference_variance_branch(self):
+  if self._pending_reference_variance_branch is None:return False
+  values=self._pending_reference_variance_branch;self._pending_reference_variance_branch=None
+  self._attach_reference_variance_actor(*values);return True
  def module_protocol(self):
   raw=json.dumps(self.modules_config,sort_keys=True,separators=(",",":"));return {"enabled_modules":enabled_module_names(self.modules_config),"module_config":deepcopy(self.modules_config),"module_config_sha256":hashlib.sha256(raw.encode()).hexdigest()}
  def capture_rng_state(self):
@@ -1825,11 +1910,15 @@ class ModularMAPPOTrainer:
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
   return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION,"hta_worker_consolidation":HTA_WORKER_CONSOLIDATION_VERSION,"sequential_wave_gradient_projection":SWGP_MAPPO_VERSION,"team_mean_credit":TEAM_MEAN_CREDIT_VERSION,"persistent_wave_trajectory_replay":PWTR_MAPPO_VERSION,"wave1_sensitivity_gating":W1SG_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"sequential_wave_gradient_projection_state":self.sequential_wave_gradient_projection.state_dict() if self.sequential_wave_gradient_projection.enabled else None,"persistent_wave_trajectory_replay_state":self.persistent_wave_trajectory_replay.state_dict() if self.persistent_wave_trajectory_replay.enabled else None,"wave1_sensitivity_gating_state":self.wave1_sensitivity_gating.state_dict() if self.wave1_sensitivity_gating.enabled else None,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def checkpoint_state(self,extra=None):
+  if self.reference_variance.enabled:
+   if self.reference_variance_actor is None:raise RuntimeError("RV reference actor missing before checkpoint save")
+   if self.reference_variance_actor_sha256()!=self.reference_variance_initial_sha256:raise RuntimeError("RV reference actor mutated")
   state=self._base_checkpoint_state(extra)
   state["development_feature_versions"]["wave_specific_actor_isolation"]=WSAI_MAPPO_VERSION
   state["development_feature_versions"]["wave_specific_mean_heads"]=WSMH_MAPPO_VERSION
   state["development_feature_versions"]["actor_gradient_clipping"]=ACTOR_GRAD_CLIP_VERSION
   state["development_feature_versions"]["deployment_aligned_wave_exploration"]=DAWE_MAPPO_VERSION
+  state["development_feature_versions"]["reference_variance"]=REFERENCE_VARIANCE_VERSION
   state.update({"wave2_actor_state":None if self.wave2_actor is None else self.wave2_actor.state_dict(),
    "wave3_actor_state":None if self.wave3_actor is None else self.wave3_actor.state_dict(),
    "wave2_actor_optimizer_state":None if self.wave2_actor_optimizer is None else self.wave2_actor_optimizer.state_dict(),
@@ -1843,16 +1932,22 @@ class ModularMAPPOTrainer:
   state["actor_gradient_clipping_state"]=self.actor_gradient_clipping.state_dict() if self.actor_gradient_clipping.enabled else None
   state["deployment_aligned_wave_exploration_state"]=(self.deployment_aligned_wave_exploration.state_dict()
    if self.deployment_aligned_wave_exploration.enabled else None)
+  state.update({"reference_variance_actor_state":None if self.reference_variance_actor is None else self.reference_variance_actor.state_dict(),
+   "reference_variance_actor_sha256":self.reference_variance_actor_sha256(),
+   "reference_variance_source_checkpoint_sha256":self.reference_variance_source_checkpoint_sha256,
+   "reference_variance_source_sampled_steps":self.reference_variance_source_sampled_steps,
+   "reference_variance_source_training_seed":self.reference_variance_source_training_seed,
+   "reference_variance_state":self.reference_variance.state_dict() if self.reference_variance.enabled else None})
   return state
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
- def load(self,path,strict_protocol=True,restore_rng=True):
+ def load(self,path,strict_protocol=True,restore_rng=True,defer_reference_attach=False):
   state=torch.load(path,map_location=self.device,weights_only=False)
   if state.get("algorithm")!="modular_mappo":raise RuntimeError("not a modular_mappo checkpoint")
   checkpoint_version=state.get("modular_mappo_impl_version")
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled or self.deployment_aligned_wave_exploration.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled or self.deployment_aligned_wave_exploration.enabled or self.reference_variance.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -1871,8 +1966,33 @@ class ModularMAPPOTrainer:
    if self.wave_specific_mean_heads.enabled and versions.get("wave_specific_mean_heads")!=WSMH_MAPPO_VERSION:raise RuntimeError("checkpoint WSMH feature version mismatch")
    if self.actor_gradient_clipping.enabled and versions.get("actor_gradient_clipping")!=ACTOR_GRAD_CLIP_VERSION:raise RuntimeError("checkpoint actor gradient clipping feature version mismatch")
    if self.deployment_aligned_wave_exploration.enabled and versions.get("deployment_aligned_wave_exploration")!=DAWE_MAPPO_VERSION:raise RuntimeError("checkpoint DAWE feature version mismatch")
+   if self.reference_variance.enabled and versions.get("reference_variance")!=REFERENCE_VARIANCE_VERSION:raise RuntimeError("checkpoint RV feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
+  if self.reference_variance.enabled:
+   if strict_protocol:
+    reference_state=state.get("reference_variance_actor_state")
+    required=("reference_variance_actor_sha256","reference_variance_source_checkpoint_sha256",
+              "reference_variance_source_sampled_steps","reference_variance_source_training_seed")
+    if not isinstance(reference_state,dict) or any(state.get(key) is None for key in required):
+     raise RuntimeError("strict RV resume checkpoint is not self-contained")
+    self.reference_variance_actor=deepcopy(self.actor).to(self.device)
+    self.reference_variance_actor.load_state_dict(reference_state);self.reference_variance_actor.eval()
+    for parameter in self.reference_variance_actor.parameters():parameter.requires_grad_(False);parameter.grad=None
+    for parameter in self.actor.log_std.parameters():parameter.requires_grad_(False);parameter.grad=None
+    self.reference_variance_initial_sha256=state["reference_variance_actor_sha256"]
+    self.reference_variance_source_checkpoint_sha256=state["reference_variance_source_checkpoint_sha256"]
+    self.reference_variance_source_sampled_steps=int(state["reference_variance_source_sampled_steps"])
+    self.reference_variance_source_training_seed=int(state["reference_variance_source_training_seed"])
+    if self.reference_variance_actor_sha256()!=self.reference_variance_initial_sha256:raise RuntimeError("RV reference actor SHA mismatch")
+   else:
+    digest=hashlib.sha256()
+    with Path(path).open("rb") as stream:
+     for block in iter(lambda:stream.read(1024*1024),b""):digest.update(block)
+    extra=state.get("extra",{})
+    values=(digest.hexdigest(),state.get("sampled_steps",-1),extra.get("training_seed",-1))
+    if defer_reference_attach:self._pending_reference_variance_branch=values
+    else:self._attach_reference_variance_actor(*values)
   if self.wave_specific_actor_isolation.enabled:
    if strict_protocol:
     required=("wave2_actor_state","wave3_actor_state","wave2_actor_optimizer_state","wave3_actor_optimizer_state")
@@ -1942,6 +2062,8 @@ class ModularMAPPOTrainer:
    self.actor_gradient_clipping.load_state_dict(state.get("actor_gradient_clipping_state"),branch_from_plain=not strict_protocol)
   if self.deployment_aligned_wave_exploration.enabled:
    self.deployment_aligned_wave_exploration.load_state_dict(state.get("deployment_aligned_wave_exploration_state"),branch_from_plain=not strict_protocol)
+  if self.reference_variance.enabled:
+   self.reference_variance.load_state_dict(state.get("reference_variance_state"),branch_from_plain=not strict_protocol)
   if self.actor_lr_decay.enabled:
    baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.wave_specific_actor_isolation.enabled:
