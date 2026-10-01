@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .networks import CentralizedValueCritic, SharedMAPPOActor
+from .networks import CentralizedMLPCritic, CentralizedValueCritic, SharedMAPPOActor
 
 
 MAPPO_IMPL_VERSION = 2
@@ -87,6 +87,7 @@ class MAPPOTrainer:
         critic_activation: str = "relu",
         log_std_min: float = -5.0,
         log_std_max: float = 2.0,
+        critic_type: str = "attention",
     ) -> None:
         self.device = torch.device(device)
         if self.device.type == "cuda" and not torch.cuda.is_available():
@@ -106,14 +107,18 @@ class MAPPOTrainer:
         torch.manual_seed(seed)
         if self.device.type == "cuda":
             torch.cuda.manual_seed_all(seed)
+        self.critic_type=str(critic_type)
+        if self.critic_type not in {"attention","mlp"}:raise ValueError(f"unsupported critic_type: {self.critic_type}")
+        self.attention_heads=int(attention_heads)
 
         self.actor = SharedMAPPOActor(
             observation_dim, action_dim, hidden_dim, log_std_min, log_std_max,
             actor_activation,
         ).to(self.device)
-        self.critic = CentralizedValueCritic(
-            observation_dim, hidden_dim, attention_heads, critic_activation
-        ).to(self.device)
+        if self.critic_type=="attention":
+            self.critic=CentralizedValueCritic(observation_dim,hidden_dim,attention_heads,critic_activation).to(self.device)
+        else:
+            self.critic=CentralizedMLPCritic(observation_dim,num_agents,hidden_dim,critic_activation).to(self.device)
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(), lr=actor_learning_rate
         )
@@ -361,6 +366,7 @@ class MAPPOTrainer:
         return {
             "algorithm": "MAPPO",
             "mappo_impl_version": MAPPO_IMPL_VERSION,
+            "critic_type": self.critic_type,
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
             "actor_optimizer": self.actor_optimizer.state_dict(),
@@ -383,6 +389,9 @@ class MAPPOTrainer:
         state = torch.load(path, map_location=self.device, weights_only=False)
         if state.get("algorithm") != "MAPPO":
             raise RuntimeError("checkpoint is not a MAPPO checkpoint")
+        checkpoint_critic_type=str(state.get("critic_type",state.get("extra",{}).get("critic_type","attention")))
+        if checkpoint_critic_type!=self.critic_type:
+            raise RuntimeError(f"checkpoint critic_type mismatch: checkpoint={checkpoint_critic_type}, current={self.critic_type}")
         legacy = state.get("mappo_impl_version") != MAPPO_IMPL_VERSION
         if legacy and not allow_legacy_diagnostic:
             raise RuntimeError(

@@ -21,11 +21,11 @@ training:
   ppo_epochs: 10
   minibatch_size: 512
   num_train_envs: 24
-  total_sampled_steps: 8000000
-  evaluation_episodes: 20
+  total_sampled_steps: 1500000
+  evaluation_episodes: 50
   evaluation_interval_sampled_steps: 100000
-  device: cpu
-  seed: 0
+  device: cuda
+  seed: 5303
 runtime_logging:
   console_interval_sampled_steps: 20000
   recent_episode_window: 100
@@ -36,5 +36,5 @@ implementation:
   log_std_max: 2.0
   normalize_advantages: true
   clip_value_loss: true
-  evaluation_seed_base: 10000000
+  evaluation_seed_base: 46000000
   checkpoint_interval_sampled_steps: 500000

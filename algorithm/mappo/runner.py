@@ -68,6 +68,7 @@ class MAPPOTrainingRunner:
             str(implementation["actor_activation"]),
             str(implementation["critic_activation"]),
             float(implementation["log_std_min"]), float(implementation["log_std_max"]),
+            critic_type=str(network.get("critic_type", "attention")),
         )
         evaluation_base = int(implementation["evaluation_seed_base"])
         self.evaluation_seeds = list(range(
@@ -103,7 +104,11 @@ class MAPPOTrainingRunner:
             "device": self.device, "observation_dim": self.observation_dim,
             "action_dim": self.action_dim, "num_agents": self.num_agents,
             "effective_hidden_dim": self.effective_hidden_dim,
-            "attention_heads": self.trainer.critic.attention_heads,
+            "critic_type": self.trainer.critic_type,
+            "attention_heads": self.trainer.attention_heads,
+            "actor_parameter_count":sum(p.numel() for p in self.trainer.actor.parameters()),
+            "critic_parameter_count":sum(p.numel() for p in self.trainer.critic.parameters()),
+            "total_parameter_count":sum(p.numel() for p in self.trainer.actor.parameters())+sum(p.numel() for p in self.trainer.critic.parameters()),
             "num_envs_M": self.num_envs, "environment_backend": self.vector.backend,
             "environment_workers": self.vector.num_workers, "seed": self.seed,
             "total_sampled_steps": self.total_sampled_steps,
@@ -123,7 +128,7 @@ class MAPPOTrainingRunner:
         s = self.startup_summary()
         return (f"[START] algorithm=MAPPO | mode={s['mode']} | device={s['device']} "
                 f"| obs={s['observation_dim']} | act={s['action_dim']} | agents={s['num_agents']} "
-                f"| hidden={s['effective_hidden_dim']} | heads={s['attention_heads']} "
+                f"| hidden={s['effective_hidden_dim']} | critic={s['critic_type']} | heads={s['attention_heads']} "
                 f"| envs={s['num_envs_M']} | workers={s['environment_workers']} "
                 f"| backend={s['environment_backend']} | seed={s['seed']} "
                 f"| total={s['total_sampled_steps']} | rollout={s['rollout_steps']} "
@@ -329,6 +334,10 @@ class MAPPOTrainingRunner:
             "training_total_sampled_steps": self.total_sampled_steps,
             "training_smoke": self.smoke,
             "effective_hidden_dim": self.effective_hidden_dim,
+            "critic_type":self.trainer.critic_type,
+            "actor_parameter_count":sum(p.numel() for p in self.trainer.actor.parameters()),
+            "critic_parameter_count":sum(p.numel() for p in self.trainer.critic.parameters()),
+            "total_parameter_count":sum(p.numel() for p in self.trainer.actor.parameters())+sum(p.numel() for p in self.trainer.critic.parameters()),
             "environment_config_sha256": config_sha256(self.env_config),
             "algorithm_config_sha256": config_sha256(self.algorithm_config),
             "episode_indices": self.vector.episode_indices.tolist(),

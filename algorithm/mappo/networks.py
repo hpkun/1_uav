@@ -168,4 +168,31 @@ class CentralizedValueCritic(nn.Module):
         return (values, weights) if return_attention else values
 
 
-__all__ = ["CentralizedValueCritic", "SharedMAPPOActor"]
+class CentralizedMLPCritic(nn.Module):
+    """Shared V_i=V_phi(masked global state, masked focal observation)."""
+
+    def __init__(self, observation_dim: int = 52, num_agents: int = 4,
+                 hidden_dim: int = 256, activation: str = "relu") -> None:
+        super().__init__()
+        activation_cls={"relu":nn.ReLU,"leaky_relu":nn.LeakyReLU}.get(activation)
+        if activation_cls is None:raise ValueError(f"unsupported critic activation: {activation}")
+        self.observation_dim=int(observation_dim);self.num_agents=int(num_agents)
+        input_dim=(self.num_agents+1)*self.observation_dim
+        self.value_network=nn.Sequential(
+            nn.Linear(input_dim,hidden_dim),activation_cls(),
+            nn.Linear(hidden_dim,hidden_dim),activation_cls(),nn.Linear(hidden_dim,1))
+
+    def forward(self,observations:torch.Tensor,alive_mask:torch.Tensor|None=None)->torch.Tensor:
+        if observations.ndim!=3:raise ValueError("critic observations must be [batch, agents, features]")
+        batch,agents,features=observations.shape
+        if (agents,features)!=(self.num_agents,self.observation_dim):raise ValueError("MLP critic observation shape mismatch")
+        if alive_mask is None:alive_mask=torch.ones((batch,agents),dtype=observations.dtype,device=observations.device)
+        if alive_mask.shape!=(batch,agents):raise ValueError("MLP critic alive mask shape mismatch")
+        masked=observations*alive_mask.unsqueeze(-1);global_state=masked.reshape(batch,-1)
+        global_per_agent=global_state.unsqueeze(1).expand(-1,agents,-1)
+        critic_input=torch.cat((global_per_agent,masked),dim=-1)
+        values=self.value_network(critic_input).squeeze(-1)
+        return values*alive_mask
+
+
+__all__ = ["CentralizedMLPCritic", "CentralizedValueCritic", "SharedMAPPOActor"]

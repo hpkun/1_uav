@@ -314,6 +314,17 @@ def runtime_file_map(run: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def validate_formal_run_artifacts(path: Path) -> None:
+    """Explain absent/not-yet-complete formal runs without masking the protocol failure."""
+    required=("run_config.json","run_summary.json","branch_from.json","evaluation_history.csv",
+              "optimization_metrics.jsonl","latest.pt","final.pt")
+    if not path.is_dir():
+        raise RuntimeError(f"formal run has not been started or migrated: {path}; run tools/run_rv_fixed10_300k.sh first")
+    missing=[name for name in required if not (path/name).is_file()]
+    if missing:
+        raise RuntimeError(f"formal run is incomplete: {path}; missing={missing}; wait for the six-run launcher to finish before analysis")
+
+
 def main() -> None:
     if OUT.exists():
         raise FileExistsError(f"refusing to overwrite analysis output: {OUT}")
@@ -347,9 +358,7 @@ def main() -> None:
             raise RuntimeError(f"source checkpoint step mismatch: seed{seed}")
         for method, path_fn in RUNS.items():
             path = path_fn(seed)
-            required = ("run_config.json", "run_summary.json", "branch_from.json", "evaluation_history.csv", "optimization_metrics.jsonl", "latest.pt", "final.pt")
-            if not path.is_dir() or any(not (path / name).is_file() for name in required):
-                raise RuntimeError(f"incomplete run: {path}")
+            validate_formal_run_artifacts(path)
             run = json.loads((path / "run_config.json").read_text(encoding="utf-8"))
             summary = json.loads((path / "run_summary.json").read_text(encoding="utf-8"))
             branch = json.loads((path / "branch_from.json").read_text(encoding="utf-8"))

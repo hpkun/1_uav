@@ -75,6 +75,10 @@ def _validate_common_checkpoint_contract(
             "checkpoint MAPPO implementation mismatch: expected "
             f"{MAPPO_IMPL_VERSION}, got {implementation_version!r}"
         )
+    configured_critic_type=str(algorithm_config.get("network",{}).get("critic_type","attention"))
+    checkpoint_critic_type=str(state.get("critic_type",extra.get("critic_type","attention")))
+    if checkpoint_critic_type!=configured_critic_type:
+        raise RuntimeError(f"checkpoint critic_type mismatch: expected {configured_critic_type!r}, got {checkpoint_critic_type!r}")
     configured = _configured_dimensions(algorithm_config)
     environment = (
         observation_dim_from_config(env_config.get("observation", {})),

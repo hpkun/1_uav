@@ -21,6 +21,7 @@ def build_mappo_trainer(
             network["actor_hidden_layers"][0] if hidden_dim is None else hidden_dim
         ),
         "attention_heads": int(network["attention_heads"]),
+        "critic_type": str(network.get("critic_type", "attention")),
         "device": device,
         "actor_activation": implementation["actor_activation"],
         "critic_activation": implementation["critic_activation"],

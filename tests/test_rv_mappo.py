@@ -12,7 +12,7 @@ from algorithm.modular_mappo.trainer import stable_ratio_terms
 from algorithm.train_modular_mappo import load_config
 from tools.analyze_rv_fixed10_300k import (METHODS,actor_state_sha256,
  validate_rv_frozen_actor_state,validate_rv_optimization_rows,
- validate_control_optimization_rows)
+ validate_control_optimization_rows,validate_formal_run_artifacts)
 
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/"outputs/diag_mappo_learnability/l3_seed5301/checkpoint_1505280.pt"
@@ -165,3 +165,9 @@ def test_screening_gate_constants_and_formal_protocol_checks_unchanged():
  text=(ROOT/"tools/analyze_rv_fixed10_300k.py").read_text()
  for token in ('> -0.50','> -0.25','>= -0.05','["wins"] >= 2','"PROMISING"','"NOT_SUPPORTED"','"SAFETY_FAIL"','5860','45_000_000'):
   assert token in text
+
+def test_analyzer_distinguishes_not_started_and_incomplete_runs(tmp_path):
+ missing=tmp_path/"not_started"
+ with pytest.raises(RuntimeError,match="has not been started or migrated"):validate_formal_run_artifacts(missing)
+ missing.mkdir();(missing/"run_config.json").write_text("{}")
+ with pytest.raises(RuntimeError,match="formal run is incomplete"):validate_formal_run_artifacts(missing)

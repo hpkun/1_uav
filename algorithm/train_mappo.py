@@ -431,6 +431,10 @@ def main() -> None:
         "environment_version": str(env_config["environment_version"]),
         "algorithm": "MAPPO",
         "effective_hidden_dim": startup["effective_hidden_dim"],
+        "critic_type":startup["critic_type"],
+        "actor_parameter_count":startup["actor_parameter_count"],
+        "critic_parameter_count":startup["critic_parameter_count"],
+        "total_parameter_count":startup["total_parameter_count"],
         "output_dir": str(runner.output_dir.resolve()),
         "resume_checkpoint": (
             None if resume_checkpoint is None else str(resume_checkpoint)
