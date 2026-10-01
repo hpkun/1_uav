@@ -282,8 +282,7 @@ class MAPPOTrainingRunner:
                     while self.next_console_log <= self.trainer.sampled_steps:
                         self.next_console_log += self.console_interval
                 if self.trainer.sampled_steps >= self.next_evaluation:
-                    row = {"sampled_steps": self.trainer.sampled_steps,
-                           **evaluate(self.trainer, self.env_config, self.evaluation_seeds)}
+                    row = self._evaluation_record()
                     self.evaluation_history.append(row); self._write_evaluation()
                     self._consider_best_evaluation(row)
                     print(self.evaluation_log_line(row), flush=True)
@@ -298,6 +297,17 @@ class MAPPOTrainingRunner:
             return self.summary()
         finally:
             self.vector.close()
+
+    def _evaluation_record(self) -> dict[str, Any]:
+        """Evaluate and persist the exact scenario-seed provenance in the row."""
+        if not self.evaluation_seeds:
+            raise RuntimeError("evaluation seed protocol is empty")
+        return {
+            "sampled_steps": self.trainer.sampled_steps,
+            "evaluation_seed_base": int(self.evaluation_seeds[0]),
+            "evaluation_seed_end": int(self.evaluation_seeds[-1]),
+            **evaluate(self.trainer, self.env_config, self.evaluation_seeds),
+        }
 
     def _write_evaluation(self) -> None:
         if self.evaluation_history:

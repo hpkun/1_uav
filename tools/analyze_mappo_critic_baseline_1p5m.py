@@ -26,17 +26,29 @@ def write_csv(path,rows):
   for key in row:
    if key not in fields:fields.append(key)
  with path.open("w",newline="",encoding="utf-8") as f:w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(rows)
-def validate_run(name,path,cfg,critic_type):
+def validate_evaluation_provenance(name,history):
+ required=("evaluation_seed_base","evaluation_seed_end","evaluation_episodes")
+ for index,row in enumerate(history):
+  missing=[key for key in required if key not in row or row[key] in (None,"")]
+  if missing:raise RuntimeError(f"{name} evaluation row {index} missing provenance: {missing}")
+  actual=tuple(int(float(row[key])) for key in required)
+  if actual!=(46_000_000,46_000_049,50):raise RuntimeError(f"{name} evaluation row {index} protocol mismatch: {actual}")
+ return True
+def validate_run_identity(name,run,expected):
+ missing=[key for key in expected if key not in run]
+ if missing:raise RuntimeError(f"{name} run identity missing fields: {missing}")
+ bad={key:(run[key],value) for key,value in expected.items() if run[key]!=value}
+ if bad:raise RuntimeError(f"{name} run identity mismatch: {bad}")
+ return True
+def validate_run(name,path,cfg,critic_type,environment_sha=None):
  required=("run_config.json","run_summary.json","evaluation_history.csv","optimization_metrics.jsonl","latest.pt")
  if not path.is_dir() or any(not (path/x).is_file() for x in required):raise RuntimeError(f"incomplete {name} run: {path}")
  run=json.loads((path/"run_config.json").read_text());summary=json.loads((path/"run_summary.json").read_text());history=csv_rows(path/"evaluation_history.csv");opt=jsonl(path/"optimization_metrics.jsonl")
- expected={"seed":5303,"total_sampled_steps":TARGET,"environment_variant":"persistent_wave_v2","algorithm":"MAPPO","critic_type":critic_type,"algorithm_config_sha256":config_sha256(cfg)}
- bad={k:(run.get(k),v) for k,v in expected.items() if run.get(k)!=v}
- if bad:raise RuntimeError(f"{name} run identity mismatch: {bad}")
+ expected={"seed":5303,"total_sampled_steps":TARGET,"environment_variant":"persistent_wave_v2","algorithm":"MAPPO","critic_type":critic_type,"algorithm_config_sha256":config_sha256(cfg),"environment_config_sha256":environment_sha if environment_sha is not None else config_sha256(load_yaml(ENV))}
+ validate_run_identity(name,run,expected)
  endpoint=[r for r in history if int(float(r["sampled_steps"]))==TARGET]
  if len(endpoint)!=1:raise RuntimeError(f"{name} requires one exact 1.5M evaluation")
- base=int(float(endpoint[0].get("evaluation_seed_base",endpoint[0].get("seed_start",-1))));episodes=int(float(endpoint[0].get("evaluation_episodes",endpoint[0].get("episodes",-1))))
- if (base,episodes)!=(46_000_000,50):raise RuntimeError(f"{name} evaluation protocol mismatch")
+ validate_evaluation_provenance(name,history)
  state=torch.load(path/"latest.pt",map_location="cuda",weights_only=False)
  stored=str(state.get("critic_type",state.get("extra",{}).get("critic_type","attention")))
  if stored!=critic_type or int(state.get("sampled_steps",-1))!=TARGET:raise RuntimeError(f"{name} checkpoint identity mismatch")
@@ -47,16 +59,16 @@ def validate_run(name,path,cfg,critic_type):
 def main():
  if OUT.exists():raise FileExistsError(OUT)
  if not torch.cuda.is_available():raise RuntimeError("CUDA mandatory for checkpoint audit")
- env=load_yaml(ENV);configs={name:load_yaml(value[0]) for name,value in ARMS.items()};validate_configs(configs["MLP"],configs["Attention"])
+ env=load_yaml(ENV);environment_sha=config_sha256(env);configs={name:load_yaml(value[0]) for name,value in ARMS.items()};validate_configs(configs["MLP"],configs["Attention"])
  results={};curve=[];params=[]
  for name,(cfg_path,path,critic_type) in ARMS.items():
-  run,summary,history,opt,state,endpoint,best=validate_run(name,path,configs[name],critic_type)
+  run,summary,history,opt,state,endpoint,best=validate_run(name,path,configs[name],critic_type,environment_sha)
   endpoint_metrics=qmetrics(endpoint);best_metrics=None if best is None else qmetrics(best)
   optimization={key:statistics.mean(float(r[key]) for r in opt if r.get(key) is not None) for key in ("value_loss","explained_variance")}
   results[name]={"exact_endpoint":endpoint_metrics,"best_diagnostic":best_metrics,"best_sampled_steps":None if best is None else int(best["sampled_steps"]),"optimization":optimization,"critic_type":critic_type}
   params.append({"method":name,"actor_parameter_count":run["actor_parameter_count"],"critic_parameter_count":run["critic_parameter_count"],"total_parameter_count":run["total_parameter_count"]})
   for row in history:curve.append({"method":name,"sampled_steps":int(float(row["sampled_steps"])),**qmetrics(row)})
  delta={key:None if results["Attention"]["exact_endpoint"][key] is None or results["MLP"]["exact_endpoint"][key] is None else results["Attention"]["exact_endpoint"][key]-results["MLP"]["exact_endpoint"][key] for key in (*FIELDS,"Q2","Q3")}
- report={"status":"ANALYSIS_COMPLETE","research_question":"Centralized Attention Critic versus Centralized MLP Critic","training_seed":5303,"evaluation_seed_range":[46_000_000,46_000_049],"paired_by_training_seed_and_evaluation_scenarios":True,"common_action_noise_after_initialization":False,"results":results,"attention_minus_mlp":delta,"parameter_counts":params,"uses_44m":False,"uses_45m":False,"winner_label":None}
+ report={"status":"ANALYSIS_COMPLETE","research_question":"Centralized Attention Critic versus Centralized MLP Critic","training_seed":5303,"evaluation_seed_range":[46_000_000,46_000_049],"paired_by_training_seed_and_evaluation_scenarios":True,"common_action_noise_after_initialization":False,"protocol_validation":{"training_seed":5303,"target_sampled_steps":TARGET,"environment_sha_match_all":True,"evaluation_seed_provenance_match_all":True,"common_evaluation_scenarios":True,"observation_dim":52,"wave_information_used":False},"results":results,"attention_minus_mlp":delta,"parameter_counts":params,"uses_44m":False,"uses_45m":False,"winner_label":None}
  OUT.mkdir(parents=True);(OUT/"analysis.json").write_text(json.dumps(report,indent=2),encoding="utf-8");write_csv(OUT/"endpoint_comparison.csv",[{"method":n,**v["exact_endpoint"]} for n,v in results.items()]);write_csv(OUT/"learning_curve_comparison.csv",curve);write_csv(OUT/"parameter_counts.csv",params);(OUT/"decision_support.txt").write_text("ANALYSIS_COMPLETE\nNo winner gate is defined.\n",encoding="utf-8");print(json.dumps({"status":"ANALYSIS_COMPLETE","output":str(OUT)},indent=2))
 if __name__=="__main__":main()

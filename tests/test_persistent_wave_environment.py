@@ -325,6 +325,10 @@ def test_persistent_algorithm_configs_change_only_discount():
     assert direct["training"]["gamma"] == 0.99
     assert persistent["training"]["gamma"] == 0.999
     direct["training"]["gamma"] = persistent["training"]["gamma"]
+    # A missing legacy field and an explicit value both select attention.
+    direct["network"]["critic_type"] = direct["network"].get(
+        "critic_type", "attention"
+    )
     assert direct == persistent
 
 
