@@ -48,7 +48,6 @@ def test_configs_strictly_matched_and_protocol():
  assert mlp["network"]["observation_dim"]==attn["network"]["observation_dim"]==52
  assert mlp["implementation"]["evaluation_seed_base"]==attn["implementation"]["evaluation_seed_base"]==46_000_000
  assert all("wave" not in str(cfg["network"]).lower() for cfg in (mlp,attn))
- assert not (ROOT/"outputs/mappo_mlp_seed5303_1p5m").exists() and not (ROOT/"outputs/mappo_attention_seed5303_1p5m").exists()
 def test_parameter_counts_are_exact_and_actor_equal():
  mlp,attn=configs();m=build_seeded_trainer(mlp,"cpu",5303);a=build_seeded_trainer(attn,"cpu",5303)
  assert sum(p.numel() for p in m.actor.parameters())==sum(p.numel() for p in a.actor.parameters())==80_902

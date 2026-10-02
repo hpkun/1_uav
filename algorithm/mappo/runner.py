@@ -271,6 +271,12 @@ class MAPPOTrainingRunner:
                 update_record = {
                     "sampled_steps": self.trainer.sampled_steps,
                     "rollout_update": self.trainer.ppo_update_count,
+                    "actor_learning_rate": float(
+                        self.trainer.actor_optimizer.param_groups[0]["lr"]
+                    ),
+                    "critic_learning_rate": float(
+                        self.trainer.critic_optimizer.param_groups[0]["lr"]
+                    ),
                     **self.last_metrics,
                 }
                 with (self.output_dir / "optimization_metrics.jsonl").open(
