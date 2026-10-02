@@ -86,7 +86,14 @@ def test_retention_zero_denominator_is_none():
  rows=[eval_row(1_100_000,w3=0,aw=0),eval_row(w3=0,aw=0)];value=retention(rows)
  assert value["W3_retention"] is None and value["AW_retention"] is None
 
-def test_formal_output_directories_are_absent():assert all(not path.exists() for path in RUNS)
+def test_formal_output_paths_are_static_distinct_and_shared_by_protocol_tools():
+ assert len(RUNS)==2 and RUNS[0]!=RUNS[1]
+ assert RUNS[0].name=="mappo_attn_lr3e4_cont_seed5303_1p5m"
+ assert RUNS[1].name=="mappo_attn_lr1e4_cont_seed5303_1p5m"
+ analyzer=(ROOT/"tools/analyze_mappo_late_lr_continuation.py").read_text(encoding="utf-8")
+ preflight=(ROOT/"tools/preflight_mappo_late_lr_continuation.py").read_text(encoding="utf-8")
+ for path in RUNS:
+  assert path.name in analyzer and path.name in preflight
 
 def test_method_document_discloses_non_bitwise_rng_continuation():
  text=(ROOT/"docs/mappo_late_lr_continuation.md").read_text(encoding="utf-8")

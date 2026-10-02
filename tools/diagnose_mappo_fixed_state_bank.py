@@ -59,6 +59,9 @@ EXPECTED_STEPS = {
     "TreatmentFinal": 1_500_000,
     "CommonSource": 1_001_472,
 }
+EXPECTED_ENVIRONMENT_SHA256 = "ca2108c449065f17a3ad8ea287c94e8aa94dadac8b1e20a7b063afbfd22333ee"
+EXPECTED_FRESH_STRONG_SHA256 = "65c265f865735483688ee2c93d2db8889a2c0ec4710cd0831ace152cd234690d"
+EXPECTED_COMMON_SOURCE_SHA256 = "9e6ce2a0c03de98ff70a8162f069594d28fabe4e1496e9e8523b85f3edac1ef8"
 
 
 def sha256(path: Path) -> str:
@@ -75,6 +78,37 @@ def load_yaml(path: Path) -> dict[str, Any]:
 
 def algorithm_config(checkpoint: Path) -> dict[str, Any]:
     return load_yaml(checkpoint.parent / "algorithm_config.yaml")
+
+
+def validate_checkpoint_provenance(
+    name: str, path: Path, state: dict[str, Any], environment_sha: str,
+    checkpoint_sha: str,
+) -> None:
+    extra = state.get("extra", {})
+    if environment_sha != EXPECTED_ENVIRONMENT_SHA256:
+        raise RuntimeError("current persistent-wave environment SHA is not frozen")
+    if extra.get("environment_config_sha256") != environment_sha:
+        raise RuntimeError(f"{name} environment config fingerprint mismatch")
+    if name == "FreshStrong" and checkpoint_sha != EXPECTED_FRESH_STRONG_SHA256:
+        raise RuntimeError("FreshStrong frozen checkpoint SHA mismatch")
+    if name == "CommonSource":
+        if path.name != "checkpoint_1001472.pt":
+            raise RuntimeError("CommonSource must be checkpoint_1001472.pt")
+        if checkpoint_sha != EXPECTED_COMMON_SOURCE_SHA256:
+            raise RuntimeError("CommonSource frozen checkpoint SHA mismatch")
+    if name in {"ControlFinal", "TreatmentFinal"}:
+        run = json.loads((path.parent / "run_config.json").read_text(encoding="utf-8"))
+        branch = json.loads((path.parent / "branch_from.json").read_text(encoding="utf-8"))
+        for label, document in (("run_config", run), ("branch_from", branch)):
+            if document.get("parent_checkpoint_sha256") != EXPECTED_COMMON_SOURCE_SHA256:
+                raise RuntimeError(f"{name} {label} parent checkpoint SHA mismatch")
+            if int(document.get("source_sampled_steps", -1)) != 1_001_472:
+                raise RuntimeError(f"{name} {label} source step mismatch")
+            seed = document.get("seed", document.get("source_training_seed"))
+            if int(seed if seed is not None else -1) != 5303:
+                raise RuntimeError(f"{name} {label} seed mismatch")
+            if document.get("environment_config_sha256") != environment_sha:
+                raise RuntimeError(f"{name} {label} environment SHA mismatch")
 
 
 def checkpoint_identity(
@@ -111,14 +145,29 @@ def checkpoint_identity(
             raise RuntimeError("FreshStrong is not the recorded best evaluation checkpoint")
     if extra.get("algorithm_config_sha256") != config_sha256(config):
         raise RuntimeError(f"{name} algorithm config fingerprint mismatch")
+    checkpoint_sha = sha256(path)
+    environment_sha = config_sha256(load_yaml(ENV_CONFIG))
+    validate_checkpoint_provenance(
+        name, path, state, environment_sha, checkpoint_sha
+    )
     result = {
-        **actual, "sampled_steps": step, "sha256": sha256(path),
+        **actual, "sampled_steps": step, "sha256": checkpoint_sha,
+        "environment_config_sha256": environment_sha,
         "path": str(path.resolve()),
     }
     if name == "FreshStrong":
         result["best_evaluation_sampled_steps"] = int(
             extra["best_evaluation"]["sampled_steps"]
         )
+        result["frozen_generator_sha_verified"] = True
+    if name == "CommonSource":
+        result["source_identity"] = "checkpoint_1001472.pt"
+        result["frozen_source_sha_verified"] = True
+    if name in {"ControlFinal", "TreatmentFinal"}:
+        run = json.loads((path.parent / "run_config.json").read_text(encoding="utf-8"))
+        result["parent_checkpoint_sha256"] = run["parent_checkpoint_sha256"]
+        result["source_sampled_steps"] = int(run["source_sampled_steps"])
+        result["continuation_provenance_verified"] = True
     del state
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -474,12 +523,13 @@ def cross_wave_alias_rows(
                     ))
                     row: dict[str, Any] = {
                         "pair": f"W{wave_a}-W{wave_b}",
+                        "direction": f"W{wave_a}_TO_W{wave_b}",
                         "restriction": restriction,
                         "distance_kind": distance_kind, "distance": distance,
                         "exact_alias": exact,
                         "pair_class": (
-                            "exact_alias" if exact
-                            else "near_observation_cross_wave_pair"
+                            "exact_cross_wave_alias" if exact
+                            else "cross_wave_nearest_neighbor"
                         ),
                         "source_episode_seed": source["episode_seed"],
                         "source_episode_index": source["episode_index"],
@@ -524,17 +574,17 @@ def cross_wave_alias_rows(
 def alias_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     keys = sorted({
-        (row["pair"], row["restriction"], row["distance_kind"])
+        (row["pair"], row["direction"], row["restriction"], row["distance_kind"])
         for row in rows
     })
-    for pair, restriction, kind in keys:
+    for pair, direction, restriction, kind in keys:
         selected = [
             row for row in rows
-            if (row["pair"], row["restriction"], row["distance_kind"])
-            == (pair, restriction, kind)
+            if (row["pair"], row["direction"], row["restriction"], row["distance_kind"])
+            == (pair, direction, restriction, kind)
         ]
         result.append({
-            "pair": pair, "restriction": restriction,
+            "pair": pair, "direction": direction, "restriction": restriction,
             "distance_kind": kind,
             "exact_alias_count": sum(row["exact_alias"] for row in selected),
             **quantiles(row["distance"] for row in selected),
@@ -550,13 +600,25 @@ def bank_coverage(
         wave: [row for row in bank if row["wave_index"] == wave]
         for wave in WAVES
     }
+    entry_events = {
+        (row["episode_seed"], row["entry_wave"], row["global_step"])
+        for row in entries if row["entry_wave"] in (2, 3)
+    }
     result: dict[str, Any] = {
         "total_decision_states": len({
             (row["episode_index"], row["global_step"]) for row in bank
         }),
         "live_focal_records": len(bank), "bank_episodes": bank_episodes,
-        "w2_entry_count": sum(row["entry_wave"] == 2 for row in entries),
-        "w3_entry_count": sum(row["entry_wave"] == 3 for row in entries),
+        "w2_entry_events": sum(wave == 2 for _, wave, _ in entry_events),
+        "w3_entry_events": sum(wave == 3 for _, wave, _ in entry_events),
+        "w2_entry_live_focal_records": sum(row["entry_wave"] == 2 for row in entries),
+        "w3_entry_live_focal_records": sum(row["entry_wave"] == 3 for row in entries),
+        "episodes_reaching_w2_entry": len({
+            seed for seed, wave, _ in entry_events if wave == 2
+        }),
+        "episodes_reaching_w3_entry": len({
+            seed for seed, wave, _ in entry_events if wave == 3
+        }),
     }
     for wave in WAVES:
         result[f"wave_{wave}_live_focal_records"] = len(by_wave[wave])
@@ -569,37 +631,93 @@ def bank_coverage(
             )
     threshold = max(20, bank_episodes)
     result["minimum_w3_live_focal_records"] = threshold
+    minimum_w3_episodes = 3
+    result["minimum_recommended_w3_episodes"] = minimum_w3_episodes
+    low_diversity = result["episodes_reaching_wave_3"] < minimum_w3_episodes
     insufficient = len(by_wave[3]) < threshold
     result["coverage_status"] = (
-        "INSUFFICIENT_W3_BANK_COVERAGE" if insufficient
+        "INSUFFICIENT_W3_BANK_COVERAGE" if insufficient or low_diversity
         else "COVERAGE_RECORDED"
     )
-    result["warnings"] = ([
-        "INSUFFICIENT_W3_BANK_COVERAGE: increase --bank-episodes; generator was not changed"
-    ] if insufficient else [])
+    warnings = []
+    if insufficient:
+        warnings.append(
+            "INSUFFICIENT_W3_BANK_COVERAGE: increase --bank-episodes; generator was not changed"
+        )
+    if low_diversity:
+        warnings.append("LOW_W3_EPISODE_DIVERSITY")
+    result["warnings"] = warnings
     return result
 
 
 def entry_summary(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    metrics = (
-        "red_survivors", "distance_to_boundary", "altitude", "speed",
-        "formation_dispersion", "nearest_blue_distance",
-        "remaining_horizon_steps", "own_fire_ready",
+    team_metrics = (
+        "red_survivors", "remaining_horizon_steps", "formation_dispersion",
+    )
+    focal_metrics = (
+        "distance_to_boundary", "altitude", "speed", "heading", "pitch",
+        "nearest_blue_distance", "nearest_blue_ata", "nearest_blue_aa",
+        "nearest_blue_closing_velocity", "own_fire_ready",
     )
     rows = []
-    for wave in (2, 3):
-        selected = [row for row in entries if row["entry_wave"] == wave]
-        for metric in metrics:
+    checkpoints = sorted({str(row["checkpoint"]) for row in entries})
+    for checkpoint in checkpoints:
+      for wave in (2, 3):
+        selected = [
+            row for row in entries
+            if row["checkpoint"] == checkpoint and row["entry_wave"] == wave
+        ]
+        unique_events = {}
+        for row in selected:
+            key = (
+                row["checkpoint"], row["episode_seed"], row["entry_wave"],
+                row["entry_global_step"],
+            )
+            unique_events.setdefault(key, row)
+        for metric in team_metrics:
             rows.append({
-                "entry_wave": wave, "metric": metric,
+                "checkpoint": checkpoint, "entry_wave": wave,
+                "metric": metric, "aggregation_level": "entry_event",
+                **quantiles(float(row[metric]) for row in unique_events.values()),
+            })
+        for metric in focal_metrics:
+            rows.append({
+                "checkpoint": checkpoint, "entry_wave": wave,
+                "metric": metric, "aggregation_level": "live_focal_agent",
                 **quantiles(float(row[metric]) for row in selected),
             })
+    return rows
+
+
+def entry_detail_rows(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for row in entries:
+        rows.append({
+            "checkpoint": row["checkpoint"],
+            "episode_seed": row["episode_seed"],
+            "entry_wave": row["entry_wave"],
+            "entry_global_step": row["entry_global_step"],
+            "red_survivors": row["red_survivors"],
+            "remaining_horizon_steps": row["remaining_horizon_steps"],
+            "formation_dispersion": row["formation_dispersion"],
+            "focal_agent_index": row["focal_agent_index"],
+            "distance_to_boundary": row["distance_to_boundary"],
+            "altitude": row["altitude"], "speed": row["speed"],
+            "heading": row["heading"], "pitch": row["pitch"],
+            "nearest_blue_distance": row["nearest_blue_distance"],
+            "nearest_blue_ATA": row["nearest_blue_ata"],
+            "nearest_blue_AA": row["nearest_blue_aa"],
+            "nearest_blue_closing_velocity": row["nearest_blue_closing_velocity"],
+            "own_fire_ready": row["own_fire_ready"],
+        })
     return rows
 
 
 def run_deployment_episode(
     trainer, env_config: dict[str, Any], environment_seed: int,
     deterministic: bool, base_policy_seed: int = 89_710_000,
+    checkpoint: str | None = None,
+    entry_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     env = make_combat_environment(env_config)
     observation, _ = env.reset(int(environment_seed))
@@ -619,6 +737,18 @@ def run_deployment_episode(
             )
             observation, reward, terminated, truncated, info = env.step(action)
             returns += reward
+            if (
+                deterministic and entry_sink is not None and checkpoint is not None
+                and info.get("spawned_next_wave", False)
+            ):
+                entry_rows = make_bank_records(
+                    env, observation, environment_seed, environment_seed,
+                    entry_wave=int(info["wave_index"]),
+                )
+                for row in entry_rows:
+                    row["checkpoint"] = checkpoint
+                    row["entry_global_step"] = row["global_step"]
+                entry_sink.extend(entry_rows)
             if terminated or truncated:
                 return {
                     "environment_seed": int(environment_seed),
@@ -633,8 +763,9 @@ def run_deployment_episode(
 
 def deployment_summary(
     policies: dict[str, Any], env_config: dict[str, Any], seeds: Iterable[int]
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows = []
+    entries: list[dict[str, Any]] = []
     seed_list = list(seeds)
     for checkpoint in (
         "FreshStrong", "FreshFinal", "ControlFinal", "TreatmentFinal"
@@ -642,7 +773,9 @@ def deployment_summary(
         for deterministic in (True, False):
             episodes = [
                 run_deployment_episode(
-                    policies[checkpoint], env_config, seed, deterministic
+                    policies[checkpoint], env_config, seed, deterministic,
+                    checkpoint=checkpoint,
+                    entry_sink=entries if deterministic else None,
                 ) for seed in seed_list
             ]
             rows.append({
@@ -677,7 +810,7 @@ def deployment_summary(
                 "environment_seed_end": seed_list[-1],
                 "action_noise_matched_claimed": False,
             })
-    return rows
+    return rows, entries
 
 
 def ensure_output_available(path: Path) -> None:
@@ -702,6 +835,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def save_bank(path: Path, bank: list[dict[str, Any]]) -> None:
     np.savez_compressed(
         path,
+        record_index=np.arange(len(bank), dtype=np.int64),
         local_observation=np.stack([row["local_observation"] for row in bank]),
         team_observation=np.stack([row["team_observation"] for row in bank]),
         alive_mask=np.stack([row["alive_mask"] for row in bank]),
@@ -723,6 +857,29 @@ def save_bank(path: Path, bank: list[dict[str, Any]]) -> None:
     )
 
 
+def save_bank_context(path: Path, bank: list[dict[str, Any]]) -> None:
+    fields = (
+        "episode_seed", "episode_index", "global_step", "wave_index",
+        "waves_remaining", "focal_agent_index", "red_survivors",
+        "blue_survivors", "remaining_horizon_steps", "own_fire_ready",
+        "team_fire_readiness", "entry_wave", "distance_to_boundary",
+        "altitude", "speed", "heading", "pitch", "formation_dispersion",
+        "nearest_blue_distance", "nearest_blue_ata", "nearest_blue_aa",
+        "nearest_blue_closing_velocity",
+    )
+    with path.open("w", encoding="utf-8") as stream:
+        for record_index, record in enumerate(bank):
+            row = {"record_index": record_index}
+            for field in fields:
+                value = record[field]
+                if isinstance(value, np.ndarray):
+                    value = value.tolist()
+                elif isinstance(value, np.generic):
+                    value = value.item()
+                row[field] = value
+            stream.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
 def report_text(summary: dict[str, Any]) -> str:
     return "# MAPPO fixed-state-bank diagnostic\n\n" + "\n".join((
         f"- Status: **{summary['status']}**",
@@ -731,7 +888,7 @@ def report_text(summary: dict[str, Any]) -> str:
         f"- Fixed bank records: {summary['bank_coverage']['live_focal_records']}",
         f"- Coverage: **{summary['bank_coverage']['coverage_status']}**",
         "- Every checkpoint was evaluated on one immutable bank without environment advancement.",
-        "- Cross-wave rows are descriptive near-observation pairs; only elementwise equality is exact alias.",
+        "- Cross-wave rows are directional nearest neighbours; only elementwise equality is an exact cross-wave alias.",
         "- Critic values are surface comparisons, not value errors (no return-to-go labels).",
         "- Deployment modes share environment seeds but make no action-noise-matching claim.",
         "- No automatic root-cause winner is emitted; causal interpretation remains manual.",
@@ -782,7 +939,7 @@ def main() -> None:
         raise RuntimeError("not all checkpoints were evaluated on one fixed bank")
     coverage = bank_coverage(bank, entries, args.bank_episodes)
     alias_rows = cross_wave_alias_rows(bank, outputs)
-    deployment = deployment_summary(
+    deployment, checkpoint_entries = deployment_summary(
         policies, env_config,
         range(ranges["deployment"][0], ranges["deployment"][1] + 1),
     )
@@ -814,8 +971,8 @@ def main() -> None:
         "fixed_bank_environment_steps_during_evaluation": 0,
         "classifications": {
             "observation_aliasing": "FORMAL_ALIASING_EXISTS",
-            "empirical_aliasing": "EMPIRICAL_NEAR_ALIASING_QUANTIFIED",
-            "performance_causal_role": "NOT_ESTABLISHED",
+            "empirical_aliasing": "EMPIRICAL_CROSS_WAVE_NEAREST_NEIGHBOURS_QUANTIFIED",
+            "performance_causal_role": "PERFORMANCE_CAUSAL_ROLE_NOT_ESTABLISHED",
         },
         "comparisons": [label for _, _, label in PAIR_SPECS],
         "root_cause_winner": None,
@@ -834,9 +991,11 @@ def main() -> None:
     write_csv(output / "critic_value_by_wave.csv", critic_table(outputs, bank))
     write_csv(output / "cross_wave_alias_pairs.csv", alias_rows)
     write_csv(output / "cross_wave_alias_summary.csv", alias_summary(alias_rows))
-    write_csv(output / "entry_state_summary.csv", entry_summary(entries))
+    write_csv(output / "entry_state_by_checkpoint.csv", entry_detail_rows(checkpoint_entries))
+    write_csv(output / "entry_state_summary.csv", entry_summary(checkpoint_entries))
     write_csv(output / "deployment_mode_comparison.csv", deployment)
     save_bank(output / "bank_states.npz", bank)
+    save_bank_context(output / "bank_context.jsonl", bank)
     (output / "diagnostic_report.md").write_text(
         report_text(summary), encoding="utf-8"
     )

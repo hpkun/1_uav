@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +47,7 @@ def record(wave=1, episode=0, step=0, agent=0, value=1.0):
         "red_survivors": 4, "blue_survivors": 4,
         "remaining_horizon_steps": 3000 - step, "own_fire_ready": True,
         "team_fire_readiness": np.ones(4, bool), "entry_wave": None,
+        "checkpoint": "FreshStrong", "entry_global_step": step,
         "distance_to_boundary": 1000.0, "altitude": 3000.0,
         "speed": 225.0, "heading": 0.0, "pitch": 0.0,
         "formation_dispersion": 300.0, "nearest_blue_distance": 4000.0,
@@ -214,7 +216,8 @@ def test_exact_alias_is_only_elementwise_equality():
     bank[1]["local_observation"][0] += 1e-7
     rows = diagnostic.cross_wave_alias_rows(bank, outputs(bank))
     assert rows and all(not row["exact_alias"] for row in rows)
-    assert all(row["pair_class"] == "near_observation_cross_wave_pair" for row in rows)
+    assert all(row["pair_class"] == "cross_wave_nearest_neighbor" for row in rows)
+    assert all(row["direction"] == "W1_TO_W2" for row in rows)
 
 
 def test_alias_rows_preserve_context_and_checkpoint_surface_differences():
@@ -236,6 +239,26 @@ def test_insufficient_w3_coverage_warns_without_switching_generator():
     assert coverage["warnings"] and diagnostic.BANK_GENERATOR == "FreshStrong"
 
 
+def test_entry_coverage_separates_events_live_records_and_episode_counts():
+    entries = []
+    for episode, survivors in ((0, 4), (1, 2)):
+        for agent in range(survivors):
+            row = record(2, episode, 100 + episode, agent)
+            row["entry_wave"] = 2
+            entries.append(row)
+    coverage = diagnostic.bank_coverage(entries, entries, 2)
+    assert coverage["w2_entry_events"] == 2
+    assert coverage["w2_entry_live_focal_records"] == 6
+    assert coverage["episodes_reaching_w2_entry"] == 2
+
+
+def test_low_w3_episode_diversity_has_separate_warning():
+    bank = [record(3, 0, step, step % 4) for step in range(30)]
+    coverage = diagnostic.bank_coverage(bank, [], 12)
+    assert "LOW_W3_EPISODE_DIVERSITY" in coverage["warnings"]
+    assert coverage["minimum_recommended_w3_episodes"] == 3
+
+
 def test_coverage_reports_per_wave_per_agent_counts():
     bank = [record(wave=wave, episode=wave, agent=agent) for wave in (1, 2, 3) for agent in range(4)]
     coverage = diagnostic.bank_coverage(bank, [], 1)
@@ -248,6 +271,37 @@ def test_entry_summary_contains_required_metrics():
     rows = diagnostic.entry_summary([entry])
     metrics = {row["metric"] for row in rows if row["entry_wave"] == 2}
     assert {"red_survivors", "distance_to_boundary", "altitude", "speed", "formation_dispersion", "nearest_blue_distance", "remaining_horizon_steps", "own_fire_ready"} <= metrics
+
+
+def test_entry_summary_deduplicates_team_events_but_keeps_live_focals():
+    entries = []
+    for agent in range(4):
+        row = record(2, 0, 100, agent)
+        row["entry_wave"] = 2
+        entries.append(row)
+    rows = diagnostic.entry_summary(entries)
+    team = next(row for row in rows if row["entry_wave"] == 2 and row["metric"] == "red_survivors")
+    focal = next(row for row in rows if row["entry_wave"] == 2 and row["metric"] == "altitude")
+    assert team["aggregation_level"] == "entry_event" and team["n"] == 1
+    assert focal["aggregation_level"] == "live_focal_agent" and focal["n"] == 4
+
+
+def test_checkpoint_entry_collection_uses_all_policies_and_common_environment_seeds(monkeypatch):
+    calls = []
+    def fake_episode(policy, config, seed, deterministic, checkpoint=None, entry_sink=None, **kwargs):
+        calls.append((policy, seed, deterministic, checkpoint))
+        if deterministic and entry_sink is not None:
+            row = record(2, seed - 88_710_000, 100)
+            row.update({"checkpoint": checkpoint, "entry_wave": 2, "entry_global_step": 100, "episode_seed": seed})
+            entry_sink.append(row)
+        return {"environment_seed": seed, "deterministic": deterministic, "waves_cleared": 1,
+                "return": 0.0, "red_loss": 0, "ground": 0, "boundary": 0}
+    monkeypatch.setattr(diagnostic, "run_deployment_episode", fake_episode)
+    policies = {name: object() for name in ("FreshStrong", "FreshFinal", "ControlFinal", "TreatmentFinal")}
+    _, entries = diagnostic.deployment_summary(policies, {}, [88_710_000, 88_710_001])
+    assert {row["checkpoint"] for row in entries} == set(policies)
+    assert all({row["episode_seed"] for row in entries if row["checkpoint"] == name} == {88_710_000, 88_710_001} for name in policies)
+    assert all(policy is policies[name] for policy, _, _, name in calls)
 
 
 def test_policy_episode_rng_is_scenario_local_and_reproducible():
@@ -298,7 +352,8 @@ def test_required_output_names_are_wired_in_source():
         "diagnostic_summary.json", "bank_metadata.json", "bank_coverage.json",
         "policy_std_by_wave.csv", "policy_mean_drift_by_wave.csv",
         "critic_value_by_wave.csv", "cross_wave_alias_pairs.csv",
-        "cross_wave_alias_summary.csv", "entry_state_summary.csv",
+        "cross_wave_alias_summary.csv", "entry_state_by_checkpoint.csv",
+        "entry_state_summary.csv", "bank_context.jsonl",
         "deployment_mode_comparison.csv", "diagnostic_report.md",
     ):
         assert name in source
@@ -308,3 +363,49 @@ def test_tool_does_not_emit_causal_winner():
     source = (ROOT / "tools/diagnose_mappo_fixed_state_bank.py").read_text(encoding="utf-8")
     assert '"root_cause_winner": None' in source
     assert "WAVE_CONTEXT_CONFIRMED" not in source
+
+
+def test_bank_context_persistence_aligns_record_index(tmp_path):
+    bank = [record(1, 0, 10), record(2, 1, 20)]
+    context = tmp_path / "bank_context.jsonl"
+    archive = tmp_path / "bank_states.npz"
+    diagnostic.save_bank_context(context, bank)
+    diagnostic.save_bank(archive, bank)
+    rows = [json.loads(line) for line in context.read_text().splitlines()]
+    arrays = np.load(archive)
+    assert [row["record_index"] for row in rows] == arrays["record_index"].tolist() == [0, 1]
+    assert rows[1]["episode_seed"] == int(arrays["episode_seed"][1])
+    assert len(rows[0]["team_fire_readiness"]) == 4
+
+
+def test_environment_sha_mismatch_fails_closed(tmp_path):
+    state = {"extra": {"environment_config_sha256": "wrong"}}
+    with pytest.raises(RuntimeError, match="environment SHA"):
+        diagnostic.validate_checkpoint_provenance(
+            "FreshFinal", tmp_path / "checkpoint.pt", state, "wrong", "sha"
+        )
+
+
+def test_fresh_strong_sha_mismatch_fails_closed(tmp_path):
+    state = {"extra": {"environment_config_sha256": diagnostic.EXPECTED_ENVIRONMENT_SHA256}}
+    with pytest.raises(RuntimeError, match="FreshStrong frozen"):
+        diagnostic.validate_checkpoint_provenance(
+            "FreshStrong", tmp_path / "best_eval.pt", state,
+            diagnostic.EXPECTED_ENVIRONMENT_SHA256, "wrong",
+        )
+
+
+def test_continuation_parent_source_mismatch_fails_closed(tmp_path):
+    run = {"parent_checkpoint_sha256": "wrong", "source_sampled_steps": 1_001_472,
+           "seed": 5303, "environment_config_sha256": diagnostic.EXPECTED_ENVIRONMENT_SHA256}
+    branch = {"parent_checkpoint_sha256": diagnostic.EXPECTED_COMMON_SOURCE_SHA256,
+              "source_sampled_steps": 1_001_472, "source_training_seed": 5303,
+              "environment_config_sha256": diagnostic.EXPECTED_ENVIRONMENT_SHA256}
+    (tmp_path / "run_config.json").write_text(json.dumps(run))
+    (tmp_path / "branch_from.json").write_text(json.dumps(branch))
+    state = {"extra": {"environment_config_sha256": diagnostic.EXPECTED_ENVIRONMENT_SHA256}}
+    with pytest.raises(RuntimeError, match="parent checkpoint SHA"):
+        diagnostic.validate_checkpoint_provenance(
+            "ControlFinal", tmp_path / "final.pt", state,
+            diagnostic.EXPECTED_ENVIRONMENT_SHA256, "irrelevant",
+        )
