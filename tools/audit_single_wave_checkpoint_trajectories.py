@@ -1,203 +1,130 @@
-"""Optional six-checkpoint boundary-precursor audit (not run by the main audit).
-
-The tool evaluates best/final checkpoints for seeds 5401..5403 on the same
-reserved diagnostic seed bank beginning at 89.2M.  It refuses CPU and existing
-output directories.  Counterfactual reward values are *offline scores of fixed
-trajectories*, never claims about a counterfactual policy distribution.
-"""
+"""CUDA trajectory collector for the clean MAPPO single-wave stability audit."""
 from __future__ import annotations
-
-import argparse
-import csv
-import json
-import math
-import sys
-from collections import deque
+import argparse, copy, json, math, sys
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import torch
-import yaml
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from algorithm.modular_mappo.factory import build_modular_mappo_trainer
+ROOT=Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 from env.factory import make_combat_environment
 from env.geometry import engagement_geometry
+from tools.single_wave_stability_common import (CROSS_HORIZON_BASE,DIAGNOSTIC_BASE,action_saturation,boundary_descriptor,checkpoint_specs,counterfactual_score,cross_horizon_config,deterministic_policy_data,heading_relative_to_outward,load_clean_mappo,precursor_indices,radial_velocity,refuse_existing_output,strict_checkpoint_identity,symmetric_cone_components,validate_seed_bank,weapon_hit_probability,write_csv)
+LAGS=(50,20,10,5,1);DIMS=("heading","pitch","speed")
 
-RUN = "outputs/mappo_mlp_single_wave_seed{seed}_1p5m"
-TRAINING_SEEDS = (5401, 5402, 5403)
-LAGS = (20, 10, 5, 1)
+def nearest_geometry(env,agent):
+ own=env.red[agent];targets=[x for x in env.blue if x.alive]
+ if not own.alive or not targets:return {"nearest_blue_distance":None,"nearest_blue_off_boresight":None,"nearest_blue_ATA":None,"nearest_blue_AA":None,"closing_velocity":None,"fire_window":False}
+ target=min(targets,key=lambda x:engagement_geometry(own,x).distance);g=engagement_geometry(own,target)
+ rel=np.asarray([target.x-own.x,target.y-own.y,target.z-own.z]);relv=target.velocity_vector()-own.velocity_vector()
+ return {"nearest_blue_distance":g.distance,"nearest_blue_off_boresight":g.off_boresight,"nearest_blue_ATA":g.ata,"nearest_blue_AA":g.aa,"closing_velocity":-float(np.dot(rel,relv)/max(g.distance,1e-12)),"fire_window":bool(env.weapon.in_fire_window(g))}
 
+def snapshot(env,obs,action,raw,log_std,last_attempt):
+ out=[]
+ for i,own in enumerate(env.red):
+  vel=own.velocity_vector();r=math.hypot(own.x,own.y)
+  out.append({"agent":i,"x":own.x,"y":own.y,"radius":r,"boundary_margin":env.arena_radius-r,"radial_velocity":radial_velocity(own.x,own.y,vel[0],vel[1]),"altitude":own.altitude,"speed":own.v,"heading":own.psi,"pitch":own.theta,"heading_relative_to_outward":heading_relative_to_outward(own.x,own.y,own.psi),**nearest_geometry(env,i),"fire_ready":bool(env.red_fire_states[i].armed),**{f"action_{d}":float(action[i,j]) for j,d in enumerate(DIMS)},**{f"raw_mean_{d}":float(raw[i,j]) for j,d in enumerate(DIMS)},**{f"log_std_{d}":float(log_std[i,j]) for j,d in enumerate(DIMS)},"steps_since_red_attempt":1_000_000 if last_attempt is None else env.steps-last_attempt,"observation":obs[i].astype(np.float32).copy()})
+ return out
 
-def best_step(run: Path) -> int:
-    with (run / "evaluation_history.csv").open(newline="", encoding="utf-8") as stream:
-        rows = list(csv.DictReader(stream))
-    row = max(rows, key=lambda x: (float(x["win_rate"]), float(x["average_return"]), -float(x["average_red_loss"])))
-    return int(row["sampled_steps"])
+def evaluate_episode(trainer,env_config,episode_seed,capture=True):
+ env=make_combat_environment(env_config);obs,_=env.reset(int(episode_seed));returns=np.zeros(4);history=deque(maxlen=max(LAGS)+1);precursors=[];actions_all=[];state_records=[];first_boundary=None;last_attempt=None;last_kill=None
+ while True:
+  alive=env.red_alive_mask.astype(np.float32);action,raw,log_std=deterministic_policy_data(trainer,obs,alive)
+  if capture:
+   actions_all.append(action[alive>.5].copy());state_records.extend({"step":env.steps,"agent":int(i),"observation":obs[i].copy(),"action":action[i].copy()} for i in np.flatnonzero(alive>.5))
+  before=np.asarray([x.alive for x in env.red]);history.append({"step":env.steps,"agents":snapshot(env,obs,action,raw,log_std,last_attempt)})
+  obs,reward,terminated,truncated,info=env.step(action);returns+=reward
+  if info.get("red_step_fire_attempts",0):last_attempt=env.steps
+  if info.get("red_step_attack_kills",0):last_kill=env.steps
+  after=np.asarray([x.alive for x in env.red])
+  for agent in np.flatnonzero(before&~after):
+   if math.hypot(env.red[agent].x,env.red[agent].y)<=env.arena_radius:continue
+   first_boundary=env.steps if first_boundary is None else first_boundary;event=[]
+   for lag,source_step in precursor_indices(env.steps,[x["step"] for x in history],LAGS).items():
+    source=next(x for x in history if x["step"]==source_step);snap=source["agents"][agent]
+    event.append({"episode_seed":episode_seed,"agent":int(agent),"boundary_step":env.steps,"source_step":source_step,"lag_steps":lag,**{k:v for k,v in snap.items() if k!="observation"},"_observation":snap["observation"]})
+   label=boundary_descriptor(event,env.steps,last_kill)
+   for row in event:row.update({"boundary_descriptor":label,"descriptor_warning":"trajectory descriptor/candidate; not an inference of policy intent"})
+   precursors.extend(event)
+  if terminated or truncated:break
+ outcome={"episode_seed":int(episode_seed),"red_success":bool(info["red_success"]),"termination_reason":info["termination_reason"],"episode_length":int(info["episode_length"]),"episode_return":float(returns.sum()),"mean_agent_return":float(returns.mean()),**{k:int(info[k]) for k in ("red_losses","blue_losses","red_attack_kills","blue_attack_kills","red_boundary_exits","blue_boundary_exits","red_ground_losses","blue_ground_losses")},**{f"R{i}":float(info[f"episode_r{i}_total"]) for i in range(1,5)},"first_fire_window_step":info.get("red_first_fire_window_step"),"first_attempt_step":info.get("red_first_attempt_step"),"first_hit_step":info.get("red_first_hit_step"),"first_kill_step":info.get("red_first_kill_step"),"first_boundary_exit_step":first_boundary,**{k:info.get(k) for k in ("blue_ground_guard_decision_steps","blue_ground_guard_override_steps","blue_ground_guard_activations","blue_ground_guard_activation_ratio","blue_ground_guard_max_duration_steps")}}
+ boundary_keys={(int(r["source_step"]),int(r["agent"])) for r in precursors}
+ non_boundary_records=[r for r in state_records if (r["step"],r["agent"]) not in boundary_keys]
+ return outcome,precursors if capture else [],actions_all if capture else [],[r["action"] for r in non_boundary_records] if capture else [],[r["observation"] for r in non_boundary_records] if capture else []
 
+def reservoir(bank,items,limit,rng,seen):
+ for item in items:
+  seen[0]+=1
+  if len(bank)<limit:bank.append(np.asarray(item,np.float32))
+  else:
+   j=int(rng.integers(0,seen[0]))
+   if j<limit:bank[j]=np.asarray(item,np.float32)
 
-def checkpoint_specs() -> list[dict[str, Any]]:
-    specs = []
-    for seed in TRAINING_SEEDS:
-        run = ROOT / RUN.format(seed=seed)
-        specs.extend([
-            {"training_seed": seed, "role": "best", "path": run / "best_eval.pt", "expected_step": best_step(run)},
-            {"training_seed": seed, "role": "final", "path": run / "checkpoint_1500000.pt", "expected_step": 1_500_000},
-        ])
-    return specs
+def policy_drift(specs,banks):
+ rows=[];pairs=defaultdict(dict)
+ for spec in specs:pairs[spec["training_seed"]][spec["checkpoint_role"]]=spec
+ for seed,pair in pairs.items():
+  best,_=load_clean_mappo(pair["best"]);final,_=load_clean_mappo(pair["final"])
+  for source in ("best","final"):
+   for cls in ("non_boundary","boundary_precursor"):
+    data=banks[(seed,source,cls)]
+    if not data:continue
+    obs=torch.as_tensor(np.asarray(data),dtype=torch.float32,device="cuda")
+    with torch.no_grad():bd,fd=best.actor.distribution(obs),final.actor.distribution(obs);bm,fm=bd.mean,fd.mean;ba,fa=torch.tanh(bm),torch.tanh(fm);bl,fl=torch.log(bd.scale),torch.log(fd.scale)
+    row={"training_seed":seed,"state_source":source,"state_class":cls,"n_states":len(data)}
+    for name,(left,right) in {"raw_mean":(bm,fm),"deterministic_action":(ba,fa),"log_std":(bl,fl)}.items():
+     diff=right-left;row[f"{name}_l2"]=float(torch.linalg.vector_norm(diff,dim=-1).mean())
+     for i,dim in enumerate(DIMS):row[f"{name}_{dim}_mean_abs_delta"]=float(diff[:,i].abs().mean())
+    rows.append(row)
+  del best,final;torch.cuda.empty_cache()
+ return rows
 
+def weapon_table(cfg):
+ w=cfg["weapon"];rows=[]
+ for distance in (500,1000,2000,3000,3900):
+  for deg in (0,10,20,30):
+   angle=math.radians(deg);sym=symmetric_cone_components(angle)
+   for orientation,(az,el) in {"azimuth_edge":(angle,0.),"elevation_edge":(0.,angle),"symmetric_3d_cone":sym}.items():rows.append({"distance":distance,"off_boresight_degrees":deg,"orientation":orientation,"azimuth_error":az,"elevation_error":el,"hit_probability":weapon_hit_probability(distance,az,el,w["effective_hit_distance"],w["attack_noise_scale"],w["height_noise_scale"])})
+ return rows
 
-def load_trainer(spec: dict[str, Any]):
-    state = torch.load(spec["path"], map_location="cuda:0", weights_only=False)
-    if int(state.get("sampled_steps", -1)) != spec["expected_step"]:
-        raise RuntimeError(f"checkpoint step mismatch: {spec['path']}")
-    config = state.get("extra", {}).get("algorithm_config")
-    if not isinstance(config, dict):
-        config = yaml.safe_load((spec["path"].parent / "algorithm_config.yaml").read_text(encoding="utf-8"))
-    trainer = build_modular_mappo_trainer(config, "cuda", total_sampled_steps=1_500_000)
-    trainer.load(spec["path"], strict_protocol=True, restore_rng=False)
-    trainer.actor.eval(); trainer.critic.eval()
-    return trainer
-
-
-def aircraft_snapshot(env, actions: np.ndarray) -> list[dict[str, Any]]:
-    rows = []
-    for index, own in enumerate(env.red):
-        radius = math.hypot(own.x, own.y)
-        radial = 0.0 if radius == 0 else (own.x * own.velocity_vector()[0] + own.y * own.velocity_vector()[1]) / radius
-        candidates = [(engagement_geometry(own, target).distance, target) for target in env.blue if target.alive]
-        geo = engagement_geometry(own, min(candidates, key=lambda x: x[0])[1]) if own.alive and candidates else None
-        rows.append({
-            "agent": index, "alive": bool(own.alive), "x": own.x, "y": own.y,
-            "radius": radius, "boundary_margin": float(env.arena_radius - radius),
-            "radial_velocity": radial, "altitude": own.altitude, "speed": own.v,
-            "pitch": own.theta, "heading": own.psi,
-            "heading_relative_to_outward": float(((own.psi - math.atan2(own.y, own.x) + math.pi) % (2 * math.pi)) - math.pi),
-            "nearest_blue_distance": None if geo is None else geo.distance,
-            "nearest_blue_off_boresight": None if geo is None else geo.off_boresight,
-            "fire_window": False if geo is None else bool(env.weapon.in_fire_window(geo)),
-            "fire_ready": bool(env.red_fire_states[index].armed),
-            "action_heading": float(actions[index, 0]), "action_pitch": float(actions[index, 1]),
-            "action_speed": float(actions[index, 2]),
-        })
-    return rows
-
-
-def audit_episode(trainer, env_config: dict[str, Any], episode_seed: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    env = make_combat_environment(env_config)
-    obs, _ = env.reset(episode_seed)
-    alive = env.red_alive_mask.astype(np.float32)
-    history: deque[dict[str, Any]] = deque(maxlen=max(LAGS) + 1)
-    precursors: list[dict[str, Any]] = []
-    total = np.zeros(4, dtype=np.float64)
-    while True:
-        actions, _ = trainer.act(obs[None], alive[None], deterministic=True)
-        action = actions[0]
-        before_alive = np.asarray([x.alive for x in env.red], dtype=bool)
-        history.append({"step": env.steps, "agents": aircraft_snapshot(env, action)})
-        obs, reward, terminated, truncated, info = env.step(action)
-        total += reward
-        after_alive = np.asarray([x.alive for x in env.red], dtype=bool)
-        newly_dead = np.flatnonzero(before_alive & ~after_alive)
-        for agent in newly_dead:
-            if math.hypot(env.red[agent].x, env.red[agent].y) <= env.arena_radius:
-                continue
-            event_rows = []
-            for lag in LAGS:
-                target = env.steps - lag
-                candidates = [x for x in history if x["step"] == target]
-                if not candidates:
-                    continue
-                snap = candidates[0]["agents"][agent]
-                event_rows.append({"episode_seed": episode_seed, "boundary_step": env.steps,
-                    "lag_steps": lag, **snap})
-            tactical = any((row["nearest_blue_distance"] is not None and row["nearest_blue_distance"] <= 4000)
-                           or row["fire_window"] for row in event_rows)
-            escape_like = bool(event_rows) and all(row["radial_velocity"] > 0 and
-                               abs(row["heading_relative_to_outward"]) < math.pi / 2 for row in event_rows)
-            candidate = ("TACTICAL_OVERSHOOT_CANDIDATE" if tactical else
-                         "INTENTIONAL_ESCAPE_LIKE_CANDIDATE" if escape_like else "UNCLASSIFIED")
-            for row in event_rows:
-                row["descriptive_candidate"] = candidate
-                row["classification_warning"] = "heuristic descriptor, not causal intent inference"
-            precursors.extend(event_rows)
-        alive = np.asarray(info["red_alive_mask"], dtype=np.float32)
-        if terminated or truncated:
-            break
-    base = float(total.sum())
-    outcome = {
-        "episode_seed": episode_seed, "episode_return": base,
-        "termination_reason": info["termination_reason"], "red_success": bool(info["red_success"]),
-        "red_losses": int(info["red_losses"]), "blue_losses": int(info["blue_losses"]),
-        "red_boundary_exits": int(info["red_boundary_exits"]),
-        "red_ground_losses": int(info["red_ground_losses"]), "episode_length": int(info["episode_length"]),
-        **{f"episode_{name}_total": float(info[f"episode_{name}_total"]) for name in ("r1", "r2", "r3", "r4")},
-        "red_first_fire_window_step": info.get("red_first_fire_window_step"),
-        "red_first_attempt_step": info.get("red_first_attempt_step"),
-        "red_first_kill_step": info.get("red_first_kill_step"),
-        "first_boundary_exit_step": min((int(r["boundary_step"]) for r in precursors), default=None),
-        **{k: info.get(k) for k in ("blue_ground_guard_decision_steps", "blue_ground_guard_override_steps",
-            "blue_ground_guard_activations", "blue_ground_guard_activation_ratio", "blue_ground_guard_max_duration_steps")},
-    }
-    return precursors, outcome
-
-
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        path.write_text("status\nNO_ROWS\n", encoding="utf-8"); return
-    keys = list(dict.fromkeys(k for row in rows for k in row))
-    with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=keys); writer.writeheader(); writer.writerows(rows)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--episodes", type=int, default=20)
-    parser.add_argument("--seed-base", type=int, default=89_200_000)
-    parser.add_argument("--output-dir", default="outputs/single_wave_checkpoint_trajectory_audit")
-    args = parser.parse_args()
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is mandatory; CPU fallback is forbidden")
-    if args.episodes <= 0:
-        raise ValueError("episodes must be positive")
-    output = ROOT / args.output_dir
-    if output.exists():
-        raise FileExistsError(f"refusing to overwrite {output}")
-    output.mkdir(parents=True)
-    all_precursors, outcomes, scores = [], [], []
-    for spec in checkpoint_specs():
-        trainer = load_trainer(spec)
-        env_config = yaml.safe_load((spec["path"].parent / "env_config.yaml").read_text(encoding="utf-8"))
-        for episode_seed in range(args.seed_base, args.seed_base + args.episodes):
-            precursors, outcome = audit_episode(trainer, env_config, episode_seed)
-            identity = {"training_seed": spec["training_seed"], "checkpoint_role": spec["role"],
-                        "checkpoint_step": spec["expected_step"]}
-            all_precursors.extend([{**identity, **row} for row in precursors])
-            outcomes.append({**identity, **outcome})
-            for boundary_penalty in (-10.0, -20.0, -30.0):
-                for timeout_penalty in (0.0, -10.0, -20.0):
-                    fixed_score = (outcome["episode_return"] - outcome["episode_r2_total"]
-                                   + boundary_penalty * outcome["red_boundary_exits"]
-                                   + (timeout_penalty if outcome["termination_reason"] == "red_failure_timeout" else 0.0))
-                    scores.append({**identity, "episode_seed": episode_seed,
-                        "boundary_penalty": boundary_penalty, "timeout_penalty": timeout_penalty,
-                        "fixed_trajectory_counterfactual_score": fixed_score,
-                        "warning": "offline fixed-trajectory score; policy behavior is not re-simulated"})
-        del trainer; torch.cuda.empty_cache()
-    write_csv(output / "boundary_precursors.csv", all_precursors)
-    write_csv(output / "episode_outcomes.csv", outcomes)
-    write_csv(output / "offline_counterfactual_reward_scores.csv", scores)
-    manifest = {"executed": True, "seed_base": args.seed_base, "seed_end": args.seed_base + args.episodes - 1,
-                "episodes_per_checkpoint": args.episodes, "checkpoints": [{**s, "path": str(s["path"])} for s in checkpoint_specs()],
-                "interpretation_limit": "descriptive trajectory evidence and fixed-trajectory reward scoring only"}
-    (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(json.dumps({"status": "COMPLETE", "output": str(output), "episodes": len(outcomes),
-                      "boundary_precursor_rows": len(all_precursors)}, indent=2))
-
-
-if __name__ == "__main__":
-    main()
+def main():
+ p=argparse.ArgumentParser();p.add_argument("--episodes",type=int,default=50);p.add_argument("--seed-base",type=int,default=DIAGNOSTIC_BASE);p.add_argument("--cross-horizon-seed-base",type=int,default=CROSS_HORIZON_BASE);p.add_argument("--output-dir",default="outputs/single_wave_checkpoint_trajectory_audit");p.add_argument("--state-bank-per-source",type=int,default=512);a=p.parse_args()
+ if not torch.cuda.is_available():raise RuntimeError("CUDA is mandatory")
+ seeds=validate_seed_bank(range(a.seed_base,a.seed_base+a.episodes));hseeds=validate_seed_bank(range(a.cross_horizon_seed_base,a.cross_horizon_seed_base+a.episodes))
+ if set(seeds)&set(hseeds):raise RuntimeError("H3000/H1000 seed banks overlap")
+ output=ROOT/a.output_dir
+ # Validate every identity before creating any formal output directory.
+ prevalidated=[strict_checkpoint_identity(spec) for spec in checkpoint_specs()]
+ refuse_existing_output(output)
+ output.mkdir(parents=True);specs=checkpoint_specs();outcomes=[];precursors=[];cross=[];saturation=[];counter=[];banks=defaultdict(list);seen=defaultdict(lambda:[0]);rng=np.random.default_rng(89_299_991);identities=[]
+ for spec in specs:
+  trainer,identity=load_clean_mappo(spec);identities.append({k:v for k,v in identity.items() if not k.endswith("config")});ident={k:identity[k] for k in ("training_seed","checkpoint_role","checkpoint_step","checkpoint_sha256")};action_chunks=[];nonboundary_chunks=[]
+  for epseed in seeds:
+   outcome,event_rows,acts,nonboundary_acts,states=evaluate_episode(trainer,identity["environment_config"],epseed);outcomes.append({**ident,**outcome});action_chunks.extend(acts);nonboundary_chunks.extend(nonboundary_acts);bobs=[]
+   for row in event_rows:bobs.append(row.pop("_observation"));precursors.append({**ident,**row})
+   reservoir(banks[(spec["training_seed"],spec["checkpoint_role"],"non_boundary")],states,a.state_bank_per_source,rng,seen[(spec["training_seed"],spec["checkpoint_role"],"non_boundary")]);reservoir(banks[(spec["training_seed"],spec["checkpoint_role"],"boundary_precursor")],bobs,a.state_bank_per_source,rng,seen[(spec["training_seed"],spec["checkpoint_role"],"boundary_precursor")])
+   for bp in (-10,-20,-30):
+    for tp in (0,-10,-20):
+     for wb in (0,10,20):
+      for lp in (0,-10,-20):
+       score=counterfactual_score(outcome,bp,tp,wb,lp)
+       counter.append({**ident,"episode_seed":epseed,"boundary_penalty":bp,"timeout_penalty":tp,"win_bonus":wb,"mission_loss_penalty":lp,"fixed_trajectory_score":score,"warning":"fixed-trajectory rescoring only; does not predict retrained policy behavior"})
+  allacts=np.concatenate(action_chunks) if action_chunks else np.empty((0,3));nonacts=np.asarray(nonboundary_chunks);ownpre=[r for r in precursors if r["training_seed"]==spec["training_seed"] and r["checkpoint_role"]==spec["checkpoint_role"]];preacts=np.asarray([[r[f"action_{d}"] for d in DIMS] for r in ownpre])
+  for scope,vals in (("all_alive_states",allacts),("non_boundary_states",nonacts),("boundary_precursors",preacts)):
+   for threshold in (.9,.99):saturation.append({**ident,"scope":scope,"threshold":threshold,"n_agent_states":len(vals),**action_saturation(vals,threshold)})
+  h1000=cross_horizon_config(identity["environment_config"])
+  for epseed in hseeds:
+   for horizon,cfg in ((3000,identity["environment_config"]),(1000,h1000)):
+    outcome,_,_,_,_=evaluate_episode(trainer,cfg,epseed,False);cross.append({**ident,**outcome,"evaluation_label":"CROSS_HORIZON_POLICY_EVALUATION","training_max_steps":3000,"evaluation_max_steps":horizon,"paired_environment_seed":epseed})
+  del trainer;torch.cuda.empty_cache()
+ summary=[]
+ for spec in specs:
+  sub=[r for r in outcomes if r["training_seed"]==spec["training_seed"] and r["checkpoint_role"]==spec["checkpoint_role"]];events={(r["episode_seed"],r["agent"],r["boundary_step"]):r["boundary_descriptor"] for r in precursors if r["training_seed"]==spec["training_seed"] and r["checkpoint_role"]==spec["checkpoint_role"]};cnt=Counter(events.values());total=sum(cnt.values());nbe=sum(r["red_boundary_exits"]>0 for r in sub)
+  labels=(("escape_like","ESCAPE_LIKE_TRAJECTORY_DESCRIPTOR"),("tactical_overshoot","TACTICAL_OVERSHOOT_CANDIDATE"),("post_combat_overshoot","POST_COMBAT_OVERSHOOT_CANDIDATE"),("unclassified","UNCLASSIFIED_BOUNDARY_EXIT"))
+  summary.append({"training_seed":spec["training_seed"],"checkpoint_role":spec["checkpoint_role"],"episodes":len(sub),"episodes_with_boundary_exit":nbe,"boundary_episode_rate":nbe/max(len(sub),1),"total_boundary_exits":sum(r["red_boundary_exits"] for r in sub),**{f"{name}_count":cnt[label] for name,label in labels},**{f"{name}_fraction":cnt[label]/max(total,1) for name,label in labels}})
+ drift=policy_drift(specs,banks);tmp,identity=load_clean_mappo(specs[0]);envcfg=identity["environment_config"];del tmp;torch.cuda.empty_cache()
+ for name,data in (("episode_outcomes.csv",outcomes),("boundary_precursors.csv",precursors),("boundary_behavior_summary.csv",summary),("action_saturation_summary.csv",saturation),("policy_drift_summary.csv",drift),("offline_counterfactual_reward_scores.csv",counter),("weapon_probability_audit.csv",weapon_table(envcfg)),("cross_horizon_evaluation.csv",cross)):write_csv(output/name,data)
+ manifest={"status":"TRAJECTORY_COLLECTION_COMPLETE","deployment":"deterministic_tanh_mean","episodes_per_checkpoint":a.episodes,"diagnostic_seed_base":seeds[0],"diagnostic_seed_end":seeds[-1],"cross_horizon_seed_base":hseeds[0],"cross_horizon_seed_end":hseeds[-1],"formal_48m_seeds_accessed":False,"checkpoint_identities":identities,"boundary_descriptor_rules":{"POST_COMBAT_OVERSHOOT_CANDIDATE":"red kill within 100 steps and precursor enemy absent/>4000m","TACTICAL_OVERSHOOT_CANDIDATE":"within <=20-step precursors, live Blue <=4000m or fire window","ESCAPE_LIKE_TRAJECTORY_DESCRIPTOR":"at least two <=20-step points: outward velocity, heading within 90deg outward, enemy absent/>4000m, no fire window, no attempt for >20 steps","UNCLASSIFIED_BOUNDARY_EXIT":"none of the above","warning":"not an inference of policy intent"},"cross_horizon_semantics":"3000-trained policy, only max_steps changed to 1000; direct deployment effect, not training-dynamics effect"}
+ (output/"manifest.json").write_text(json.dumps(manifest,indent=2),encoding="utf-8");print(json.dumps({"status":manifest["status"],"output":str(output),"episodes":len(outcomes),"cross_horizon_episodes":len(cross)},indent=2))
+if __name__=="__main__":main()
