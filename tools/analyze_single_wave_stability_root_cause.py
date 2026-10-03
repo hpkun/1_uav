@@ -21,7 +21,7 @@ def empirical_gt(a,b):
  if not a or not b:return None
  return float(np.mean(np.asarray(a)[:,None]>np.asarray(b)[None,:]))
 def groups(rows):
- return {"WIN":[r for r in rows if truth(r["red_success"])],"NON_WIN":[r for r in rows if not truth(r["red_success"])],"BOUNDARY_HEAVY":[r for r in rows if number(r,"red_boundary_exits",0)>=1],"NO_BOUNDARY_COMBAT_LOSS":[r for r in rows if not truth(r["red_success"]) and number(r,"red_boundary_exits",0)==0 and number(r,"red_ground_losses",0)==0 and r["termination_reason"]!="red_failure_timeout"],"GROUND_LOSS":[r for r in rows if number(r,"red_ground_losses",0)>=1],"TIMEOUT":[r for r in rows if r["termination_reason"]=="red_failure_timeout"]}
+ return {"WIN":[r for r in rows if truth(r["red_success"])],"NON_WIN":[r for r in rows if not truth(r["red_success"])],"BOUNDARY_ANY":[r for r in rows if number(r,"red_boundary_exits",0)>=1],"GROUND_ANY":[r for r in rows if number(r,"red_ground_losses",0)>=1],"TIMEOUT":[r for r in rows if r["termination_reason"]=="red_failure_timeout"],"BOUNDARY_FAILURE":[r for r in rows if not truth(r["red_success"]) and number(r,"red_boundary_exits",0)>=1],"PURE_COMBAT_DEFEAT":[r for r in rows if r["termination_reason"]=="blue_win" and number(r,"red_boundary_exits",0)==0 and number(r,"red_ground_losses",0)==0],"MUTUAL_DESTRUCTION_DRAW":[r for r in rows if r["termination_reason"]=="draw_mutual_destruction"]}
 
 def optimization_summary():
  out=[]
@@ -44,7 +44,7 @@ def reward_outputs(outcomes):
      ranking.append({"training_seed":seed,"checkpoint_role":role,"outcome_class":name,"metric":metric,"N":len(items),**stats([number(r,metric) for r in items])})
     absolute={f"R{i}":sum(abs(number(r,f"R{i}",0)) for r in items) for i in range(1,5)};den=sum(absolute.values())
     for i in range(1,5):component.append({"training_seed":seed,"checkpoint_role":role,"outcome_class":name,"component":f"R{i}","N":len(items),**stats([number(r,f"R{i}") for r in items]),"episode_level_absolute_reward_component_share":absolute[f"R{i}"]/den if den else None})
-   prob.append({"training_seed":seed,"checkpoint_role":role,"n_boundary":len(g["BOUNDARY_HEAVY"]),"n_combat_loss":len(g["NO_BOUNDARY_COMBAT_LOSS"]),"n_nonwin":len(g["NON_WIN"]),"n_win":len(g["WIN"]),"P_Return_boundary_gt_combat_loss":empirical_gt([number(r,"episode_return") for r in g["BOUNDARY_HEAVY"]],[number(r,"episode_return") for r in g["NO_BOUNDARY_COMBAT_LOSS"]]),"P_Return_nonwin_gt_win":empirical_gt([number(r,"episode_return") for r in g["NON_WIN"]],[number(r,"episode_return") for r in g["WIN"]]),"P_Return_boundary_gt_win":empirical_gt([number(r,"episode_return") for r in g["BOUNDARY_HEAVY"]],[number(r,"episode_return") for r in g["WIN"]]),"confidence_warning":"empirical pair probability; small groups have wide uncertainty"})
+   prob.append({"training_seed":seed,"checkpoint_role":role,"n_boundary_failure":len(g["BOUNDARY_FAILURE"]),"n_pure_combat_defeat":len(g["PURE_COMBAT_DEFEAT"]),"n_win":len(g["WIN"]),"n_mutual_destruction_draw":len(g["MUTUAL_DESTRUCTION_DRAW"]),"P_Return_boundary_failure_gt_pure_combat_defeat":empirical_gt([number(r,"episode_return") for r in g["BOUNDARY_FAILURE"]],[number(r,"episode_return") for r in g["PURE_COMBAT_DEFEAT"]]),"P_Return_boundary_failure_gt_win":empirical_gt([number(r,"episode_return") for r in g["BOUNDARY_FAILURE"]],[number(r,"episode_return") for r in g["WIN"]]),"P_Return_pure_combat_defeat_gt_win":empirical_gt([number(r,"episode_return") for r in g["PURE_COMBAT_DEFEAT"]],[number(r,"episode_return") for r in g["WIN"]]),"confidence_warning":"empirical pair probability; small groups have wide uncertainty; BOUNDARY_ANY is descriptive overlap only"})
  return ranking,component,prob
 
 def counterfactual_summary(scores,outcomes):
@@ -53,8 +53,8 @@ def counterfactual_summary(scores,outcomes):
   key=tuple(row[k] for k in ("training_seed","checkpoint_role","boundary_penalty","timeout_penalty","win_bonus","mission_loss_penalty"));bucket.setdefault(key,[]).append(row)
  out=[]
  for key,items in bucket.items():
-  classified=[(r,outcomes_key[(r["training_seed"],r["checkpoint_role"],r["episode_seed"])]) for r in items];win=[number(r,"fixed_trajectory_score") for r,o in classified if truth(o["red_success"])];boundary=[number(r,"fixed_trajectory_score") for r,o in classified if number(o,"red_boundary_exits",0)>=1];combat=[number(r,"fixed_trajectory_score") for r,o in classified if not truth(o["red_success"]) and number(o,"red_boundary_exits",0)==0 and number(o,"red_ground_losses",0)==0 and o["termination_reason"]!="red_failure_timeout"]
-  out.append(dict(zip(("training_seed","checkpoint_role","boundary_penalty","timeout_penalty","win_bonus","mission_loss_penalty"),key),n=len(items),mean_score=statistics.mean(number(r,"fixed_trajectory_score") for r in items),P_boundary_gt_combat_loss=empirical_gt(boundary,combat),P_boundary_gt_win=empirical_gt(boundary,win),warning="fixed-trajectory ranking only; no retraining-policy claim"))
+  classified=[(r,outcomes_key[(r["training_seed"],r["checkpoint_role"],r["episode_seed"])]) for r in items];win=[number(r,"fixed_trajectory_score") for r,o in classified if truth(o["red_success"])];boundary=[number(r,"fixed_trajectory_score") for r,o in classified if not truth(o["red_success"]) and number(o,"red_boundary_exits",0)>=1];combat=[number(r,"fixed_trajectory_score") for r,o in classified if o["termination_reason"]=="blue_win" and number(o,"red_boundary_exits",0)==0 and number(o,"red_ground_losses",0)==0]
+  out.append(dict(zip(("training_seed","checkpoint_role","boundary_penalty","timeout_penalty","win_bonus","mission_loss_penalty"),key),n=len(items),mean_score=statistics.mean(number(r,"fixed_trajectory_score") for r in items),P_boundary_failure_gt_pure_combat_defeat=empirical_gt(boundary,combat),P_boundary_failure_gt_win=empirical_gt(boundary,win),warning="fixed-trajectory ranking only; no retraining-policy claim"))
  return out
 
 def blue_guard(outcomes):
@@ -82,9 +82,12 @@ def main():
   b=find(boundary,training_seed=seed,checkpoint_role="best");f=find(boundary,training_seed=seed,checkpoint_role="final")
   if b and f:boundary_rise.append(number(f,"boundary_episode_rate",0)-number(b,"boundary_episode_rate",0))
  tactical_rise=[]
+ escape_rise=[]
  for seed in TRAINING_SEEDS:
   b=find(boundary,training_seed=seed,checkpoint_role="best");f=find(boundary,training_seed=seed,checkpoint_role="final")
-  if b and f:tactical_rise.append(number(f,"tactical_overshoot_fraction",0)-number(b,"tactical_overshoot_fraction",0))
+  if b and f:
+   tactical_rise.append(number(f,"tactical_overshoot_fraction",0)-number(b,"tactical_overshoot_fraction",0))
+   escape_rise.append(number(f,"escape_like_fraction",0)-number(b,"escape_like_fraction",0))
  heading_sat_rise=[]
  for seed in TRAINING_SEEDS:
   b=find(sat,training_seed=seed,checkpoint_role="best",scope="boundary_precursors",threshold="0.9");f=find(sat,training_seed=seed,checkpoint_role="final",scope="boundary_precursors",threshold="0.9")
@@ -109,10 +112,16 @@ def main():
   vb,vl=phase_mean(seed,"BEST_PRECEDING_200K","value_loss"),phase_mean(seed,"BEST_TO_FINAL","value_loss")
   if before is not None and late is not None:kl_pattern.append(late-before)
   if vb is not None and vl is not None:critic_pattern.append(vl-vb)
+ reward_boundary_not_worse=[]
+ for seed in (5401,5402):
+  row=next((r for r in probs if r["training_seed"]==seed and r["checkpoint_role"]=="final"),None)
+  reward_boundary_not_worse.append(bool(row and row["n_boundary_failure"]>=5 and row["n_pure_combat_defeat"]>=5 and row["P_Return_boundary_failure_gt_pure_combat_defeat"] is not None and row["P_Return_boundary_failure_gt_pure_combat_defeat"]>=.5))
+ local_optimum_supported=(len(escape_rise)>=2 and escape_rise[0]>.05 and escape_rise[1]>.05 and all(reward_boundary_not_worse))
  evidence=[
   {"candidate":"Environment implementation bug","level":"NOT_SUPPORTED","evidence":"strict identities pass; prior mechanics regression audit passed"},
   {"candidate":"Reward mission-alignment mismatch","level":"SUPPORTED_PHENOMENON","evidence":"local R1/R2 and no shared terminal team reward; episode ranking in reward_ranking_by_outcome.csv"},
-  {"candidate":"Boundary-sensitive local solution","level":"STRONGLY_SUPPORTED_ASSOCIATION" if len(boundary_rise)==3 and boundary_rise[0]>.2 and boundary_rise[1]>.2 else "SUPPORTED_ASSOCIATION","evidence":f"paired boundary episode-rate deltas={boundary_rise}; reward ranking remains observational"},
+  {"candidate":"Boundary-associated late degradation","level":"STRONGLY_SUPPORTED_ASSOCIATION" if len(boundary_rise)==3 and boundary_rise[0]>.2 and boundary_rise[1]>.2 else "SUPPORTED_ASSOCIATION","evidence":f"paired boundary episode-rate deltas={boundary_rise}; phenotype association, not reward causality"},
+  {"candidate":"Reward-driven boundary local optimum","level":"SUPPORTED_ASSOCIATION" if local_optimum_supported else "PLAUSIBLE_NOT_ESTABLISHED","evidence":f"final boundary-failure return not-worse flags for 5401/5402={reward_boundary_not_worse}; paired escape-like fraction deltas={escape_rise}; requires both conditions"},
   {"candidate":"Tactical overshoot","level":"SUPPORTED_ASSOCIATION" if any(x>.05 for x in tactical_rise[:2]) else "SUPPORTED_PHENOMENON" if any(number(r,"tactical_overshoot_count",0)>0 for r in boundary) else "NOT_SUPPORTED","evidence":f"paired tactical fraction deltas={tactical_rise}; no intent inference"},
   {"candidate":"Action saturation","level":"SUPPORTED_ASSOCIATION" if any(x>.05 for x in heading_sat_rise[:2]) else "NOT_SUPPORTED","evidence":f"boundary precursor heading >.9 paired deltas={heading_sat_rise}"},
   {"candidate":"Policy mean drift","level":"SUPPORTED_ASSOCIATION" if drift_boundary and drift_other and statistics.mean(drift_boundary)>1.25*max(statistics.mean(drift_other),1e-12) else "SUPPORTED_PHENOMENON" if drift else "DATA_INSUFFICIENT","evidence":"best/final actors evaluated on same union fixed-state banks"},

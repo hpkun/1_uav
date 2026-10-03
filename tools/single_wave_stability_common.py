@@ -144,24 +144,44 @@ def precursor_indices(boundary_step: int, available_steps: Iterable[int], lags=(
     return {int(lag): int(boundary_step - lag) for lag in lags if boundary_step - lag in available}
 
 
+def agent_attempt_transitions(armed_before: Iterable[bool], armed_after: Iterable[bool],
+                              alive_before: Iterable[bool]) -> np.ndarray:
+    """Detect entry-trigger attempts without changing or depending on env info."""
+    before = np.asarray(list(armed_before), dtype=bool)
+    after = np.asarray(list(armed_after), dtype=bool)
+    alive = np.asarray(list(alive_before), dtype=bool)
+    if before.shape != (4,) or after.shape != (4,) or alive.shape != (4,):
+        raise ValueError("FireState transition vectors must all have shape (4,)")
+    return alive & before & ~after
+
+
+def active_pursuit_geometry(row: dict[str, Any]) -> bool:
+    if bool(row.get("fire_window")):
+        return True
+    distance = row.get("nearest_blue_distance")
+    off_boresight = row.get("nearest_blue_off_boresight")
+    closing = row.get("closing_velocity")
+    range_max = row.get("weapon_range_max", 4000.0)
+    return bool(distance is not None and off_boresight is not None and closing is not None
+                and float(distance) <= float(range_max)
+                and abs(float(off_boresight)) < math.pi / 2 and float(closing) > 0)
+
+
 def boundary_descriptor(rows: list[dict[str, Any]], boundary_step: int, last_red_kill_step: int | None) -> str:
     """Transparent trajectory descriptor; never an inference of policy intent."""
     if not rows:
         return "UNCLASSIFIED_BOUNDARY_EXIT"
+    recent = [r for r in rows if int(r.get("lag_steps", 999)) <= 20]
     recent_kill = last_red_kill_step is not None and 0 <= boundary_step - last_red_kill_step <= 100
-    far_or_none = all(r.get("nearest_blue_distance") is None or r["nearest_blue_distance"] > 4000 for r in rows)
-    if recent_kill and far_or_none:
-        return "POST_COMBAT_OVERSHOOT_CANDIDATE"
-    tactical = any(bool(r.get("fire_window")) or
-                   (r.get("nearest_blue_distance") is not None and r["nearest_blue_distance"] <= 4000)
-                   for r in rows if int(r.get("lag_steps", 999)) <= 20)
+    tactical = any(active_pursuit_geometry(r) for r in recent)
+    if recent_kill and recent and not tactical:
+        return "RECENT_KILL_OVERSHOOT_CANDIDATE"
     if tactical:
         return "TACTICAL_OVERSHOOT_CANDIDATE"
-    recent = [r for r in rows if int(r.get("lag_steps", 999)) <= 20]
     escape_like = len(recent) >= 2 and all(
         r["radial_velocity"] > 0 and abs(r["heading_relative_to_outward"]) < math.pi / 2
-        and (r.get("nearest_blue_distance") is None or r["nearest_blue_distance"] > 4000)
-        and not bool(r.get("fire_window")) and int(r.get("steps_since_red_attempt", 0)) > 20
+        and not bool(r.get("fire_window")) and not active_pursuit_geometry(r)
+        and int(r.get("steps_since_own_red_attempt", 0)) > 20
         for r in recent)
     return "ESCAPE_LIKE_TRAJECTORY_DESCRIPTOR" if escape_like else "UNCLASSIFIED_BOUNDARY_EXIT"
 
