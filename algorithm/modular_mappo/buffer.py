@@ -28,6 +28,7 @@ class ModularRolloutBatch:
     hta_options:np.ndarray|None=None
     hta_next_options:np.ndarray|None=None
     hta_manager_transitions:object|None=None
+    marc_success_segments:object|None=None
 
 def contiguous_chunks(time_steps:int,num_envs:int,sequence_length:int):
     return [(env,start,min(start+sequence_length,time_steps)) for env in range(num_envs) for start in range(0,time_steps,sequence_length)]

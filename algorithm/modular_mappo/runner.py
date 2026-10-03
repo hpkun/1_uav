@@ -21,7 +21,8 @@ from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.mappo.networks import SharedMAPPOActor
 from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from .buffer import ModularRolloutBatch
-from algorithm.modules import ManagerTransitionBatch,smdp_boundary_masks
+from algorithm.modules import (ManagerTransitionBatch,smdp_boundary_masks,
+                               successful_wave_from_transition)
 from .evaluation import evaluate_modular
 from .factory import build_modular_mappo_trainer
 from .protocol import checkpoint_architecture, validate_modular_checkpoint
@@ -184,6 +185,8 @@ class ModularMAPPOTrainingRunner:
         self.brsc_pending_episode = [{1: None, 2: None} for _ in range(self.num_envs)]
         self.brsc_pending_boundaries_dropped_on_resume = 0
         self.brsc_completed_episode_counter = 0
+        self.marc_pending_episode = [{1: [], 2: [], 3: []} for _ in range(self.num_envs)]
+        self.marc_pending_dropped_on_resume = 0
         self.resume_count = 0
         if not resume_mode:
             if warm_start_checkpoint:
@@ -421,6 +424,45 @@ class ModularMAPPOTrainingRunner:
                     pending,waves_cleared,group_id,int(env_id)))
         self.brsc_pending_episode[int(env_id)]={1:None,2:None};return completed
 
+    def _marc_collect_candidates(self, observations, alive_masks, waves) -> None:
+        """Keep strided, alive-only candidates until their milestone is known."""
+        module = self.trainer.milestone_aware_retention_credit
+        if not module.enabled:
+            return
+        for env_id in range(self.num_envs):
+            wave = int(waves[env_id])
+            if wave not in (1, 2, 3) or int(self.episode_steps[env_id]) % module.retention_stride:
+                continue
+            rows = self.marc_pending_episode[env_id][wave]
+            rows.extend(np.asarray(observations[env_id], dtype=np.float32)[np.asarray(alive_masks[env_id]) > .5])
+            # Pending storage is bounded independently for every live episode.
+            overflow = len(rows) - module.retention_bank_size_per_wave
+            if overflow > 0:
+                del rows[:overflow]
+
+    def _marc_finalize_step(self, pre_waves, done, infos) -> list[dict[str, Any]]:
+        """Commit only successful source-wave candidates; failures never enter banks."""
+        if not self.trainer.milestone_aware_retention_credit.enabled:
+            return []
+        completed = []
+        for env_id, info in enumerate(infos):
+            wave = int(pre_waves[env_id])
+            successful_wave = successful_wave_from_transition(
+                wave,
+                spawned_next_wave=bool(info.get("spawned_next_wave", False)),
+                episode_done=bool(done[env_id]),
+                red_success=bool(info.get("red_success", False)),
+            )
+            if successful_wave is not None:
+                rows = self.marc_pending_episode[env_id][successful_wave]
+                if rows:
+                    completed.append({"wave": successful_wave,
+                                      "observations": np.asarray(rows, dtype=np.float32)})
+                self.marc_pending_episode[env_id][successful_wave] = []
+            if bool(done[env_id]):
+                self.marc_pending_episode[env_id] = {1: [], 2: [], 3: []}
+        return completed
+
     def _collect_wave_entry_snapshots(
         self, infos: list[dict[str, Any]], sampled_steps: int
     ) -> None:
@@ -493,6 +535,7 @@ class ModularMAPPOTrainingRunner:
         completed_caiw_segments = []
         completed_brsc_boundaries = []
         completed_hta_macros = []
+        completed_marc_segments = []
         hta_enabled = self.trainer.hierarchical_temporal_abstraction.enabled
         rollout_length = int(steps or self.rollout_steps)
         current_options = current_manager_log_probs = None
@@ -519,6 +562,7 @@ class ModularMAPPOTrainingRunner:
         rollout_death_indices = np.zeros_like(self.death_index_totals)
         for rollout_index in range(rollout_length):
             obs, alive, pre_wave = self.observations.copy(), self.alive.copy(), self.wave.copy()
+            self._marc_collect_candidates(obs, alive, pre_wave)
             blue_alive = self.blue_alive.copy()
             remaining_horizon = np.clip(
                 (float(self.runtime_env_config["simulation"]["max_steps"]) - self.episode_steps)
@@ -606,6 +650,9 @@ class ModularMAPPOTrainingRunner:
             next_context = mission_context_numpy(
                 self.trainer, next_wave, next_total, post_blue, next_steps,
                 self.runtime_env_config["simulation"]["max_steps"],
+            )
+            completed_marc_segments.extend(
+                self._marc_finalize_step(pre_wave, done, result.infos)
             )
             hta_next_options=None
             if hta_enabled:
@@ -784,6 +831,7 @@ class ModularMAPPOTrainingRunner:
         kwargs["iw_supervision_segments"] = completed_iw_segments
         kwargs["caiw_supervision_segments"] = completed_caiw_segments
         kwargs["brsc_supervision_boundaries"] = completed_brsc_boundaries
+        kwargs["marc_success_segments"] = completed_marc_segments
         if hta_enabled:
             if not completed_hta_macros or any(row["duration"]<1 or row["duration"]>16 for row in completed_hta_macros):
                 raise RuntimeError("HTA rollout produced invalid or missing closed macros")
@@ -883,6 +931,8 @@ class ModularMAPPOTrainingRunner:
             "brsc_completed_episode_counter":self.brsc_completed_episode_counter,
             "brsc_pending_boundaries_dropped_on_resume":self.brsc_pending_boundaries_dropped_on_resume,
             "brsc_pending_boundary_counts":[{str(w):int(rows[w] is not None) for w in (1,2)} for rows in self.brsc_pending_episode],
+            "marc_pending_dropped_on_resume":self.marc_pending_dropped_on_resume,
+            "marc_pending_candidate_counts":[{str(w):len(rows[w]) for w in (1,2,3)} for rows in self.marc_pending_episode],
             "evaluation": evaluation,
         }
         if self.trainer.fbmr_enabled:
@@ -1006,6 +1056,9 @@ class ModularMAPPOTrainingRunner:
             int(count)>0 for rows in extra.get("brsc_pending_boundary_counts",[]) for count in rows.values())
         self.brsc_completed_episode_counter=int(extra.get("brsc_completed_episode_counter",0))
         self.brsc_pending_episode=[{1:None,2:None} for _ in range(self.num_envs)]
+        self.marc_pending_dropped_on_resume = int(extra.get("marc_pending_dropped_on_resume", 0)) + sum(
+            int(count) for rows in extra.get("marc_pending_candidate_counts", []) for count in rows.values())
+        self.marc_pending_episode=[{1:[],2:[],3:[]} for _ in range(self.num_envs)]
         self._make_vector(previous)
         if self.trainer.persistent_wave_trajectory_replay.enabled:
             self.trainer.persistent_wave_trajectory_replay.discard_pending_after_environment_restart()

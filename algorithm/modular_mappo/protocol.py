@@ -88,6 +88,22 @@ def checkpoint_architecture(trainer):
   result.update({"actor_gradient_clipping_enabled":True,"actor_grad_clip_version":module.version,
    "actor_grad_clip_mode":module.mode,"actor_max_grad_norm":module.actor_max_grad_norm,
    "critic_max_grad_norm":trainer.max_grad_norm,"actor_clip_only_intervention":True,"network_topology_unchanged":True})
+ if trainer.milestone_aware_retention_credit.enabled:
+  module=trainer.milestone_aware_retention_credit
+  result.update({"milestone_aware_retention_credit_enabled":True,"marc_version":module.version,
+   "actor_observation_dim":52,"actor_wave_input":False,
+   "credit_decomposition":"global_GAE=local_GAE+continuation_advantage",
+   "local_trace_stops_at_wave_transition":True,"td_bootstrap_at_wave_transition":True,
+   "continuation_alpha":module.continuation_alpha,
+   "wave_balance_target":"actor_surrogate_only","wave_balance_temperature":module.wave_balance_temperature,
+   "wave_weight_min":module.wave_weight_min,"wave_weight_max":module.wave_weight_max,
+   "critic_target":"unchanged_full_horizon_return","entropy_weighting":"plain_alive_mean",
+   "retention_target":"successful_milestone_policy_snapshot",
+   "retention_coefficient":module.retention_coefficient,
+   "retention_bank_size_per_wave":module.retention_bank_size_per_wave,
+   "retention_samples_per_wave":module.retention_samples_per_wave,
+   "retention_min_samples_per_wave":module.retention_min_samples_per_wave,
+   "retention_stride":module.retention_stride})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):

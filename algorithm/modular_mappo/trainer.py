@@ -46,6 +46,8 @@ from algorithm.modules import (WaveSpecificMeanHeadsModule,WSMH_MAPPO_VERSION,
 from algorithm.modules import (ActorGradientClippingModule,ACTOR_GRAD_CLIP_VERSION)
 from algorithm.modules import (DeploymentAlignedWaveExplorationModule,DAWE_MAPPO_VERSION)
 from algorithm.modules import (ReferenceVarianceModule,REFERENCE_VARIANCE_VERSION)
+from algorithm.modules import (MARC_MAPPO_VERSION,MilestoneAwareRetentionCreditModule,
+ compute_local_gae)
 from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean
@@ -176,6 +178,8 @@ class ModularMAPPOTrainer:
   self.deployment_aligned_wave_exploration=DeploymentAlignedWaveExplorationModule(
    self.modules_config.get("deployment_aligned_wave_exploration"))
   self.reference_variance=ReferenceVarianceModule(self.modules_config.get("reference_variance"))
+  self.milestone_aware_retention_credit=MilestoneAwareRetentionCreditModule(
+   self.modules_config.get("milestone_aware_retention_credit"),seed)
   self.reference_variance_actor=None
   self.reference_variance_initial_sha256=None
   self.reference_variance_source_checkpoint_sha256=None
@@ -189,6 +193,22 @@ class ModularMAPPOTrainer:
   self.fbmr_enabled=self.frozen_base_policy_entity_enabled
   self.total_sampled_steps=int(total_sampled_steps)
   if self.total_sampled_steps<=0:raise ValueError("total_sampled_steps must be positive")
+  if self.milestone_aware_retention_credit.enabled:
+   enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","milestone_aware_retention_credit"}
+   if enabled!=required:raise ValueError(f"MARC V1 requires exact enabled modules: {sorted(required)}")
+   if not self.actor_lr_decay.enabled:raise ValueError("MARC V1 requires actor_lr_decay")
+   if any((self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
+           self.wave_entry_curriculum.enabled,self.actor_kl_guard.enabled,self.inter_wave_credit.enabled,
+           self.counterfactual_inter_wave_credit.enabled,self.boundary_redistributed_segment_credit.enabled,
+           self.mission_film.enabled,self.wave_context.enabled,self.entity_attention_enabled,
+           self.advantage_priority.enabled,self.ppo_stabilization.enabled,self.popart.enabled,
+           self.curriculum.enabled,self.anchor.enabled,self.warm_start.enabled,self.reward_adapter.enabled,
+           self.wave_survival_pbrs.enabled,self.team_mean_credit.enabled,
+           self.persistent_wave_trajectory_replay.enabled,self.sequential_wave_gradient_projection.enabled,
+           self.wave1_sensitivity_gating.enabled,self.wave_specific_actor_isolation.enabled,
+           self.wave_specific_mean_heads.enabled,self.deployment_aligned_wave_exploration.enabled,
+           self.reference_variance.enabled)):
+    raise ValueError("MARC V1 requires an otherwise Plain feed-forward Actor/Critic")
   if self.entity_attention_enabled and (self.recurrent.enabled or self.wave_context.enabled):raise ValueError("entity attention v1 is incompatible with recurrent memory and wave context")
   if self.ppo_stabilization.enabled and self.recurrent.enabled:raise ValueError("PPO stabilization v1 requires the feed-forward update path")
   if self.actor_kl_guard.enabled and self.recurrent.enabled:raise ValueError("actor_kl_guard requires the feed-forward update path")
@@ -512,8 +532,30 @@ class ModularMAPPOTrainer:
    credit_rewards,team_credit_metrics=self.team_mean_credit.transform(rewards,alive,waves)
   else:
    credit_rewards=rewards;team_credit_metrics=self.team_mean_credit.disabled_metrics()
+  marc_metrics={};marc_weights=None
   with torch.no_grad():
-   values,next_values=self._value_rollout(r,obs,nobs);adv,returns=compute_gae(credit_rewards,values,next_values,dones,alive,nalive,self.gamma,self.gae_lambda);raw_adv=adv.clone()
+   values,next_values=self._value_rollout(r,obs,nobs)
+   global_adv,returns=compute_gae(credit_rewards,values,next_values,dones,alive,nalive,self.gamma,self.gae_lambda)
+   adv=global_adv;raw_adv=global_adv.clone()
+   if self.milestone_aware_retention_credit.enabled:
+    if r.wave_transition_flags is None:raise RuntimeError("MARC rollout lacks wave_transition_flags")
+    transitions=torch.as_tensor(r.wave_transition_flags,dtype=torch.float32,device=self.device)
+    local_adv,local_returns=compute_local_gae(credit_rewards,values,next_values,dones,alive,nalive,
+     transitions,self.gamma,self.gae_lambda)
+    continuation_adv=global_adv-local_adv
+    eta=self.milestone_aware_retention_credit.coefficients(waves).unsqueeze(-1)
+    adv=local_adv+eta*continuation_adv
+    # The local return is diagnostic only.  Critic targets remain full-horizon.
+    del local_returns
+    marc_weights,wave_metrics=self.milestone_aware_retention_credit.wave_weights(waves,alive)
+    def marc_stats(name,tensor):
+     live=tensor[alive>.5]
+     return {f"marc_{name}_mean":float(live.mean()),f"marc_{name}_std":float(live.std(unbiased=False))}
+    marc_metrics.update(marc_stats("global_adv",global_adv))
+    marc_metrics.update(marc_stats("local_adv",local_adv))
+    marc_metrics.update(marc_stats("cont_adv",continuation_adv))
+    marc_metrics.update(marc_stats("actor_adv",adv))
+    marc_metrics.update(wave_metrics)
    wave_w,wmetrics=self.wave_balance.compute_tensor(waves,alive)
    _,actor_w,pmetrics=self.advantage_priority.compute_tensor(raw_adv,waves,alive,wave_w if self.wave_balance.actor_enabled else torch.ones_like(wave_w))
    if self.normalize_advantages:
@@ -566,7 +608,12 @@ class ModularMAPPOTrainer:
   actor_before,critic_before=self.actor_update_count,self.critic_update_count
   worker_parameters=self.actor.trainable_policy_parameters() if self.hta_worker_consolidation.enabled else []
   worker_before=[parameter.detach().clone() for parameter in worker_parameters]
-  if self.wave_specific_mean_heads.enabled:
+  if self.milestone_aware_retention_credit.enabled:
+   self.milestone_aware_retention_credit.ingest_success_segments(
+    r.marc_success_segments,self.actor,self.device)
+   metrics=self._update_flat_marc(obs,act,raw,oldlog,alive,adv,old_values,target_returns,
+    wave_w,ctx,waves,marc_weights)
+  elif self.wave_specific_mean_heads.enabled:
    metrics=self._update_flat_wsmh(obs,act,raw,oldlog,alive,adv,old_values,target_returns,ctx,waves)
   elif self.wave_specific_actor_isolation.enabled:
    metrics=self._update_flat_wsai(obs,act,raw,oldlog,alive,adv,old_values,target_returns,ctx,waves)
@@ -643,6 +690,7 @@ class ModularMAPPOTrainer:
   for key,value in caiw_metrics.items():metrics.setdefault(key,value)
   for key,value in brsc_metrics.items():metrics.setdefault(key,value)
   metrics.update(team_credit_metrics)
+  metrics.update(marc_metrics)
   if self.sequential_wave_gradient_projection.enabled:
    module=self.sequential_wave_gradient_projection
    for key in ("swgp_active","swgp_wave1_alive_fraction","swgp_wave2_alive_fraction",
@@ -1324,6 +1372,45 @@ class ModularMAPPOTrainer:
   row={"actor_loss":float(al.detach()),"weighted_actor_loss":float(al.detach()),"value_loss":float(vl.detach()),"weighted_value_loss":float(vl.detach()),"entropy":float(en.detach()),"approx_kl":float(masked_mean(kl,mask).detach()),"clip_fraction":float(masked_mean((ratio.sub(1).abs()>self.clip_ratio).float(),mask).detach()),"actor_grad_norm":float(ag),"critic_grad_norm":float(cg),"actor_gru_grad_norm":float(arg),"critic_gru_grad_norm":float(crg),"gru_gradient_norm":float(np.hypot(arg,crg)),"anchor_kl":float(akl),"anchor_loss":float(anchor.detach()),"anchor_effective_coefficient":float(self.anchor.effective_coefficient(self.sampled_steps)),"_valid_count":int(live.numel()),"_ratio_values":live.detach().cpu().numpy(),"_log_ratio_values":live_logratio.detach().cpu().numpy()}
   if self.actor_gradient_clipping.enabled:row.update(self._last_actor_grad_clip_metrics)
   return row
+ def _update_flat_marc(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,waves,marc_weights):
+  """MARC actor objective; critic and entropy retain Plain MAPPO semantics."""
+  if marc_weights is None:raise RuntimeError("MARC actor weights are missing")
+  flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:])
+  arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,waves,marc_weights)))
+  N=arrays[0].shape[0];rows=[];actor_before=self.actor_update_count;critic_before=self.critic_update_count
+  minibatches_per_epoch=(N+self.minibatch_size-1)//self.minibatch_size
+  expected=self.ppo_epochs*minibatches_per_epoch
+  for _ in range(self.ppo_epochs):
+   permutation=self.rng.permutation(N)
+   for start in range(0,N,self.minibatch_size):
+    ix=torch.as_tensor(permutation[start:start+self.minibatch_size],device=self.device)
+    o,a,r,ol,m,ad,ov,t,w,c,wave,mw=[x[ix] for x in arrays]
+    losses=self._loss_step(o,a,r,ol,m,ad,ov,t,w,c,actor_weights=mw)
+    actor_loss,value_loss,entropy=losses[:3]
+    retention_loss,retention_metrics=self.milestone_aware_retention_credit.retention_loss(
+     self.actor,self.device)
+    self.actor_optimizer.zero_grad()
+    (actor_loss+retention_loss-self.entropy_coefficient*entropy).backward()
+    actor_parameters=self.actor.trainable_policy_parameters()
+    ag=nn.utils.clip_grad_norm_(actor_parameters,self.max_grad_norm)
+    self.actor_optimizer.step();self.actor_update_count+=1
+    self.critic_optimizer.zero_grad()
+    (self.value_loss_coefficient*value_loss).backward()
+    cg=nn.utils.clip_grad_norm_(self.critic.parameters(),self.max_grad_norm)
+    self.critic_optimizer.step();self.critic_update_count+=1
+    row=self._row(losses,m,ag,cg);row.update(retention_metrics);rows.append(row)
+  actor_steps=self.actor_update_count-actor_before;critic_steps=self.critic_update_count-critic_before
+  if len(rows)!=expected or actor_steps!=expected or critic_steps!=expected:
+   raise RuntimeError("MARC flat PPO epoch execution mismatch")
+  result=aggregate_update_rows(rows,self.clip_ratio)
+  result.update({"ppo_epochs_configured":float(self.ppo_epochs),
+   "ppo_epochs_executed":float(len(rows)//minibatches_per_epoch),
+   "ppo_minibatches_per_epoch":float(minibatches_per_epoch),
+   "ppo_minibatches_executed":float(len(rows)),
+   "actor_optimizer_steps_this_update":float(actor_steps),
+   "critic_optimizer_steps_this_update":float(critic_steps)})
+  return result
+
  def _update_flat(self,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,actor_weights=None,fresh_waves=None,wave_indices=None):
   flat=lambda x:x.reshape(obs.shape[0]*obs.shape[1],*x.shape[2:]); arrays=list(map(flat,(obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx)));flat_actor=None if actor_weights is None else flat(actor_weights);N=arrays[0].shape[0];rows=[]
   flat_waves=None if wave_indices is None else wave_indices.reshape(-1)
@@ -1908,7 +1995,7 @@ class ModularMAPPOTrainer:
   return True
  def _base_checkpoint_state(self,extra=None):
   if self.fbmr_enabled and self.frozen_actor_drift_metrics()["frozen_base_parameter_drift_max"]!=0.:raise RuntimeError("FBMR frozen baseline actor changed before checkpoint save")
-  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION,"hta_worker_consolidation":HTA_WORKER_CONSOLIDATION_VERSION,"sequential_wave_gradient_projection":SWGP_MAPPO_VERSION,"team_mean_credit":TEAM_MEAN_CREDIT_VERSION,"persistent_wave_trajectory_replay":PWTR_MAPPO_VERSION,"wave1_sensitivity_gating":W1SG_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"sequential_wave_gradient_projection_state":self.sequential_wave_gradient_projection.state_dict() if self.sequential_wave_gradient_projection.enabled else None,"persistent_wave_trajectory_replay_state":self.persistent_wave_trajectory_replay.state_dict() if self.persistent_wave_trajectory_replay.enabled else None,"wave1_sensitivity_gating_state":self.wave1_sensitivity_gating.state_dict() if self.wave1_sensitivity_gating.enabled else None,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
+  return {"algorithm":"modular_mappo","modular_mappo_impl_version":MODULAR_MAPPO_IMPL_VERSION,"baseline_mappo_impl_version":MAPPO_IMPL_VERSION,"development_feature_versions":{"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"actor_lr_decay":ACTOR_LR_DECAY_VERSION,"entity_attention":1,"fbmr_ea":1,"fbmr_dual_bound":1,"mission_film":MISSION_FILM_VERSION,"actor_kl_guard":ACTOR_KL_GUARD_VERSION,"inter_wave_credit":IWSC_MAPPO_VERSION,"counterfactual_inter_wave_credit":CAIW_MAPPO_VERSION,"boundary_redistributed_segment_credit":BRSC_MAPPO_VERSION,"hierarchical_temporal_abstraction":HTA_MAPPO_VERSION,"hta_worker_consolidation":HTA_WORKER_CONSOLIDATION_VERSION,"sequential_wave_gradient_projection":SWGP_MAPPO_VERSION,"team_mean_credit":TEAM_MEAN_CREDIT_VERSION,"persistent_wave_trajectory_replay":PWTR_MAPPO_VERSION,"wave1_sensitivity_gating":W1SG_MAPPO_VERSION,"milestone_aware_retention_credit":MARC_MAPPO_VERSION},"actor":self.actor.state_dict(),"critic":self.critic.state_dict(),"actor_optimizer":self.actor_optimizer.state_dict(),"critic_optimizer":self.critic_optimizer.state_dict(),"manager_actor":None if self.manager_actor is None else self.manager_actor.state_dict(),"manager_critic":None if self.manager_critic is None else self.manager_critic.state_dict(),"manager_actor_optimizer":None if self.manager_actor_optimizer is None else self.manager_actor_optimizer.state_dict(),"manager_critic_optimizer":None if self.manager_critic_optimizer is None else self.manager_critic_optimizer.state_dict(),"manager_actor_updates":self.manager_actor_update_count,"manager_critic_updates":self.manager_critic_update_count,"manager_optimizer_steps":self.manager_optimizer_step_count,"hta_option_usage_counts":self.hta_option_usage_counts.tolist(),"hta_decision_reason_counts":deepcopy(self.hta_decision_reason_counts),"iw_critic":None if self.iw_critic is None else self.iw_critic.state_dict(),"iw_critic_optimizer":None if self.iw_critic_optimizer is None else self.iw_critic_optimizer.state_dict(),"inter_wave_credit_state":self.inter_wave_credit.state_dict(),"iw_conflict_count":self.iw_conflict_count,"iw_gradient_step_count":self.iw_gradient_step_count,"caiw_critic":None if self.caiw_critic is None else self.caiw_critic.state_dict(),"caiw_critic_optimizer":None if self.caiw_critic_optimizer is None else self.caiw_critic_optimizer.state_dict(),"counterfactual_inter_wave_credit_state":self.counterfactual_inter_wave_credit.state_dict(),"caiw_rng_state":deepcopy(self.caiw_rng.bit_generator.state),"caiw_conflict_count":self.caiw_conflict_count,"caiw_gradient_step_count":self.caiw_gradient_step_count,"caiw_trust_cap_count":self.caiw_trust_cap_count,"caiw_aux_induced_clip_count":self.caiw_aux_induced_clip_count,"brsc_critic":None if self.brsc_critic is None else self.brsc_critic.state_dict(),"brsc_critic_optimizer":None if self.brsc_critic_optimizer is None else self.brsc_critic_optimizer.state_dict(),"boundary_redistributed_segment_credit_state":self.boundary_redistributed_segment_credit.state_dict(),"brsc_rng_state":deepcopy(self.brsc_rng.bit_generator.state),"brsc_conflict_count":self.brsc_conflict_count,"brsc_gradient_step_count":self.brsc_gradient_step_count,"brsc_trust_cap_count":self.brsc_trust_cap_count,"brsc_aux_induced_clip_count":self.brsc_aux_induced_clip_count,"sequential_wave_gradient_projection_state":self.sequential_wave_gradient_projection.state_dict() if self.sequential_wave_gradient_projection.enabled else None,"persistent_wave_trajectory_replay_state":self.persistent_wave_trajectory_replay.state_dict() if self.persistent_wave_trajectory_replay.enabled else None,"wave1_sensitivity_gating_state":self.wave1_sensitivity_gating.state_dict() if self.wave1_sensitivity_gating.enabled else None,"milestone_aware_retention_credit_state":self.milestone_aware_retention_credit.state_dict() if self.milestone_aware_retention_credit.enabled else None,"popart":self.popart.state_dict(),"ppo_updates":self.ppo_update_count,"actor_updates":self.actor_update_count,"critic_updates":self.critic_update_count,"sampled_steps":self.sampled_steps,"vector_steps":self.vector_steps,"kl_hard_stop_count":self.kl_hard_stop_count,"actor_kl_guard_hard_stop_count":self.actor_kl_guard_hard_stop_count,"actor_kl_guard_actor_epochs_total":self.actor_kl_guard_actor_epochs_total,"actor_kl_guard_actor_epochs_min":self.actor_kl_guard_actor_epochs_min,"rng_state":self.capture_rng_state(),"rng_state_available":True,"rng_state_restored":self.rng_restore_metadata["rng_state_restored"],"cuda_rng_state_restored":self.rng_restore_metadata["cuda_rng_state_restored"],**self.module_protocol(),"warm_start_provenance":self.warm_start_provenance,"anchor_provenance":self.anchor_provenance,"anchor_reference_actor_state":None if self.anchor.reference_actor is None else self.anchor.reference_actor.state_dict(),"fbmr_branch_metadata":deepcopy(self.fbmr_branch_metadata),"frozen_base_actor_state":None if self._frozen_actor_reference is None else self._frozen_actor_reference,"frozen_base_actor_sha256":self.frozen_actor_sha256(),"extra":extra or {}}
  def checkpoint_state(self,extra=None):
   if self.reference_variance.enabled:
    if self.reference_variance_actor is None:raise RuntimeError("RV reference actor missing before checkpoint save")
@@ -1947,7 +2034,7 @@ class ModularMAPPOTrainer:
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
-  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled or self.deployment_aligned_wave_exploration.enabled or self.reference_variance.enabled):
+  if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled or self.deployment_aligned_wave_exploration.enabled or self.reference_variance.enabled or self.milestone_aware_retention_credit.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
    if any(versions.get(key)!=value for key,value in expected.items()):raise RuntimeError("checkpoint development feature version mismatch")
    if self.actor_lr_decay.enabled and versions.get("actor_lr_decay")!=ACTOR_LR_DECAY_VERSION:raise RuntimeError("checkpoint actor_lr_decay feature version mismatch")
@@ -1967,6 +2054,7 @@ class ModularMAPPOTrainer:
    if self.actor_gradient_clipping.enabled and versions.get("actor_gradient_clipping")!=ACTOR_GRAD_CLIP_VERSION:raise RuntimeError("checkpoint actor gradient clipping feature version mismatch")
    if self.deployment_aligned_wave_exploration.enabled and versions.get("deployment_aligned_wave_exploration")!=DAWE_MAPPO_VERSION:raise RuntimeError("checkpoint DAWE feature version mismatch")
    if self.reference_variance.enabled and versions.get("reference_variance")!=REFERENCE_VARIANCE_VERSION:raise RuntimeError("checkpoint RV feature version mismatch")
+   if self.milestone_aware_retention_credit.enabled and versions.get("milestone_aware_retention_credit")!=MARC_MAPPO_VERSION:raise RuntimeError("checkpoint MARC feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.reference_variance.enabled:
@@ -2064,6 +2152,9 @@ class ModularMAPPOTrainer:
    self.deployment_aligned_wave_exploration.load_state_dict(state.get("deployment_aligned_wave_exploration_state"),branch_from_plain=not strict_protocol)
   if self.reference_variance.enabled:
    self.reference_variance.load_state_dict(state.get("reference_variance_state"),branch_from_plain=not strict_protocol)
+  if self.milestone_aware_retention_credit.enabled:
+   self.milestone_aware_retention_credit.load_state_dict(
+    state.get("milestone_aware_retention_credit_state"),strict=strict_protocol)
   if self.actor_lr_decay.enabled:
    baseline_lr=self.actor_lr_decay.apply(self.actor_optimizer,self.sampled_steps,self.base_actor_learning_rate)
    if self.wave_specific_actor_isolation.enabled:
