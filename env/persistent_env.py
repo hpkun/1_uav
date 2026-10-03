@@ -53,6 +53,19 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             raise ValueError("spawn_radius must be inside the arena")
         if self.spawn_direction_count < 1:
             raise ValueError("spawn_direction_count must be positive")
+        configured_blue_counts = wave_config.get("blue_units_per_wave")
+        if configured_blue_counts is None:
+            self.blue_units_per_wave = [self.team_size] * self.total_waves
+        else:
+            if not isinstance(configured_blue_counts, (list, tuple)):
+                raise ValueError("blue_units_per_wave must be a sequence")
+            self.blue_units_per_wave = [int(value) for value in configured_blue_counts]
+        if len(self.blue_units_per_wave) != self.total_waves:
+            raise ValueError("blue_units_per_wave length must equal total_waves")
+        if any(count < 1 or count > self.team_size for count in self.blue_units_per_wave):
+            raise ValueError("blue_units_per_wave values must be in [1, team_size]")
+        if self.blue_units_per_wave[0] != self.team_size:
+            raise ValueError("the first persistent wave must use all Blue slots")
         maximum_offset = max(map(abs, self.config["scenario"]["formation_offsets"]))
         if np.hypot(self.spawn_radius, maximum_offset) >= self.arena_radius:
             raise ValueError("configured Blue formation does not fit inside arena")
@@ -63,6 +76,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         self.wave_records: list[dict[str, Any]] = []
         self._wave_start_step = 0
         self._wave_start_red_survivors = self.team_size
+        self._wave_start_blue_survivors = self.team_size
         self._wave_start_counts: dict[str, dict[str, int]] = {}
         self._wave_start_rewards: dict[str, float] = {}
         self._wave_record_open = False
@@ -105,8 +119,8 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             raise RuntimeError("curriculum snapshot must be exported immediately post-spawn")
         if self.steps >= self.max_steps or not self.red_alive_mask.any():
             raise RuntimeError("curriculum snapshot cannot be terminal")
-        if int(self.blue_alive_mask.sum()) != self.team_size:
-            raise RuntimeError("curriculum snapshot requires a complete fresh Blue wave")
+        if int(self.blue_alive_mask.sum()) != self.blue_units_per_wave[self.wave_index - 1]:
+            raise RuntimeError("curriculum snapshot has the wrong active Blue force size")
         fixed_policy_state = None
         if isinstance(self.fixed_policy, GroundAwareNearestTargetPursuitPolicy):
             fixed_policy_state = {
@@ -142,6 +156,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             "wave_records": deepcopy(self.wave_records),
             "_wave_start_step": int(self._wave_start_step),
             "_wave_start_red_survivors": int(self._wave_start_red_survivors),
+            "_wave_start_blue_survivors": int(self._wave_start_blue_survivors),
             "_wave_start_counts": deepcopy(self._wave_start_counts),
             "_wave_start_rewards": deepcopy(self._wave_start_rewards),
             "_wave_record_open": bool(self._wave_record_open),
@@ -197,6 +212,9 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         self.wave_records = deepcopy(state["wave_records"])
         self._wave_start_step = int(state["_wave_start_step"])
         self._wave_start_red_survivors = int(state["_wave_start_red_survivors"])
+        self._wave_start_blue_survivors = int(
+            state.get("_wave_start_blue_survivors", self.blue_units_per_wave[self.wave_index - 1])
+        )
         self._wave_start_counts = deepcopy(state["_wave_start_counts"])
         self._wave_start_rewards = deepcopy(state["_wave_start_rewards"])
         self._wave_record_open = bool(state["_wave_record_open"])
@@ -213,8 +231,8 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
                 setattr(self.fixed_policy, key, np.asarray(fixed[key]).copy())
         if self.steps != self._wave_start_step or not self.red_alive_mask.any():
             raise ValueError("restored curriculum state is not a live post-spawn entry")
-        if int(self.blue_alive_mask.sum()) != self.team_size:
-            raise ValueError("restored curriculum state has an incomplete Blue wave")
+        if int(self.blue_alive_mask.sum()) != self.blue_units_per_wave[self.wave_index - 1]:
+            raise ValueError("restored curriculum state has the wrong active Blue force size")
         return {
             "observation": self._observations().copy(),
             "red_alive_mask": self.red_alive_mask.copy(),
@@ -230,6 +248,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         self._wave_record_open = True
         self._wave_start_step = self.steps
         self._wave_start_red_survivors = int(self.red_alive_mask.sum())
+        self._wave_start_blue_survivors = int(self.blue_alive_mask.sum())
         self._wave_start_counts = {
             side: dict(counts) for side, counts in self.combat_counts.items()
         }
@@ -250,7 +269,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             "duration_steps": self.steps - self._wave_start_step,
             "red_survivors_start": self._wave_start_red_survivors,
             "red_survivors_end": int(self.red_alive_mask.sum()),
-            "blue_survivors_start": self.team_size,
+            "blue_survivors_start": self._wave_start_blue_survivors,
             "blue_survivors_end": int(self.blue_alive_mask.sum()),
             "wave_completed": True,
             "wave_cleared": bool(wave_cleared),
@@ -344,6 +363,14 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
                 best_candidate = candidate
         # __init__ proves every enumerated formation fits inside the arena.
         assert best_candidate is not None and self._blue_wave_inside_arena(best_candidate)
+        # Candidate generation/search is always performed with the legacy full
+        # four-slot geometry.  Only after the winning candidate is fixed do we
+        # deterministically deactivate placeholder slots, consuming no RNG.
+        next_wave_active_count = self.blue_units_per_wave[self.wave_index]
+        if next_wave_active_count < self.team_size:
+            inactive_count = self.team_size - next_wave_active_count
+            for offset in range(inactive_count):
+                best_candidate[(best_index + offset) % self.team_size].alive = False
         self.blue = best_candidate
         self.red_fire_states = [FireState() for _ in range(self.team_size)]
         self.blue_fire_states = [FireState() for _ in range(self.team_size)]
@@ -364,6 +391,7 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
             "environment_variant": self.environment_variant,
             "wave_index": self.wave_index,
             "total_waves": self.total_waves,
+            "blue_units_per_wave": list(self.blue_units_per_wave),
             "waves_cleared": self.waves_cleared,
             "wave_cleared_this_step": wave_cleared,
             "spawned_next_wave": spawned_next_wave,
@@ -433,11 +461,13 @@ class PersistentWaveCombatEnv(MultiUAVCombatEnv):
         if (terminated or truncated) and self._wave_record_open:
             self._finish_wave_record(False, str(info["termination_reason"]))
 
-        current_blue_losses = self.team_size - int(self.blue_alive_mask.sum())
+        completed_blue_losses = sum(self.blue_units_per_wave[:self.waves_cleared])
+        current_active_count = self.blue_units_per_wave[self.wave_index - 1]
+        current_blue_losses = current_active_count - int(self.blue_alive_mask.sum())
         info["blue_losses"] = (
-            self.waves_cleared * self.team_size
+            completed_blue_losses
             if wave_cleared
-            else self.waves_cleared * self.team_size + current_blue_losses
+            else completed_blue_losses + current_blue_losses
         )
         # super().step() built info before an intermediate replacement. Always
         # overwrite state-derived fields so returned masks match observation.
