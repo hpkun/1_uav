@@ -186,6 +186,7 @@ class ModularMAPPOTrainingRunner:
         self.brsc_pending_boundaries_dropped_on_resume = 0
         self.brsc_completed_episode_counter = 0
         self.marc_pending_episode = [{1: [], 2: [], 3: []} for _ in range(self.num_envs)]
+        self.marc_wave_start_steps = np.zeros(self.num_envs, dtype=np.int64)
         self.marc_pending_dropped_on_resume = 0
         self.resume_count = 0
         if not resume_mode:
@@ -424,25 +425,40 @@ class ModularMAPPOTrainingRunner:
                     pending,waves_cleared,group_id,int(env_id)))
         self.brsc_pending_episode[int(env_id)]={1:None,2:None};return completed
 
-    def _marc_collect_candidates(self, observations, alive_masks, waves) -> None:
-        """Keep strided, alive-only candidates until their milestone is known."""
+    def _marc_collect_candidates(self, observations, alive_masks, waves, actions=None) -> None:
+        """Keep aligned, strided candidates until their milestone is known.
+
+        V1 intentionally preserves its observation-only pre-action snapshots.
+        V2 is called after ``trainer.act`` and stores the exact post-tanh action
+        that is subsequently passed to ``env.step``; it never resamples targets.
+        """
         module = self.trainer.milestone_aware_retention_credit
         if not module.enabled:
+            return
+        if (module.version == 1) != (actions is None):
             return
         for env_id in range(self.num_envs):
             wave = int(waves[env_id])
             if wave not in (1, 2, 3) or int(self.episode_steps[env_id]) % module.retention_stride:
                 continue
             rows = self.marc_pending_episode[env_id][wave]
-            rows.extend(np.asarray(observations[env_id], dtype=np.float32)[np.asarray(alive_masks[env_id]) > .5])
-            # Pending storage is bounded independently for every live episode.
-            overflow = len(rows) - module.retention_bank_size_per_wave
-            if overflow > 0:
-                del rows[:overflow]
+            live = np.asarray(alive_masks[env_id]) > .5
+            live_observations = np.asarray(observations[env_id], dtype=np.float32)[live]
+            if module.version == 1:
+                rows.extend(live_observations)
+                # V1 pending storage retains its historical FIFO-compatible bound.
+                overflow = len(rows) - module.retention_bank_size_per_wave
+                if overflow > 0:
+                    del rows[:overflow]
+            else:
+                live_actions = np.asarray(actions[env_id], dtype=np.float32)[live]
+                rows.extend({"observation": observation.copy(), "target_action": action.copy()}
+                            for observation, action in zip(live_observations, live_actions))
 
     def _marc_finalize_step(self, pre_waves, done, infos) -> list[dict[str, Any]]:
         """Commit only successful source-wave candidates; failures never enter banks."""
-        if not self.trainer.milestone_aware_retention_credit.enabled:
+        module = self.trainer.milestone_aware_retention_credit
+        if not module.enabled:
             return []
         completed = []
         for env_id, info in enumerate(infos):
@@ -456,12 +472,47 @@ class ModularMAPPOTrainingRunner:
             if successful_wave is not None:
                 rows = self.marc_pending_episode[env_id][successful_wave]
                 if rows:
-                    completed.append({"wave": successful_wave,
-                                      "observations": np.asarray(rows, dtype=np.float32)})
+                    if module.version == 1:
+                        completed.append({"wave": successful_wave,
+                                          "observations": np.asarray(rows, dtype=np.float32)})
+                    else:
+                        episode_step = int(info.get("episode_length", self.episode_steps[env_id] + 1))
+                        duration = episode_step - int(self.marc_wave_start_steps[env_id])
+                        if duration <= 0:
+                            raise RuntimeError("MARC V2 wave duration is not positive")
+                        completed.append({
+                            "wave": successful_wave,
+                            "observations": np.stack([row["observation"] for row in rows]),
+                            "target_actions": np.stack([row["target_action"] for row in rows]),
+                            "wave_duration_steps": duration,
+                            "red_survivors_after_clear": int(np.asarray(
+                                info.get("red_alive_mask", []), dtype=np.float32).sum()),
+                        })
                 self.marc_pending_episode[env_id][successful_wave] = []
+                if module.version == 2 and successful_wave in (1, 2):
+                    self.marc_wave_start_steps[env_id] = int(
+                        info.get("episode_length", self.episode_steps[env_id] + 1)
+                    )
             if bool(done[env_id]):
                 self.marc_pending_episode[env_id] = {1: [], 2: [], 3: []}
+                if hasattr(self, "marc_wave_start_steps"):
+                    self.marc_wave_start_steps[env_id] = 0
         return completed
+
+    def _marc_discard_pending_after_resume(self, extra: dict[str, Any]) -> None:
+        """Drop non-checkpointed live-episode candidates after environment restart.
+
+        Completed V1/V2 banks live in trainer checkpoint state and are untouched.
+        Pending observation/action pairs cannot be aligned to freshly reset live
+        environments, so the fail-closed resume behavior is to count and drop them.
+        """
+        dropped = sum(int(count) for rows in extra.get("marc_pending_candidate_counts", [])
+                      for count in rows.values())
+        self.marc_pending_dropped_on_resume = int(
+            extra.get("marc_pending_dropped_on_resume", 0)
+        ) + dropped
+        self.marc_pending_episode = [{1: [], 2: [], 3: []} for _ in range(self.num_envs)]
+        self.marc_wave_start_steps = np.zeros(self.num_envs, dtype=np.int64)
 
     def _collect_wave_entry_snapshots(
         self, infos: list[dict[str, Any]], sampled_steps: int
@@ -582,6 +633,7 @@ class ModularMAPPOTrainingRunner:
                 obs, alive, False, True, context, self.actor_hidden, self.episode_mask,
                 option_ids=current_options, wave_indices=pre_wave
             )
+            self._marc_collect_candidates(obs, alive, pre_wave, actions)
             _, new_critic = self.trainer.values_step(
                 obs, alive, context, self.critic_hidden, self.episode_mask,
                 option_ids=current_options
@@ -1056,9 +1108,7 @@ class ModularMAPPOTrainingRunner:
             int(count)>0 for rows in extra.get("brsc_pending_boundary_counts",[]) for count in rows.values())
         self.brsc_completed_episode_counter=int(extra.get("brsc_completed_episode_counter",0))
         self.brsc_pending_episode=[{1:None,2:None} for _ in range(self.num_envs)]
-        self.marc_pending_dropped_on_resume = int(extra.get("marc_pending_dropped_on_resume", 0)) + sum(
-            int(count) for rows in extra.get("marc_pending_candidate_counts", []) for count in rows.values())
-        self.marc_pending_episode=[{1:[],2:[],3:[]} for _ in range(self.num_envs)]
+        self._marc_discard_pending_after_resume(extra)
         self._make_vector(previous)
         if self.trainer.persistent_wave_trajectory_replay.enabled:
             self.trainer.persistent_wave_trajectory_replay.discard_pending_after_environment_restart()

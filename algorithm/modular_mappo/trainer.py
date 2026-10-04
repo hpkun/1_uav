@@ -195,8 +195,8 @@ class ModularMAPPOTrainer:
   if self.total_sampled_steps<=0:raise ValueError("total_sampled_steps must be positive")
   if self.milestone_aware_retention_credit.enabled:
    enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","milestone_aware_retention_credit"}
-   if enabled!=required:raise ValueError(f"MARC V1 requires exact enabled modules: {sorted(required)}")
-   if not self.actor_lr_decay.enabled:raise ValueError("MARC V1 requires actor_lr_decay")
+   if enabled!=required:raise ValueError(f"MARC V{self.milestone_aware_retention_credit.version} requires exact enabled modules: {sorted(required)}")
+   if not self.actor_lr_decay.enabled:raise ValueError("MARC requires actor_lr_decay")
    if any((self.recurrent.enabled,self.hierarchical_temporal_abstraction.enabled,self.wave_balance.enabled,
            self.wave_entry_curriculum.enabled,self.actor_kl_guard.enabled,self.inter_wave_credit.enabled,
            self.counterfactual_inter_wave_credit.enabled,self.boundary_redistributed_segment_credit.enabled,
@@ -208,7 +208,7 @@ class ModularMAPPOTrainer:
            self.wave1_sensitivity_gating.enabled,self.wave_specific_actor_isolation.enabled,
            self.wave_specific_mean_heads.enabled,self.deployment_aligned_wave_exploration.enabled,
            self.reference_variance.enabled)):
-    raise ValueError("MARC V1 requires an otherwise Plain feed-forward Actor/Critic")
+    raise ValueError("MARC requires an otherwise Plain feed-forward Actor/Critic")
   if self.entity_attention_enabled and (self.recurrent.enabled or self.wave_context.enabled):raise ValueError("entity attention v1 is incompatible with recurrent memory and wave context")
   if self.ppo_stabilization.enabled and self.recurrent.enabled:raise ValueError("PPO stabilization v1 requires the feed-forward update path")
   if self.actor_kl_guard.enabled and self.recurrent.enabled:raise ValueError("actor_kl_guard requires the feed-forward update path")
@@ -2001,6 +2001,7 @@ class ModularMAPPOTrainer:
    if self.reference_variance_actor is None:raise RuntimeError("RV reference actor missing before checkpoint save")
    if self.reference_variance_actor_sha256()!=self.reference_variance_initial_sha256:raise RuntimeError("RV reference actor mutated")
   state=self._base_checkpoint_state(extra)
+  state["development_feature_versions"]["milestone_aware_retention_credit"]=self.milestone_aware_retention_credit.version
   state["development_feature_versions"]["wave_specific_actor_isolation"]=WSAI_MAPPO_VERSION
   state["development_feature_versions"]["wave_specific_mean_heads"]=WSMH_MAPPO_VERSION
   state["development_feature_versions"]["actor_gradient_clipping"]=ACTOR_GRAD_CLIP_VERSION
@@ -2033,6 +2034,10 @@ class ModularMAPPOTrainer:
   checkpoint_version=state.get("modular_mappo_impl_version")
   if checkpoint_version!=MODULAR_MAPPO_IMPL_VERSION:raise RuntimeError(f"modular implementation version mismatch: checkpoint={checkpoint_version}, current={MODULAR_MAPPO_IMPL_VERSION}")
   if state.get("baseline_mappo_impl_version")!=MAPPO_IMPL_VERSION:raise RuntimeError("baseline MAPPO implementation version mismatch")
+  if strict_protocol and self.milestone_aware_retention_credit.enabled:
+   checkpoint_marc_version=state.get("development_feature_versions",{}).get("milestone_aware_retention_credit")
+   if checkpoint_marc_version!=self.milestone_aware_retention_credit.version:
+    raise RuntimeError(f"checkpoint MARC version mismatch: checkpoint={checkpoint_marc_version}, current={self.milestone_aware_retention_credit.version}")
   if strict_protocol and state.get("module_config_sha256")!=self.module_protocol()["module_config_sha256"]:raise RuntimeError("checkpoint module protocol mismatch")
   if strict_protocol and (self.entity_attention_enabled or self.advantage_priority.enabled or self.ppo_stabilization.enabled or self.actor_lr_decay.enabled or self.mission_film.enabled or self.actor_kl_guard.enabled or self.inter_wave_credit.enabled or self.counterfactual_inter_wave_credit.enabled or self.boundary_redistributed_segment_credit.enabled or self.hierarchical_temporal_abstraction.enabled or self.sequential_wave_gradient_projection.enabled or self.persistent_wave_trajectory_replay.enabled or self.wave1_sensitivity_gating.enabled or self.wave_specific_actor_isolation.enabled or self.wave_specific_mean_heads.enabled or self.actor_gradient_clipping.enabled or self.deployment_aligned_wave_exploration.enabled or self.reference_variance.enabled or self.milestone_aware_retention_credit.enabled):
    versions=state.get("development_feature_versions",{});expected={"advantage_priority":ADVANTAGE_PRIORITY_VERSION,"ppo_stabilization":PPO_STABILIZATION_VERSION,"entity_attention":1}
@@ -2054,7 +2059,7 @@ class ModularMAPPOTrainer:
    if self.actor_gradient_clipping.enabled and versions.get("actor_gradient_clipping")!=ACTOR_GRAD_CLIP_VERSION:raise RuntimeError("checkpoint actor gradient clipping feature version mismatch")
    if self.deployment_aligned_wave_exploration.enabled and versions.get("deployment_aligned_wave_exploration")!=DAWE_MAPPO_VERSION:raise RuntimeError("checkpoint DAWE feature version mismatch")
    if self.reference_variance.enabled and versions.get("reference_variance")!=REFERENCE_VARIANCE_VERSION:raise RuntimeError("checkpoint RV feature version mismatch")
-   if self.milestone_aware_retention_credit.enabled and versions.get("milestone_aware_retention_credit")!=MARC_MAPPO_VERSION:raise RuntimeError("checkpoint MARC feature version mismatch")
+   if self.milestone_aware_retention_credit.enabled and versions.get("milestone_aware_retention_credit")!=self.milestone_aware_retention_credit.version:raise RuntimeError("checkpoint MARC feature version mismatch")
   self.actor.load_state_dict(state["actor"]);self.critic.load_state_dict(state["critic"]);self.popart.load_state_dict(state.get("popart",{}),strict=False)
   self.actor_optimizer.load_state_dict(state["actor_optimizer"]);self.critic_optimizer.load_state_dict(state["critic_optimizer"])
   if self.reference_variance.enabled:

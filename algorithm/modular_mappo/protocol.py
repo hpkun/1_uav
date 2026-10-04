@@ -98,12 +98,24 @@ def checkpoint_architecture(trainer):
    "wave_balance_target":"actor_surrogate_only","wave_balance_temperature":module.wave_balance_temperature,
    "wave_weight_min":module.wave_weight_min,"wave_weight_max":module.wave_weight_max,
    "critic_target":"unchanged_full_horizon_return","entropy_weighting":"plain_alive_mean",
-   "retention_target":"successful_milestone_policy_snapshot",
-   "retention_coefficient":module.retention_coefficient,
-   "retention_bank_size_per_wave":module.retention_bank_size_per_wave,
+   "retention_target":("successful_milestone_policy_snapshot" if module.version==1 else
+                       "elite_successful_executed_action_to_deterministic_tanh_mean"),
    "retention_samples_per_wave":module.retention_samples_per_wave,
-   "retention_min_samples_per_wave":module.retention_min_samples_per_wave,
    "retention_stride":module.retention_stride})
+  if module.version==1:
+   result.update({"retention_coefficient":module.retention_coefficient,
+    "retention_bank_size_per_wave":module.retention_bank_size_per_wave,
+    "retention_min_samples_per_wave":module.retention_min_samples_per_wave,
+    "retention_distribution":"diagonal_gaussian_kl"})
+  else:
+   result.update({"deployment_distill_coefficient":module.deployment_distill_coefficient,
+    "elite_segments_per_wave":module.elite_segments_per_wave,
+    "elite_rows_per_segment":module.elite_rows_per_segment,
+    "retention_min_rows_per_wave":module.retention_min_rows_per_wave,
+    "elite_quality":"lexicographic(red_survivors_after_clear,-wave_duration_steps)",
+    "elite_replacement":"strictly_better_replaces_current_worst_equal_rejected",
+    "deployment_target":"post_tanh_action_actually_executed_in_environment",
+    "log_std_retention":False})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):
