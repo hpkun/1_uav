@@ -70,6 +70,7 @@ def main() -> None:
     observation, reset_info = env.reset(args.episode_seed)
     alive = env.red_alive_mask.copy()
     actor_hidden, critic_hidden = trainer.initial_hidden(1)
+    actor_phase_reset_flags = np.ones(1, dtype=bool)
     episode_mask = np.zeros(1, dtype=np.float32)
     frames = {key: [] for key in ("red_kinematics", "red_alive", "blue_kinematics", "blue_alive", "steps", "time_s", "active_wave", "waves_cleared")}
     transitions = {key: [] for key in ("red_actions", "local_rewards", "team_reward", "terminated", "truncated", "wave_cleared_this_step", "spawned_next_wave", "red_step_fire_attempts", "blue_step_fire_attempts", "red_step_weapon_hits", "blue_step_weapon_hits", "red_step_attack_kills", "blue_step_attack_kills", "red_boundary_exit_delta", "blue_boundary_exit_delta", "red_ground_loss_delta", "blue_ground_loss_delta")}
@@ -84,7 +85,8 @@ def main() -> None:
             trainer, wave, total, env.blue_alive_mask[None],
             np.asarray([env.steps]), env.max_steps,
         )
-        actions, _, _, actor_hidden = trainer.act(observation[None], alive[None], deterministic=True, return_policy_data=True, context=context, hidden=actor_hidden, episode_mask=episode_mask)
+        phase_kwargs = {"wave_indices":np.asarray([env.wave_index]),"actor_phase_reset_flags":actor_phase_reset_flags} if trainer.recurrent.wave_segmented else {}
+        actions, _, _, actor_hidden = trainer.act(observation[None], alive[None], deterministic=True, return_policy_data=True, context=context, hidden=actor_hidden, episode_mask=episode_mask, **phase_kwargs)
         _, critic_hidden = trainer.values_step(observation[None], alive[None], context, critic_hidden, episode_mask)
         next_observation, reward, terminated, truncated, info = env.step(actions[0])
         for key in transitions:
@@ -105,6 +107,7 @@ def main() -> None:
         actor_hidden = trainer.recurrent.apply_alive(actor_hidden, alive[None])
         critic_hidden = trainer.recurrent.apply_alive(critic_hidden, alive[None])
         episode_mask[:] = 1.0
+        actor_phase_reset_flags[:] = bool(info.get("spawned_next_wave",False))
         append_frame(frames, env, env.wave_index, env.waves_cleared, env.steps * env.dt, info)
         observation = next_observation
         if terminated or truncated:

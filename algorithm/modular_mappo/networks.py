@@ -12,9 +12,10 @@ class ModularMAPPOActor(SharedMAPPOActor):
                  log_std_min=-5.0, log_std_max=2.0, activation="relu",
                  context_dim=0, recurrent_hidden_dim=0,
                  entity_attention_config=None, mission_film_config=None,
-                 hierarchical_temporal_abstraction_config=None):
+                 hierarchical_temporal_abstraction_config=None, wave_segmented_actor_gru=False):
         self.base_observation_dim=int(observation_dim); self.context_dim=int(context_dim)
         self.recurrent_hidden_dim=int(recurrent_hidden_dim)
+        self.wave_segmented_actor_gru=bool(wave_segmented_actor_gru)
         film=dict(mission_film_config or {});self.mission_film_enabled=bool(film.get("enabled",False))
         super().__init__(observation_dim if self.mission_film_enabled else observation_dim+self.context_dim, action_dim, hidden_dim,
                          log_std_min, log_std_max, activation)
@@ -92,6 +93,9 @@ class ModularMAPPOActor(SharedMAPPOActor):
                 self.gru=nn.GRUCell(hidden_dim, self.recurrent_hidden_dim)
                 self.mean=nn.Linear(self.recurrent_hidden_dim, action_dim)
                 self.log_std=nn.Linear(self.recurrent_hidden_dim, action_dim)
+        if self.wave_segmented_actor_gru:
+            if self.recurrent_hidden_dim!=128:raise ValueError("wave-segmented actor requires hidden_dim=128")
+            self.phase_initial_hidden=nn.Parameter(torch.zeros(3,self.recurrent_hidden_dim))
         hta=dict(hierarchical_temporal_abstraction_config or {})
         self.hierarchical_temporal_abstraction_enabled=bool(hta.get("enabled",False))
         self.num_options=int(hta.get("num_options",4))
@@ -238,7 +242,7 @@ class ModularMAPPOActor(SharedMAPPOActor):
         new_hidden=hidden
         if self.recurrent_hidden_dim:
             if hidden is None:hidden=torch.zeros(*encoded.shape[:-1],self.recurrent_hidden_dim,device=encoded.device)
-            if episode_mask is not None:
+            if episode_mask is not None and not self.wave_segmented_actor_gru:
                 reset=episode_mask[...,None,None] if episode_mask.ndim==hidden.ndim-2 else episode_mask[...,None]
                 hidden=hidden*reset
             new_hidden=self.gru(encoded.reshape(-1,encoded.shape[-1]),hidden.reshape(-1,hidden.shape[-1])).view(*encoded.shape[:-1],-1)
@@ -257,6 +261,14 @@ class ModularMAPPOActor(SharedMAPPOActor):
         std=self.log_std(encoded).clamp(self.log_std_min,self.log_std_max).exp()
         result=(Normal(mean,std),new_hidden)
         return (*result,diagnostics) if return_attention else result
+
+    def phase_hidden(self,wave_indices,alive_mask):
+        """Live trainable phase initial state, shared across homogeneous agents."""
+        if not self.wave_segmented_actor_gru:raise RuntimeError("actor has no phase initialization")
+        waves=torch.as_tensor(wave_indices,dtype=torch.long,device=self.phase_initial_hidden.device)
+        if not bool(((waves>=1)&(waves<=3)).all()):raise ValueError("phase wave must be 1..3")
+        alive=torch.as_tensor(alive_mask,dtype=self.phase_initial_hidden.dtype,device=waves.device)
+        return self.phase_initial_hidden[waves-1].unsqueeze(-2)*alive.unsqueeze(-1)
 
     def distribution(self, observations, context=None,return_attention=False,option_ids=None):
         if self.recurrent_hidden_dim: raise RuntimeError("recurrent actor requires distribution_step")

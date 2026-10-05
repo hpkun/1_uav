@@ -6,6 +6,31 @@ from algorithm.common.protocol import config_sha256
 from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from .trainer import MODULAR_MAPPO_IMPL_VERSION
 def canonical_sha256(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
+
+def validate_marc_gru_screen_config(config):
+ method=config.get("development_method")
+ if method not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1"}:return
+ modules=config.get("modules",{});treatment=method=="marc_mappo_wsgru_v1"
+ enabled={k for k,v in modules.items() if isinstance(v,dict) and v.get("enabled",False)}
+ expected={"actor_lr_decay","milestone_aware_retention_credit"}|({"recurrent_memory"} if treatment else set())
+ if enabled!=expected:raise ValueError(f"{method} requires exact enabled modules: {sorted(expected)}")
+ marc=modules["milestone_aware_retention_credit"]
+ constants={"version":2,"max_waves":3,"continuation_alpha":1.0,"wave_balance_temperature":.5,
+  "wave_weight_min":.5,"wave_weight_max":2.0,"deployment_distill_coefficient":0.0}
+ if any(marc.get(k)!=v for k,v in constants.items()):raise ValueError("MARC GRU screen credit/balance constants or zero retention mismatch")
+ if treatment:
+  recurrent=modules["recurrent_memory"]
+  if any(recurrent.get(k)!=v for k,v in {"mode":"wave_segmented_actor_gru","hidden_dim":128,"sequence_length":32}.items()):
+   raise ValueError("MARC GRU screen requires wave_segmented_actor_gru, hidden_dim=128, sequence_length=32")
+ network=config["network"]
+ if any(network.get(k)!=v for k,v in {"observation_dim":52,"action_dim":3,"num_agents":4,"actor_hidden_layers":[256,256],"critic_hidden_layers":[256,256],"attention_heads":2}.items()):
+  raise ValueError("MARC GRU screen requires unchanged 52D/3D/4-agent 256-MLP attention-critic architecture")
+
+def validate_marc_gru_screen_environment(config,env):
+ if config.get("development_method") not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1"}:return
+ identity=(env.get("environment_variant"),env.get("persistent_waves",{}).get("blue_units_per_wave"),
+  env.get("persistent_waves",{}).get("total_waves"),env.get("scenario",{}).get("team_size"),env.get("simulation",{}).get("max_steps"))
+ if identity!=("persistent_wave_v2",[4,3,3],3,4,3000):raise ValueError("MARC GRU screen requires frozen 433/three-wave/3000-step environment")
 def checkpoint_architecture(trainer):
  mode=trainer.actor.entity_attention_mode if trainer.actor.entity_attention_enabled else "disabled"
  fbmr=mode in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"};dual=mode=="frozen_base_dual_bounded_mean_residual"
@@ -88,6 +113,10 @@ def checkpoint_architecture(trainer):
   result.update({"actor_gradient_clipping_enabled":True,"actor_grad_clip_version":module.version,
    "actor_grad_clip_mode":module.mode,"actor_max_grad_norm":module.actor_max_grad_norm,
    "critic_max_grad_norm":trainer.max_grad_norm,"actor_clip_only_intervention":True,"network_topology_unchanged":True})
+ if trainer.recurrent.wave_segmented:
+  result.update({"recurrent_mode":trainer.recurrent.mode,"actor_phase_embedding_shape":[3,128],
+   "actor_hidden_lifecycle":"episode/wave pre-action live phase initialization; death zero; rollout carry",
+   "actor_bptt_boundary":"explicit episode/wave phase reset; maximum 32 steps"})
  if trainer.milestone_aware_retention_credit.enabled:
   module=trainer.milestone_aware_retention_credit
   result.update({"milestone_aware_retention_credit_enabled":True,"marc_version":module.version,

@@ -131,7 +131,8 @@ def source_lifecycle_audit()->dict[str,bool]:
       "pre_action_hidden_saved":"actor_before = None if self.actor_hidden is None else self.actor_hidden.copy()" in collect and "actor_before" in collect,
       "chunk_restores_stored_hidden_detached":"r.actor_hidden_before_step[s,e]" in minibatch and ".detach()" in minibatch,
       "episode_mask_used_in_recompute":"EP[t]" in minibatch and "distribution_step" in minibatch,
-      "wave_transition_does_not_reset_hidden":"wave_cleared_this_step" not in collect[collect.index("self.actor_hidden ="):],
+      "wave_transition_does_not_reset_hidden":"wave_cleared_this_step" not in collect[collect.index("self.actor_hidden = self.trainer.recurrent.apply_alive"):]
+          and "if self.trainer.recurrent.wave_segmented:" in collect,
       "alive_mask_blocks_dead_hidden":"apply_alive(new_actor, self.alive)" in collect,
       "new_log_prob_uses_recurrent_history":"newlog=self.actor._squashed_log_prob(dist,R[t],A[t])" in minibatch,
       "actor_only_route_is_hybrid":"self.recurrent.actor_enabled and not self.recurrent.critic_enabled" in update,

@@ -233,7 +233,7 @@ class MilestoneAwareRetentionCreditModule(CapabilityModule):
 
     @torch.no_grad()
     def ingest_success_segments(self, segments, actor, device: torch.device) -> None:
-        if not self.enabled:
+        if not self.retention_active:
             return
         for segment in segments or []:
             wave = int(segment["wave"])
@@ -365,8 +365,14 @@ class MilestoneAwareRetentionCreditModule(CapabilityModule):
             })
         return metrics
 
+    @property
+    def retention_active(self):
+        return self.enabled and not (self.version == MARC_MAPPO_V2_VERSION and self.deployment_distill_coefficient == 0.0)
+
     def retention_loss(self, actor, device: torch.device) -> tuple[torch.Tensor, dict[str, float]]:
         zero = next(actor.parameters()).sum() * 0.0
+        if self.version == MARC_MAPPO_V2_VERSION and not self.retention_active:
+            return zero, self._v2_metrics()
         if self.version == MARC_MAPPO_V2_VERSION:
             metrics = self._v2_metrics()
             sampled = self.sample_elite_balanced()
