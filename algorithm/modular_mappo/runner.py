@@ -87,7 +87,8 @@ class ModularMAPPOTrainingRunner:
         self.env_config = self.declared_env_config  # compatibility alias: always declared/source
         self.evaluation_env_config = deepcopy(env_config)
         self.algorithm_config = deepcopy(algorithm_config)
-        from .protocol import validate_marc_gru_screen_environment
+        from .protocol import validate_marc_gru_screen_environment,validate_marc_factorial_config
+        validate_marc_factorial_config(algorithm_config,env_config)
         validate_marc_gru_screen_environment(algorithm_config,env_config)
         self.output_dir = Path(output_dir)
         self.branch_provenance = deepcopy(branch_provenance or {})
@@ -113,7 +114,7 @@ class ModularMAPPOTrainingRunner:
         anchor_enabled = bool(configured.get("modules", {}).get("policy_anchor", {}).get("enabled", False))
         entity_enabled = bool(configured.get("modules", {}).get("entity_attention", {}).get("enabled", False))
         self.effective_hidden_dim = int(configured["network"]["actor_hidden_layers"][0])
-        if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled) and configured.get("development_method") not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
+        if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled) and configured.get("development_method") not in {"marc_core_factorial_v1","marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
             self.effective_hidden_dim = 64
         self.trainer = build_modular_mappo_trainer(configured, self.device, self.effective_hidden_dim,self.total_sampled_steps)
         if self.trainer.wave_entry_curriculum.enabled:
@@ -1190,7 +1191,8 @@ class ModularMAPPOTrainingRunner:
         method=self.method_identity();modules=",".join(self.trainer.module_protocol()["enabled_modules"]) or "none"
         return (
             f"[START] method={method['development_method']} seed={self.seed} device={self.device} "
-            f"envs={self.num_envs} steps={self.total_sampled_steps} rollout={self.rollout_steps}",
+            f"envs={self.num_envs} steps={self.total_sampled_steps} rollout={self.rollout_steps}" +
+            (f" factorial_variant={method['factorial_variant']} continuation_alpha={method['continuation_alpha']} wave_balance_temperature={method['wave_balance_temperature']}" if 'factorial_variant' in method else ''),
             f"[PROTOCOL] env={self.env_config.get('environment_variant','direct_v2_3')} "
             f"waves={self.current_waves} max_steps={self.runtime_env_config['simulation']['max_steps']} "
             f"actor_input={method['actor_input_dim']} actor_ctx={method['actor_context_dim']} critic_ctx={method['critic_context_dim']} "
@@ -1352,6 +1354,10 @@ class ModularMAPPOTrainingRunner:
             "actor_context_dim": int(architecture["actor_context_dim"]),
             "critic_context_dim": int(architecture["critic_context_dim"]),
         }
+        if self.algorithm_config.get("development_method")=="marc_core_factorial_v1":
+            module=self.trainer.milestone_aware_retention_credit
+            result.update(factorial_variant=self.algorithm_config["factorial_variant"],
+                          continuation_alpha=module.continuation_alpha,wave_balance_temperature=module.wave_balance_temperature)
         if self.trainer.mission_film.enabled:
             result.update({key:architecture[key] for key in ("mission_film_enabled","mission_film_mode",
                 "mission_encoder_hidden_dim","mission_film_alpha","mission_film_identity_init",

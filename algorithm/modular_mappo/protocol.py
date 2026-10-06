@@ -7,6 +7,28 @@ from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 from .trainer import MODULAR_MAPPO_IMPL_VERSION
 def canonical_sha256(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()
 
+MARC_FACTORIAL_CELLS={"none":(0.0,0.0),"credit_only":(1.0,0.0),"balance_only":(0.0,0.5),"full":(1.0,0.5)}
+
+def validate_marc_factorial_config(config,env=None):
+ """Strict scalar-only ablation of the existing feed-forward MARC lineage."""
+ if config.get("development_method")!="marc_core_factorial_v1":return
+ from pathlib import Path
+ from algorithm.train_modular_mappo import load_config
+ root=Path(__file__).resolve().parents[2]
+ cell=config.get("factorial_variant")
+ if cell not in MARC_FACTORIAL_CELLS:raise ValueError("unknown MARC factorial cell")
+ source=load_config(root/"configs/dev_marc_credit_balance_1m.yaml")
+ expected=deepcopy(source);expected["development_method"]="marc_core_factorial_v1"
+ expected["factorial_variant"]=cell;expected["training"]["total_sampled_steps"]=3000000
+ # Runtime training seed is deliberately matched, not fixed to a single replicate.
+ expected["training"]["seed"]=config["training"]["seed"]
+ alpha,temp=MARC_FACTORIAL_CELLS[cell]
+ expected["modules"]["milestone_aware_retention_credit"].update(continuation_alpha=alpha,wave_balance_temperature=temp)
+ expected["development_protocol"]["primary_checkpoints"]=[900000,3000000]
+ if config!=expected:raise ValueError("MARC factorial differs outside the four registered scalar cells/metadata/budget")
+ if env is not None and env!=load_config(root/"configs/persistent_wave_v2_blue433_environment.yaml"):
+  raise ValueError("MARC factorial requires unchanged frozen 433 environment including reward/Blue/weapon")
+
 def validate_marc_gru_screen_config(config):
  method=config.get("development_method")
  if method not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1"}:return
