@@ -10,36 +10,40 @@ from pathlib import Path
 import shutil
 import sys
 
-import torch
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from algorithm.train_mappo import (
-    TeeOutput, ensure_fresh_output_directory, load_run_config,
-    prepare_resume_rollback, reject_stale_resume_checkpoint,
-    resolve_runtime_settings, validate_resume_config_snapshots,
-)
-from algorithm.common.protocol import (
-    config_sha256,
-    runtime_source_branch_provenance,
-    runtime_source_manifest,
-)
-from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
-from algorithm.modular_mappo.protocol import (
-    checkpoint_architecture, validate_modular_branch, validate_fbmr_stage2_branch,
-    validate_fbmr_v2_stage2_branch,
-    validate_modular_checkpoint,
-    validate_swgp_branch,
-    validate_team_credit_branch,
-    validate_pwtr_branch,
-    validate_w1sg_branch, validate_wsai_branch, validate_wsmh_branch, validate_actor_grad_clip_branch,
-    validate_dawe_branch, validate_rv_branch,
-)
-from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
-from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
+# spawn re-executes this file as __mp_main__ in each environment worker.
+# Those workers only need env.process_worker, not Torch/CUDA or training code.
+# Keep the real CLI and normal library-import paths unchanged.
+if __name__ != "__mp_main__":
+    import torch
+    from algorithm.train_mappo import (
+        TeeOutput, ensure_fresh_output_directory, load_run_config,
+        prepare_resume_rollback, reject_stale_resume_checkpoint,
+        resolve_runtime_settings, validate_resume_config_snapshots,
+    )
+    from algorithm.common.protocol import (
+        config_sha256,
+        runtime_source_branch_provenance,
+        runtime_source_manifest,
+    )
+    from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
+    from algorithm.modular_mappo.protocol import (
+        checkpoint_architecture, validate_modular_branch, validate_fbmr_stage2_branch,
+        validate_fbmr_v2_stage2_branch,
+        validate_modular_checkpoint,
+        validate_swgp_branch,
+        validate_team_credit_branch,
+        validate_pwtr_branch,
+        validate_w1sg_branch, validate_wsai_branch, validate_wsmh_branch, validate_actor_grad_clip_branch,
+        validate_dawe_branch, validate_rv_branch,
+    )
+    from algorithm.modular_mappo.runner import ModularMAPPOTrainingRunner
+    from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
 
 
 def _merge(base: dict, override: dict) -> dict:
