@@ -276,6 +276,52 @@ class ModularMAPPOActor(SharedMAPPOActor):
         return (result[0],result[2]) if return_attention else result[0]
 
 
+class StateMemoryMAPPOActor(ModularMAPPOActor):
+    """Current 55D state has a direct path alongside a within-wave GRU memory."""
+    def __init__(self,observation_dim=52,action_dim=3,hidden_dim=256,
+                 log_std_min=-5.,log_std_max=2.,activation="relu"):
+        if (observation_dim,action_dim,hidden_dim,activation)!=(52,3,256,"relu"):
+            raise ValueError("MARC-SM requires 52D/3D, 256-256 ReLU policy")
+        # Consume exactly the baseline construction stream seen by the critic.
+        super().__init__(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,activation)
+        self.context_dim=3;self.recurrent_hidden_dim=128
+        self.state_memory_input_dim=55;self.fused_policy_input_dim=183
+        with torch.random.fork_rng(devices=[]):
+            self.gru=nn.GRUCell(55,128)
+            self.backbone=nn.Sequential(nn.Linear(183,256),nn.ReLU(),nn.Linear(256,256),nn.ReLU())
+        # Existing Gaussian heads still read the 256D policy feature.
+
+    @staticmethod
+    def wave_one_hot(wave_indices,alive_mask,device=None):
+        waves=torch.as_tensor(wave_indices,device=device)
+        if not bool(((waves>=1)&(waves<=3)&(waves==waves.long())).all()):
+            raise ValueError("State Memory requires pre-action wave indices in 1..3")
+        alive=torch.as_tensor(alive_mask,dtype=torch.float32,device=waves.device)
+        if waves.shape!=alive.shape[:-1]:raise ValueError("State Memory waves/alive shape mismatch")
+        return torch.nn.functional.one_hot(waves.long()-1,3).to(torch.float32).unsqueeze(-2).expand(*alive.shape,3)*alive[...,None]
+
+    def distribution_step(self,observations,context=None,hidden=None,episode_mask=None,
+                          alive_mask=None,return_attention=False,option_ids=None):
+        if observations.shape[-1]!=52 or context is None or context.shape!=(*observations.shape[:-1],3):
+            raise ValueError("State Memory Actor requires 52D observation and explicit 3D wave context")
+        if alive_mask is None:raise ValueError("State Memory Actor requires alive mask")
+        # Dead rows may have zero context; live rows must be literal one-hot.
+        live=alive_mask>.5
+        if not bool(((context[live]==0)|(context[live]==1)).all()) or not bool((context[live].sum(-1)==1).all()):
+            raise ValueError("State Memory context must be fixed wave one-hot")
+        x=torch.cat((observations,context),-1)
+        if hidden is None:hidden=torch.zeros(*observations.shape[:-1],128,device=observations.device)
+        if episode_mask is not None:
+            reset=episode_mask[...,None,None] if episode_mask.ndim==hidden.ndim-2 else episode_mask[...,None]
+            hidden=hidden*reset
+        hidden=hidden*alive_mask[...,None]
+        new_hidden=self.gru(x.reshape(-1,55),hidden.reshape(-1,128)).reshape(*observations.shape[:-1],128)
+        new_hidden=new_hidden*alive_mask[...,None]
+        encoded=self.backbone(torch.cat((x,new_hidden),-1))
+        result=(Normal(self.mean(encoded),self.log_std(encoded).clamp(self.log_std_min,self.log_std_max).exp()),new_hidden)
+        return (*result,{}) if return_attention else result
+
+
 class HierarchicalManagerActor(nn.Module):
     """Shared low-frequency categorical actor over latent tactical options."""
     def __init__(self,observation_dim=52,hidden_dim=256,num_options=4,activation="relu"):
@@ -440,4 +486,4 @@ class BoundaryStateOutcomeCritic(nn.Module):
         return (per_agent*mask).sum(1)/mask.sum(1).clamp_min(1.0)
 
 
-__all__=["ModularMAPPOActor","ModularCentralizedCritic","HierarchicalManagerActor","InterWaveStateQualityCritic","InterWaveActionOutcomeCritic","BoundaryStateOutcomeCritic"]
+__all__=["ModularMAPPOActor","StateMemoryMAPPOActor","ModularCentralizedCritic","HierarchicalManagerActor","InterWaveStateQualityCritic","InterWaveActionOutcomeCritic","BoundaryStateOutcomeCritic"]

@@ -113,7 +113,7 @@ class ModularMAPPOTrainingRunner:
         anchor_enabled = bool(configured.get("modules", {}).get("policy_anchor", {}).get("enabled", False))
         entity_enabled = bool(configured.get("modules", {}).get("entity_attention", {}).get("enabled", False))
         self.effective_hidden_dim = int(configured["network"]["actor_hidden_layers"][0])
-        if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled) and configured.get("development_method") not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1"}:
+        if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled) and configured.get("development_method") not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
             self.effective_hidden_dim = 64
         self.trainer = build_modular_mappo_trainer(configured, self.device, self.effective_hidden_dim,self.total_sampled_steps)
         if self.trainer.wave_entry_curriculum.enabled:
@@ -626,12 +626,13 @@ class ModularMAPPOTrainingRunner:
                 self.trainer, pre_wave, self.total, blue_alive, self.episode_steps,
                 self.runtime_env_config["simulation"]["max_steps"],
             )
+            context = self.trainer.actor_context_numpy(pre_wave, alive, context)
             # The mission-progress component is penultimate in mission_markov.
             progress = mission_progress_from_wave_state(pre_wave, blue_alive, self.total)
             context_progress_rows.append(progress.copy())
             context_horizon_rows.append(remaining_horizon.copy())
-            phase_flags = self.actor_phase_reset_flags.copy() if self.trainer.recurrent.wave_segmented else None
-            if self.trainer.recurrent.wave_segmented:
+            phase_flags = self.actor_phase_reset_flags.copy() if self.trainer.recurrent.wave_boundary_reset else None
+            if self.trainer.recurrent.wave_boundary_reset:
                 self.actor_hidden = self.trainer.prepare_actor_hidden(self.actor_hidden, alive, pre_wave, phase_flags)
             actor_before = None if self.actor_hidden is None else self.actor_hidden.copy()
             critic_before = None if self.critic_hidden is None else self.critic_hidden.copy()
@@ -709,6 +710,7 @@ class ModularMAPPOTrainingRunner:
                 self.trainer, next_wave, next_total, post_blue, next_steps,
                 self.runtime_env_config["simulation"]["max_steps"],
             )
+            next_context = self.trainer.actor_context_numpy(next_wave, result.next_alive_masks, next_context)
             completed_marc_segments.extend(
                 self._marc_finalize_step(pre_wave, done, result.infos)
             )
@@ -884,6 +886,10 @@ class ModularMAPPOTrainingRunner:
         if reward_rows:
             for key in reward_rows[0]:
                 self.last_rollout_metrics[key] = float(np.mean([row[key] for row in reward_rows]))
+        if self.trainer.recurrent.state_memory:
+            self.last_rollout_metrics.update({
+                f"state_memory_one_hot_alive_count_wave_{w}":float(np.asarray(storage["contexts"])[...,w-1].sum()) for w in (1,2,3)})
+            self.last_rollout_metrics["state_memory_boundary_resets"] = float(np.asarray(storage["actor_recurrent_phase_reset_flags"]).sum())
         if self.trainer.wave_entry_curriculum.enabled:
             self.last_rollout_metrics.update(self.trainer.wave_entry_curriculum.diagnostics())
         kwargs = {key: (None if not values or values[0] is None else np.asarray(values)) for key, values in storage.items()}

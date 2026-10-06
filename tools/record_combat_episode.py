@@ -85,7 +85,8 @@ def main() -> None:
             trainer, wave, total, env.blue_alive_mask[None],
             np.asarray([env.steps]), env.max_steps,
         )
-        phase_kwargs = {"wave_indices":np.asarray([env.wave_index]),"actor_phase_reset_flags":actor_phase_reset_flags} if trainer.recurrent.wave_segmented else {}
+        context = trainer.actor_context_numpy(wave, alive[None], context)
+        phase_kwargs = {"wave_indices":np.asarray([env.wave_index]),"actor_phase_reset_flags":actor_phase_reset_flags} if trainer.recurrent.wave_boundary_reset else {}
         actions, _, _, actor_hidden = trainer.act(observation[None], alive[None], deterministic=True, return_policy_data=True, context=context, hidden=actor_hidden, episode_mask=episode_mask, **phase_kwargs)
         _, critic_hidden = trainer.values_step(observation[None], alive[None], context, critic_hidden, episode_mask)
         next_observation, reward, terminated, truncated, info = env.step(actions[0])

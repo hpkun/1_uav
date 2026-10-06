@@ -48,7 +48,7 @@ from algorithm.modules import (DeploymentAlignedWaveExplorationModule,DAWE_MAPPO
 from algorithm.modules import (ReferenceVarianceModule,REFERENCE_VARIANCE_VERSION)
 from algorithm.modules import (MARC_MAPPO_VERSION,MilestoneAwareRetentionCreditModule,
  compute_local_gae)
-from .networks import (ModularMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
+from .networks import (ModularMAPPOActor,StateMemoryMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
 from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean,wave_segmented_chunks
 
@@ -196,7 +196,7 @@ class ModularMAPPOTrainer:
   if self.total_sampled_steps<=0:raise ValueError("total_sampled_steps must be positive")
   if self.milestone_aware_retention_credit.enabled:
    enabled=set(enabled_module_names(self.modules_config));required={"actor_lr_decay","milestone_aware_retention_credit"}
-   segmented=self.recurrent.wave_segmented and development_method=="marc_mappo_wsgru_v1"
+   segmented=(self.recurrent.wave_segmented and development_method=="marc_mappo_wsgru_v1") or (self.recurrent.state_memory and development_method=="marc_mappo_state_memory_v1")
    if segmented:
     required.add("recurrent_memory")
     if self.milestone_aware_retention_credit.version!=2 or self.milestone_aware_retention_credit.deployment_distill_coefficient!=0 or self.recurrent.hidden_dim!=128 or self.recurrent.sequence_length!=32:
@@ -217,6 +217,8 @@ class ModularMAPPOTrainer:
     raise ValueError("MARC requires an otherwise Plain feed-forward Actor/Critic")
   if self.recurrent.wave_segmented and (development_method!="marc_mappo_wsgru_v1" or not self.milestone_aware_retention_credit.enabled):
    raise ValueError("wave_segmented_actor_gru requires isolated marc_mappo_wsgru_v1 method")
+  if self.recurrent.state_memory and (development_method!="marc_mappo_state_memory_v1" or not self.milestone_aware_retention_credit.enabled):
+   raise ValueError("State Memory requires isolated marc_mappo_state_memory_v1 method")
   if self.entity_attention_enabled and (self.recurrent.enabled or self.wave_context.enabled):raise ValueError("entity attention v1 is incompatible with recurrent memory and wave context")
   if self.ppo_stabilization.enabled and self.recurrent.enabled:raise ValueError("PPO stabilization v1 requires the feed-forward update path")
   if self.actor_kl_guard.enabled and self.recurrent.enabled:raise ValueError("actor_kl_guard requires the feed-forward update path")
@@ -363,7 +365,10 @@ class ModularMAPPOTrainer:
   critic_context_injection=("additive_zero" if self.hierarchical_temporal_abstraction.enabled or (self.wave_context.enabled and
    self.wave_context.encoding=="mission_markov" and self.wave_context.critic_enabled and
    not self.wave_context.actor_enabled) else "concat")
-  self.actor=ModularMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation,ac,ar,self.entity_attention_config,self.mission_film.config,self.hierarchical_temporal_abstraction.config,self.recurrent.wave_segmented).to(self.device)
+  if self.recurrent.state_memory:
+   self.actor=StateMemoryMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation).to(self.device)
+  else:
+   self.actor=ModularMAPPOActor(observation_dim,action_dim,hidden_dim,log_std_min,log_std_max,actor_activation,ac,ar,self.entity_attention_config,self.mission_film.config,self.hierarchical_temporal_abstraction.config,self.recurrent.wave_segmented).to(self.device)
   self.critic=ModularCentralizedCritic(observation_dim,hidden_dim,attention_heads,critic_activation,cc,cr,critic_context_injection).to(self.device)
   trainable_actor_parameters=self.actor.trainable_policy_parameters()
   if not trainable_actor_parameters:raise RuntimeError("actor has no trainable policy parameters")
@@ -434,14 +439,22 @@ class ModularMAPPOTrainer:
   return actor,self.recurrent.zeros(num_envs,self.num_agents,False)
  @torch.no_grad()
  def prepare_actor_hidden(self,hidden,alive,waves,phase_reset_flags):
-  if not self.recurrent.wave_segmented:return hidden
+  if not self.recurrent.wave_boundary_reset:return hidden
   if phase_reset_flags is None or waves is None:raise RuntimeError("wave-segmented Actor requires explicit pre-action phase reset flags and waves")
-  live=self.actor.phase_hidden(waves,alive).cpu().numpy()
+  if self.recurrent.state_memory:
+   self.actor.wave_one_hot(waves,alive,self.device) # validate the pre-action wave provenance
+   live=np.zeros((*np.asarray(alive).shape,self.recurrent.hidden_dim),np.float32)
+  else:live=self.actor.phase_hidden(waves,alive).cpu().numpy()
   flags=np.asarray(phase_reset_flags,dtype=bool)
   if flags.shape!=live.shape[:-2]:raise RuntimeError("actor phase reset flags shape mismatch")
   if hidden is None:hidden=np.zeros_like(live)
   return np.where(flags[...,None,None],live,hidden)*np.asarray(alive)[...,None]
+ @torch.no_grad()
+ def actor_context_numpy(self,waves,alive,context):
+  if not self.recurrent.state_memory:return context
+  return self.actor.wave_one_hot(waves,alive,self.device).cpu().numpy()
  def _ctx(self,c,actor):
+  if self.recurrent.state_memory:return c if actor else None
   active=self.wave_context.actor_enabled if actor else self.wave_context.critic_enabled
   return c if active else None
  def _actor_grad_clip_limit(self):return self.actor_gradient_clipping.actor_max_grad_norm if self.actor_gradient_clipping.enabled else self.max_grad_norm
@@ -492,7 +505,8 @@ class ModularMAPPOTrainer:
   return self._effective_actor_distribution(base_distribution,wave_indices)
  @torch.no_grad()
  def act(self,observations,alive_mask=None,deterministic=False,return_policy_data=False,context=None,hidden=None,episode_mask=None,option_ids=None,wave_indices=None,actor_phase_reset_flags=None):
-  if self.recurrent.wave_segmented:hidden=self.prepare_actor_hidden(hidden,alive_mask,wave_indices,actor_phase_reset_flags)
+  if self.recurrent.wave_boundary_reset:hidden=self.prepare_actor_hidden(hidden,alive_mask,wave_indices,actor_phase_reset_flags)
+  if self.recurrent.state_memory:context=self.actor_context_numpy(wave_indices,alive_mask,context)
   obs=torch.as_tensor(observations,dtype=torch.float32,device=self.device);mask=torch.as_tensor(alive_mask,dtype=torch.float32,device=self.device) if alive_mask is not None else None
   ctx=torch.as_tensor(context,dtype=torch.float32,device=self.device) if context is not None else None;hid=torch.as_tensor(hidden,dtype=torch.float32,device=self.device) if hidden is not None else None
   ep=torch.as_tensor(episode_mask,dtype=torch.float32,device=self.device) if episode_mask is not None else None
@@ -545,6 +559,9 @@ class ModularMAPPOTrainer:
    values.append(v);next_values.append(nv)
   return torch.as_tensor(np.asarray(values),device=self.device),torch.as_tensor(np.asarray(next_values),device=self.device)
  def update(self,r:ModularRolloutBatch):
+  if self.recurrent.state_memory:
+   expected=self.actor_context_numpy(r.wave_indices,r.alive_masks,None)
+   if not np.array_equal(r.contexts,expected):raise RuntimeError("State Memory rollout one-hot context/pre-action wave mismatch")
   tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
   obs,act,raw,oldlog,rewards,dones,alive,nobs,nalive=map(tt,(r.observations,r.actions,r.raw_actions,r.old_log_probs,r.rewards,r.dones,r.alive_masks,r.next_observations,r.next_alive_masks))
   waves=torch.as_tensor(r.wave_indices,dtype=torch.long,device=self.device);ctx=tt(r.contexts);T,E=obs.shape[:2]
@@ -633,7 +650,7 @@ class ModularMAPPOTrainer:
   if self.milestone_aware_retention_credit.enabled:
    self.milestone_aware_retention_credit.ingest_success_segments(
     r.marc_success_segments,self.actor,self.device)
-   if self.recurrent.wave_segmented:
+   if self.recurrent.wave_boundary_reset:
     metrics=self._update_actor_recurrent_critic_flat(r,obs,act,raw,oldlog,alive,adv,old_values,target_returns,wave_w,ctx,marc_weights)
    else:
     metrics=self._update_flat_marc(obs,act,raw,oldlog,alive,adv,old_values,target_returns,
@@ -1736,7 +1753,7 @@ class ModularMAPPOTrainer:
  def _update_actor_recurrent_critic_flat(self,r,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,marc_weights=None):
   """Train an actor-only GRU with BPTT while retaining Plain flat critic updates."""
   tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
-  if self.recurrent.wave_segmented:
+  if self.recurrent.wave_boundary_reset:
    if r.actor_recurrent_phase_reset_flags is None:raise RuntimeError("missing actor_recurrent_phase_reset_flags")
    chunks=wave_segmented_chunks(r.wave_indices,r.actor_recurrent_phase_reset_flags,r.episode_masks,self.recurrent.sequence_length)
   else:chunks=contiguous_chunks(obs.shape[0],obs.shape[1],self.recurrent.sequence_length)
@@ -1770,7 +1787,7 @@ class ModularMAPPOTrainer:
    "critic_grad_norm":float(np.mean(critic_grad_norms)),"critic_gru_grad_norm":0.0,
    "sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),
    "recurrent_minibatches_per_epoch":float(np.ceil(len(chunks)/sequences_per_minibatch))})
-  if self.recurrent.wave_segmented:
+  if self.recurrent.wave_boundary_reset:
    actor_expected=self.ppo_epochs*int(np.ceil(len(chunks)/sequences_per_minibatch))
    critic_expected=self.ppo_epochs*int(np.ceil(N/self.minibatch_size))
    if len(actor_rows)!=actor_expected or self.actor_update_count-actor_before!=actor_expected or self.critic_update_count-critic_before!=critic_expected:
@@ -1800,6 +1817,9 @@ class ModularMAPPOTrainer:
    if bool(reset.any()):
     phase=self.actor.phase_hidden([r.wave_indices[s,e] for e,s,_ in group],M[0])
     ah=torch.where(reset[:,None,None],phase,ah)
+  elif self.recurrent.state_memory:
+   reset=torch.as_tensor([r.actor_recurrent_phase_reset_flags[s,e] for e,s,_ in group],dtype=torch.bool,device=self.device)
+   ah=torch.where(reset[:,None,None],torch.zeros_like(ah),ah)
   surrogates=[];entropies=[];ratios=[];logratios=[];newlogs=[];masks=[];waveweights=[];anchor_kls=[]
   for t in range(length):
    mask=M[t]*valid[t,:,None]
@@ -1812,7 +1832,7 @@ class ModularMAPPOTrainer:
     anchor_kls.append(kl_divergence(dist,reference).sum(-1))
    surrogates.append(surrogate);entropies.append(entropy);ratios.append(ratio);logratios.append(logratio);newlogs.append(newlog);masks.append(mask);waveweights.append(W[t,:,None].expand_as(mask))
   surrogate,entropy,ratio,logratio,newlog,mask,ww=map(lambda x:torch.stack(x),(surrogates,entropies,ratios,logratios,newlogs,masks,waveweights))
-  aw=ww if self.wave_balance.actor_enabled or self.recurrent.wave_segmented else torch.ones_like(ww)
+  aw=ww if self.wave_balance.actor_enabled or self.recurrent.wave_boundary_reset else torch.ones_like(ww)
   actor_loss=-recurrent_alive_mean(surrogate*aw,M,valid);entropy_mean=recurrent_alive_mean(entropy,M,valid)
   anchor_mean=recurrent_alive_mean(torch.stack(anchor_kls),M,valid) if anchor_kls else torch.zeros((),device=self.device)
   anchor_loss=anchor_mean*self.anchor.effective_coefficient(self.sampled_steps)
@@ -2047,7 +2067,7 @@ class ModularMAPPOTrainer:
    if self.reference_variance_actor is None:raise RuntimeError("RV reference actor missing before checkpoint save")
    if self.reference_variance_actor_sha256()!=self.reference_variance_initial_sha256:raise RuntimeError("RV reference actor mutated")
   state=self._base_checkpoint_state(extra)
-  if self.development_method in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1"}:
+  if self.development_method in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
    state["extra"]["development_method"]=self.development_method
   state["development_feature_versions"]["milestone_aware_retention_credit"]=self.milestone_aware_retention_credit.version
   state["development_feature_versions"]["wave_specific_actor_isolation"]=WSAI_MAPPO_VERSION
@@ -2078,7 +2098,7 @@ class ModularMAPPOTrainer:
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True,defer_reference_attach=False):
   state=torch.load(path,map_location=self.device,weights_only=False)
-  if strict_protocol and self.development_method in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1"} and state.get("extra",{}).get("development_method")!=self.development_method:
+  if strict_protocol and self.development_method in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"} and state.get("extra",{}).get("development_method")!=self.development_method:
    raise RuntimeError("MARC GRU screen checkpoint development method mismatch")
   if state.get("algorithm")!="modular_mappo":raise RuntimeError("not a modular_mappo checkpoint")
   checkpoint_version=state.get("modular_mappo_impl_version")

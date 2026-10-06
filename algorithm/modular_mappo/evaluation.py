@@ -39,17 +39,21 @@ def evaluate_modular_episode(trainer, env_config, seed, include_trace=False):
  ah,ch=trainer.initial_hidden(1);wave=1;total=int(env_config.get("persistent_waves",{}).get("total_waves",1));ret=np.zeros(4);ep=np.zeros(1,np.float32)
  hta=bool(getattr(getattr(trainer,"hierarchical_temporal_abstraction",None),"enabled",False))
  options=trainer.manager_act(obs[None],alive[None],True) if hta else None
- manager_duration=0;actions_trace=[];wave_trace=[];option_trace=[];manager_decision_trace=[];phase_flags=np.ones(1,bool);phase_trace=[]
+ manager_duration=0;actions_trace=[];wave_trace=[];option_trace=[];manager_decision_trace=[];phase_flags=np.ones(1,bool);phase_trace=[];wave_context_trace=[];pre_hidden_norm_trace=[]
  if hta and include_trace:manager_decision_trace.append({"step":0,"reason":"episode_start","options":options[0].copy()})
  while True:
   ctx=mission_context_numpy(
    trainer,np.asarray([wave]),np.asarray([total]),env.blue_alive_mask[None],
    np.asarray([env.steps]),env.max_steps)
+  ctx=trainer.actor_context_numpy(np.asarray([wave]),alive[None],ctx)
+  if include_trace and trainer.recurrent.state_memory:
+   pre_hidden=trainer.prepare_actor_hidden(ah,alive[None],np.asarray([wave]),phase_flags)
+   pre_hidden_norm_trace.append(np.linalg.norm(pre_hidden[0],axis=-1));wave_context_trace.append(ctx[0].copy())
   if hta:
    actions,ah=trainer.act(obs[None],alive[None],True,False,ctx,ah,ep,option_ids=options,wave_indices=np.asarray([wave]))
    _,ch=trainer.values_step(obs[None],alive[None],ctx,ch,ep,option_ids=options)
   else:
-   kwargs={"actor_phase_reset_flags":phase_flags} if trainer.recurrent.wave_segmented else {}
+   kwargs={"actor_phase_reset_flags":phase_flags} if trainer.recurrent.wave_boundary_reset else {}
    actions,ah=trainer.act(obs[None],alive[None],True,False,ctx,ah,ep,wave_indices=np.asarray([wave]),**kwargs)
    _,ch=trainer.values_step(obs[None],alive[None],ctx,ch,ep)
   if include_trace:
@@ -69,7 +73,8 @@ def evaluate_modular_episode(trainer, env_config, seed, include_trace=False):
    team,agent=episode_return_metrics(ret);record={"episode_return":team,"mean_agent_episode_return":agent,**info,**per_wave_episode_diagnostics(info,total)}
    if include_trace:
     record.update({"action_trace":np.asarray(actions_trace),"wave_trace":np.asarray(wave_trace)})
-    if trainer.recurrent.wave_segmented:record["actor_recurrent_phase_reset_trace"]=np.asarray(phase_trace)
+    if trainer.recurrent.wave_boundary_reset:record["actor_recurrent_phase_reset_trace"]=np.asarray(phase_trace)
+    if trainer.recurrent.state_memory:record.update({"actor_wave_one_hot_trace":np.asarray(wave_context_trace),"actor_hidden_before_step_norm_trace":np.asarray(pre_hidden_norm_trace)})
     if hta:record.update({"option_trace":np.asarray(option_trace),"manager_decision_trace":manager_decision_trace})
    return record
 

@@ -13,7 +13,7 @@ class RecurrentMemoryModule(CapabilityModule):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self.mode = str(self.config.get("mode", "actor_critic_gru"))
-        if self.mode not in {"actor_gru", "critic_gru", "actor_critic_gru", "wave_segmented_actor_gru"}:
+        if self.mode not in {"actor_gru", "critic_gru", "actor_critic_gru", "wave_segmented_actor_gru", "wave_state_memory_actor_gru"}:
             raise ValueError(f"invalid recurrent mode: {self.mode}")
         self.hidden_dim = int(self.config.get("hidden_dim", 128))
         self.sequence_length = int(self.config.get("sequence_length", 32))
@@ -22,11 +22,19 @@ class RecurrentMemoryModule(CapabilityModule):
 
     @property
     def actor_enabled(self) -> bool:
-        return self.enabled and self.mode in {"actor_gru", "actor_critic_gru", "wave_segmented_actor_gru"}
+        return self.enabled and self.mode in {"actor_gru", "actor_critic_gru", "wave_segmented_actor_gru", "wave_state_memory_actor_gru"}
 
     @property
     def wave_segmented(self) -> bool:
         return self.enabled and self.mode == "wave_segmented_actor_gru"
+
+    @property
+    def state_memory(self) -> bool:
+        return self.enabled and self.mode == "wave_state_memory_actor_gru"
+
+    @property
+    def wave_boundary_reset(self) -> bool:
+        return self.wave_segmented or self.state_memory
 
     @property
     def critic_enabled(self) -> bool:

@@ -27,10 +27,22 @@ def validate_marc_gru_screen_config(config):
   raise ValueError("MARC GRU screen requires unchanged 52D/3D/4-agent 256-MLP attention-critic architecture")
 
 def validate_marc_gru_screen_environment(config,env):
- if config.get("development_method") not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1"}:return
+ if config.get("development_method") not in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:return
  identity=(env.get("environment_variant"),env.get("persistent_waves",{}).get("blue_units_per_wave"),
   env.get("persistent_waves",{}).get("total_waves"),env.get("scenario",{}).get("team_size"),env.get("simulation",{}).get("max_steps"))
  if identity!=("persistent_wave_v2",[4,3,3],3,4,3000):raise ValueError("MARC GRU screen requires frozen 433/three-wave/3000-step environment")
+
+def validate_marc_state_memory_config(config):
+ if config.get("development_method")!="marc_mappo_state_memory_v1":return
+ shadow=deepcopy(config);shadow["development_method"]="marc_credit_balance_ablation"
+ shadow["modules"]["recurrent_memory"]["enabled"]=False
+ validate_marc_gru_screen_config(shadow)
+ expected={"enabled":True,"mode":"wave_state_memory_actor_gru","hidden_dim":128,
+           "sequence_length":32,"wave_context_dim":3,"initial_hidden":"zeros"}
+ if config["modules"].get("recurrent_memory")!=expected:
+  raise ValueError("MARC-SM requires isolated 55D State Memory GRU128/BPTT32/3D context/literal zero initialization")
+ if config["implementation"]["actor_activation"]!="relu":raise ValueError("MARC-SM requires existing ReLU policy")
+ if int(config["training"]["ppo_epochs"])!=10:raise ValueError("MARC-SM requires all 10 PPO epochs")
 def checkpoint_architecture(trainer):
  mode=trainer.actor.entity_attention_mode if trainer.actor.entity_attention_enabled else "disabled"
  fbmr=mode in {"frozen_base_mean_residual","frozen_base_dual_bounded_mean_residual"};dual=mode=="frozen_base_dual_bounded_mean_residual"
@@ -120,7 +132,7 @@ def checkpoint_architecture(trainer):
  if trainer.milestone_aware_retention_credit.enabled:
   module=trainer.milestone_aware_retention_credit
   result.update({"milestone_aware_retention_credit_enabled":True,"marc_version":module.version,
-   "actor_observation_dim":52,"actor_wave_input":False,
+   "actor_observation_dim":52,"actor_wave_input":bool(trainer.recurrent.state_memory),
    "credit_decomposition":"global_GAE=local_GAE+continuation_advantage",
    "local_trace_stops_at_wave_transition":True,"td_bootstrap_at_wave_transition":True,
    "continuation_alpha":module.continuation_alpha,
@@ -145,6 +157,13 @@ def checkpoint_architecture(trainer):
     "elite_replacement":"strictly_better_replaces_current_worst_equal_rejected",
     "deployment_target":"post_tanh_action_actually_executed_in_environment",
     "log_std_retention":False})
+ if trainer.recurrent.state_memory:
+  result.update({"actor_input_dim":55,"actor_context_dim":3,"wave_context_encoding":"fixed_one_hot_3",
+   "wave_context_target":"actor_only","recurrent_mode":trainer.recurrent.mode,
+   "state_memory_input_dim":55,"fused_policy_input_dim":183,
+   "actor_memory_initialization":"literal_zeros","actor_phase_embedding_shape":None,
+   "actor_hidden_lifecycle":"zero_episode_start_zero_wave_start_dead_zero_rollout_carry",
+   "bptt_boundaries":"episode_and_wave","retention_target":"disabled","deployment_retention_active":False})
  return result
 
 def _validate_embedded_disabled_curriculum_runtime(extra,algorithm_config):
