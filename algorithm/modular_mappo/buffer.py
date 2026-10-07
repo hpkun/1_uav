@@ -65,6 +65,20 @@ def recurrent_batch_plan(time_steps:int,num_envs:int,sequence_length:int,minibat
             "recurrent_minibatches_per_epoch":minibatches_per_epoch,
             "optimizer_steps":minibatches_per_epoch*ppo_epochs}
 
+def episode_contiguous_chunks(episode_masks,sequence_length):
+    """Ordered joint recurrent chunks: split on real episode starts, not waves."""
+    episodes=np.asarray(episode_masks)
+    if episodes.ndim!=2 or not np.isin(episodes,[0,1]).all() or int(sequence_length)<=0:
+        raise ValueError("recurrent chunks require binary [T,E] episode masks and positive length")
+    T,E=episodes.shape;chunks=[]
+    for env in range(E):
+        start=0
+        for t in range(1,T):
+            if episodes[t,env]==0 or t-start==sequence_length:
+                chunks.append((env,start,t));start=t
+        if start<T:chunks.append((env,start,T))
+    return chunks
+
 def recurrent_alive_mean(values,alive_mask,valid_time_mask):
     mask=alive_mask*valid_time_mask[...,None]
     return (values*mask).sum()/mask.sum().clamp_min(1.0)

@@ -9,6 +9,41 @@ def canonical_sha256(value):return hashlib.sha256(json.dumps(value,sort_keys=Tru
 
 MARC_FACTORIAL_CELLS={"none":(0.0,0.0),"credit_only":(1.0,0.0),"balance_only":(0.0,0.5),"full":(1.0,0.5)}
 
+JIAO_3M_METHODS={"jiao2025_matched_plain_3m","jiao2025_core_3m"}
+JIAO_3M_SOURCE_CLASSIFICATION={
+ "paper_specified":["scalar round F","recurrent Actor","recurrent value network","trajectory/chunk training","PopArt","LR=5e-4","PPO epochs=10","clip=.1","entropy=.01","lambda=.95","gamma=.99"],
+ "project_adaptations":["433 3-D environment","3-D tanh-Gaussian action","width256","GRU128","BPTT32","rollout256","24 environments","minibatch512","centralized attention Critic","PopArt beta=.999 epsilon=1e-5","3M budget","44M development bank","GAE+value lambda-return target","true-episode-only hidden reset"],
+ "source_ambiguities":["centralized/global Critic notation","Algorithm1 reward-to-go vs project lambda-return"]}
+
+def validate_jiao2025_3m_config(config,env=None):
+ """Fail closed on non-package differences in the new Jiao transfer recipe."""
+ if config.get("development_method") not in JIAO_3M_METHODS:return
+ from pathlib import Path
+ from algorithm.train_modular_mappo import load_config
+ root=Path(__file__).resolve().parents[2]
+ expected=load_config(root/"configs/diag_mappo_learnability_common_3m.yaml")
+ expected["development_method"]=config["development_method"]
+ expected["training"].update(actor_learning_rate=.0005,critic_learning_rate=.0005,gamma=.99,clip_ratio=.1)
+ # The runtime smoke uses diagnostic seeds; formal preflight fixes seed5301.
+ expected["training"]["seed"]=config["training"]["seed"]
+ expected["modules"]["actor_lr_decay"]["enabled"]=False
+ expected["modules"]["actor_kl_guard"]={"enabled":False}
+ for name in ("actor_gradient_clipping","mission_film","inter_wave_credit","counterfactual_inter_wave_credit",
+              "boundary_redistributed_segment_credit","hierarchical_temporal_abstraction","hta_worker_consolidation",
+              "sequential_wave_gradient_projection","team_mean_credit","persistent_wave_trajectory_replay",
+              "wave_entry_curriculum","wave1_sensitivity_gating","wave_specific_actor_isolation","wave_specific_mean_heads",
+              "deployment_aligned_wave_exploration","reference_variance"):
+  expected["modules"][name]={"enabled":False}
+ expected["modules"]["milestone_aware_retention_credit"]={"enabled":False,"version":2,"deployment_distill_coefficient":0.0}
+ expected["jiao_transfer"]={"source_doi":"10.1049/cth2.12781","role":"paper_aligned_transfer_not_exact_simulator_reproduction","primary_result":"exact_3000000_final_evaluation"}
+ if config["development_method"]=="jiao2025_core_3m":
+  expected["modules"]["wave_context"]={"enabled":True,"context_target":"actor_critic","encoding":"scalar_round","max_waves":3}
+  expected["modules"]["recurrent_memory"]={"enabled":True,"mode":"actor_critic_gru","hidden_dim":128,"sequence_length":32}
+  expected["modules"]["popart"]={"enabled":True,"beta":.999,"epsilon":.00001}
+ if config!=expected:raise ValueError("Jiao 3M config differs outside the registered scalar-F/Actor+Critic-GRU/PopArt package")
+ if env is not None and env!=load_config(root/"configs/persistent_wave_v2_blue433_environment.yaml"):
+  raise ValueError("Jiao 3M requires the unchanged frozen 433 environment/reward/Blue/weapon")
+
 def validate_marc_factorial_config(config,env=None):
  """Strict scalar-only ablation of the existing feed-forward MARC lineage."""
  if config.get("development_method")!="marc_core_factorial_v1":return

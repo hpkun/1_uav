@@ -87,7 +87,8 @@ class ModularMAPPOTrainingRunner:
         self.env_config = self.declared_env_config  # compatibility alias: always declared/source
         self.evaluation_env_config = deepcopy(env_config)
         self.algorithm_config = deepcopy(algorithm_config)
-        from .protocol import validate_marc_gru_screen_environment,validate_marc_factorial_config
+        from .protocol import validate_marc_gru_screen_environment,validate_marc_factorial_config,validate_jiao2025_3m_config,JIAO_3M_METHODS
+        validate_jiao2025_3m_config(algorithm_config,env_config)
         validate_marc_factorial_config(algorithm_config,env_config)
         validate_marc_gru_screen_environment(algorithm_config,env_config)
         self.output_dir = Path(output_dir)
@@ -114,7 +115,7 @@ class ModularMAPPOTrainingRunner:
         anchor_enabled = bool(configured.get("modules", {}).get("policy_anchor", {}).get("enabled", False))
         entity_enabled = bool(configured.get("modules", {}).get("entity_attention", {}).get("enabled", False))
         self.effective_hidden_dim = int(configured["network"]["actor_hidden_layers"][0])
-        if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled) and configured.get("development_method") not in {"marc_core_factorial_v1","marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
+        if self.smoke and not (warm_enabled or anchor_enabled or entity_enabled) and configured.get("development_method") not in JIAO_3M_METHODS|{"marc_core_factorial_v1","marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
             self.effective_hidden_dim = 64
         self.trainer = build_modular_mappo_trainer(configured, self.device, self.effective_hidden_dim,self.total_sampled_steps)
         if self.trainer.wave_entry_curriculum.enabled:
@@ -1216,6 +1217,8 @@ class ModularMAPPOTrainingRunner:
         extras=[]
         if self.trainer.recurrent.enabled:
             extras.append(f"recurrent_h={self.last_metrics.get('hidden_norm_mean',0):.3f} resets={self.last_metrics.get('hidden_reset_count',0):.0f} chunks={self.last_metrics.get('sequence_chunks',0):.0f} gru_grad={self.last_metrics.get('gru_gradient_norm',0):.3f}")
+        if self.algorithm_config.get('development_method')=='jiao2025_core_3m':
+            extras.append(f"rmb={self.last_metrics.get('recurrent_minibatches_per_epoch',0):.0f} optA/C={self.last_metrics.get('actor_optimizer_steps_this_update',0):.0f}/{self.last_metrics.get('critic_optimizer_steps_this_update',0):.0f} GRUA/C={self.last_metrics.get('actor_gru_grad_norm',0):.3f}/{self.last_metrics.get('critic_gru_grad_norm',0):.3f} hA/C={self.last_metrics.get('actor_hidden_norm',0):.3f}/{self.last_metrics.get('critic_hidden_norm',0):.3f}")
         if self.trainer.popart.enabled:extras.append(f"popart_std={self.last_metrics.get('popart_std',1):.3f}")
         if self.trainer.wave_balance.enabled:extras.append(f"wave_weight={self.last_metrics.get('effective_wave_weight_mean',1):.3f}")
         if self.trainer.reward_adapter.enabled:extras.append(f"bonus={self.reward_bonus_totals[0]:.2f}")
@@ -1358,6 +1361,14 @@ class ModularMAPPOTrainingRunner:
             module=self.trainer.milestone_aware_retention_credit
             result.update(factorial_variant=self.algorithm_config["factorial_variant"],
                           continuation_alpha=module.continuation_alpha,wave_balance_temperature=module.wave_balance_temperature)
+        if self.algorithm_config.get("development_method") in {"jiao2025_matched_plain_3m","jiao2025_core_3m"}:
+            from .protocol import JIAO_3M_SOURCE_CLASSIFICATION
+            result.update(jiao_transfer=deepcopy(self.algorithm_config["jiao_transfer"]),
+                          jiao_source_classification=deepcopy(JIAO_3M_SOURCE_CLASSIFICATION),
+                          recurrent_mode=self.trainer.recurrent.mode if self.trainer.recurrent.enabled else "disabled",
+                          recurrent_sequence_length=self.trainer.recurrent.sequence_length if self.trainer.recurrent.enabled else 0,
+                          hidden_reset_protocol="true_episode_only_dead_agent_mask_no_wave_reset",
+                          popart_enabled=self.trainer.popart.enabled)
         if self.trainer.mission_film.enabled:
             result.update({key:architecture[key] for key in ("mission_film_enabled","mission_film_mode",
                 "mission_encoder_hidden_dim","mission_film_alpha","mission_film_identity_init",

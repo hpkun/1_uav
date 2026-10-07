@@ -3,7 +3,10 @@ from .trainer import ModularMAPPOTrainer
 
 def build_modular_mappo_trainer(config,device=None,hidden_dim=None,total_sampled_steps=None):
  n,t,i=config["network"],config["training"],config["implementation"]
- from .protocol import validate_marc_gru_screen_config,validate_marc_state_memory_config,validate_marc_factorial_config
+ from .protocol import validate_marc_gru_screen_config,validate_marc_state_memory_config,validate_marc_factorial_config,validate_jiao2025_3m_config,JIAO_3M_METHODS
+ validate_jiao2025_3m_config(config)
+ if config.get("development_method") in JIAO_3M_METHODS and hidden_dim is not None and int(hidden_dim)!=256:
+  raise ValueError("Jiao 3M cannot override the fixed 256-wide architecture")
  validate_marc_factorial_config(config)
  validate_marc_gru_screen_config(config)
  validate_marc_state_memory_config(config)

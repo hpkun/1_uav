@@ -50,7 +50,7 @@ from algorithm.modules import (MARC_MAPPO_VERSION,MilestoneAwareRetentionCreditM
  compute_local_gae)
 from .networks import (ModularMAPPOActor,StateMemoryMAPPOActor,ModularCentralizedCritic,InterWaveStateQualityCritic,
  InterWaveActionOutcomeCritic,BoundaryStateOutcomeCritic,HierarchicalManagerActor)
-from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean,wave_segmented_chunks
+from .buffer import ModularRolloutBatch,contiguous_chunks,recurrent_alive_mean,wave_segmented_chunks,episode_contiguous_chunks
 
 # Version 2 is the formal hardened implementation. Version 1 checkpoints use
 # prototype recurrent/weighting semantics and are diagnostic-only artifacts.
@@ -1741,14 +1741,24 @@ class ModularMAPPOTrainer:
   return float(torch.cat(values).double().mean())
  def _update_recurrent(self,r,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx):
   tt=lambda x:torch.as_tensor(x,dtype=torch.float32,device=self.device)
-  chunks=contiguous_chunks(obs.shape[0],obs.shape[1],self.recurrent.sequence_length);rows=[]
+  if self.development_method=="jiao2025_core_3m":
+   if r.episode_masks is None:raise RuntimeError("Jiao-Core requires true episode masks for recurrent chunks")
+   if r.actor_hidden_before_step is None or r.critic_hidden_before_step is None:raise RuntimeError("Jiao-Core requires saved pre-action Actor and Critic hidden")
+   chunks=episode_contiguous_chunks(r.episode_masks,self.recurrent.sequence_length)
+  else:chunks=contiguous_chunks(obs.shape[0],obs.shape[1],self.recurrent.sequence_length)
+  rows=[];actor_before=self.actor_update_count;critic_before=self.critic_update_count
   sequences_per_minibatch=max(1,self.minibatch_size//self.recurrent.sequence_length)
   for _ in range(self.ppo_epochs):
    order=self.rng.permutation(len(chunks))
    for start in range(0,len(chunks),sequences_per_minibatch):
     group=[chunks[int(i)] for i in order[start:start+sequences_per_minibatch]]
     rows.append(self._recurrent_minibatch(r,group,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,tt))
-  out=aggregate_update_rows(rows,self.clip_ratio);out.update({"sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),"recurrent_minibatches_per_epoch":float(np.ceil(len(chunks)/sequences_per_minibatch))});return out
+  minibatches=int(np.ceil(len(chunks)/sequences_per_minibatch));expected=self.ppo_epochs*minibatches
+  if len(rows)!=expected or self.actor_update_count-actor_before!=expected or self.critic_update_count-critic_before!=expected:
+   raise RuntimeError("joint recurrent PPO epoch/optimizer execution mismatch")
+  out=aggregate_update_rows(rows,self.clip_ratio);out.update({"sequence_chunks":float(len(chunks)),"sequences_per_minibatch":float(sequences_per_minibatch),"recurrent_minibatches_per_epoch":float(minibatches),
+   "ppo_epochs_configured":float(self.ppo_epochs),"ppo_epochs_executed":float(len(rows)//minibatches),
+   "actor_optimizer_steps_this_update":float(self.actor_update_count-actor_before),"critic_optimizer_steps_this_update":float(self.critic_update_count-critic_before)});return out
 
  def _update_actor_recurrent_critic_flat(self,r,obs,act,raw,oldlog,alive,adv,oldvalue,target,weights,ctx,marc_weights=None):
   """Train an actor-only GRU with BPTT while retaining Plain flat critic updates."""
@@ -2067,7 +2077,7 @@ class ModularMAPPOTrainer:
    if self.reference_variance_actor is None:raise RuntimeError("RV reference actor missing before checkpoint save")
    if self.reference_variance_actor_sha256()!=self.reference_variance_initial_sha256:raise RuntimeError("RV reference actor mutated")
   state=self._base_checkpoint_state(extra)
-  if self.development_method in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
+  if self.development_method in {"jiao2025_matched_plain_3m","jiao2025_core_3m","marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"}:
    state["extra"]["development_method"]=self.development_method
   state["development_feature_versions"]["milestone_aware_retention_credit"]=self.milestone_aware_retention_credit.version
   state["development_feature_versions"]["wave_specific_actor_isolation"]=WSAI_MAPPO_VERSION
@@ -2098,7 +2108,7 @@ class ModularMAPPOTrainer:
  def save(self,path,extra=None):Path(path).parent.mkdir(parents=True,exist_ok=True);torch.save(self.checkpoint_state(extra),path)
  def load(self,path,strict_protocol=True,restore_rng=True,defer_reference_attach=False):
   state=torch.load(path,map_location=self.device,weights_only=False)
-  if strict_protocol and self.development_method in {"marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"} and state.get("extra",{}).get("development_method")!=self.development_method:
+  if strict_protocol and self.development_method in {"jiao2025_matched_plain_3m","jiao2025_core_3m","marc_credit_balance_ablation","marc_mappo_wsgru_v1","marc_mappo_state_memory_v1"} and state.get("extra",{}).get("development_method")!=self.development_method:
    raise RuntimeError("MARC GRU screen checkpoint development method mismatch")
   if state.get("algorithm")!="modular_mappo":raise RuntimeError("not a modular_mappo checkpoint")
   checkpoint_version=state.get("modular_mappo_impl_version")
