@@ -1,0 +1,8656 @@
+{
+  "old_files": [
+    {
+      "path": "env/__init__.py",
+      "bytes": 523,
+      "imports": [
+        "combat_env",
+        "factory",
+        "geometry",
+        "models",
+        "weapon"
+      ]
+    },
+    {
+      "path": "env/combat_env.py",
+      "bytes": 30143,
+      "imports": [
+        "__future__",
+        "combat_v30",
+        "combat_v31",
+        "combat_v310",
+        "combat_v311",
+        "combat_v312",
+        "combat_v313",
+        "combat_v314",
+        "combat_v315",
+        "combat_v316",
+        "combat_v317",
+        "combat_v318",
+        "combat_v319",
+        "combat_v32",
+        "combat_v320",
+        "combat_v321",
+        "combat_v322",
+        "combat_v323",
+        "combat_v324",
+        "combat_v325",
+        "combat_v326",
+        "combat_v327",
+        "combat_v328",
+        "combat_v329",
+        "combat_v33",
+        "combat_v330",
+        "combat_v331",
+        "combat_v332",
+        "combat_v333",
+        "combat_v334",
+        "combat_v335",
+        "combat_v336",
+        "combat_v337",
+        "combat_v338",
+        "combat_v339",
+        "combat_v34",
+        "combat_v340",
+        "combat_v341",
+        "combat_v35",
+        "combat_v36",
+        "combat_v37",
+        "combat_v38",
+        "combat_v39",
+        "config",
+        "control",
+        "dynamics",
+        "fixed_policy",
+        "geometry",
+        "integrator",
+        "math",
+        "models",
+        "numpy",
+        "observation",
+        "pathlib",
+        "reward",
+        "scenario",
+        "typing",
+        "weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v30.py",
+      "bytes": 11101,
+      "imports": [
+        "combat_env",
+        "config",
+        "dataclasses",
+        "dynamics",
+        "integrator",
+        "numpy",
+        "v30_observation",
+        "v30_policy",
+        "v30_reward",
+        "v30_weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v31.py",
+      "bytes": 1079,
+      "imports": [
+        "combat_v30",
+        "numpy",
+        "v31_scenario"
+      ]
+    },
+    {
+      "path": "env/combat_v310.py",
+      "bytes": 426,
+      "imports": [
+        "combat_v39",
+        "v310_policy"
+      ]
+    },
+    {
+      "path": "env/combat_v311.py",
+      "bytes": 4562,
+      "imports": [
+        "combat_v310",
+        "config",
+        "numpy",
+        "v310_policy",
+        "v311_kinematics",
+        "v311_reward",
+        "v311_scenario",
+        "v311_weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v312.py",
+      "bytes": 391,
+      "imports": [
+        "combat_v311",
+        "v312_observation"
+      ]
+    },
+    {
+      "path": "env/combat_v313.py",
+      "bytes": 998,
+      "imports": [
+        "combat_v312",
+        "v313_geometry",
+        "v313_observation",
+        "v313_reward",
+        "v313_weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v314.py",
+      "bytes": 845,
+      "imports": [
+        "combat_env",
+        "combat_v313",
+        "dynamics",
+        "integrator",
+        "v314_observation"
+      ]
+    },
+    {
+      "path": "env/combat_v315.py",
+      "bytes": 942,
+      "imports": [
+        "combat_v314",
+        "numpy",
+        "v315_control",
+        "v315_observation"
+      ]
+    },
+    {
+      "path": "env/combat_v316.py",
+      "bytes": 502,
+      "imports": [
+        "combat_v315",
+        "v316_weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v317.py",
+      "bytes": 1187,
+      "imports": [
+        "combat_v316",
+        "geometry",
+        "numpy",
+        "v317_weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v318.py",
+      "bytes": 1494,
+      "imports": [
+        "combat_v317",
+        "numpy",
+        "weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v319.py",
+      "bytes": 429,
+      "imports": [
+        "combat_v317",
+        "v319_reward"
+      ]
+    },
+    {
+      "path": "env/combat_v32.py",
+      "bytes": 388,
+      "imports": [
+        "combat_v31",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/combat_v320.py",
+      "bytes": 707,
+      "imports": [
+        "combat_v319",
+        "numpy",
+        "v320_control"
+      ]
+    },
+    {
+      "path": "env/combat_v321.py",
+      "bytes": 446,
+      "imports": [
+        "combat_v320",
+        "v321_policy"
+      ]
+    },
+    {
+      "path": "env/combat_v322.py",
+      "bytes": 435,
+      "imports": [
+        "combat_v321",
+        "v322_reward"
+      ]
+    },
+    {
+      "path": "env/combat_v323.py",
+      "bytes": 2817,
+      "imports": [
+        "combat_v322",
+        "numpy",
+        "v323_reward"
+      ]
+    },
+    {
+      "path": "env/combat_v324.py",
+      "bytes": 399,
+      "imports": [
+        "combat_v323",
+        "v324_observation"
+      ]
+    },
+    {
+      "path": "env/combat_v325.py",
+      "bytes": 450,
+      "imports": [
+        "combat_v30",
+        "combat_v324"
+      ]
+    },
+    {
+      "path": "env/combat_v326.py",
+      "bytes": 2352,
+      "imports": [
+        "combat_v325",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/combat_v327.py",
+      "bytes": 2037,
+      "imports": [
+        "combat_v325",
+        "combat_v326",
+        "numpy",
+        "v327_policy"
+      ]
+    },
+    {
+      "path": "env/combat_v328.py",
+      "bytes": 210,
+      "imports": [
+        "combat_v326"
+      ]
+    },
+    {
+      "path": "env/combat_v329.py",
+      "bytes": 3827,
+      "imports": [
+        "combat_v328",
+        "geometry",
+        "numpy",
+        "v310_policy",
+        "v329_control",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/combat_v33.py",
+      "bytes": 892,
+      "imports": [
+        "combat_v32",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/combat_v330.py",
+      "bytes": 7183,
+      "imports": [
+        "combat_env",
+        "combat_v31",
+        "combat_v329",
+        "config",
+        "dynamics",
+        "integrator",
+        "numpy",
+        "sensor",
+        "v310_policy",
+        "v330_observation",
+        "v330_transition"
+      ]
+    },
+    {
+      "path": "env/combat_v331.py",
+      "bytes": 212,
+      "imports": [
+        "combat_v330"
+      ]
+    },
+    {
+      "path": "env/combat_v332.py",
+      "bytes": 1229,
+      "imports": [
+        "combat_v330",
+        "numpy",
+        "v311_kinematics"
+      ]
+    },
+    {
+      "path": "env/combat_v333.py",
+      "bytes": 461,
+      "imports": [
+        "combat_v332",
+        "v333_reward"
+      ]
+    },
+    {
+      "path": "env/combat_v334.py",
+      "bytes": 381,
+      "imports": [
+        "combat_v332",
+        "v334_scenario"
+      ]
+    },
+    {
+      "path": "env/combat_v335.py",
+      "bytes": 210,
+      "imports": [
+        "combat_v334"
+      ]
+    },
+    {
+      "path": "env/combat_v336.py",
+      "bytes": 2204,
+      "imports": [
+        "combat_v335",
+        "geometry",
+        "v336_weapon",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/combat_v337.py",
+      "bytes": 471,
+      "imports": [
+        "combat_v336",
+        "v337_reward"
+      ]
+    },
+    {
+      "path": "env/combat_v338.py",
+      "bytes": 393,
+      "imports": [
+        "combat_v337",
+        "v338_observation"
+      ]
+    },
+    {
+      "path": "env/combat_v339.py",
+      "bytes": 461,
+      "imports": [
+        "combat_v338",
+        "v339_policy"
+      ]
+    },
+    {
+      "path": "env/combat_v34.py",
+      "bytes": 844,
+      "imports": [
+        "combat_v33",
+        "v34_policy"
+      ]
+    },
+    {
+      "path": "env/combat_v340.py",
+      "bytes": 209,
+      "imports": [
+        "combat_v339"
+      ]
+    },
+    {
+      "path": "env/combat_v341.py",
+      "bytes": 216,
+      "imports": [
+        "combat_v340"
+      ]
+    },
+    {
+      "path": "env/combat_v35.py",
+      "bytes": 3068,
+      "imports": [
+        "combat_v33",
+        "math_utils",
+        "numpy",
+        "v35_policy"
+      ]
+    },
+    {
+      "path": "env/combat_v36.py",
+      "bytes": 1282,
+      "imports": [
+        "combat_v35",
+        "numpy",
+        "v36_reward",
+        "v36_weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v37.py",
+      "bytes": 1660,
+      "imports": [
+        "combat_v36",
+        "v36_geometry",
+        "v37_weapon"
+      ]
+    },
+    {
+      "path": "env/combat_v38.py",
+      "bytes": 1501,
+      "imports": [
+        "combat_v37",
+        "numpy",
+        "sensor",
+        "v36_geometry",
+        "v38_scenario"
+      ]
+    },
+    {
+      "path": "env/combat_v39.py",
+      "bytes": 2287,
+      "imports": [
+        "combat_v38",
+        "numpy",
+        "v39_reward"
+      ]
+    },
+    {
+      "path": "env/config.py",
+      "bytes": 12762,
+      "imports": [
+        "__future__",
+        "math",
+        "models",
+        "observation",
+        "pathlib",
+        "typing",
+        "v30_config",
+        "v30_observation",
+        "v310_config",
+        "v311_config",
+        "v312_config",
+        "v313_config",
+        "v314_config",
+        "v315_config",
+        "v316_config",
+        "v317_config",
+        "v318_config",
+        "v319_config",
+        "v31_config",
+        "v320_config",
+        "v321_config",
+        "v322_config",
+        "v323_config",
+        "v324_config",
+        "v325_config",
+        "v326_config",
+        "v327_config",
+        "v328_config",
+        "v329_config",
+        "v32_config",
+        "v330_config",
+        "v331_config",
+        "v332_config",
+        "v333_config",
+        "v334_config",
+        "v335_config",
+        "v336_config",
+        "v337_config",
+        "v338_config",
+        "v339_config",
+        "v33_config",
+        "v340_config",
+        "v341_config",
+        "v34_config",
+        "v35_config",
+        "v36_config",
+        "v37_config",
+        "v38_config",
+        "v39_config",
+        "yaml"
+      ]
+    },
+    {
+      "path": "env/control.py",
+      "bytes": 2447,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/dynamics.py",
+      "bytes": 1008,
+      "imports": [
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/factory.py",
+      "bytes": 357,
+      "imports": [
+        "combat_env",
+        "pathlib",
+        "typing"
+      ]
+    },
+    {
+      "path": "env/fixed_policy.py",
+      "bytes": 6489,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "enum",
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/geometry.py",
+      "bytes": 2864,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/integrator.py",
+      "bytes": 1412,
+      "imports": [
+        "dynamics",
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/math_utils.py",
+      "bytes": 634,
+      "imports": [
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/models.py",
+      "bytes": 1425,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/observation.py",
+      "bytes": 4326,
+      "imports": [
+        "__future__",
+        "geometry",
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/process_worker.py",
+      "bytes": 1655,
+      "imports": [
+        "__future__",
+        "factory",
+        "os",
+        "traceback",
+        "typing"
+      ]
+    },
+    {
+      "path": "env/reward.py",
+      "bytes": 2014,
+      "imports": [
+        "__future__",
+        "geometry",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/scenario.py",
+      "bytes": 1984,
+      "imports": [
+        "__future__",
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/sensor.py",
+      "bytes": 1653,
+      "imports": [
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v30_config.py",
+      "bytes": 4674,
+      "imports": [
+        "math",
+        "models"
+      ]
+    },
+    {
+      "path": "env/v30_observation.py",
+      "bytes": 972,
+      "imports": [
+        "numpy",
+        "observation",
+        "sensor"
+      ]
+    },
+    {
+      "path": "env/v30_policy.py",
+      "bytes": 1648,
+      "imports": [
+        "fixed_policy",
+        "numpy",
+        "sensor"
+      ]
+    },
+    {
+      "path": "env/v30_reward.py",
+      "bytes": 1727,
+      "imports": [
+        "numpy",
+        "sensor"
+      ]
+    },
+    {
+      "path": "env/v30_weapon.py",
+      "bytes": 854,
+      "imports": [
+        "dataclasses",
+        "numpy",
+        "sensor"
+      ]
+    },
+    {
+      "path": "env/v310_config.py",
+      "bytes": 585,
+      "imports": [
+        "copy",
+        "v35_config",
+        "v36_config",
+        "v39_config"
+      ]
+    },
+    {
+      "path": "env/v310_policy.py",
+      "bytes": 1456,
+      "imports": [
+        "fixed_policy"
+      ]
+    },
+    {
+      "path": "env/v311_config.py",
+      "bytes": 2661,
+      "imports": [
+        "math",
+        "v311_weapon",
+        "v39_config"
+      ]
+    },
+    {
+      "path": "env/v311_kinematics.py",
+      "bytes": 1014,
+      "imports": [
+        "math_utils",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v311_reward.py",
+      "bytes": 1174,
+      "imports": [
+        "numpy",
+        "v36_geometry",
+        "v36_reward"
+      ]
+    },
+    {
+      "path": "env/v311_scenario.py",
+      "bytes": 856,
+      "imports": [
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v311_weapon.py",
+      "bytes": 347,
+      "imports": [
+        "math",
+        "v37_weapon"
+      ]
+    },
+    {
+      "path": "env/v312_config.py",
+      "bytes": 495,
+      "imports": [
+        "copy",
+        "v311_config"
+      ]
+    },
+    {
+      "path": "env/v312_observation.py",
+      "bytes": 2043,
+      "imports": [
+        "numpy",
+        "observation",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v313_config.py",
+      "bytes": 281,
+      "imports": [
+        "copy",
+        "v312_config"
+      ]
+    },
+    {
+      "path": "env/v313_geometry.py",
+      "bytes": 1154,
+      "imports": [
+        "numpy",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v313_observation.py",
+      "bytes": 2072,
+      "imports": [
+        "numpy",
+        "observation",
+        "v313_geometry"
+      ]
+    },
+    {
+      "path": "env/v313_reward.py",
+      "bytes": 1230,
+      "imports": [
+        "numpy",
+        "v313_geometry",
+        "v36_geometry",
+        "v36_reward"
+      ]
+    },
+    {
+      "path": "env/v313_weapon.py",
+      "bytes": 743,
+      "imports": [
+        "numpy",
+        "v311_weapon",
+        "v313_geometry",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v314_config.py",
+      "bytes": 862,
+      "imports": [
+        "copy",
+        "v311_config",
+        "v313_config"
+      ]
+    },
+    {
+      "path": "env/v314_observation.py",
+      "bytes": 732,
+      "imports": [
+        "numpy",
+        "v313_observation"
+      ]
+    },
+    {
+      "path": "env/v315_config.py",
+      "bytes": 434,
+      "imports": [
+        "copy",
+        "v314_config"
+      ]
+    },
+    {
+      "path": "env/v315_control.py",
+      "bytes": 947,
+      "imports": [
+        "control",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v315_observation.py",
+      "bytes": 347,
+      "imports": [
+        "v313_observation"
+      ]
+    },
+    {
+      "path": "env/v316_config.py",
+      "bytes": 1097,
+      "imports": [
+        "copy",
+        "math",
+        "v315_config"
+      ]
+    },
+    {
+      "path": "env/v316_weapon.py",
+      "bytes": 1692,
+      "imports": [
+        "dataclasses",
+        "geometry",
+        "math",
+        "numpy",
+        "v313_weapon",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v317_config.py",
+      "bytes": 2002,
+      "imports": [
+        "copy",
+        "math",
+        "v311_config",
+        "v316_config"
+      ]
+    },
+    {
+      "path": "env/v317_weapon.py",
+      "bytes": 2578,
+      "imports": [
+        "dataclasses",
+        "geometry",
+        "math",
+        "numpy",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v318_config.py",
+      "bytes": 429,
+      "imports": [
+        "copy",
+        "v317_config"
+      ]
+    },
+    {
+      "path": "env/v319_config.py",
+      "bytes": 916,
+      "imports": [
+        "copy",
+        "v311_config",
+        "v317_config"
+      ]
+    },
+    {
+      "path": "env/v319_reward.py",
+      "bytes": 1586,
+      "imports": [
+        "numpy",
+        "v313_geometry",
+        "v36_geometry",
+        "v36_reward"
+      ]
+    },
+    {
+      "path": "env/v31_config.py",
+      "bytes": 2095,
+      "imports": [
+        "copy",
+        "math",
+        "v30_config"
+      ]
+    },
+    {
+      "path": "env/v31_scenario.py",
+      "bytes": 1890,
+      "imports": [
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v320_config.py",
+      "bytes": 443,
+      "imports": [
+        "copy",
+        "v319_config"
+      ]
+    },
+    {
+      "path": "env/v320_control.py",
+      "bytes": 1126,
+      "imports": [
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v321_config.py",
+      "bytes": 413,
+      "imports": [
+        "copy",
+        "v320_config"
+      ]
+    },
+    {
+      "path": "env/v321_policy.py",
+      "bytes": 2150,
+      "imports": [
+        "math_utils",
+        "numpy",
+        "v310_policy"
+      ]
+    },
+    {
+      "path": "env/v322_config.py",
+      "bytes": 430,
+      "imports": [
+        "copy",
+        "v321_config"
+      ]
+    },
+    {
+      "path": "env/v322_reward.py",
+      "bytes": 1986,
+      "imports": [
+        "numpy",
+        "v313_geometry",
+        "v36_geometry",
+        "v36_reward"
+      ]
+    },
+    {
+      "path": "env/v323_config.py",
+      "bytes": 1126,
+      "imports": [
+        "copy",
+        "math",
+        "v322_config"
+      ]
+    },
+    {
+      "path": "env/v323_reward.py",
+      "bytes": 2447,
+      "imports": [
+        "geometry",
+        "numpy",
+        "v322_reward",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v324_config.py",
+      "bytes": 434,
+      "imports": [
+        "copy",
+        "v323_config"
+      ]
+    },
+    {
+      "path": "env/v324_observation.py",
+      "bytes": 1872,
+      "imports": [
+        "geometry",
+        "numpy",
+        "observation"
+      ]
+    },
+    {
+      "path": "env/v325_config.py",
+      "bytes": 776,
+      "imports": [
+        "copy",
+        "v324_config"
+      ]
+    },
+    {
+      "path": "env/v326_config.py",
+      "bytes": 422,
+      "imports": [
+        "copy",
+        "v325_config"
+      ]
+    },
+    {
+      "path": "env/v327_config.py",
+      "bytes": 427,
+      "imports": [
+        "copy",
+        "v326_config"
+      ]
+    },
+    {
+      "path": "env/v327_policy.py",
+      "bytes": 1196,
+      "imports": [
+        "numpy",
+        "v321_policy"
+      ]
+    },
+    {
+      "path": "env/v328_config.py",
+      "bytes": 841,
+      "imports": [
+        "copy",
+        "v326_config"
+      ]
+    },
+    {
+      "path": "env/v329_config.py",
+      "bytes": 442,
+      "imports": [
+        "copy",
+        "v328_config"
+      ]
+    },
+    {
+      "path": "env/v329_control.py",
+      "bytes": 2159,
+      "imports": [
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v32_config.py",
+      "bytes": 271,
+      "imports": [
+        "copy",
+        "v31_config"
+      ]
+    },
+    {
+      "path": "env/v330_config.py",
+      "bytes": 849,
+      "imports": [
+        "copy",
+        "v329_config"
+      ]
+    },
+    {
+      "path": "env/v330_observation.py",
+      "bytes": 1872,
+      "imports": [
+        "geometry",
+        "numpy",
+        "observation"
+      ]
+    },
+    {
+      "path": "env/v330_transition.py",
+      "bytes": 4192,
+      "imports": [
+        "numpy",
+        "v30_reward"
+      ]
+    },
+    {
+      "path": "env/v331_config.py",
+      "bytes": 891,
+      "imports": [
+        "copy",
+        "v330_config"
+      ]
+    },
+    {
+      "path": "env/v332_config.py",
+      "bytes": 1115,
+      "imports": [
+        "copy",
+        "math",
+        "v330_config"
+      ]
+    },
+    {
+      "path": "env/v333_config.py",
+      "bytes": 892,
+      "imports": [
+        "copy",
+        "v332_config"
+      ]
+    },
+    {
+      "path": "env/v333_reward.py",
+      "bytes": 1450,
+      "imports": [
+        "numpy",
+        "v323_reward",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v334_config.py",
+      "bytes": 1143,
+      "imports": [
+        "copy",
+        "v332_config"
+      ]
+    },
+    {
+      "path": "env/v334_scenario.py",
+      "bytes": 921,
+      "imports": [
+        "math_utils",
+        "models",
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v335_config.py",
+      "bytes": 843,
+      "imports": [
+        "copy",
+        "math",
+        "v334_config"
+      ]
+    },
+    {
+      "path": "env/v336_config.py",
+      "bytes": 978,
+      "imports": [
+        "copy",
+        "math",
+        "v335_config"
+      ]
+    },
+    {
+      "path": "env/v336_weapon.py",
+      "bytes": 2660,
+      "imports": [
+        "dataclasses",
+        "geometry",
+        "math",
+        "numpy",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v337_config.py",
+      "bytes": 458,
+      "imports": [
+        "copy",
+        "v336_config"
+      ]
+    },
+    {
+      "path": "env/v337_reward.py",
+      "bytes": 2723,
+      "imports": [
+        "geometry",
+        "numpy",
+        "v322_reward",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v338_config.py",
+      "bytes": 441,
+      "imports": [
+        "copy",
+        "v337_config"
+      ]
+    },
+    {
+      "path": "env/v338_observation.py",
+      "bytes": 1869,
+      "imports": [
+        "geometry",
+        "numpy",
+        "observation"
+      ]
+    },
+    {
+      "path": "env/v339_config.py",
+      "bytes": 1382,
+      "imports": [
+        "copy",
+        "math",
+        "v338_config"
+      ]
+    },
+    {
+      "path": "env/v339_policy.py",
+      "bytes": 1117,
+      "imports": [
+        "numpy",
+        "v310_policy"
+      ]
+    },
+    {
+      "path": "env/v33_config.py",
+      "bytes": 1007,
+      "imports": [
+        "copy",
+        "math",
+        "v32_config"
+      ]
+    },
+    {
+      "path": "env/v340_config.py",
+      "bytes": 1318,
+      "imports": [
+        "copy",
+        "v339_config"
+      ]
+    },
+    {
+      "path": "env/v341_config.py",
+      "bytes": 801,
+      "imports": [
+        "copy",
+        "math",
+        "v340_config"
+      ]
+    },
+    {
+      "path": "env/v34_config.py",
+      "bytes": 1334,
+      "imports": [
+        "copy",
+        "math",
+        "v33_config"
+      ]
+    },
+    {
+      "path": "env/v34_policy.py",
+      "bytes": 3656,
+      "imports": [
+        "numpy",
+        "sensor",
+        "v30_policy"
+      ]
+    },
+    {
+      "path": "env/v35_config.py",
+      "bytes": 1061,
+      "imports": [
+        "copy",
+        "math",
+        "v33_config"
+      ]
+    },
+    {
+      "path": "env/v35_policy.py",
+      "bytes": 3708,
+      "imports": [
+        "fixed_policy",
+        "numpy",
+        "sensor"
+      ]
+    },
+    {
+      "path": "env/v36_config.py",
+      "bytes": 1702,
+      "imports": [
+        "copy",
+        "math",
+        "v35_config"
+      ]
+    },
+    {
+      "path": "env/v36_geometry.py",
+      "bytes": 1332,
+      "imports": [
+        "numpy"
+      ]
+    },
+    {
+      "path": "env/v36_reward.py",
+      "bytes": 1539,
+      "imports": [
+        "numpy",
+        "sensor",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v36_weapon.py",
+      "bytes": 1018,
+      "imports": [
+        "dataclasses",
+        "numpy",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v37_config.py",
+      "bytes": 1049,
+      "imports": [
+        "copy",
+        "v36_config",
+        "v37_weapon"
+      ]
+    },
+    {
+      "path": "env/v37_weapon.py",
+      "bytes": 2068,
+      "imports": [
+        "dataclasses",
+        "math",
+        "numpy",
+        "v36_geometry"
+      ]
+    },
+    {
+      "path": "env/v38_config.py",
+      "bytes": 1510,
+      "imports": [
+        "copy",
+        "math",
+        "v31_config",
+        "v37_config"
+      ]
+    },
+    {
+      "path": "env/v38_scenario.py",
+      "bytes": 1590,
+      "imports": [
+        "math_utils",
+        "models",
+        "numpy",
+        "v31_scenario"
+      ]
+    },
+    {
+      "path": "env/v39_config.py",
+      "bytes": 711,
+      "imports": [
+        "copy",
+        "math",
+        "v36_config",
+        "v37_config",
+        "v38_config"
+      ]
+    },
+    {
+      "path": "env/v39_reward.py",
+      "bytes": 1431,
+      "imports": [
+        "numpy",
+        "sensor",
+        "v36_geometry",
+        "v36_reward"
+      ]
+    },
+    {
+      "path": "env/weapon.py",
+      "bytes": 3005,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "geometry",
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/__init__.py",
+      "bytes": 77,
+      "imports": []
+    },
+    {
+      "path": "algorithm/acirl/__init__.py",
+      "bytes": 77,
+      "imports": []
+    },
+    {
+      "path": "algorithm/acirl/advantages.py",
+      "bytes": 3618,
+      "imports": [
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/diagnostics.py",
+      "bytes": 6761,
+      "imports": [
+        "numpy",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/evaluation.py",
+      "bytes": 3880,
+      "imports": [
+        "algorithm.common.evaluator",
+        "env.factory",
+        "numpy",
+        "protocol",
+        "state",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/factory.py",
+      "bytes": 272,
+      "imports": [
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/networks.py",
+      "bytes": 7499,
+      "imports": [
+        "math",
+        "torch",
+        "torch.distributions",
+        "torch.nn"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/protocol.py",
+      "bytes": 8917,
+      "imports": [
+        "algorithm.common.protocol",
+        "env.config",
+        "math",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/recording.py",
+      "bytes": 1624,
+      "imports": [
+        "json",
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/rollout.py",
+      "bytes": 7796,
+      "imports": [
+        "advantages",
+        "dataclasses",
+        "state",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/runner.py",
+      "bytes": 9294,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "copy",
+        "csv",
+        "evaluation",
+        "json",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "rollout",
+        "torch",
+        "trainer",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/state.py",
+      "bytes": 5492,
+      "imports": [
+        "dataclasses",
+        "networks",
+        "torch",
+        "torch.distributions"
+      ]
+    },
+    {
+      "path": "algorithm/acirl/trainer.py",
+      "bytes": 20688,
+      "imports": [
+        "advantages",
+        "algorithm.common.protocol",
+        "copy",
+        "diagnostics",
+        "networks",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "random",
+        "state",
+        "torch",
+        "torch.distributions",
+        "torch.nn"
+      ]
+    },
+    {
+      "path": "algorithm/benchmark_etm_mappo.py",
+      "bytes": 889,
+      "imports": [
+        "algorithm.etm_mappo.benchmark",
+        "argparse",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/common/__init__.py",
+      "bytes": 562,
+      "imports": [
+        "checkpoint",
+        "evaluator",
+        "vector_env"
+      ]
+    },
+    {
+      "path": "algorithm/common/checkpoint.py",
+      "bytes": 7272,
+      "imports": [
+        "__future__",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.policy_protocol",
+        "algorithm.common.protocol",
+        "algorithm.mappo.trainer",
+        "env.config",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/common/control_factory.py",
+      "bytes": 3318,
+      "imports": [
+        "algorithm.common.critic_protocol",
+        "entity_layout"
+      ]
+    },
+    {
+      "path": "algorithm/common/controller_diagnostics.py",
+      "bytes": 1573,
+      "imports": [
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/common/critic_protocol.py",
+      "bytes": 2446,
+      "imports": []
+    },
+    {
+      "path": "algorithm/common/entity_layout.py",
+      "bytes": 1120,
+      "imports": []
+    },
+    {
+      "path": "algorithm/common/evaluator.py",
+      "bytes": 9276,
+      "imports": [
+        "__future__",
+        "env.factory",
+        "metrics",
+        "numpy",
+        "pathlib",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/common/metrics.py",
+      "bytes": 502,
+      "imports": []
+    },
+    {
+      "path": "algorithm/common/policy_protocol.py",
+      "bytes": 2678,
+      "imports": [
+        "algorithm.common.protocol"
+      ]
+    },
+    {
+      "path": "algorithm/common/protocol.py",
+      "bytes": 419,
+      "imports": [
+        "hashlib",
+        "json",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/common/training_log.py",
+      "bytes": 563,
+      "imports": [
+        "json"
+      ]
+    },
+    {
+      "path": "algorithm/common/vector_env.py",
+      "bytes": 9257,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "env.process_worker",
+        "multiprocessing",
+        "multiprocessing.connection",
+        "numpy",
+        "pathlib",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/diagnose_ippo.py",
+      "bytes": 2769,
+      "imports": [
+        "algorithm.ippo.diagnostics",
+        "argparse",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.combat_trace",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/ea_mappo/__init__.py",
+      "bytes": 92,
+      "imports": [
+        "factory"
+      ]
+    },
+    {
+      "path": "algorithm/ea_mappo/evaluation.py",
+      "bytes": 2976,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "factory",
+        "pathlib",
+        "protocol",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/ea_mappo/factory.py",
+      "bytes": 766,
+      "imports": [
+        "algorithm.common.control_factory",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/ea_mappo/networks.py",
+      "bytes": 3524,
+      "imports": [
+        "algorithm.common.entity_layout",
+        "algorithm.mappo.networks",
+        "algorithm.stea_mappo.networks",
+        "torch",
+        "torch.distributions"
+      ]
+    },
+    {
+      "path": "algorithm/ea_mappo/protocol.py",
+      "bytes": 4777,
+      "imports": [
+        "algorithm.common.policy_protocol",
+        "algorithm.common.protocol",
+        "env.config",
+        "factory",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/ea_mappo/runner.py",
+      "bytes": 8166,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.mappo.runner",
+        "env.config",
+        "evaluation",
+        "factory",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/ea_mappo/trainer.py",
+      "bytes": 4977,
+      "imports": [
+        "algorithm.common.entity_layout",
+        "algorithm.common.policy_protocol",
+        "algorithm.mappo.trainer",
+        "networks",
+        "pathlib",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/__init__.py",
+      "bytes": 289,
+      "imports": [
+        "factory",
+        "networks"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/entry.py",
+      "bytes": 1940,
+      "imports": [
+        "algorithm.train_mappo",
+        "contextlib",
+        "json",
+        "pathlib",
+        "runner",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/evaluation.py",
+      "bytes": 593,
+      "imports": [
+        "algorithm.common.evaluator",
+        "factory",
+        "protocol"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/factory.py",
+      "bytes": 421,
+      "imports": [
+        "algorithm.common.control_factory",
+        "protocol",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/networks.py",
+      "bytes": 3618,
+      "imports": [
+        "algorithm.mappo.networks",
+        "math",
+        "torch",
+        "torch.distributions"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/protocol.py",
+      "bytes": 4451,
+      "imports": [
+        "algorithm.common.policy_protocol",
+        "algorithm.common.protocol",
+        "copy",
+        "env.config",
+        "networks",
+        "pathlib",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/runner.py",
+      "bytes": 2845,
+      "imports": [
+        "algorithm.mappo.runner",
+        "factory",
+        "protocol"
+      ]
+    },
+    {
+      "path": "algorithm/eaa_mappo/trainer.py",
+      "bytes": 4595,
+      "imports": [
+        "algorithm.mappo.trainer",
+        "copy",
+        "networks",
+        "numpy",
+        "protocol",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/__init__.py",
+      "bytes": 82,
+      "imports": []
+    },
+    {
+      "path": "algorithm/etm_mappo/analysis.py",
+      "bytes": 4752,
+      "imports": [
+        "json",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/benchmark.py",
+      "bytes": 4615,
+      "imports": [
+        "checkpoint",
+        "config",
+        "contextlib",
+        "copy",
+        "csv",
+        "json",
+        "numpy",
+        "pathlib",
+        "runner",
+        "shutil"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/checkpoint.py",
+      "bytes": 3707,
+      "imports": [
+        "config",
+        "pathlib",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/config.py",
+      "bytes": 4781,
+      "imports": [
+        "copy",
+        "hashlib",
+        "json",
+        "math",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/evaluation.py",
+      "bytes": 2095,
+      "imports": [
+        "config",
+        "copy",
+        "navigation",
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/memory.py",
+      "bytes": 2725,
+      "imports": [
+        "dataclasses",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/navigation.py",
+      "bytes": 7759,
+      "imports": [
+        "copy",
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/networks.py",
+      "bytes": 10882,
+      "imports": [
+        "math",
+        "memory",
+        "torch",
+        "torch.distributions",
+        "torch.nn"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/runner.py",
+      "bytes": 9042,
+      "imports": [
+        "checkpoint",
+        "config",
+        "csv",
+        "dataclasses",
+        "evaluation",
+        "json",
+        "memory",
+        "navigation",
+        "numpy",
+        "pathlib",
+        "time",
+        "torch",
+        "trainer",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/etm_mappo/trainer.py",
+      "bytes": 15979,
+      "imports": [
+        "config",
+        "dataclasses",
+        "memory",
+        "networks",
+        "numpy",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_acirl.py",
+      "bytes": 1674,
+      "imports": [
+        "algorithm.acirl.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_ea_mappo.py",
+      "bytes": 1609,
+      "imports": [
+        "algorithm.ea_mappo.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_etm_mappo.py",
+      "bytes": 1773,
+      "imports": [
+        "algorithm.etm_mappo.checkpoint",
+        "algorithm.etm_mappo.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_ippo.py",
+      "bytes": 2065,
+      "imports": [
+        "__future__",
+        "algorithm.ippo.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_maac.py",
+      "bytes": 1858,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.maac.trainer",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_maddpg.py",
+      "bytes": 1752,
+      "imports": [
+        "algorithm.maddpg.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_madsac.py",
+      "bytes": 4904,
+      "imports": [
+        "__future__",
+        "algorithm.common.protocol",
+        "algorithm.madsac.evaluation",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.trainer",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_mappo.py",
+      "bytes": 1829,
+      "imports": [
+        "__future__",
+        "algorithm.mappo.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_matd3.py",
+      "bytes": 1791,
+      "imports": [
+        "algorithm.matd3.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_rmappo.py",
+      "bytes": 1601,
+      "imports": [
+        "algorithm.rmappo.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/evaluate_stea_mappo.py",
+      "bytes": 1609,
+      "imports": [
+        "algorithm.stea_mappo.evaluation",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/__init__.py",
+      "bytes": 101,
+      "imports": [
+        "networks",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/diagnostics.py",
+      "bytes": 9096,
+      "imports": [
+        "algorithm.common.protocol",
+        "evaluation",
+        "json",
+        "numpy",
+        "pathlib",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/evaluation.py",
+      "bytes": 2197,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "factory",
+        "pathlib",
+        "protocol",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/factory.py",
+      "bytes": 3145,
+      "imports": [
+        "__future__",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.protocol",
+        "protocol",
+        "trainer",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/networks.py",
+      "bytes": 1097,
+      "imports": [
+        "algorithm.mappo.networks",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/protocol.py",
+      "bytes": 6769,
+      "imports": [
+        "algorithm.common.critic_protocol",
+        "algorithm.common.policy_protocol",
+        "algorithm.common.protocol",
+        "env.config",
+        "math",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/runner.py",
+      "bytes": 10474,
+      "imports": [
+        "algorithm.common.critic_protocol",
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.mappo.runner",
+        "diagnostics",
+        "env.config",
+        "factory",
+        "json",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "tools.record_combat_episode",
+        "trainer",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/ippo/trainer.py",
+      "bytes": 18686,
+      "imports": [
+        "__future__",
+        "algorithm.common.policy_protocol",
+        "algorithm.mappo.networks",
+        "algorithm.mappo.trainer",
+        "networks",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "torch",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/maac/__init__.py",
+      "bytes": 70,
+      "imports": []
+    },
+    {
+      "path": "algorithm/maac/networks.py",
+      "bytes": 4341,
+      "imports": [
+        "math",
+        "torch",
+        "torch.distributions",
+        "torch.nn"
+      ]
+    },
+    {
+      "path": "algorithm/maac/protocol.py",
+      "bytes": 4397,
+      "imports": [
+        "algorithm.common.protocol",
+        "env.config"
+      ]
+    },
+    {
+      "path": "algorithm/maac/replay.py",
+      "bytes": 2906,
+      "imports": [
+        "dataclasses",
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/maac/runner.py",
+      "bytes": 9494,
+      "imports": [
+        "algorithm.common.controller_diagnostics",
+        "algorithm.common.evaluator",
+        "algorithm.common.vector_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "replay",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/maac/trainer.py",
+      "bytes": 9393,
+      "imports": [
+        "copy",
+        "networks",
+        "protocol",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/__init__.py",
+      "bytes": 177,
+      "imports": [
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/diagnostics.py",
+      "bytes": 2301,
+      "imports": [
+        "math",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/evaluation.py",
+      "bytes": 2156,
+      "imports": [
+        "algorithm.common.evaluator",
+        "factory",
+        "protocol",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/factory.py",
+      "bytes": 877,
+      "imports": [
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/logging.py",
+      "bytes": 997,
+      "imports": [
+        "math"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/networks.py",
+      "bytes": 1410,
+      "imports": [
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/noise.py",
+      "bytes": 2053,
+      "imports": [
+        "copy",
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/protocol.py",
+      "bytes": 12028,
+      "imports": [
+        "algorithm.common.protocol",
+        "env.config",
+        "math",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/replay_buffer.py",
+      "bytes": 3870,
+      "imports": [
+        "dataclasses",
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/runner.py",
+      "bytes": 21068,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "copy",
+        "csv",
+        "evaluation",
+        "factory",
+        "json",
+        "logging",
+        "noise",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "replay_buffer",
+        "schedule",
+        "trainer",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/maddpg/schedule.py",
+      "bytes": 970,
+      "imports": []
+    },
+    {
+      "path": "algorithm/maddpg/trainer.py",
+      "bytes": 16255,
+      "imports": [
+        "copy",
+        "diagnostics",
+        "networks",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/__init__.py",
+      "bytes": 400,
+      "imports": [
+        "networks",
+        "replay_buffer",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/console.py",
+      "bytes": 1050,
+      "imports": []
+    },
+    {
+      "path": "algorithm/madsac/critic_contract.py",
+      "bytes": 3683,
+      "imports": []
+    },
+    {
+      "path": "algorithm/madsac/evaluation.py",
+      "bytes": 2785,
+      "imports": [
+        "__future__",
+        "algorithm.common.evaluator",
+        "env.factory",
+        "hashlib",
+        "numpy",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/factory.py",
+      "bytes": 839,
+      "imports": [
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/networks.py",
+      "bytes": 5698,
+      "imports": [
+        "__future__",
+        "math",
+        "torch",
+        "torch.distributions",
+        "torch.nn"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/protocol.py",
+      "bytes": 8228,
+      "imports": [
+        "algorithm.common.protocol",
+        "critic_contract",
+        "env.config",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/replay_buffer.py",
+      "bytes": 3576,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "numpy"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/runner.py",
+      "bytes": 23035,
+      "imports": [
+        "__future__",
+        "algorithm.common.checkpoint",
+        "algorithm.common.controller_diagnostics",
+        "algorithm.common.evaluator",
+        "algorithm.common.metrics",
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "console",
+        "copy",
+        "critic_contract",
+        "csv",
+        "env.config",
+        "evaluation",
+        "json",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "replay_buffer",
+        "trainer",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/madsac/trainer.py",
+      "bytes": 16938,
+      "imports": [
+        "__future__",
+        "copy",
+        "critic_contract",
+        "math",
+        "networks",
+        "numpy",
+        "pathlib",
+        "random",
+        "replay_buffer",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/mappo/__init__.py",
+      "bytes": 538,
+      "imports": [
+        "evaluation",
+        "networks",
+        "runner",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/mappo/evaluation.py",
+      "bytes": 4854,
+      "imports": [
+        "__future__",
+        "algorithm.common.checkpoint",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "factory",
+        "pathlib",
+        "torch",
+        "typing",
+        "warnings"
+      ]
+    },
+    {
+      "path": "algorithm/mappo/factory.py",
+      "bytes": 2722,
+      "imports": [
+        "__future__",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.protocol",
+        "trainer",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/mappo/networks.py",
+      "bytes": 9888,
+      "imports": [
+        "__future__",
+        "math",
+        "torch",
+        "torch.distributions",
+        "torch.nn"
+      ]
+    },
+    {
+      "path": "algorithm/mappo/runner.py",
+      "bytes": 33093,
+      "imports": [
+        "__future__",
+        "algorithm.common.checkpoint",
+        "algorithm.common.controller_diagnostics",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.evaluator",
+        "algorithm.common.metrics",
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "csv",
+        "env.config",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "torch",
+        "trainer",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/mappo/trainer.py",
+      "bytes": 23567,
+      "imports": [
+        "__future__",
+        "algorithm.common.policy_protocol",
+        "dataclasses",
+        "networks",
+        "numpy",
+        "pathlib",
+        "torch",
+        "typing"
+      ]
+    },
+    {
+      "path": "algorithm/matd3/__init__.py",
+      "bytes": 40,
+      "imports": []
+    },
+    {
+      "path": "algorithm/matd3/diagnostics.py",
+      "bytes": 2350,
+      "imports": [
+        "math",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/matd3/evaluation.py",
+      "bytes": 2193,
+      "imports": [
+        "algorithm.common.evaluator",
+        "factory",
+        "protocol",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/matd3/factory.py",
+      "bytes": 944,
+      "imports": [
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/matd3/networks.py",
+      "bytes": 1509,
+      "imports": [
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/matd3/protocol.py",
+      "bytes": 15129,
+      "imports": [
+        "algorithm.common.protocol",
+        "env.config",
+        "math",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/matd3/runner.py",
+      "bytes": 22557,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.maddpg.logging",
+        "algorithm.maddpg.noise",
+        "algorithm.maddpg.replay_buffer",
+        "algorithm.maddpg.schedule",
+        "copy",
+        "csv",
+        "evaluation",
+        "factory",
+        "json",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "trainer",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/matd3/trainer.py",
+      "bytes": 21423,
+      "imports": [
+        "copy",
+        "diagnostics",
+        "networks",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "random",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/rmappo/__init__.py",
+      "bytes": 88,
+      "imports": [
+        "factory"
+      ]
+    },
+    {
+      "path": "algorithm/rmappo/evaluation.py",
+      "bytes": 4182,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "env.factory",
+        "factory",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/rmappo/factory.py",
+      "bytes": 645,
+      "imports": [
+        "algorithm.common.control_factory",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/rmappo/networks.py",
+      "bytes": 5395,
+      "imports": [
+        "algorithm.mappo.networks",
+        "torch",
+        "torch.distributions"
+      ]
+    },
+    {
+      "path": "algorithm/rmappo/protocol.py",
+      "bytes": 4561,
+      "imports": [
+        "algorithm.common.policy_protocol",
+        "algorithm.common.protocol",
+        "env.config",
+        "factory",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/rmappo/runner.py",
+      "bytes": 10263,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.mappo.runner",
+        "env.config",
+        "evaluation",
+        "factory",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/rmappo/trainer.py",
+      "bytes": 15034,
+      "imports": [
+        "algorithm.common.policy_protocol",
+        "algorithm.mappo.trainer",
+        "dataclasses",
+        "networks",
+        "numpy",
+        "pathlib",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/stea_mappo/__init__.py",
+      "bytes": 358,
+      "imports": [
+        "networks",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/stea_mappo/evaluation.py",
+      "bytes": 4210,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "env.factory",
+        "factory",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/stea_mappo/factory.py",
+      "bytes": 3935,
+      "imports": [
+        "algorithm.common.critic_protocol",
+        "algorithm.common.entity_layout",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/stea_mappo/networks.py",
+      "bytes": 10553,
+      "imports": [
+        "__future__",
+        "algorithm.common.entity_layout",
+        "algorithm.mappo.networks",
+        "math",
+        "torch",
+        "torch.distributions"
+      ]
+    },
+    {
+      "path": "algorithm/stea_mappo/protocol.py",
+      "bytes": 4492,
+      "imports": [
+        "algorithm.common.policy_protocol",
+        "algorithm.common.protocol",
+        "env.config",
+        "factory",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/stea_mappo/runner.py",
+      "bytes": 9974,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.mappo.runner",
+        "env.config",
+        "evaluation",
+        "factory",
+        "numpy",
+        "pathlib",
+        "protocol",
+        "torch",
+        "trainer"
+      ]
+    },
+    {
+      "path": "algorithm/stea_mappo/trainer.py",
+      "bytes": 16705,
+      "imports": [
+        "algorithm.common.entity_layout",
+        "algorithm.common.policy_protocol",
+        "algorithm.mappo.trainer",
+        "dataclasses",
+        "networks",
+        "numpy",
+        "pathlib",
+        "torch"
+      ]
+    },
+    {
+      "path": "algorithm/train_acirl.py",
+      "bytes": 1369,
+      "imports": [
+        "algorithm.acirl.runner",
+        "argparse",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_ea_mappo.py",
+      "bytes": 4919,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.ea_mappo.runner",
+        "algorithm.train_mappo",
+        "argparse",
+        "contextlib",
+        "datetime",
+        "json",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_eaa_mappo.py",
+      "bytes": 940,
+      "imports": [
+        "algorithm.eaa_mappo.entry",
+        "argparse",
+        "pathlib",
+        "sys"
+      ]
+    },
+    {
+      "path": "algorithm/train_etm_mappo.py",
+      "bytes": 2876,
+      "imports": [
+        "algorithm.etm_mappo.config",
+        "algorithm.etm_mappo.runner",
+        "argparse",
+        "contextlib",
+        "datetime",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_ippo.py",
+      "bytes": 3362,
+      "imports": [
+        "__future__",
+        "algorithm.common.protocol",
+        "algorithm.ippo.protocol",
+        "algorithm.ippo.runner",
+        "algorithm.train_mappo",
+        "argparse",
+        "contextlib",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_maac.py",
+      "bytes": 2984,
+      "imports": [
+        "algorithm.maac.protocol",
+        "algorithm.maac.runner",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_maddpg.py",
+      "bytes": 1418,
+      "imports": [
+        "algorithm.maddpg.runner",
+        "argparse",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_madsac.py",
+      "bytes": 4678,
+      "imports": [
+        "__future__",
+        "algorithm.common.protocol",
+        "algorithm.madsac.critic_contract",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_mappo.py",
+      "bytes": 21176,
+      "imports": [
+        "__future__",
+        "algorithm.common.checkpoint",
+        "algorithm.common.protocol",
+        "algorithm.eaa_mappo.entry",
+        "algorithm.mappo.runner",
+        "argparse",
+        "contextlib",
+        "csv",
+        "datetime",
+        "json",
+        "pathlib",
+        "shutil",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_matd3.py",
+      "bytes": 1448,
+      "imports": [
+        "algorithm.matd3.runner",
+        "argparse",
+        "pathlib",
+        "sys",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_rmappo.py",
+      "bytes": 4907,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.rmappo.protocol",
+        "algorithm.rmappo.runner",
+        "algorithm.train_mappo",
+        "argparse",
+        "contextlib",
+        "datetime",
+        "json",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "algorithm/train_stea_mappo.py",
+      "bytes": 4625,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.stea_mappo.protocol",
+        "algorithm.stea_mappo.runner",
+        "algorithm.train_mappo",
+        "argparse",
+        "contextlib",
+        "datetime",
+        "json",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/__init__.py",
+      "bytes": 79,
+      "imports": []
+    },
+    {
+      "path": "tools/_audit_v312_checkpoints.py",
+      "bytes": 1968,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.rmappo.protocol",
+        "algorithm.stea_mappo.protocol",
+        "env.config",
+        "json",
+        "pathlib",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_audit_v313_checkpoints.py",
+      "bytes": 1968,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.rmappo.protocol",
+        "algorithm.stea_mappo.protocol",
+        "env.config",
+        "json",
+        "pathlib",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_capture_v31_reference.py",
+      "bytes": 1416,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/_capture_v32_reference.py",
+      "bytes": 1599,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/_capture_v33_reference.py",
+      "bytes": 2090,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/_check_v310_vector_reset.py",
+      "bytes": 2006,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v39"
+      ]
+    },
+    {
+      "path": "tools/_check_v311_vector_reset.py",
+      "bytes": 2294,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v39"
+      ]
+    },
+    {
+      "path": "tools/_check_v312_vector_reset.py",
+      "bytes": 2099,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v39"
+      ]
+    },
+    {
+      "path": "tools/_check_v313_vector_reset.py",
+      "bytes": 2099,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v39"
+      ]
+    },
+    {
+      "path": "tools/_check_v34_vector_reset.py",
+      "bytes": 1371,
+      "imports": [
+        "algorithm.common.vector_env",
+        "json",
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/_check_v35_vector_reset.py",
+      "bytes": 1609,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_check_v36_vector_reset.py",
+      "bytes": 1292,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_check_v37_vector_reset.py",
+      "bytes": 1292,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_check_v38_vector_reset.py",
+      "bytes": 1292,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_check_v39_vector_reset.py",
+      "bytes": 1705,
+      "imports": [
+        "algorithm.common.vector_env",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v39"
+      ]
+    },
+    {
+      "path": "tools/_enable_v36.py",
+      "bytes": 2787,
+      "imports": [
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v310.py",
+      "bytes": 1752,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v311.py",
+      "bytes": 1648,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v312.py",
+      "bytes": 3054,
+      "imports": [
+        "algorithm.ea_mappo.networks",
+        "algorithm.stea_mappo.networks",
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v313.py",
+      "bytes": 1660,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v34.py",
+      "bytes": 3691,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v35.py",
+      "bytes": 4382,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v36.py",
+      "bytes": 2317,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v37.py",
+      "bytes": 1583,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "tools._prepare_v36",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v38.py",
+      "bytes": 1853,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_prepare_v39.py",
+      "bytes": 1717,
+      "imports": [
+        "env.combat_env",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference"
+      ]
+    },
+    {
+      "path": "tools/_report_v310_validation.py",
+      "bytes": 9906,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v311_validation.py",
+      "bytes": 10481,
+      "imports": [
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v312_validation.py",
+      "bytes": 10609,
+      "imports": [
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v313_validation.py",
+      "bytes": 11533,
+      "imports": [
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "re",
+        "subprocess"
+      ]
+    },
+    {
+      "path": "tools/_report_v33_validation.py",
+      "bytes": 7130,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v34_validation.py",
+      "bytes": 8022,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v35_validation.py",
+      "bytes": 9249,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v36_validation.py",
+      "bytes": 10770,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v37_validation.py",
+      "bytes": 6583,
+      "imports": [
+        "env.v37_weapon",
+        "hashlib",
+        "json",
+        "math",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v38_validation.py",
+      "bytes": 8144,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_report_v39_validation.py",
+      "bytes": 10375,
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/_wire_v310.py",
+      "bytes": 2851,
+      "imports": [
+        "pathlib",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_wire_v311.py",
+      "bytes": 2797,
+      "imports": [
+        "copy",
+        "env.v311_config",
+        "pathlib",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_wire_v312.py",
+      "bytes": 3670,
+      "imports": [
+        "env.v312_config",
+        "pathlib",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/_wire_v313.py",
+      "bytes": 3973,
+      "imports": [
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/_wire_v39.py",
+      "bytes": 2411,
+      "imports": [
+        "pathlib",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/aggregate_holdout_results.py",
+      "bytes": 5440,
+      "imports": [
+        "__future__",
+        "argparse",
+        "csv",
+        "json",
+        "math",
+        "pathlib",
+        "sys",
+        "tools.aggregate_training_runs",
+        "typing"
+      ]
+    },
+    {
+      "path": "tools/aggregate_training_runs.py",
+      "bytes": 9698,
+      "imports": [
+        "__future__",
+        "algorithm.common.protocol",
+        "argparse",
+        "csv",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "typing",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/analyze_eaa_attention.py",
+      "bytes": 3791,
+      "imports": [
+        "algorithm.eaa_mappo.evaluation",
+        "argparse",
+        "csv",
+        "env.factory",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/analyze_red_speed.py",
+      "bytes": 31930,
+      "imports": [
+        "argparse",
+        "collections",
+        "concurrent.futures",
+        "env.geometry",
+        "env.math_utils",
+        "env.models",
+        "env.v336_weapon",
+        "hashlib",
+        "json",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "sys",
+        "time",
+        "tools.audit_red_speed",
+        "tools.combat_trace"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v24.py",
+      "bytes": 13532,
+      "imports": [
+        "__future__",
+        "algorithm.common.metrics",
+        "argparse",
+        "concurrent.futures",
+        "env.combat_env",
+        "env.config",
+        "env.fixed_policy",
+        "env.geometry",
+        "hashlib",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "sys",
+        "time",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v30.py",
+      "bytes": 7353,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "env.models",
+        "env.sensor",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "sys",
+        "time"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v310.py",
+      "bytes": 3869,
+      "imports": [
+        "env.combat_env",
+        "env.fixed_policy",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools.audit_combat_v39"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v311.py",
+      "bytes": 4041,
+      "imports": [
+        "env.combat_env",
+        "env.fixed_policy",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools.audit_combat_v310",
+        "tools.audit_combat_v39"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v313.py",
+      "bytes": 5900,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.models",
+        "env.v313_geometry",
+        "env.v36_geometry",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v39",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v314.py",
+      "bytes": 8820,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.config",
+        "env.control",
+        "env.math_utils",
+        "env.models",
+        "env.v313_observation",
+        "json",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v315.py",
+      "bytes": 6728,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.control",
+        "env.models",
+        "env.v315_control",
+        "itertools",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v316_weapon.py",
+      "bytes": 9463,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.geometry",
+        "env.models",
+        "env.v313_geometry",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v317_v318.py",
+      "bytes": 6247,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.geometry",
+        "env.models",
+        "env.v313_geometry",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v31_initialization.py",
+      "bytes": 10448,
+      "imports": [
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "collections",
+        "env.combat_env",
+        "env.config",
+        "env.math_utils",
+        "env.sensor",
+        "gzip",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "sys",
+        "time",
+        "tools.audit_combat_v30",
+        "tools.audit_v30_initial_policy_baselines"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v328.py",
+      "bytes": 2735,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "env.math_utils",
+        "env.models",
+        "env.v320_control",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v329.py",
+      "bytes": 4400,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.models",
+        "env.v329_control",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v32_symmetry.py",
+      "bytes": 4861,
+      "imports": [
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "env.config",
+        "gzip",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "sys",
+        "time",
+        "tools",
+        "tools.audit_v30_initial_policy_baselines"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v330.py",
+      "bytes": 3968,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.models",
+        "env.v329_control",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v331_reward.py",
+      "bytes": 7905,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.models",
+        "env.v323_reward",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v332_kinematics.py",
+      "bytes": 5856,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.math_utils",
+        "env.models",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v333_engagement.py",
+      "bytes": 8117,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.v323_reward",
+        "env.v333_reward",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v334_initialization.py",
+      "bytes": 13253,
+      "imports": [
+        "argparse",
+        "collections",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.v322_reward",
+        "env.v323_reward",
+        "env.v334_config",
+        "env.v334_scenario",
+        "env.v36_geometry",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v335_engagement.py",
+      "bytes": 8388,
+      "imports": [
+        "argparse",
+        "collections",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.geometry",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_combat_v334_initialization",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v335_hit_probability.py",
+      "bytes": 3476,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v335_paper_reward.py",
+      "bytes": 29024,
+      "imports": [
+        "argparse",
+        "collections",
+        "csv",
+        "env.combat_env",
+        "env.fixed_policy",
+        "gzip",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.record_combat_episode",
+        "tools.v335_paper_reward_reference",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v336_weapon_geometry.py",
+      "bytes": 9973,
+      "imports": [
+        "argparse",
+        "collections",
+        "copy",
+        "csv",
+        "env.combat_env",
+        "env.config",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.models",
+        "env.v317_weapon",
+        "env.v336_weapon",
+        "env.v36_geometry",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v337_reward_geometry.py",
+      "bytes": 9135,
+      "imports": [
+        "argparse",
+        "collections",
+        "csv",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.models",
+        "env.v322_reward",
+        "env.v323_reward",
+        "env.v337_reward",
+        "env.v36_geometry",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_combat_v336_weapon_geometry",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v33_reward.py",
+      "bytes": 4673,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools._capture_v33_reference",
+        "tools.audit_v30_initial_policy_baselines"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v34_blue.py",
+      "bytes": 5933,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "env.sensor",
+        "env.v30_policy",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v30"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v35_blue.py",
+      "bytes": 4090,
+      "imports": [
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "env.v30_policy",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "tools.audit_combat_v30",
+        "tools.audit_combat_v34_blue"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v36.py",
+      "bytes": 5994,
+      "imports": [
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "env.sensor",
+        "env.v30_policy",
+        "env.v36_geometry",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "tools.audit_combat_v30",
+        "tools.audit_combat_v35_blue"
+      ]
+    },
+    {
+      "path": "tools/audit_combat_v39.py",
+      "bytes": 6299,
+      "imports": [
+        "env.combat_env",
+        "env.config",
+        "env.fixed_policy",
+        "env.sensor",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/audit_madsac_attention.py",
+      "bytes": 6236,
+      "imports": [
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.trainer",
+        "argparse",
+        "env.factory",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.madsac_audit_reference",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/audit_madsac_training_schedule.py",
+      "bytes": 5887,
+      "imports": [
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "argparse",
+        "math",
+        "pathlib",
+        "sys",
+        "tools.madsac_audit_reference",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/audit_red_speed.py",
+      "bytes": 9520,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.eaa_mappo.evaluation",
+        "argparse",
+        "concurrent.futures",
+        "csv",
+        "hashlib",
+        "json",
+        "pathlib",
+        "sys",
+        "time",
+        "tools.combat_trace",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/audit_v30_initial_policy_baselines.py",
+      "bytes": 28408,
+      "imports": [
+        "algorithm.common.training_log",
+        "algorithm.mappo.networks",
+        "algorithm.rmappo.protocol",
+        "argparse",
+        "collections",
+        "env.combat_env",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.sensor",
+        "gzip",
+        "hashlib",
+        "json",
+        "math",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "re",
+        "sys",
+        "time",
+        "tools.audit_combat_v30",
+        "torch",
+        "traceback",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/audit_v327_red_firing.py",
+      "bytes": 13555,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.combat_v327",
+        "env.geometry",
+        "env.v36_geometry",
+        "hashlib",
+        "inspect",
+        "json",
+        "numpy",
+        "pathlib",
+        "shutil",
+        "sys",
+        "tools.record_combat_episode",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/audit_v330_controller.py",
+      "bytes": 18871,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.math_utils",
+        "env.models",
+        "env.v311_kinematics",
+        "env.v329_control",
+        "hashlib",
+        "json",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/audit_v339_attack_geometry.py",
+      "bytes": 25067,
+      "imports": [
+        "argparse",
+        "copy",
+        "csv",
+        "env.combat_env",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.v337_reward",
+        "hashlib",
+        "json",
+        "math",
+        "numpy",
+        "os",
+        "pathlib",
+        "platform",
+        "subprocess",
+        "sys",
+        "time"
+      ]
+    },
+    {
+      "path": "tools/audit_v339_scenario_exposure.py",
+      "bytes": 21028,
+      "imports": [
+        "argparse",
+        "concurrent.futures",
+        "contextlib",
+        "copy",
+        "env.math_utils",
+        "env.models",
+        "env.v337_reward",
+        "hashlib",
+        "json",
+        "math",
+        "numpy",
+        "os",
+        "pathlib",
+        "subprocess",
+        "sys",
+        "time",
+        "tools.audit_v339_attack_geometry"
+      ]
+    },
+    {
+      "path": "tools/audit_v339_single_aircraft.py",
+      "bytes": 22356,
+      "imports": [
+        "argparse",
+        "csv",
+        "env.combat_env",
+        "env.config",
+        "env.models",
+        "env.v311_kinematics",
+        "hashlib",
+        "inspect",
+        "json",
+        "math",
+        "numpy",
+        "os",
+        "pathlib",
+        "platform",
+        "shutil",
+        "subprocess",
+        "sys",
+        "tools.audit_combat_v332_kinematics",
+        "tools.report_v339_single_aircraft"
+      ]
+    },
+    {
+      "path": "tools/audit_v341_probability.py",
+      "bytes": 5161,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "statistics",
+        "sys",
+        "tools.audit_v339_attack_geometry"
+      ]
+    },
+    {
+      "path": "tools/build_madsac_audit_report.py",
+      "bytes": 32447,
+      "imports": [
+        "algorithm.madsac.trainer",
+        "datetime",
+        "json",
+        "pathlib",
+        "platform",
+        "subprocess",
+        "sys",
+        "tools.audit_madsac_training_schedule",
+        "tools.madsac_audit_reference",
+        "torch",
+        "xml.etree.ElementTree",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/check_parallel_env.py",
+      "bytes": 2078,
+      "imports": [
+        "__future__",
+        "algorithm.common.vector_env",
+        "argparse",
+        "numpy",
+        "os",
+        "pathlib",
+        "sys",
+        "time",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/combat_replay_report.py",
+      "bytes": 13515,
+      "imports": [
+        "collections",
+        "csv",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools.combat_trace"
+      ]
+    },
+    {
+      "path": "tools/combat_trace.py",
+      "bytes": 5745,
+      "imports": [
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/combat_video.py",
+      "bytes": 1047,
+      "imports": [
+        "matplotlib",
+        "os",
+        "pathlib",
+        "shutil",
+        "subprocess"
+      ]
+    },
+    {
+      "path": "tools/combat_visualization.py",
+      "bytes": 7472,
+      "imports": [
+        "dataclasses",
+        "env.combat_env",
+        "env.geometry",
+        "env.models",
+        "env.v317_weapon",
+        "env.v336_weapon",
+        "env.v36_geometry",
+        "env.weapon",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "tools.combat_trace",
+        "typing"
+      ]
+    },
+    {
+      "path": "tools/compare_v338_v339_blue.py",
+      "bytes": 18320,
+      "imports": [
+        "algorithm.common.protocol",
+        "argparse",
+        "concurrent.futures",
+        "hashlib",
+        "json",
+        "multiprocessing",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "sys",
+        "time",
+        "tools.analyze_red_speed",
+        "tools.audit_red_speed",
+        "tools.combat_visualization",
+        "torch",
+        "traceback",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/compare_v38_initialization.py",
+      "bytes": 2529,
+      "imports": [
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.sensor",
+        "env.v36_geometry",
+        "json",
+        "numpy",
+        "pathlib"
+      ]
+    },
+    {
+      "path": "tools/create_combat_v24_videos.py",
+      "bytes": 23078,
+      "imports": [
+        "algorithm.common.protocol",
+        "argparse",
+        "csv",
+        "env.geometry",
+        "env.models",
+        "html",
+        "json",
+        "numpy",
+        "pathlib",
+        "shutil",
+        "subprocess",
+        "sys",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "tools.render_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/diagnose_mappo_lambda.py",
+      "bytes": 10976,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.runner",
+        "algorithm.mappo.trainer",
+        "algorithm.train_mappo",
+        "argparse",
+        "copy",
+        "env.factory",
+        "hashlib",
+        "json",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "sys",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/diagnose_stea_representation.py",
+      "bytes": 34732,
+      "imports": [
+        "__future__",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.common.training_log",
+        "algorithm.stea_mappo.networks",
+        "algorithm.stea_mappo.protocol",
+        "algorithm.stea_mappo.trainer",
+        "argparse",
+        "csv",
+        "env.factory",
+        "hashlib",
+        "json",
+        "numpy",
+        "os",
+        "pathlib",
+        "sys",
+        "tools.evaluate_policy_modes",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/evaluate_policy_modes.py",
+      "bytes": 12655,
+      "imports": [
+        "__future__",
+        "algorithm.common.checkpoint",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.mappo.factory",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.protocol",
+        "argparse",
+        "contextlib",
+        "env.config",
+        "env.factory",
+        "hashlib",
+        "json",
+        "numpy",
+        "os",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/madsac_audit_reference.py",
+      "bytes": 7133,
+      "imports": [
+        "hashlib",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/preflight_v340.py",
+      "bytes": 10872,
+      "imports": [
+        "argparse",
+        "concurrent.futures",
+        "env.combat_env",
+        "env.config",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "time",
+        "tools.audit_v339_attack_geometry"
+      ]
+    },
+    {
+      "path": "tools/preflight_v341.py",
+      "bytes": 14025,
+      "imports": [
+        "argparse",
+        "concurrent.futures",
+        "csv",
+        "env.combat_env",
+        "env.config",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "shutil",
+        "subprocess",
+        "sys",
+        "time",
+        "tools.audit_v339_attack_geometry",
+        "tools.preflight_v340"
+      ]
+    },
+    {
+      "path": "tools/record_combat_episode.py",
+      "bytes": 12593,
+      "imports": [
+        "algorithm.acirl.evaluation",
+        "algorithm.acirl.recording",
+        "algorithm.common.checkpoint",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.protocol",
+        "algorithm.eaa_mappo.evaluation",
+        "algorithm.ippo.diagnostics",
+        "algorithm.ippo.evaluation",
+        "algorithm.maac.protocol",
+        "algorithm.maac.trainer",
+        "algorithm.maddpg.factory",
+        "algorithm.maddpg.protocol",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.factory",
+        "algorithm.matd3.factory",
+        "algorithm.matd3.protocol",
+        "argparse",
+        "importlib",
+        "numpy",
+        "pathlib",
+        "sys",
+        "time",
+        "tools.combat_trace",
+        "tools.combat_visualization",
+        "torch",
+        "typing",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/record_single_uav_min_turn.py",
+      "bytes": 6357,
+      "imports": [
+        "argparse",
+        "env.config",
+        "env.dynamics",
+        "env.integrator",
+        "env.models",
+        "env.v329_control",
+        "imageio_ffmpeg",
+        "json",
+        "matplotlib",
+        "matplotlib.animation",
+        "matplotlib.patches",
+        "matplotlib.pyplot",
+        "numpy",
+        "pathlib",
+        "sys"
+      ]
+    },
+    {
+      "path": "tools/render_combat_episode.py",
+      "bytes": 6786,
+      "imports": [
+        "argparse",
+        "json",
+        "matplotlib",
+        "matplotlib.animation",
+        "matplotlib.lines",
+        "matplotlib.pyplot",
+        "mpl_toolkits.mplot3d",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.combat_video",
+        "tools.combat_visualization"
+      ]
+    },
+    {
+      "path": "tools/render_combat_episode_interactive.py",
+      "bytes": 7904,
+      "imports": [
+        "argparse",
+        "json",
+        "numpy",
+        "pathlib",
+        "plotly.graph_objects",
+        "sys",
+        "tools.combat_visualization"
+      ]
+    },
+    {
+      "path": "tools/render_combat_replays_realtime.py",
+      "bytes": 2240,
+      "imports": [
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "tools.combat_visualization",
+        "tools.create_combat_v24_videos",
+        "tools.render_combat_episode",
+        "tools.render_combat_episode_interactive"
+      ]
+    },
+    {
+      "path": "tools/replay_combat.py",
+      "bytes": 3588,
+      "imports": [
+        "argparse",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.combat_replay_report",
+        "tools.combat_video",
+        "tools.record_combat_episode",
+        "tools.render_combat_episode",
+        "tools.render_combat_episode_interactive",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/report_v339_attack_geometry.py",
+      "bytes": 51971,
+      "imports": [
+        "argparse",
+        "env.geometry",
+        "env.models",
+        "hashlib",
+        "json",
+        "math",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "re",
+        "shutil",
+        "tools.audit_v339_attack_geometry"
+      ]
+    },
+    {
+      "path": "tools/report_v339_scenario_exposure.py",
+      "bytes": 47301,
+      "imports": [
+        "argparse",
+        "hashlib",
+        "json",
+        "math",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "re",
+        "shutil",
+        "tools.audit_v339_scenario_exposure"
+      ]
+    },
+    {
+      "path": "tools/report_v339_single_aircraft.py",
+      "bytes": 26768,
+      "imports": [
+        "json",
+        "math",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "re"
+      ]
+    },
+    {
+      "path": "tools/report_v340_preflight.py",
+      "bytes": 17628,
+      "imports": [
+        "csv",
+        "env.config",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_v339_attack_geometry"
+      ]
+    },
+    {
+      "path": "tools/report_v341_preflight.py",
+      "bytes": 21924,
+      "imports": [
+        "hashlib",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_v339_attack_geometry",
+        "tools.preflight_v341"
+      ]
+    },
+    {
+      "path": "tools/review_combat_v24_traces.py",
+      "bytes": 5832,
+      "imports": [
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "env.models",
+        "json",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch"
+      ]
+    },
+    {
+      "path": "tools/smoke_combat_v24.py",
+      "bytes": 8864,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.protocol",
+        "algorithm.mappo.evaluation",
+        "algorithm.mappo.runner",
+        "algorithm.stea_mappo.evaluation",
+        "algorithm.stea_mappo.networks",
+        "algorithm.stea_mappo.protocol",
+        "algorithm.stea_mappo.runner",
+        "algorithm.stea_mappo.trainer",
+        "argparse",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_combat_v24",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/smoke_formal_8v8.py",
+      "bytes": 13696,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.ea_mappo.evaluation",
+        "algorithm.ea_mappo.runner",
+        "algorithm.mappo.evaluation",
+        "algorithm.mappo.runner",
+        "algorithm.rmappo.evaluation",
+        "algorithm.rmappo.protocol",
+        "algorithm.rmappo.runner",
+        "algorithm.stea_mappo.evaluation",
+        "algorithm.stea_mappo.runner",
+        "algorithm.train_mappo",
+        "argparse",
+        "contextlib",
+        "csv",
+        "env.config",
+        "hashlib",
+        "importlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/v335_paper_reward_reference.py",
+      "bytes": 4682,
+      "imports": [
+        "env.geometry",
+        "env.v322_reward",
+        "env.v36_geometry",
+        "numpy"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_environment.py",
+      "bytes": 10738,
+      "imports": [
+        "__future__",
+        "algorithm.common.metrics",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "env.control",
+        "env.dynamics",
+        "env.geometry",
+        "env.integrator",
+        "env.models",
+        "env.scenario",
+        "env.weapon",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v314.py",
+      "bytes": 5407,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.vector_env",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.rmappo.protocol",
+        "algorithm.stea_mappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v39",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v315.py",
+      "bytes": 8649,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.vector_env",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.rmappo.protocol",
+        "algorithm.stea_mappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "env.models",
+        "env.v315_observation",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_combat_v39",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v316.py",
+      "bytes": 5004,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.vector_env",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.rmappo.protocol",
+        "algorithm.stea_mappo.protocol",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_combat_v39",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v317_v318.py",
+      "bytes": 6296,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.vector_env",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.ea_mappo.runner",
+        "algorithm.mappo.runner",
+        "algorithm.rmappo.protocol",
+        "algorithm.rmappo.runner",
+        "algorithm.stea_mappo.protocol",
+        "algorithm.stea_mappo.runner",
+        "argparse",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.audit_combat_v39",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v333_smoke.py",
+      "bytes": 3525,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v334_smoke.py",
+      "bytes": 3603,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v335_smoke.py",
+      "bytes": 3609,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v336_smoke.py",
+      "bytes": 3615,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v337_smoke.py",
+      "bytes": 3621,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_combat_v338.py",
+      "bytes": 6127,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.maac.trainer",
+        "algorithm.madsac.evaluation",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "algorithm.mappo.runner",
+        "argparse",
+        "copy",
+        "env.factory",
+        "gc",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_eaa_mappo_smoke.py",
+      "bytes": 7074,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.eaa_mappo.evaluation",
+        "algorithm.eaa_mappo.protocol",
+        "algorithm.mappo.evaluation",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.trainer",
+        "argparse",
+        "hashlib",
+        "importlib.util",
+        "json",
+        "numpy",
+        "original_mappo.factory",
+        "pathlib",
+        "subprocess",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_maddpg_smoke.py",
+      "bytes": 3791,
+      "imports": [
+        "algorithm.maddpg.factory",
+        "algorithm.maddpg.protocol",
+        "hashlib",
+        "json",
+        "math",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_maddpg_v338_smoke.py",
+      "bytes": 4581,
+      "imports": [
+        "algorithm.maddpg.evaluation",
+        "algorithm.maddpg.factory",
+        "algorithm.maddpg.protocol",
+        "argparse",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_madsac_v4.py",
+      "bytes": 6438,
+      "imports": [
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "argparse",
+        "hashlib",
+        "json",
+        "math",
+        "pathlib",
+        "sys",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/validate_stern_conversion.py",
+      "bytes": 7899,
+      "imports": [
+        "argparse",
+        "collections",
+        "env.config",
+        "env.control",
+        "env.dynamics",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.integrator",
+        "env.models",
+        "env.scenario",
+        "env.weapon",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys"
+      ]
+    },
+    {
+      "path": "tools/verify_madsac_v341.py",
+      "bytes": 8191,
+      "imports": [
+        "algorithm.madsac.evaluation",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "argparse",
+        "copy",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.validate_madsac_v4",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/verify_v339_training.py",
+      "bytes": 7906,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.eaa_mappo.protocol",
+        "algorithm.eaa_mappo.runner",
+        "algorithm.maac.protocol",
+        "algorithm.maac.runner",
+        "algorithm.maddpg.protocol",
+        "algorithm.maddpg.runner",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.runner",
+        "algorithm.mappo.runner",
+        "argparse",
+        "copy",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/verify_v340_readiness.py",
+      "bytes": 2314,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.mappo.runner",
+        "argparse",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tools/verify_v341_algorithm_configs.py",
+      "bytes": 7701,
+      "imports": [
+        "algorithm.eaa_mappo.runner",
+        "algorithm.maac.protocol",
+        "algorithm.maac.runner",
+        "argparse",
+        "json",
+        "pathlib",
+        "sys",
+        "tools.verify_v339_training",
+        "torch",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tools/verify_v341_readiness.py",
+      "bytes": 7652,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.protocol",
+        "algorithm.mappo.evaluation",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.runner",
+        "argparse",
+        "env.config",
+        "json",
+        "numpy",
+        "pathlib",
+        "sys",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/fixtures/formal_5v5_before_8v8.pt",
+      "bytes": 4499083
+    },
+    {
+      "path": "tests/fixtures/v23_reference.json",
+      "bytes": 38132
+    },
+    {
+      "path": "tests/fixtures/v24_final_reference.json",
+      "bytes": 115508
+    },
+    {
+      "path": "tests/test_acirl.py",
+      "bytes": 23055,
+      "imports": [
+        "algorithm.acirl.advantages",
+        "algorithm.acirl.evaluation",
+        "algorithm.acirl.networks",
+        "algorithm.acirl.protocol",
+        "algorithm.acirl.rollout",
+        "algorithm.acirl.runner",
+        "algorithm.acirl.state",
+        "algorithm.acirl.trainer",
+        "algorithm.common.vector_env",
+        "copy",
+        "env.factory",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.combat_trace",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "tools.render_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_environment.py",
+      "bytes": 16893,
+      "imports": [
+        "__future__",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.control",
+        "env.dynamics",
+        "env.geometry",
+        "env.integrator",
+        "env.models",
+        "env.observation",
+        "env.reward",
+        "env.scenario",
+        "env.weapon",
+        "numpy",
+        "pathlib",
+        "pytest"
+      ]
+    },
+    {
+      "path": "tests/test_combat_interactive_dynamic.py",
+      "bytes": 2247,
+      "imports": [
+        "numpy",
+        "pathlib",
+        "plotly.graph_objects",
+        "pytest",
+        "tools.record_combat_episode",
+        "tools.render_combat_episode_interactive",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_protocol.py",
+      "bytes": 11909,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.madsac.evaluation",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.runner",
+        "algorithm.mappo.evaluation",
+        "algorithm.mappo.runner",
+        "copy",
+        "env",
+        "env.combat_env",
+        "env.factory",
+        "inspect",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_replay_pipeline.py",
+      "bytes": 16837,
+      "imports": [
+        "algorithm.common.critic_protocol",
+        "algorithm.common.protocol",
+        "algorithm.maac.protocol",
+        "algorithm.maac.trainer",
+        "copy",
+        "csv",
+        "dataclasses",
+        "env.combat_env",
+        "env.combat_v336",
+        "env.geometry",
+        "env.models",
+        "importlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "plotly.graph_objects",
+        "pytest",
+        "re",
+        "shutil",
+        "subprocess",
+        "tools",
+        "tools.combat_replay_report",
+        "tools.combat_trace",
+        "tools.combat_video",
+        "tools.combat_visualization",
+        "tools.create_combat_v24_videos",
+        "tools.render_combat_episode",
+        "tools.render_combat_episode_interactive",
+        "torch",
+        "types",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v24.py",
+      "bytes": 12411,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.madsac.protocol",
+        "algorithm.stea_mappo.networks",
+        "env.combat_env",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.observation",
+        "env.weapon",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v24",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v24_videos.py",
+      "bytes": 11822,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.madsac.critic_contract",
+        "env.combat_env",
+        "importlib",
+        "json",
+        "matplotlib",
+        "matplotlib.pyplot",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "shutil",
+        "tools.combat_visualization",
+        "tools.create_combat_v24_videos",
+        "tools.record_combat_episode",
+        "tools.render_combat_episode",
+        "torch",
+        "types",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v25.py",
+      "bytes": 7337,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.madsac.protocol",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.networks",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.weapon",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tests.test_combat_v24",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v26.py",
+      "bytes": 14788,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.ea_mappo.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.trainer",
+        "algorithm.rmappo.factory",
+        "algorithm.stea_mappo.factory",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.control",
+        "env.dynamics",
+        "env.fixed_policy",
+        "env.integrator",
+        "env.math_utils",
+        "env.models",
+        "env.process_worker",
+        "env.weapon",
+        "importlib",
+        "multiprocessing",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.smoke_formal_8v8",
+        "tools.validate_stern_conversion",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v27.py",
+      "bytes": 6005,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.trainer",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.fixed_policy",
+        "env.models",
+        "env.weapon",
+        "importlib",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v28.py",
+      "bytes": 7059,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.maddpg.protocol",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.trainer",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.fixed_policy",
+        "env.models",
+        "env.weapon",
+        "importlib",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v29.py",
+      "bytes": 7891,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.maddpg.protocol",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.trainer",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.fixed_policy",
+        "env.models",
+        "env.weapon",
+        "importlib",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v30.py",
+      "bytes": 14089,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.mappo.trainer",
+        "algorithm.stea_mappo.networks",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.sensor",
+        "env.v30_policy",
+        "env.v30_reward",
+        "env.v30_weapon",
+        "importlib",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v31.py",
+      "bytes": 6884,
+      "imports": [
+        "algorithm.rmappo.networks",
+        "algorithm.stea_mappo.networks",
+        "copy",
+        "env.combat_env",
+        "env.combat_v30",
+        "env.combat_v31",
+        "env.config",
+        "env.math_utils",
+        "env.v31_scenario",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v31_reference",
+        "tools.audit_combat_v31_initialization",
+        "torch"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v310.py",
+      "bytes": 12129,
+      "imports": [
+        "algorithm.common.evaluator",
+        "copy",
+        "env.combat_env",
+        "env.combat_v310",
+        "env.combat_v39",
+        "env.config",
+        "env.fixed_policy",
+        "env.models",
+        "env.sensor",
+        "env.v310_policy",
+        "env.v35_policy",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v33_reference",
+        "tools._prepare_v310",
+        "tools.audit_combat_v310",
+        "tools.audit_combat_v39",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v311.py",
+      "bytes": 14889,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v310",
+        "env.combat_v311",
+        "env.combat_v35",
+        "env.config",
+        "env.math_utils",
+        "env.models",
+        "env.sensor",
+        "env.v30_observation",
+        "env.v311_config",
+        "env.v311_kinematics",
+        "env.v311_reward",
+        "env.v311_scenario",
+        "env.v311_weapon",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._prepare_v311",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v312.py",
+      "bytes": 12184,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.ea_mappo.factory",
+        "algorithm.ea_mappo.networks",
+        "algorithm.mappo.trainer",
+        "algorithm.rmappo.factory",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.networks",
+        "copy",
+        "env.combat_env",
+        "env.combat_v311",
+        "env.combat_v312",
+        "env.config",
+        "env.fixed_policy",
+        "env.models",
+        "env.observation",
+        "env.sensor",
+        "env.v312_observation",
+        "env.v36_geometry",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v33_reference",
+        "tools._prepare_v312",
+        "tools.combat_visualization",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v313.py",
+      "bytes": 10510,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v312",
+        "env.combat_v313",
+        "env.config",
+        "env.v311_weapon",
+        "env.v313_geometry",
+        "env.v313_reward",
+        "env.v313_weapon",
+        "env.v36_geometry",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tests.test_combat_v312",
+        "tools._prepare_v313",
+        "tools.audit_combat_v313",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v314.py",
+      "bytes": 17005,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v313",
+        "env.combat_v314",
+        "env.config",
+        "env.control",
+        "env.dynamics",
+        "env.integrator",
+        "env.math_utils",
+        "env.models",
+        "env.v313_geometry",
+        "env.v313_observation",
+        "env.v313_weapon",
+        "env.v314_observation",
+        "hashlib",
+        "importlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v33_reference",
+        "tools.combat_visualization",
+        "tools.validate_combat_v314",
+        "types",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v315.py",
+      "bytes": 12795,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v314",
+        "env.combat_v315",
+        "env.config",
+        "env.control",
+        "env.dynamics",
+        "env.integrator",
+        "env.models",
+        "env.v313_geometry",
+        "env.v313_observation",
+        "env.v314_observation",
+        "env.v315_control",
+        "env.v315_observation",
+        "importlib",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.combat_visualization",
+        "tools.validate_combat_v315",
+        "types",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v316.py",
+      "bytes": 9719,
+      "imports": [
+        "copy",
+        "dataclasses",
+        "env.combat_env",
+        "env.combat_v315",
+        "env.combat_v316",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.v313_geometry",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v316_weapon",
+        "tools.combat_visualization",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v317.py",
+      "bytes": 10648,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v316",
+        "env.combat_v317",
+        "env.combat_v318",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.v313_geometry",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v318.py",
+      "bytes": 3977,
+      "imports": [
+        "copy",
+        "env.combat_v317",
+        "env.combat_v318",
+        "env.weapon",
+        "numpy",
+        "pytest",
+        "tools.audit_combat_v317_v318"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v319.py",
+      "bytes": 10937,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v317",
+        "env.combat_v319",
+        "env.config",
+        "env.models",
+        "env.v319_reward",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v32.py",
+      "bytes": 8977,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.metrics",
+        "algorithm.ea_mappo.runner",
+        "algorithm.mappo.runner",
+        "algorithm.rmappo.runner",
+        "algorithm.stea_mappo.runner",
+        "env.combat_env",
+        "env.combat_v31",
+        "env.combat_v32",
+        "env.config",
+        "env.models",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v32_reference",
+        "types"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v320.py",
+      "bytes": 11015,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v319",
+        "env.combat_v320",
+        "env.config",
+        "env.models",
+        "env.v315_control",
+        "env.v320_control",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v321.py",
+      "bytes": 11199,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v320",
+        "env.combat_v321",
+        "env.config",
+        "env.math_utils",
+        "env.models",
+        "env.v310_policy",
+        "env.v315_control",
+        "env.v320_control",
+        "env.v321_policy",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v322.py",
+      "bytes": 12048,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v321",
+        "env.combat_v322",
+        "env.config",
+        "env.models",
+        "env.v319_reward",
+        "env.v322_reward",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v323.py",
+      "bytes": 15346,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v322",
+        "env.combat_v323",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.v322_reward",
+        "env.v323_reward",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v324.py",
+      "bytes": 11097,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v323",
+        "env.combat_v324",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.v315_observation",
+        "env.v323_reward",
+        "env.v324_observation",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v325.py",
+      "bytes": 12305,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v324",
+        "env.combat_v325",
+        "env.config",
+        "env.models",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v326.py",
+      "bytes": 10563,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v325",
+        "env.combat_v326",
+        "env.config",
+        "env.models",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v327.py",
+      "bytes": 9706,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.trainer",
+        "copy",
+        "env.combat_env",
+        "env.combat_v326",
+        "env.combat_v327",
+        "env.config",
+        "env.models",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v328.py",
+      "bytes": 7830,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.combat_v326",
+        "env.combat_v328",
+        "env.config",
+        "env.models",
+        "env.v320_control",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.audit_combat_v328",
+        "tools.combat_visualization",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v329.py",
+      "bytes": 13550,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.controller_diagnostics",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.trainer",
+        "copy",
+        "env.combat_env",
+        "env.combat_v328",
+        "env.combat_v329",
+        "env.config",
+        "env.math_utils",
+        "env.models",
+        "env.v310_policy",
+        "env.v329_control",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "torch",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v33.py",
+      "bytes": 13004,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.ea_mappo.runner",
+        "algorithm.maddpg.evaluation",
+        "algorithm.maddpg.factory",
+        "algorithm.maddpg.protocol",
+        "algorithm.madsac.critic_contract",
+        "algorithm.madsac.evaluation",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.runner",
+        "algorithm.rmappo.runner",
+        "algorithm.stea_mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v32",
+        "env.combat_v33",
+        "env.config",
+        "env.models",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v33_reference",
+        "tools.audit_combat_v33_reward",
+        "torch",
+        "types",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v330.py",
+      "bytes": 13357,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.maac.protocol",
+        "algorithm.maac.replay",
+        "algorithm.maac.trainer",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.factory",
+        "copy",
+        "env.combat_env",
+        "env.combat_v329",
+        "env.combat_v330",
+        "env.config",
+        "env.models",
+        "env.v329_control",
+        "env.v330_observation",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v331.py",
+      "bytes": 6861,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v330",
+        "env.combat_v331",
+        "env.config",
+        "env.models",
+        "env.v331_config",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.audit_combat_v331_reward",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v332.py",
+      "bytes": 9668,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.combat_v330",
+        "env.combat_v332",
+        "env.config",
+        "env.models",
+        "env.v311_kinematics",
+        "env.v332_config",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v317_v318",
+        "tools.audit_combat_v332_kinematics",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v333.py",
+      "bytes": 8111,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.combat_v332",
+        "env.combat_v333",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.v333_config",
+        "env.v333_reward",
+        "inspect",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v333_engagement",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v334.py",
+      "bytes": 9462,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.combat_v332",
+        "env.combat_v333",
+        "env.combat_v334",
+        "env.config",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.v310_policy",
+        "env.v334_config",
+        "env.v334_scenario",
+        "hashlib",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tests.test_combat_v332",
+        "tools.audit_combat_v334_initialization",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v335.py",
+      "bytes": 8416,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "dataclasses",
+        "env.combat_env",
+        "env.combat_v334",
+        "env.combat_v335",
+        "env.config",
+        "env.v317_weapon",
+        "env.v335_config",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tests.test_combat_v332",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v336.py",
+      "bytes": 11816,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env.combat_env",
+        "env.combat_v335",
+        "env.combat_v336",
+        "env.config",
+        "env.geometry",
+        "env.models",
+        "env.v317_weapon",
+        "env.v336_weapon",
+        "inspect",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v337.py",
+      "bytes": 9750,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "copy",
+        "env",
+        "env.combat_env",
+        "env.combat_v336",
+        "env.combat_v337",
+        "env.config",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.v322_reward",
+        "env.v323_reward",
+        "env.v336_weapon",
+        "inspect",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tests.test_combat_v336",
+        "tools.audit_combat_v336_weapon_geometry",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v338.py",
+      "bytes": 9104,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v337",
+        "env.combat_v338",
+        "env.config",
+        "env.factory",
+        "env.fixed_policy",
+        "env.geometry",
+        "env.models",
+        "env.v330_observation",
+        "env.v336_weapon",
+        "env.v338_observation",
+        "inspect",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_combat_v336_weapon_geometry",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v339.py",
+      "bytes": 11728,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.protocol",
+        "env.combat_env",
+        "env.combat_v338",
+        "env.combat_v339",
+        "env.config",
+        "env.models",
+        "env.v310_policy",
+        "env.v339_policy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.combat_trace",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v34.py",
+      "bytes": 7235,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v33",
+        "env.combat_v34",
+        "env.config",
+        "env.models",
+        "env.v30_policy",
+        "env.v34_policy",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._prepare_v34",
+        "tools.audit_combat_v34_blue"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v340.py",
+      "bytes": 12818,
+      "imports": [
+        "algorithm.common",
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v339",
+        "env.combat_v340",
+        "env.config",
+        "env.v322_reward",
+        "env.v337_reward",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_v339_attack_geometry",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v341.py",
+      "bytes": 10361,
+      "imports": [
+        "algorithm.common",
+        "algorithm.common.checkpoint",
+        "algorithm.common.protocol",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v340",
+        "env.combat_v341",
+        "env.config",
+        "env.v337_reward",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_v339_attack_geometry",
+        "tools.audit_v341_probability",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v35.py",
+      "bytes": 10681,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v33",
+        "env.combat_v35",
+        "env.config",
+        "env.math_utils",
+        "env.models",
+        "env.v35_policy",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v33_reference",
+        "tools._prepare_v35",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v36.py",
+      "bytes": 9607,
+      "imports": [
+        "algorithm.common.evaluator",
+        "copy",
+        "env.combat_env",
+        "env.combat_v35",
+        "env.combat_v36",
+        "env.config",
+        "env.models",
+        "env.sensor",
+        "env.v36_geometry",
+        "env.v36_reward",
+        "env.v36_weapon",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._prepare_v36",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v37.py",
+      "bytes": 10645,
+      "imports": [
+        "algorithm.common.evaluator",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "env.v36_geometry",
+        "env.v36_reward",
+        "env.v37_weapon",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tests.test_combat_v36",
+        "tools._prepare_v37",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v38.py",
+      "bytes": 6660,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.combat_v37",
+        "env.combat_v38",
+        "env.config",
+        "env.v36_geometry",
+        "env.v38_scenario",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._prepare_v38",
+        "tools.compare_v38_initialization"
+      ]
+    },
+    {
+      "path": "tests/test_combat_v39.py",
+      "bytes": 10221,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.combat_v38",
+        "env.combat_v39",
+        "env.config",
+        "env.models",
+        "env.sensor",
+        "env.v36_reward",
+        "env.v39_reward",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._prepare_v39",
+        "tools.audit_combat_v39",
+        "types",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_combat_visualization.py",
+      "bytes": 5341,
+      "imports": [
+        "env.combat_env",
+        "env.config",
+        "env.models",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools._capture_v33_reference",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "tools.render_combat_episode",
+        "tools.render_combat_episode_interactive"
+      ]
+    },
+    {
+      "path": "tests/test_compact_training_metrics.py",
+      "bytes": 10200,
+      "imports": [
+        "algorithm.common.training_log",
+        "algorithm.ea_mappo.runner",
+        "algorithm.mappo.runner",
+        "algorithm.rmappo.runner",
+        "algorithm.stea_mappo.runner",
+        "algorithm.train_mappo",
+        "copy",
+        "csv",
+        "env.combat_env",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.diagnose_stea_representation",
+        "torch",
+        "types",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_critic_protocol.py",
+      "bytes": 9030,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.critic_protocol",
+        "algorithm.common.protocol",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.networks",
+        "algorithm.mappo.trainer",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.protocol",
+        "copy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_eaa_mappo.py",
+      "bytes": 13583,
+      "imports": [
+        "algorithm.ea_mappo.trainer",
+        "algorithm.eaa_mappo.factory",
+        "algorithm.eaa_mappo.networks",
+        "algorithm.eaa_mappo.protocol",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.networks",
+        "algorithm.mappo.runner",
+        "algorithm.mappo.trainer",
+        "copy",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "torch.distributions",
+        "types",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_etm_mappo.py",
+      "bytes": 24383,
+      "imports": [
+        "algorithm.etm_mappo.checkpoint",
+        "algorithm.etm_mappo.config",
+        "algorithm.etm_mappo.evaluation",
+        "algorithm.etm_mappo.memory",
+        "algorithm.etm_mappo.navigation",
+        "algorithm.etm_mappo.networks",
+        "algorithm.etm_mappo.runner",
+        "algorithm.etm_mappo.trainer",
+        "copy",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_experiment_infrastructure.py",
+      "bytes": 8338,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.protocol",
+        "algorithm.mappo.factory",
+        "algorithm.train_mappo",
+        "copy",
+        "csv",
+        "json",
+        "pathlib",
+        "pytest",
+        "sys",
+        "tools.aggregate_holdout_results",
+        "tools.aggregate_training_runs",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_formal_8v8.py",
+      "bytes": 11814,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.common.protocol",
+        "algorithm.ea_mappo.factory",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.ea_mappo.runner",
+        "algorithm.mappo.networks",
+        "algorithm.mappo.trainer",
+        "algorithm.rmappo.factory",
+        "algorithm.rmappo.protocol",
+        "algorithm.rmappo.runner",
+        "algorithm.rmappo.trainer",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.networks",
+        "algorithm.stea_mappo.trainer",
+        "copy",
+        "env.config",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_gaussian_protocol.py",
+      "bytes": 7671,
+      "imports": [
+        "algorithm.common.policy_protocol",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.networks",
+        "algorithm.mappo.trainer",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.networks",
+        "algorithm.stea_mappo.trainer",
+        "copy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.evaluate_policy_modes",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_ippo.py",
+      "bytes": 17736,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.ippo.diagnostics",
+        "algorithm.ippo.evaluation",
+        "algorithm.ippo.factory",
+        "algorithm.ippo.networks",
+        "algorithm.ippo.protocol",
+        "algorithm.ippo.runner",
+        "algorithm.ippo.trainer",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.trainer",
+        "algorithm.matd3.factory",
+        "algorithm.matd3.protocol",
+        "copy",
+        "env.factory",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "shutil",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_maac.py",
+      "bytes": 17865,
+      "imports": [
+        "algorithm.maac.networks",
+        "algorithm.maac.protocol",
+        "algorithm.maac.replay",
+        "algorithm.maac.trainer",
+        "copy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.record_combat_episode",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_maddpg.py",
+      "bytes": 35140,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.ea_mappo.factory",
+        "algorithm.maddpg.evaluation",
+        "algorithm.maddpg.factory",
+        "algorithm.maddpg.networks",
+        "algorithm.maddpg.noise",
+        "algorithm.maddpg.protocol",
+        "algorithm.maddpg.replay_buffer",
+        "algorithm.maddpg.runner",
+        "algorithm.maddpg.schedule",
+        "algorithm.maddpg.trainer",
+        "algorithm.madsac.trainer",
+        "algorithm.mappo.trainer",
+        "algorithm.rmappo.factory",
+        "algorithm.stea_mappo.factory",
+        "copy",
+        "dataclasses",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "types",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_maddpg_lr_ablation.py",
+      "bytes": 5463,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.maddpg.factory",
+        "algorithm.maddpg.noise",
+        "algorithm.maddpg.protocol",
+        "algorithm.maddpg.runner",
+        "copy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_madsac.py",
+      "bytes": 14829,
+      "imports": [
+        "__future__",
+        "algorithm.common.vector_env",
+        "algorithm.madsac.evaluation",
+        "algorithm.madsac.networks",
+        "algorithm.madsac.replay_buffer",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "numpy",
+        "pytest",
+        "torch"
+      ]
+    },
+    {
+      "path": "tests/test_madsac_algorithm_audit.py",
+      "bytes": 5362,
+      "imports": [
+        "algorithm.madsac.factory",
+        "algorithm.madsac.networks",
+        "algorithm.madsac.replay_buffer",
+        "algorithm.madsac.trainer",
+        "copy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.audit_madsac_attention",
+        "tools.validate_madsac_v4",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_madsac_v3.py",
+      "bytes": 8032,
+      "imports": [
+        "algorithm.madsac.console",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.networks",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "copy",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "test_madsac_v326",
+        "torch",
+        "types",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_madsac_v326.py",
+      "bytes": 6033,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.madsac.critic_contract",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.trainer",
+        "copy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_madsac_v341.py",
+      "bytes": 8181,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.madsac.critic_contract",
+        "algorithm.madsac.factory",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.replay_buffer",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "copy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "torch.distributions",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_madsac_v4.py",
+      "bytes": 10467,
+      "imports": [
+        "algorithm.madsac.networks",
+        "algorithm.madsac.protocol",
+        "algorithm.madsac.replay_buffer",
+        "algorithm.madsac.runner",
+        "algorithm.madsac.trainer",
+        "copy",
+        "math",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.validate_madsac_v4",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_mappo.py",
+      "bytes": 8557,
+      "imports": [
+        "algorithm.mappo",
+        "algorithm.mappo.runner",
+        "copy",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_mappo_environment_identity.py",
+      "bytes": 4672,
+      "imports": [
+        "algorithm.maac.protocol",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.runner",
+        "env.config",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_mappo_lambda.py",
+      "bytes": 7944,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.trainer",
+        "algorithm.train_mappo",
+        "copy",
+        "env.factory",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.diagnose_mappo_lambda",
+        "torch"
+      ]
+    },
+    {
+      "path": "tests/test_matd3.py",
+      "bytes": 23215,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.common.vector_env",
+        "algorithm.maddpg.factory",
+        "algorithm.maddpg.noise",
+        "algorithm.maddpg.protocol",
+        "algorithm.maddpg.replay_buffer",
+        "algorithm.maddpg.schedule",
+        "algorithm.madsac.protocol",
+        "algorithm.matd3.evaluation",
+        "algorithm.matd3.factory",
+        "algorithm.matd3.protocol",
+        "algorithm.matd3.runner",
+        "algorithm.matd3.trainer",
+        "copy",
+        "env.factory",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.combat_visualization",
+        "tools.record_combat_episode",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_new_5v5_baselines.py",
+      "bytes": 20550,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.control_factory",
+        "algorithm.common.protocol",
+        "algorithm.ea_mappo.factory",
+        "algorithm.ea_mappo.protocol",
+        "algorithm.ea_mappo.runner",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.networks",
+        "algorithm.mappo.trainer",
+        "algorithm.rmappo",
+        "algorithm.rmappo.factory",
+        "algorithm.rmappo.protocol",
+        "algorithm.rmappo.runner",
+        "algorithm.rmappo.trainer",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.protocol",
+        "copy",
+        "inspect",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "types",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_policy_modes.py",
+      "bytes": 7046,
+      "imports": [
+        "algorithm.common.protocol",
+        "algorithm.mappo.factory",
+        "algorithm.mappo.networks",
+        "algorithm.stea_mappo.networks",
+        "env.config",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools",
+        "torch",
+        "torch.distributions",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_project_structure.py",
+      "bytes": 3997,
+      "imports": [
+        "__future__",
+        "algorithm.mappo.runner",
+        "json",
+        "os",
+        "pathlib",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_red_speed_audit.py",
+      "bytes": 7912,
+      "imports": [
+        "copy",
+        "env.combat_env",
+        "env.geometry",
+        "env.models",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "pytest",
+        "sys",
+        "tools.analyze_red_speed",
+        "tools.audit_red_speed",
+        "tools.combat_visualization",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_stea_mappo.py",
+      "bytes": 19243,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.mappo.networks",
+        "algorithm.mappo.trainer",
+        "algorithm.stea_mappo.evaluation",
+        "algorithm.stea_mappo.factory",
+        "algorithm.stea_mappo.networks",
+        "algorithm.stea_mappo.protocol",
+        "algorithm.stea_mappo.runner",
+        "algorithm.stea_mappo.trainer",
+        "copy",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.aggregate_holdout_results",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_stea_representation_diagnostic.py",
+      "bytes": 5425,
+      "imports": [
+        "algorithm.stea_mappo.evaluation",
+        "algorithm.stea_mappo.networks",
+        "hashlib",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.diagnose_stea_representation",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_training_protocol.py",
+      "bytes": 6366,
+      "imports": [
+        "algorithm.common.evaluator",
+        "algorithm.common.vector_env",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_v30_initial_policy_audit.py",
+      "bytes": 6822,
+      "imports": [
+        "algorithm.common.control_factory",
+        "algorithm.common.vector_env",
+        "algorithm.mappo.runner",
+        "algorithm.mappo.trainer",
+        "algorithm.rmappo.protocol",
+        "env.combat_env",
+        "env.config",
+        "multiprocessing",
+        "numpy",
+        "tools.audit_v30_initial_policy_baselines",
+        "torch",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_v335_paper_reward_audit.py",
+      "bytes": 8334,
+      "imports": [
+        "csv",
+        "env.combat_env",
+        "env.fixed_policy",
+        "env.models",
+        "env.v323_reward",
+        "io",
+        "math",
+        "numpy",
+        "pytest",
+        "tools.audit_combat_v335_paper_reward",
+        "tools.v335_paper_reward_reference"
+      ]
+    },
+    {
+      "path": "tests/test_v336_weapon_geometry_audit.py",
+      "bytes": 2961,
+      "imports": [
+        "copy",
+        "env.fixed_policy",
+        "numpy",
+        "pytest",
+        "tests.test_combat_v336",
+        "tools.audit_combat_v336_weapon_geometry"
+      ]
+    },
+    {
+      "path": "tests/test_v337_reward_audit.py",
+      "bytes": 2528,
+      "imports": [
+        "copy",
+        "env.v337_reward",
+        "numpy",
+        "pytest",
+        "tests.test_combat_v337",
+        "tools.audit_combat_v337_reward_geometry"
+      ]
+    },
+    {
+      "path": "tests/test_v339_attack_geometry_audit.py",
+      "bytes": 8521,
+      "imports": [
+        "copy",
+        "env.geometry",
+        "env.models",
+        "env.v337_reward",
+        "math",
+        "numpy",
+        "pytest",
+        "tools.audit_v339_attack_geometry"
+      ]
+    },
+    {
+      "path": "tests/test_v339_scenario_exposure.py",
+      "bytes": 5365,
+      "imports": [
+        "copy",
+        "env.models",
+        "env.v338_observation",
+        "math",
+        "numpy",
+        "pytest",
+        "tools.audit_v339_attack_geometry",
+        "tools.audit_v339_scenario_exposure"
+      ]
+    },
+    {
+      "path": "tests/test_v339_single_aircraft_audit.py",
+      "bytes": 7463,
+      "imports": [
+        "env.combat_env",
+        "env.combat_v332",
+        "env.combat_v339",
+        "env.v311_kinematics",
+        "math",
+        "numpy",
+        "pytest",
+        "tools.audit_v339_single_aircraft",
+        "unittest.mock"
+      ]
+    },
+    {
+      "path": "tests/test_v339_training_readiness.py",
+      "bytes": 11964,
+      "imports": [
+        "algorithm.common.checkpoint",
+        "algorithm.common.evaluator",
+        "algorithm.common.protocol",
+        "algorithm.eaa_mappo.protocol",
+        "algorithm.maac.protocol",
+        "algorithm.maddpg.protocol",
+        "algorithm.madsac.protocol",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "json",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.combat_visualization",
+        "tools.compare_v338_v339_blue",
+        "tools.verify_v339_training",
+        "torch",
+        "types",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/test_v341_training_configs.py",
+      "bytes": 9509,
+      "imports": [
+        "algorithm.eaa_mappo",
+        "algorithm.eaa_mappo.factory",
+        "algorithm.maac",
+        "algorithm.maac.trainer",
+        "algorithm.mappo.runner",
+        "copy",
+        "env.combat_env",
+        "env.config",
+        "numpy",
+        "pathlib",
+        "pytest",
+        "tools.record_combat_episode",
+        "torch",
+        "unittest.mock",
+        "yaml"
+      ]
+    },
+    {
+      "path": "tests/v310_v39_reference.json",
+      "bytes": 680
+    },
+    {
+      "path": "tests/v311_v310_reference.json",
+      "bytes": 507
+    },
+    {
+      "path": "tests/v312_legacy_actor_reference.json",
+      "bytes": 644
+    },
+    {
+      "path": "tests/v312_v311_reference.json",
+      "bytes": 507
+    },
+    {
+      "path": "tests/v313_v312_reference.json",
+      "bytes": 507
+    },
+    {
+      "path": "tests/v314_v313_reference.json",
+      "bytes": 514
+    },
+    {
+      "path": "tests/v31_legacy_reference.json",
+      "bytes": 2027
+    },
+    {
+      "path": "tests/v32_legacy_reference.json",
+      "bytes": 1407
+    },
+    {
+      "path": "tests/v33_legacy_reference.json",
+      "bytes": 2109
+    },
+    {
+      "path": "tests/v34_v33_reference.json",
+      "bytes": 680
+    },
+    {
+      "path": "tests/v35_v34_reference.json",
+      "bytes": 680
+    },
+    {
+      "path": "tests/v36_v35_reference.json",
+      "bytes": 680
+    },
+    {
+      "path": "tests/v37_v36_reference.json",
+      "bytes": 680
+    },
+    {
+      "path": "tests/v38_v37_reference.json",
+      "bytes": 680
+    },
+    {
+      "path": "tests/v39_v38_reference.json",
+      "bytes": 680
+    },
+    {
+      "path": "configs/acirl_4v4_v339.yaml",
+      "bytes": 1340
+    },
+    {
+      "path": "configs/acirl_4v4_v339_fixed_interval.yaml",
+      "bytes": 1431
+    },
+    {
+      "path": "configs/acirl_4v4_v339_no_gate_q.yaml",
+      "bytes": 1426
+    },
+    {
+      "path": "configs/acirl_4v4_v339_no_intent.yaml",
+      "bytes": 1426
+    },
+    {
+      "path": "configs/acirl_4v4_v339_no_switching_cost.yaml",
+      "bytes": 1432
+    },
+    {
+      "path": "configs/acirl_4v4_v339_no_teammate_inference.yaml",
+      "bytes": 1438
+    },
+    {
+      "path": "configs/acirl_4v4_v339_no_temporal_critic.yaml",
+      "bytes": 1435
+    },
+    {
+      "path": "configs/combat_environment.yaml",
+      "bytes": 1349
+    },
+    {
+      "path": "configs/combat_environment_v24.yaml",
+      "bytes": 1474
+    },
+    {
+      "path": "configs/combat_environment_v25.yaml",
+      "bytes": 1438
+    },
+    {
+      "path": "configs/combat_environment_v26.yaml",
+      "bytes": 1594
+    },
+    {
+      "path": "configs/combat_environment_v27.yaml",
+      "bytes": 1558
+    },
+    {
+      "path": "configs/combat_environment_v28.yaml",
+      "bytes": 1558
+    },
+    {
+      "path": "configs/combat_environment_v29.yaml",
+      "bytes": 1558
+    },
+    {
+      "path": "configs/combat_environment_v30.yaml",
+      "bytes": 1529
+    },
+    {
+      "path": "configs/combat_environment_v31.yaml",
+      "bytes": 1548
+    },
+    {
+      "path": "configs/combat_environment_v310.yaml",
+      "bytes": 1795
+    },
+    {
+      "path": "configs/combat_environment_v311.yaml",
+      "bytes": 1557
+    },
+    {
+      "path": "configs/combat_environment_v312.yaml",
+      "bytes": 1556
+    },
+    {
+      "path": "configs/combat_environment_v313.yaml",
+      "bytes": 1556
+    },
+    {
+      "path": "configs/combat_environment_v314.yaml",
+      "bytes": 1758
+    },
+    {
+      "path": "configs/combat_environment_v315.yaml",
+      "bytes": 1758
+    },
+    {
+      "path": "configs/combat_environment_v316.yaml",
+      "bytes": 1795
+    },
+    {
+      "path": "configs/combat_environment_v317.yaml",
+      "bytes": 1799
+    },
+    {
+      "path": "configs/combat_environment_v318.yaml",
+      "bytes": 1799
+    },
+    {
+      "path": "configs/combat_environment_v319.yaml",
+      "bytes": 1800
+    },
+    {
+      "path": "configs/combat_environment_v32.yaml",
+      "bytes": 1548
+    },
+    {
+      "path": "configs/combat_environment_v320.yaml",
+      "bytes": 1800
+    },
+    {
+      "path": "configs/combat_environment_v321.yaml",
+      "bytes": 1800
+    },
+    {
+      "path": "configs/combat_environment_v322.yaml",
+      "bytes": 1800
+    },
+    {
+      "path": "configs/combat_environment_v323.yaml",
+      "bytes": 1842
+    },
+    {
+      "path": "configs/combat_environment_v324.yaml",
+      "bytes": 1842
+    },
+    {
+      "path": "configs/combat_environment_v325.yaml",
+      "bytes": 1842
+    },
+    {
+      "path": "configs/combat_environment_v326.yaml",
+      "bytes": 1842
+    },
+    {
+      "path": "configs/combat_environment_v327.yaml",
+      "bytes": 1842
+    },
+    {
+      "path": "configs/combat_environment_v328.yaml",
+      "bytes": 1843
+    },
+    {
+      "path": "configs/combat_environment_v329.yaml",
+      "bytes": 1843
+    },
+    {
+      "path": "configs/combat_environment_v33.yaml",
+      "bytes": 1580
+    },
+    {
+      "path": "configs/combat_environment_v330.yaml",
+      "bytes": 1757
+    },
+    {
+      "path": "configs/combat_environment_v331.yaml",
+      "bytes": 1829
+    },
+    {
+      "path": "configs/combat_environment_v332.yaml",
+      "bytes": 1700
+    },
+    {
+      "path": "configs/combat_environment_v333.yaml",
+      "bytes": 1700
+    },
+    {
+      "path": "configs/combat_environment_v334.yaml",
+      "bytes": 1738
+    },
+    {
+      "path": "configs/combat_environment_v335.yaml",
+      "bytes": 1738
+    },
+    {
+      "path": "configs/combat_environment_v336.yaml",
+      "bytes": 1707
+    },
+    {
+      "path": "configs/combat_environment_v337.yaml",
+      "bytes": 1707
+    },
+    {
+      "path": "configs/combat_environment_v338.yaml",
+      "bytes": 1707
+    },
+    {
+      "path": "configs/combat_environment_v339.yaml",
+      "bytes": 1821
+    },
+    {
+      "path": "configs/combat_environment_v34.yaml",
+      "bytes": 1690
+    },
+    {
+      "path": "configs/combat_environment_v340.yaml",
+      "bytes": 1825
+    },
+    {
+      "path": "configs/combat_environment_v341.yaml",
+      "bytes": 1826
+    },
+    {
+      "path": "configs/combat_environment_v35.yaml",
+      "bytes": 1556
+    },
+    {
+      "path": "configs/combat_environment_v36.yaml",
+      "bytes": 1719
+    },
+    {
+      "path": "configs/combat_environment_v37.yaml",
+      "bytes": 1812
+    },
+    {
+      "path": "configs/combat_environment_v38.yaml",
+      "bytes": 1788
+    },
+    {
+      "path": "configs/combat_environment_v39.yaml",
+      "bytes": 1850
+    },
+    {
+      "path": "configs/ea_mappo_4v4_v338.yaml",
+      "bytes": 1287
+    },
+    {
+      "path": "configs/ea_mappo_4v4_v339.yaml",
+      "bytes": 1287
+    },
+    {
+      "path": "configs/ea_mappo_4v4_v341.yaml",
+      "bytes": 1287
+    },
+    {
+      "path": "configs/ea_mappo_5v5.yaml",
+      "bytes": 1119
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v30.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v31.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v310.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v311.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v312.yaml",
+      "bytes": 1172
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v313.yaml",
+      "bytes": 1172
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v314.yaml",
+      "bytes": 1172
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v315.yaml",
+      "bytes": 1172
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v316.yaml",
+      "bytes": 1172
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v317.yaml",
+      "bytes": 1172
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v318.yaml",
+      "bytes": 1172
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v32.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v33.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v34.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v35.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v36.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v37.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v38.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_5v5_v39.yaml",
+      "bytes": 1141
+    },
+    {
+      "path": "configs/ea_mappo_8v8.yaml",
+      "bytes": 1120
+    },
+    {
+      "path": "configs/eaa_mappo_4v4_v338.yaml",
+      "bytes": 1294
+    },
+    {
+      "path": "configs/eaa_mappo_4v4_v339.yaml",
+      "bytes": 1294
+    },
+    {
+      "path": "configs/eaa_mappo_4v4_v341.yaml",
+      "bytes": 1294
+    },
+    {
+      "path": "configs/etm_mappo.yaml",
+      "bytes": 1253
+    },
+    {
+      "path": "configs/ippo_4v4_v341.yaml",
+      "bytes": 1203
+    },
+    {
+      "path": "configs/maac_4v4_v330.yaml",
+      "bytes": 1948
+    },
+    {
+      "path": "configs/maac_4v4_v331.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v332.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v333.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v334.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v335.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v336.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v337.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v338.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v339.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_4v4_v341.yaml",
+      "bytes": 2023
+    },
+    {
+      "path": "configs/maac_5v5_v329.yaml",
+      "bytes": 1933
+    },
+    {
+      "path": "configs/maddpg_4v4_v338.yaml",
+      "bytes": 2116
+    },
+    {
+      "path": "configs/maddpg_4v4_v339.yaml",
+      "bytes": 2168
+    },
+    {
+      "path": "configs/maddpg_4v4_v339_lr_a1.yaml",
+      "bytes": 2617
+    },
+    {
+      "path": "configs/maddpg_4v4_v339_lr_a2.yaml",
+      "bytes": 2617
+    },
+    {
+      "path": "configs/maddpg_4v4_v339_lr_a3.yaml",
+      "bytes": 2607
+    },
+    {
+      "path": "configs/maddpg_4v4_v341.yaml",
+      "bytes": 2168
+    },
+    {
+      "path": "configs/maddpg_5v5.yaml",
+      "bytes": 1243
+    },
+    {
+      "path": "configs/maddpg_8v8.yaml",
+      "bytes": 1244
+    },
+    {
+      "path": "configs/madsac.yaml",
+      "bytes": 2293
+    },
+    {
+      "path": "configs/madsac_4v4_v330.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v331.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v332.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v333.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v334.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v335.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v336.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v337.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v338.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v339.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_4v4_v341.yaml",
+      "bytes": 2425
+    },
+    {
+      "path": "configs/madsac_5v5_v326.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_5v5_v327.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_5v5_v328.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/madsac_5v5_v329.yaml",
+      "bytes": 2354
+    },
+    {
+      "path": "configs/mappo.yaml",
+      "bytes": 918
+    },
+    {
+      "path": "configs/mappo_4v4_v330.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_4v4_v331.yaml",
+      "bytes": 1101
+    },
+    {
+      "path": "configs/mappo_4v4_v332.yaml",
+      "bytes": 1101
+    },
+    {
+      "path": "configs/mappo_4v4_v333.yaml",
+      "bytes": 1101
+    },
+    {
+      "path": "configs/mappo_4v4_v334.yaml",
+      "bytes": 1101
+    },
+    {
+      "path": "configs/mappo_4v4_v335.yaml",
+      "bytes": 1101
+    },
+    {
+      "path": "configs/mappo_4v4_v336.yaml",
+      "bytes": 1101
+    },
+    {
+      "path": "configs/mappo_4v4_v337.yaml",
+      "bytes": 1101
+    },
+    {
+      "path": "configs/mappo_4v4_v338.yaml",
+      "bytes": 1162
+    },
+    {
+      "path": "configs/mappo_4v4_v338_lambda996195.yaml",
+      "bytes": 1115
+    },
+    {
+      "path": "configs/mappo_4v4_v339.yaml",
+      "bytes": 1162
+    },
+    {
+      "path": "configs/mappo_4v4_v340.yaml",
+      "bytes": 1162
+    },
+    {
+      "path": "configs/mappo_4v4_v341.yaml",
+      "bytes": 1162
+    },
+    {
+      "path": "configs/mappo_5v5.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v30.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v31.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v310.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v311.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v312.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v313.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v314.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v315.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v316.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v317.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v318.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v319.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v32.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v320.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v321.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v322.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v323.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v324.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v325.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v326.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v327.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v328.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v329.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v33.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v34.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v35.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v36.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v37.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v38.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_5v5_v39.yaml",
+      "bytes": 1053
+    },
+    {
+      "path": "configs/mappo_8v8.yaml",
+      "bytes": 929
+    },
+    {
+      "path": "configs/mappo_8v8_formal.yaml",
+      "bytes": 1054
+    },
+    {
+      "path": "configs/mappo_ca_4v4_v338.yaml",
+      "bytes": 1190
+    },
+    {
+      "path": "configs/mappo_ca_4v4_v339.yaml",
+      "bytes": 1190
+    },
+    {
+      "path": "configs/matd3_4v4_v341.yaml",
+      "bytes": 1484
+    },
+    {
+      "path": "configs/rmappo_5v5.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v30.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v31.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v310.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v311.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v312.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v313.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v314.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v315.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v316.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v317.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v318.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v32.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v33.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v34.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v35.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v36.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v37.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v38.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_5v5_v39.yaml",
+      "bytes": 1138
+    },
+    {
+      "path": "configs/rmappo_8v8.yaml",
+      "bytes": 1139
+    },
+    {
+      "path": "configs/stea_mappo.yaml",
+      "bytes": 1079
+    },
+    {
+      "path": "configs/stea_mappo_5v5.yaml",
+      "bytes": 1179
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v30.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v31.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v310.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v311.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v312.yaml",
+      "bytes": 1232
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v313.yaml",
+      "bytes": 1232
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v314.yaml",
+      "bytes": 1232
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v315.yaml",
+      "bytes": 1232
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v316.yaml",
+      "bytes": 1232
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v317.yaml",
+      "bytes": 1232
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v318.yaml",
+      "bytes": 1232
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v32.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v33.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v34.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v35.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v36.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v37.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v38.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_5v5_v39.yaml",
+      "bytes": 1201
+    },
+    {
+      "path": "configs/stea_mappo_8v8.yaml",
+      "bytes": 1080
+    },
+    {
+      "path": "configs/stea_mappo_8v8_formal.yaml",
+      "bytes": 1180
+    },
+    {
+      "path": "docs/5v5_control_algorithms.md",
+      "bytes": 7453
+    },
+    {
+      "path": "docs/acirl_v339.md",
+      "bytes": 17352
+    },
+    {
+      "path": "docs/acirl_v339_validation.md",
+      "bytes": 15039
+    },
+    {
+      "path": "docs/centralized_critic_protocol.md",
+      "bytes": 3637
+    },
+    {
+      "path": "docs/combat_environment_spec.md",
+      "bytes": 10020
+    },
+    {
+      "path": "docs/combat_environment_v24.md",
+      "bytes": 7672
+    },
+    {
+      "path": "docs/combat_environment_v25.md",
+      "bytes": 3201
+    },
+    {
+      "path": "docs/combat_environment_v26.md",
+      "bytes": 5988
+    },
+    {
+      "path": "docs/combat_environment_v27.md",
+      "bytes": 4022
+    },
+    {
+      "path": "docs/combat_environment_v28.md",
+      "bytes": 4868
+    },
+    {
+      "path": "docs/combat_environment_v29.md",
+      "bytes": 4624
+    },
+    {
+      "path": "docs/combat_environment_v30.md",
+      "bytes": 7883
+    },
+    {
+      "path": "docs/combat_environment_v31.md",
+      "bytes": 5520
+    },
+    {
+      "path": "docs/combat_environment_v310.md",
+      "bytes": 5611
+    },
+    {
+      "path": "docs/combat_environment_v311.md",
+      "bytes": 5867
+    },
+    {
+      "path": "docs/combat_environment_v312.md",
+      "bytes": 5862
+    },
+    {
+      "path": "docs/combat_environment_v313.md",
+      "bytes": 3367
+    },
+    {
+      "path": "docs/combat_environment_v314.md",
+      "bytes": 4365
+    },
+    {
+      "path": "docs/combat_environment_v315.md",
+      "bytes": 2516
+    },
+    {
+      "path": "docs/combat_environment_v316.md",
+      "bytes": 3237
+    },
+    {
+      "path": "docs/combat_environment_v317.md",
+      "bytes": 2862
+    },
+    {
+      "path": "docs/combat_environment_v318.md",
+      "bytes": 2245
+    },
+    {
+      "path": "docs/combat_environment_v319.md",
+      "bytes": 2576
+    },
+    {
+      "path": "docs/combat_environment_v32.md",
+      "bytes": 6951
+    },
+    {
+      "path": "docs/combat_environment_v320.md",
+      "bytes": 2897
+    },
+    {
+      "path": "docs/combat_environment_v321.md",
+      "bytes": 3152
+    },
+    {
+      "path": "docs/combat_environment_v322.md",
+      "bytes": 2696
+    },
+    {
+      "path": "docs/combat_environment_v323.md",
+      "bytes": 4949
+    },
+    {
+      "path": "docs/combat_environment_v324.md",
+      "bytes": 3783
+    },
+    {
+      "path": "docs/combat_environment_v325.md",
+      "bytes": 4167
+    },
+    {
+      "path": "docs/combat_environment_v326.md",
+      "bytes": 4442
+    },
+    {
+      "path": "docs/combat_environment_v327.md",
+      "bytes": 4724
+    },
+    {
+      "path": "docs/combat_environment_v328.md",
+      "bytes": 4669
+    },
+    {
+      "path": "docs/combat_environment_v329.md",
+      "bytes": 6436
+    },
+    {
+      "path": "docs/combat_environment_v33.md",
+      "bytes": 2990
+    },
+    {
+      "path": "docs/combat_environment_v330.md",
+      "bytes": 6827
+    },
+    {
+      "path": "docs/combat_environment_v331.md",
+      "bytes": 6744
+    },
+    {
+      "path": "docs/combat_environment_v332.md",
+      "bytes": 2976
+    },
+    {
+      "path": "docs/combat_environment_v333.md",
+      "bytes": 4873
+    },
+    {
+      "path": "docs/combat_environment_v334.md",
+      "bytes": 4993
+    },
+    {
+      "path": "docs/combat_environment_v335.md",
+      "bytes": 4716
+    },
+    {
+      "path": "docs/combat_environment_v336.md",
+      "bytes": 4789
+    },
+    {
+      "path": "docs/combat_environment_v337.md",
+      "bytes": 4526
+    },
+    {
+      "path": "docs/combat_environment_v338.md",
+      "bytes": 6005
+    },
+    {
+      "path": "docs/combat_environment_v339.md",
+      "bytes": 3795
+    },
+    {
+      "path": "docs/combat_environment_v34.md",
+      "bytes": 3625
+    },
+    {
+      "path": "docs/combat_environment_v340.md",
+      "bytes": 12653
+    },
+    {
+      "path": "docs/combat_environment_v341.md",
+      "bytes": 16758
+    },
+    {
+      "path": "docs/combat_environment_v35.md",
+      "bytes": 5814
+    },
+    {
+      "path": "docs/combat_environment_v36.md",
+      "bytes": 6466
+    },
+    {
+      "path": "docs/combat_environment_v37.md",
+      "bytes": 4973
+    },
+    {
+      "path": "docs/combat_environment_v38.md",
+      "bytes": 4048
+    },
+    {
+      "path": "docs/combat_environment_v39.md",
+      "bytes": 5487
+    },
+    {
+      "path": "docs/combat_episode_visualization.md",
+      "bytes": 6763
+    },
+    {
+      "path": "docs/combat_v339_training_readiness.md",
+      "bytes": 17147
+    },
+    {
+      "path": "docs/compact_training_metrics.md",
+      "bytes": 3492
+    },
+    {
+      "path": "docs/eaa_mappo.md",
+      "bytes": 17683
+    },
+    {
+      "path": "docs/etm_mappo.md",
+      "bytes": 11637
+    },
+    {
+      "path": "docs/etm_mappo_acceptance.md",
+      "bytes": 15431
+    },
+    {
+      "path": "docs/formal_8v8_protocol.md",
+      "bytes": 6345
+    },
+    {
+      "path": "docs/gaussian_policy_protocol.md",
+      "bytes": 2817
+    },
+    {
+      "path": "docs/ippo_v341.md",
+      "bytes": 9291
+    },
+    {
+      "path": "docs/ippo_v341_acceptance.md",
+      "bytes": 14049
+    },
+    {
+      "path": "docs/maac_combat_v329.md",
+      "bytes": 7773
+    },
+    {
+      "path": "docs/maddpg_learning_diagnosis.md",
+      "bytes": 17545
+    },
+    {
+      "path": "docs/maddpg_reference_alignment_audit.md",
+      "bytes": 9174
+    },
+    {
+      "path": "docs/maddpg_v338.md",
+      "bytes": 13325
+    },
+    {
+      "path": "docs/madsac_combat_v326.md",
+      "bytes": 7436
+    },
+    {
+      "path": "docs/madsac_implementation_v4.md",
+      "bytes": 11149
+    },
+    {
+      "path": "docs/mappo_lambda_only_experiment.md",
+      "bytes": 20600
+    },
+    {
+      "path": "docs/matd3_v341.md",
+      "bytes": 9868
+    },
+    {
+      "path": "docs/matd3_v341_validation.md",
+      "bytes": 14730
+    },
+    {
+      "path": "docs/policy_modes_diagnostic.md",
+      "bytes": 3682
+    },
+    {
+      "path": "docs/red_speed_blue_policy_analysis.md",
+      "bytes": 44721
+    },
+    {
+      "path": "docs/stea_mappo.md",
+      "bytes": 11038
+    }
+  ],
+  "protected_files": [
+    {
+      "path": "Li \u7b49 - 2023 - Multi-UAV Cooperative Air Combat Decision-Making Based on Multi-Agent Double-Soft Actor-Critic.pdf",
+      "sha256": "e694a5afcaeaf76e1621f11519f9f10bf7129d97c4f1868439a79e1cfb6974d7"
+    },
+    {
+      "path": "Xu \u7b49 - 2026 - Hybrid Advantage-Priority Hungarian Assignment MAPPO for Multi-UAV Cooperative Air Combat Decision-M.pdf",
+      "sha256": "cf4d6210d44d2264f6ff6ec1a91daf90d752b9b4aca720e856eb0171d9f516fb"
+    },
+    {
+      "path": "tests/v310_v39_reference.json",
+      "sha256": "5caf6025ead47b49a624d3b6625fd955f133a7b753bbc313c87a891a357ffadb"
+    },
+    {
+      "path": "tests/v311_v310_reference.json",
+      "sha256": "4e28357c9306687d2e42e65195002ab32e01c195a42e116e7ab67917cd165ca9"
+    },
+    {
+      "path": "tests/v312_legacy_actor_reference.json",
+      "sha256": "41b8cc7e1111db828979d7f488815f9e7b5395d2afd7cc367ccdd5bae092d8c0"
+    },
+    {
+      "path": "tests/v312_v311_reference.json",
+      "sha256": "edd3ad6abc475c5c9c678c99697167d91a086978c2cc655e4ae1789661c3e18f"
+    },
+    {
+      "path": "tests/v313_v312_reference.json",
+      "sha256": "1266de399265e3cba4c87e47bbf3917ff1bb46be01b7f509abc3fbb9ba6cb3b5"
+    },
+    {
+      "path": "tests/v314_v313_reference.json",
+      "sha256": "c188d43ebf6517da675eac16414fb05b8dac34c19c0a81acb3fbd4f579c31cd2"
+    },
+    {
+      "path": "tests/v31_legacy_reference.json",
+      "sha256": "1caec687ff87bc94c4f8bff1a03e93643bba97a32117d4043d852cfa4660e3a2"
+    },
+    {
+      "path": "tests/v32_legacy_reference.json",
+      "sha256": "fb76633a1c8b9562821501f19fcba6638549a172ea52ccc19804839979c8f7c7"
+    },
+    {
+      "path": "tests/v33_legacy_reference.json",
+      "sha256": "6008fb9a40b70c522a2ca642566692dde2162e4b2dd8207a551961c5dbd91bc1"
+    },
+    {
+      "path": "tests/v34_v33_reference.json",
+      "sha256": "d2340c9291156e4845674f5cae2461124249d6059963e6ff97fbe197cfebe4e9"
+    },
+    {
+      "path": "tests/v35_v34_reference.json",
+      "sha256": "dce91cbbecaf6e236c2dedfa9d53801bb419654c17093d0324950617b1e01821"
+    },
+    {
+      "path": "tests/v36_v35_reference.json",
+      "sha256": "847b5fbc6bb1b57226fe4f19b52e0d6201162d83b8cc8e43fdfbde3036b37865"
+    },
+    {
+      "path": "tests/v37_v36_reference.json",
+      "sha256": "d6a82e179c505f5ae766a31523aea2f3347d545908ada563672974ecec6804c3"
+    },
+    {
+      "path": "tests/v38_v37_reference.json",
+      "sha256": "f04c4cc44cab3d0fb04c0626987639c603ee77fc8da7fc8e0477fdc4099e5462"
+    },
+    {
+      "path": "tests/v39_v38_reference.json",
+      "sha256": "ff92696edda561b75f0554267b30cbc198ed5582ae091c5ac0ac987d4eeedcb5"
+    },
+    {
+      "path": "tests/fixtures/formal_5v5_before_8v8.pt",
+      "sha256": "ae724f6aa60b60bf0ca50ae0ab48e7a5661932911c96f63cc71a883e02083827"
+    },
+    {
+      "path": "tests/fixtures/v23_reference.json",
+      "sha256": "4f07e8d6a3322ce424c42dd124e9c0e308d7eab0a40476124524a8d6ea2ea093"
+    },
+    {
+      "path": "tests/fixtures/v24_final_reference.json",
+      "sha256": "c4ed037a05dfdedd3f09e79752d94816d85a65559c63d6ba221f5167031fd641"
+    }
+  ]
+}
