@@ -78,3 +78,26 @@ Actor只使用12D局部观测；Critic使用90D全局状态并输出5个UAV价�
 回放由真实JSON记录生成，HTML内嵌Plotly，可离线查看。支持播放/暂停、滑块、三维旋转、轨迹、速度方向、点完成与分配、控制、失效、限幅事件、五项奖励和逐UAV查询。渲染不执行环境。当前仍未完成浏览器内视觉交互验收，不能将脚本语法检查视为浏览器验证。
 
 详细文件清单、测试和CUDA结果见 [重构报告](docs/refactor_report.md)。已有outputs、历史模型和原始PDF均保留。v1恢复副本在 `tmp/coop3d_v1_before_v2.zip`，迁移前参考轨迹在 `tests/fixtures/coop3d_v1_semantics.json.gz`。
+
+## 训练日志维护与离线报告
+
+训练终端默认输出紧凑的 `[TRAIN]`、独立 `[EVAL]` 和最终 best/latest 摘要，保留原有 JSONL/CSV。新记录同时提供 `policy_loss` 和实际用于 backward 的 `actor_total_loss`；兼容字段 `actor_loss` 现在是后者的别名。**修复前 v2 历史记录中的 actor_loss 实际是 policy_loss**，不能将新旧同名字段直接当作相同损失比较；历史实验文件不会被重写。
+
+Ubuntu 离线查看已有训练结果（将 run-dir 替换为真实实验目录）：
+
+```bash
+conda activate uav
+python -m tools.report_training --run-dir outputs/你的训练目录 --last-updates 10
+```
+
+也可用本仓库现有历史记录检查工具：
+
+```bash
+python -m tools.report_training --run-dir outputs/coop3d_v2/smoke --last-updates 10
+```
+
+该工具只读 `training_metrics.jsonl`、`evaluation_history.csv`、`run_summary.json`、`run_config.json`，不加载模型、不启动仿真，也不需要 CUDA 或 PyTorch。缺失字段显示 N/A，旧 actor_total_loss 不补造。诊断提示只供排查，不自动判定训练失败或收敛。
+
+恢复训练前会只读检查日志、断点和 best/latest 来源。日志重复、比断点更新或存在更晚模型时明确拒绝追加，保留原文件；日志缺失或落后时提示历史缺口，不伪造数据。默认不自动裁剪、删除或覆盖冲突实验。网络、优化、版本、Checkpoint 协议和 TrainConfig 持久化字段均保持不变。
+
+浮点轨迹回归采用 `rtol=1e-12, atol=1e-12`；离散状态与事件依旧精确比较，原始参考 fixture 不变。实际修复、测试与日志示例见 [日志维护报告](docs/training_log_maintenance.md)。

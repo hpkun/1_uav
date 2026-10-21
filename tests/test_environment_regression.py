@@ -9,15 +9,43 @@ from env.factory import make_environment
 from env.observation import centralized
 
 
-def compare(actual,expected,path=''):
+def compare(actual,expected,path='',*,rtol=1e-12,atol=1e-12):
+    """Cross-platform numeric tolerance; structural and discrete values stay exact."""
+    import math
+    import numbers
+    location=path or '/'
     if isinstance(expected,dict):
-        for k,v in expected.items(): compare(actual[k],v,path+'/'+k)
-    elif isinstance(expected,list):
-        if expected and isinstance(expected[0],dict):
-            assert len(actual)==len(expected)
-            for i,v in enumerate(expected): compare(actual[i],v,path+f'/{i}')
-        else: np.testing.assert_array_equal(actual,expected,err_msg=path)
-    else: assert actual==expected,path
+        assert isinstance(actual,dict),f'{location}: expected dictionary'
+        assert actual.keys()==expected.keys(),f'{location}: missing keys={expected.keys()-actual.keys()}, extra keys={actual.keys()-expected.keys()}'
+        for k,v in expected.items(): compare(actual[k],v,path+'/'+str(k),rtol=rtol,atol=atol)
+    elif isinstance(actual,np.ndarray) or isinstance(expected,np.ndarray):
+        a,b=np.asarray(actual),np.asarray(expected)
+        assert a.shape==b.shape,f'{location}: shape {a.shape} != {b.shape}'
+        if b.dtype.kind=='f':
+            assert a.dtype.kind in 'fiu',f'{location}: expected numeric float array'
+            assert np.isfinite(a).all() and np.isfinite(b).all(),f'{location}: nonfinite floating array'
+            error=float(np.max(np.abs(a.astype(float)-b.astype(float)))) if a.size else 0.
+            np.testing.assert_allclose(a,b,rtol=rtol,atol=atol,equal_nan=False,
+                err_msg=f'{location}: max_abs_error={error:.17g}, rtol={rtol}, atol={atol}')
+        else:
+            if b.dtype.kind in 'iu': assert a.dtype.kind in 'iu',f'{location}: expected integer array'
+            if b.dtype.kind=='b': assert a.dtype.kind=='b',f'{location}: expected boolean array'
+            np.testing.assert_array_equal(a,b,err_msg=f'{location}: exact discrete comparison')
+    elif isinstance(expected,(list,tuple)):
+        assert isinstance(actual,(list,tuple)),f'{location}: expected sequence'
+        assert len(actual)==len(expected),f'{location}: sequence length {len(actual)} != {len(expected)}'
+        for i,v in enumerate(expected): compare(actual[i],v,path+f'/{i}',rtol=rtol,atol=atol)
+    elif isinstance(expected,(bool,np.bool_)):
+        assert isinstance(actual,(bool,np.bool_)) and actual==expected,f'{location}: boolean {actual!r} != {expected!r}'
+    elif isinstance(expected,(int,np.integer)):
+        assert isinstance(actual,(int,np.integer)) and not isinstance(actual,(bool,np.bool_)) and actual==expected,f'{location}: integer {actual!r} != {expected!r}'
+    elif isinstance(expected,(float,np.floating)):
+        assert isinstance(actual,numbers.Real) and not isinstance(actual,(bool,np.bool_)),f'{location}: expected real number'
+        assert math.isfinite(actual) and math.isfinite(expected),f'{location}: nonfinite floating scalar'
+        error=abs(actual-expected)
+        assert error<=atol+rtol*abs(expected),f'{location}: actual={actual!r}, expected={expected!r}, abs_error={error:.17g}, rtol={rtol}, atol={atol}'
+    else:
+        assert actual==expected,f'{location}: {actual!r} != {expected!r}'
 
 
 @pytest.mark.parametrize('case_index',range(12))
@@ -25,10 +53,13 @@ def test_original_semantic_trajectory(case_index):
     with gzip.open(Path(__file__).parent/'fixtures/coop3d_v1_semantics.json.gz','rt',encoding='utf-8') as f: case=json.load(f)[case_index]
     env=make_environment(EnvConfig(**case['config']))
     obs,info=env.reset(case['seed'],options=case['options'])
-    compare(obs,case['initial_observations']); compare(info,case['initial'])
-    for step in case['steps']:
+    compare(obs,case['initial_observations'],path='/initial/observations')
+    compare({k:info[k] for k in case['initial'] if k in info},case['initial'],path='/initial/info')
+    for t,step in enumerate(case['steps']):
         obs,r,term,trunc,info=env.step(step['actions'])
-        compare(obs,step['observations']); compare(r,step['rewards']); compare(info,step['info'])
+        compare(obs,step['observations'],path=f'/steps/{t}/observations')
+        compare(r,step['rewards'],path=f'/steps/{t}/rewards')
+        compare({k:info[k] for k in step['info'] if k in info},step['info'],path=f'/steps/{t}/info')
         assert (term,trunc)==(step['terminated'],step['truncated'])
 
 

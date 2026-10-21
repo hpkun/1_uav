@@ -160,7 +160,7 @@ class MAPPOTrainer:
         n = rollout.observations.shape[-2]
         valid = rollout.current_masks.flatten().bool()
         if not valid.any():
-            return dict(actor_loss=0.,critic_loss=0.,entropy=0.,approx_kl=0.,clip_fraction=0.,gradient_norm=0.,
+            return dict(policy_loss=0.,actor_total_loss=0.,actor_loss=0.,critic_loss=0.,entropy=0.,approx_kl=0.,clip_fraction=0.,gradient_norm=0.,
                         valid_samples=0,optimizer_steps=0,update=self.updates)
         obs = rollout.observations.reshape(-1,12)[valid]
         actions = rollout.actions.reshape(-1,3)[valid]
@@ -193,9 +193,10 @@ class MAPPOTrainer:
                 self.critic_optimizer.zero_grad(set_to_none=True); critic_loss.backward()
                 critic_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(),c.max_grad_norm,error_if_nonfinite=True)
                 self.critic_optimizer.step()
-                metrics.append([policy.item(),critic_loss.item(),entropy.mean().item(),((ratio-1)-log_ratio).mean().item(),
+                metrics.append([policy.item(),actor_loss.item(),critic_loss.item(),entropy.mean().item(),((ratio-1)-log_ratio).mean().item(),
                                 ((ratio-1).abs()>c.clip).float().mean().item(),math.hypot(actor_norm.item(),critic_norm.item())])
         self.updates += 1
-        result=dict(zip(('actor_loss','critic_loss','entropy','approx_kl','clip_fraction','gradient_norm'),np.mean(metrics,axis=0).tolist()))
+        result=dict(zip(('policy_loss','actor_total_loss','critic_loss','entropy','approx_kl','clip_fraction','gradient_norm'),np.mean(metrics,axis=0).tolist()))
+        result['actor_loss']=result['actor_total_loss']  # Compatibility alias; old logs used policy_loss here.
         result.update(valid_samples=len(obs),optimizer_steps=len(metrics),update=self.updates)
         return result

@@ -59,3 +59,15 @@ optimization记录loss、entropy、approx_kl、clip_fraction、gradient_norm。i
 完整checkpoint含模型、两个Adam、sampled_steps、update、最佳分数、环境/算法配置及版本、12/90/5维协议、所有Python/NumPy/Torch/ CUDA随机状态、worker状态/任务/分配/累计计数/局数、当前90D状态和episode统计累加器。恢复默认采用原配置，只允许提高命令行总预算；显式更改网络、环境、优化配置会被拒绝。旧60D身份在反序列化旧Python类前被拒绝，不保留旧包转发。只加载可信的本地checkpoint。
 
 训练、评估和checkpoint审计强制CUDA，不CPU回退；环境和数学单元测试本身可用CPU。正式长训练命令仅写在README及报告，本轮未执行。
+
+## 日志维护说明（不改变 v2 算法/Checkpoint 身份）
+
+修复前的 `optimization.actor_loss` 错记为纯 PPO policy loss。新日志分别保存 `policy_loss` 与 `actor_total_loss=policy_loss−entropy_coef*entropy`，其中均值采用原有逐小批量等权统计；`actor_loss` 保留为真实 `actor_total_loss` 的兼容别名。原有历史 JSONL/CSV、模型和报告表格不重写，读取历史值时将旧 actor_loss 解释为 policy_loss，未记录的总损失显示 N/A。Beta 熵为微分熵，可以为负。
+
+日志格式器只负责展示：普通训练进度为两行，训练回合数据缺失显示 N/A；独立评估使用 evaluate 返回值并明确显示样本数、完成点数/总数、BEST UPDATED/UNCHANGED；最终单独显示 best 与 latest 的指标和真实路径。steps/s 使用本次运行新增的 joint transitions / 本次运行墙钟时间，包含独立评估和保存耗时，不将恢复前的 sampled_steps 算入速度。
+
+恢复预检先于目录写入、日志追加、模型覆盖与trainer启动。重复/倒序/晚于断点的日志、晚于断点的目标checkpoint或不匹配的best来源会明确拒绝；缺失/落后日志只提示缺口。预检不改文件、不消耗随机状态，不自动删除唯一历史记录。没有修改TrainConfig字段、checkpoint内容协议、GAE、PPO公式或Adam参数。
+
+`python -m tools.report_training --run-dir <目录> --last-updates 10` 是纯标准库的只读日志工具，不加载模型、不调用CUDA；它与训练/模型审计的GPU要求不同。首10次与尾N次优化均值按update等权，Beta mean/std显示最后一个真实rollout的记录值，五项奖励使用日志内每有效UAV-step均值。样本不足时首尾窗口可重叠并明确提示。
+
+诊断默认考察最近N个有效记录：至少3次独立评估成功率均为0、完成率未增长、目标距离逐次增长，或至少3个记录中≥80%超过 γ/速度裁剪率10%、KL 0.03、裁剪前梯度范数5.0。阈值是报告启发式，不是训练失败标准；缺失及非有限值不填0，也不输出为有效数字。该维护未提升算法版本，完整验证见training_log_maintenance.md。
