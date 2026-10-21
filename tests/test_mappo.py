@@ -3,14 +3,14 @@ import json
 import numpy as np
 import pytest
 import torch
-from coop3d import EnvConfig
-from coop3d.mappo.config import TrainConfig
-from coop3d.mappo.networks import Actor, Critic
-from coop3d.mappo.trainer import MAPPOTrainer, Rollout, gae, require_cuda
-from coop3d.mappo.checkpoint import read_checkpoint, restore_checkpoint, save_checkpoint
-from coop3d.mappo.evaluation import evaluate
-from coop3d.vector_env import ParallelVectorEnv
-from coop3d.replay import render_replay
+from env import EnvConfig
+from algorithm.mappo.config import TrainConfig
+from algorithm.mappo.networks import Actor, Critic
+from algorithm.mappo.trainer import MAPPOTrainer, Rollout, gae, require_cuda
+from algorithm.common.checkpoint import read_checkpoint, restore_checkpoint, save_checkpoint
+from algorithm.mappo.evaluation import evaluate
+from algorithm.common.vector_env import ParallelVectorEnv
+from tools.render_replay import render_replay
 
 
 def test_network_dimensions_and_beta_probability():
@@ -18,7 +18,7 @@ def test_network_dimensions_and_beta_probability():
     obs = torch.randn(7, 12)
     action, logp = actor.act(obs)
     assert action.shape == (7, 3) and torch.all((action > 0) & (action < 1))
-    assert critic(torch.randn(7, 60)).shape == (7,)
+    assert critic(torch.randn(7, 90)).shape == (7, 5)
     dist = actor.distribution(obs)
     manual = ((dist.concentration1 - 1) * action.log() + (dist.concentration0 - 1) * torch.log1p(-action)
               + torch.lgamma(dist.concentration1 + dist.concentration0) - torch.lgamma(dist.concentration1) - torch.lgamma(dist.concentration0)).sum(-1)
@@ -91,7 +91,7 @@ def test_cuda_mandatory(monkeypatch):
 
 def test_real_ppo_checkpoint_resume_evaluate_and_replay(tmp_path):
     require_cuda()
-    cfg = TrainConfig(num_envs=1, horizon=5, epochs=2, minibatch_size=8)
+    cfg = TrainConfig(num_envs=1, horizon=5, ppo_epochs=2, minibatch_size=8)
     env_cfg = EnvConfig(max_steps=5, failure_events={2:[1]})
     trainer = MAPPOTrainer(cfg)
     with ParallelVectorEnv(env_cfg, 1, cfg.seed) as vector:
@@ -109,11 +109,21 @@ def test_real_ppo_checkpoint_resume_evaluate_and_replay(tmp_path):
         save_checkpoint(path, trainer, env_cfg, vector, (0, 0, 0))
         payload = read_checkpoint(path)
         expected, _ = trainer.collect(vector)
+        trainer.update(expected)
         clone = MAPPOTrainer(cfg)
         restore_checkpoint(payload, clone, env_cfg, vector)
         actual, _ = clone.collect(vector)
         for key in ('actions', 'observations', 'rewards', 'current_masks', 'next_masks'):
             torch.testing.assert_close(getattr(expected, key), getattr(actual, key), rtol=0, atol=0)
+        clone.update(actual)
+        for x, y in zip(trainer.actor.parameters(), clone.actor.parameters()):
+            torch.testing.assert_close(x, y, rtol=0, atol=0)
+        for x, y in zip(trainer.critic.parameters(), clone.critic.parameters()):
+            torch.testing.assert_close(x, y, rtol=0, atol=0)
+        for opt_a,opt_b in ((trainer.actor_optimizer,clone.actor_optimizer),(trainer.critic_optimizer,clone.critic_optimizer)):
+            for slot_a,slot_b in zip(opt_a.state.values(),opt_b.state.values()):
+                for key in slot_a:
+                    torch.testing.assert_close(slot_a[key],slot_b[key],rtol=0,atol=0)
         report = evaluate(clone, env_cfg, [900000], tmp_path / 'trajectory.json')
         assert len(report['episodes']) == 1
         data = json.loads((tmp_path / 'trajectory.json').read_text())
@@ -127,7 +137,7 @@ def test_real_ppo_checkpoint_resume_evaluate_and_replay(tmp_path):
 
 def test_inactive_samples_cannot_affect_updates():
     require_cuda()
-    c = TrainConfig(num_envs=1, horizon=4, epochs=1, minibatch_size=32)
+    c = TrainConfig(num_envs=1, horizon=4, ppo_epochs=1, minibatch_size=32)
     with ParallelVectorEnv(EnvConfig(failure_events={1:[1]}), 1, c.seed) as vector:
         trainer = MAPPOTrainer(c)
         batch, _ = trainer.collect(vector)
@@ -150,7 +160,7 @@ def test_inactive_samples_cannot_affect_updates():
 
 def test_empty_valid_batch_skips_optimizer():
     require_cuda()
-    c = TrainConfig(num_envs=1, horizon=1, epochs=1)
+    c = TrainConfig(num_envs=1, horizon=1, ppo_epochs=1)
     trainer = MAPPOTrainer(c)
     with ParallelVectorEnv(EnvConfig(), 1, c.seed) as vector:
         rollout, _ = trainer.collect(vector)

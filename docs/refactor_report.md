@@ -1,173 +1,266 @@
-# Coop3D 重构与验收报告
+# Coop3D v2.0 重构、修正与训练前诊断报告
 
-实施日期：2026-10-21（Asia/Shanghai）。唯一正式环境：`coop3d-v1.0.0`，类 `coop3d.Cooperative3DEnv`。
+日期：2026-10-21（Asia/Shanghai）。本轮完成实际代码重构与有限预算诊断，没有启动正式长步数训练、百万级采样、大规模参数搜索或多种子长训练。
 
-## 1. 实施结果
+## A. 最终目录与职责
 
-已将原项目重构为非武器化的三维多 UAV 空间巡检强化学习基准。完成了真实代码替换、旧实现删除、自动测试、三规模十进程 CUDA 采样、完整 PPO 梯度更新、断点保存与继续训练、独立评估和离线交互式轨迹文件生成。
-
-工程验收通过；短程策略尚未学会巡检任务。验收不等价于训练收敛，也没有复现论文的任务成功率。
-
-## 2. 文献核对与方法取舍
-
-先阅读本地 Xu 等 2026 原始 PDF，提取全文，并渲染检查第 3、8 页：
-
-- 第 3 页公式 (1)、(2)：z 轴向上的六维状态与三自由度动力学。
-- 第 8 页公式 (26)、(27)：当前有效性用于损失，下一有效性用于 GAE 自举。
-- 第 8 页表 II：三个连续控制变量的物理范围。
-- 第 8 页表 III：128×128 Tanh、Beta、12D Actor、60D Critic、优化与并行参数。
-
-任务定义、独占航路点匹配、观测字段和巡检奖励采用用户任务文本。论文的原始交战任务不进入新实现。论文 rollout 为 1500，而本次自行选择 rollout=250，并在配置中显式暴露，详见 `coop3d_spec.md`。
-
-用户在本次会话明确要求 PowerShell `uav`，因此所有 Python 实施、测试、训练、评估与审计均通过该 Windows Conda 环境执行。CUDA 检查成功：PyTorch `2.11.0+cu128`，GPU 为 NVIDIA GeForce RTX 5060 Laptop GPU。没有训练/审计 CPU 回退。
-
-## 3. 旧实现删除与数据保护
-
-先扫描 821 个原文件并记录实际 Python 导入依赖，再对原始文献和数据建立 SHA-256 清单。检查发现原动力学使用 NED 符号，旧 MAPPO 使用 Gaussian/Attention 网络，旧 vector/checkpoint/记录模块与历史环境身份和统计紧密耦合，不能直接保留。
-
-经用户明确批准，且新实现验收通过后，删除以下 803 个旧实现文件：
-
-| 原目录 | 删除数量 | 内容 |
-|---|---:|---|
-| `env/` |145|旧正式环境、历史继承链、版本分发、控制增量、旧状态机、旧奖励、旧策略与专属公共封装|
-| `algorithm/` |140|全部旧算法分支与入口、旧 MAPPO 网络/训练分支、旧公共训练协议|
-| `tools/` |136|旧环境审计、历史迁移脚本、诊断、评估及旧回放工具|
-| `tests/` |92|旧环境和旧算法专属 Python 测试|
-| `configs/` |215|全部旧环境与算法 YAML 配置|
-| `docs/` |75|不再适用的旧版本与算法技术文档|
-
-空的旧环境/算法目录以及旧字节码已清除，README、依赖和项目配置已替换。最终正式代码没有导入 `env.*` 或 `algorithm.*`，不存在旧环境混用或历史兼容入口。
-
-完整删除和导入清单保存在 `docs/migration_inventory.json`；恢复副本为 `tmp/pre_coop3d_source_backup.zip`，包含 803 个旧实现文件和旧 README/依赖/项目配置，共 806 项。恢复副本不属于正式源码，也不被导入或测试。
-
-20 个原始 PDF、模型和 JSON 数据文件的 SHA-256 全部保持不变。旧 JSON 回归数据及模型 fixture 原位保留，属于受保护数据，不提供旧环境执行能力。没有清理原训练产物或文献。
-
-最初批量清理被自动审批拒绝，未执行。随后获得用户明确批准，完成新实现验证和可恢复备份，再依据逐文件清单删除；本项已经解决，无待批准的清理操作。
-
-## 4. 公共能力保留情况与最终结构
-
-保留并整理了通用能力：角度环绕、经典 RK4 方法、spawn 长驻并行采样、JSON 训练记录、checkpoint 和三维回放。由于旧模块接口直接依赖历史环境，最终没有继续导入旧公共 Python 模块；这些能力在新包中以干净接口实现。没有同时保留两套运动模型、网络或配置。
+正式代码树如下；历史数据、文献、outputs 和测试fixture保留，不列出每个历史文件。完整正式源码路径清单见 `docs/v2_file_changes.json`，数据保护清单见 `docs/v2_migration_manifest.json`。
 
 ```text
-coop3d/
-  __init__.py __main__.py
-  config.py                 配置及参数校验
-  models.py                 状态、任务数据、间距
-  dynamics.py               三自由度方程、动作映射、速度向量
-  integrator.py             RK4、限幅、非有限诊断
-  scenario.py               固定/随机初始化
-  assignment.py             矩形 Hungarian / nearest 分配
-  observation.py            12D 观测与 60D 集中状态
-  reward.py                 五项可重算奖励
-  environment.py            唯一环境转移/完成/失效/终止
-  vector_env.py             spawn、多进程快照/恢复、真实末观测
-  recording.py replay.py    真实轨迹与离线交互 HTML
-  mappo/
-    config.py networks.py trainer.py checkpoint.py evaluation.py runner.py
+env/
+  __init__.py
+  assignment.py
+  config.py
+  cooperative_env.py
+  dynamics.py
+  factory.py
+  integrator.py
+  models.py
+  observation.py
+  reward.py
+  scenario.py
+algorithm/
+  __init__.py
+  common/__init__.py
+  common/checkpoint.py
+  common/metrics.py
+  common/protocol.py
+  common/runtime.py
+  common/serialization.py
+  common/vector_env.py
+  evaluate_mappo.py
+  mappo/__init__.py
+  mappo/config.py
+  mappo/evaluation.py
+  mappo/networks.py
+  mappo/runner.py
+  mappo/trainer.py
+  train_mappo.py
 configs/
-  coop3d_3U3P.yaml coop3d_5U5P.yaml coop3d_3U5P.yaml coop3d_mappo.yaml
+  coop3d_3U3P.yaml
+  coop3d_3U5P.yaml
+  coop3d_5U5P.yaml
+  mappo_coop3d.yaml
+tools/
+  __init__.py
+  audit_navigation.py
+  navigation_baseline.py
+  record_episode.py
+  recording.py
+  render_replay.py
+  validate_coop3d.py
 tests/
-  test_coop3d_dynamics.py test_coop3d_environment.py test_coop3d_mappo.py
-tools/validate_coop3d.py
-docs/coop3d_spec.md docs/migration_inventory.json docs/refactor_report.md
-outputs/coop3d_acceptance_v1/
-  3U3P/ 5U5P/ 3U5P/ cli_holdout/
-  acceptance.json final_audit.json protected_files_verified.json pytest.xml
+  test_dynamics.py
+  test_entrypoints.py
+  test_environment.py
+  test_environment_regression.py
+  test_mappo.py
+  test_mappo_v2.py
+  test_navigation.py
+  fixtures/coop3d_v1_semantics.json.gz + 受保护历史数据
+docs/
+  environment_spec.md
+  mappo_spec.md
+  navigation_audit.md
+  refactor_report.md
+  migration_inventory.json v2_migration_manifest.json v2_file_changes.json
+README.md / pyproject.toml / requirements.txt / AGENTS.md
+outputs/coop3d_v2/ + 原有 outputs（完整保留）
+原始 PDF（完整保留）
 ```
 
-## 5. 关键参数及补充约定
+env仅负责配置、动力学、任务与观测/奖励，AST检查确认不导入algorithm、tools或torch。algorithm通过env.factory.make_environment()构造环境。common负责vector/checkpoint/指标/协议，mappo负责网络/GAE/PPO/调度。tools导航只用于诊断，不进入训练或专家数据。
 
-| 项目 | 实现 |
+## B. 文件迁移、删除与新建清单
+
+以下“迁移或重写”不表示都属于行为不变的纯搬运。结构和数值变更单独列于C节。
+
+|原路径|新路径|
 |---|---|
-| 场景 |3U3P、5U5P、3U5P，一个环境类|
-| 状态 |`[x,y,z,v,γ,ψ]`，右手系 z 向上，有效性另存|
-| 动力学 |严格三自由度微分方程，经典 RK4|
-| g / dt / 步数 |9.81 / 0.25 s / 250|
-| 速度 / γ |100–400 m/s；γ ±85° 数值稳定性假设|
-| 动作 |Beta `[0,1]^3` → μ `[-π,π]`、ζ `[-1,2]`、ζ̂ `[0,8]`|
-| 巡检 / 安全半径 |300 m / 100 m|
-| 分配 |每步独占矩形 Hungarian；最近独占贪心基线|
-| Actor / Critic |12→128→128→6 Beta 参数；60→128→128→1，Tanh|
-| 优化 |Adam，两网络 LR=3e-4，gamma=.954，lambda=.95，clip=.2|
-| 熵 / PPO / batch |.001 / 10 epochs / 128|
-| 并行 / rollout |10 / 250|
+|`coop3d/config.py`|`env/config.py`|
+|`coop3d/models.py`|`env/models.py`|
+|`coop3d/dynamics.py`|`env/dynamics.py`|
+|`coop3d/integrator.py`|`env/integrator.py`|
+|`coop3d/scenario.py`|`env/scenario.py`|
+|`coop3d/assignment.py`|`env/assignment.py`|
+|`coop3d/observation.py`|`env/observation.py`|
+|`coop3d/reward.py`|`env/reward.py`|
+|`coop3d/environment.py`|`env/cooperative_env.py`|
+|`coop3d/vector_env.py`|`algorithm/common/vector_env.py`|
+|`coop3d/mappo/checkpoint.py`|`algorithm/common/checkpoint.py`|
+|`coop3d/mappo/config.py`|`algorithm/mappo/config.py`|
+|`coop3d/recording.py`|`tools/recording.py`|
+|`coop3d/replay.py`|`tools/render_replay.py`|
+|`coop3d/mappo/networks.py`|`algorithm/mappo/networks.py`|
+|`coop3d/mappo/trainer.py`|`algorithm/mappo/trainer.py`|
+|`coop3d/mappo/runner.py`|`algorithm/mappo/runner.py`|
+|`coop3d/mappo/evaluation.py`|`algorithm/mappo/evaluation.py`|
+|`tests/test_coop3d_dynamics.py`|`tests/test_dynamics.py`|
+|`tests/test_coop3d_environment.py`|`tests/test_environment.py`|
+|`tests/test_coop3d_mappo.py`|`tests/test_mappo.py`|
+|`configs/coop3d_mappo.yaml`|`configs/mappo_coop3d.yaml`|
+|`docs/coop3d_spec.md`|`docs/environment_spec.md`|
 
-全部归一化公式、五项奖励公式和额外优化参数在 `coop3d_spec.md` 逐项列出。主要补充约定：
+彻底移除而不保留转发包装：
+- `coop3d/__init__.py`
+- `coop3d/__main__.py`
+- `coop3d/mappo/__init__.py`
 
-1. Hungarian 自行实现，不依赖未安装的 SciPy，使用穷举验证矩形最优性；同代价按固定遍历顺序确定。
-2. 默认优先级为 1；最近分配按全局最短距离对贪心去重。
-3. 完成按步末位置判定，不在 reset 时完成、不做线段穿球检测；实际到达可完成未分配给自己的点；最低有效 UAV ID 唯一记账，重叠的不同点可分别完成。
-4. 动作前分配用于 progress，动作后重新分配用于下一观测，防止虚假进度。
-5. 确定性失效发生在积分后、完成判定前；当步保留转移及进度/时间奖励，失效 UAV 不参与步末安全项或完成事件。后续状态冻结、观测全零。
-6. 无任务有效 UAV 用 `[0,sinγ,cosγ]` 配平控制保持当前速度与飞行方向，仍通过相同微分方程积分；安全项继续记录。
-7. 非有限积分保留前个有限状态、计数并失效；非有限输入明确报错。限幅为数值保护，不新增飞行包线奖励。
-8. Critic 单一集中标量作为各个体 GAE 的共享基线，MSE 对有效个体 return 平均；不额外拼接个体观测。
-9. 真终止不自举；超时使用真实末观测自举，同时切断跨局 GAE；自动 reset 观测与真实末观测分开保存。
-10. Adam eps=1e-5、梯度限幅=.5、有效优势标准化、Beta 样本保护 epsilon=1e-6、Critic `.5*MSE`；没有额外隐藏奖励或研究算法分支。
-11. 逐更新独立评估，按成功率/完成率/回报字典序选最佳模型；完整保存随机与 worker 状态。恢复自动读取未显式覆盖的断点配置，显式配置冲突则失败。
+全部旧coop3d/源码和字节码目录已删除，旧模块路径不再能作为入口导入。旧Python实现共21个；三份原测试文件更名迁移，没有删去有效测试函数。失效旧YAML与旧规范由新路径替代。
 
-## 6. 自动化测试与静态检查
+新增正式Python文件（不包括上表迁移文件）：
+- `algorithm/__init__.py`
+- `algorithm/common/__init__.py`
+- `algorithm/common/metrics.py`
+- `algorithm/common/protocol.py`
+- `algorithm/common/runtime.py`
+- `algorithm/common/serialization.py`
+- `algorithm/evaluate_mappo.py`
+- `algorithm/mappo/__init__.py`
+- `algorithm/train_mappo.py`
+- `env/__init__.py`
+- `env/factory.py`
+- `tests/test_entrypoints.py`
+- `tests/test_environment_regression.py`
+- `tests/test_mappo_v2.py`
+- `tests/test_navigation.py`
+- `tools/__init__.py`
+- `tools/audit_navigation.py`
+- `tools/navigation_baseline.py`
+- `tools/record_episode.py`
 
-清理后的完整 `python -m pytest -q`：**66 项全部通过**。覆盖：
+新增文档与清单：
+- `docs/mappo_spec.md`
+- `docs/navigation_audit.md`
+- `docs/v2_migration_manifest.json`
+- `docs/v2_file_changes.json`
 
-- 动力学：水平匀速、加减速、左右转弯、爬升/俯冲、单个及批量三维速度、速度限幅、解析圆周轨迹下 RK4 精度、航向环绕、奇异点保护、γ 限幅和非有限保护。
-- 任务：三种规模完整单局、同种子复现、初始间距、三维到达、同时到达最低 ID、去重、矩形匹配穷举最优性、任务/飞行器数量不对称、失效与闲置槽位、完成后重新分配、成功终止及超时。
-- 奖励：进度正负、事件奖励只一次、安全平均公式、仅一架安全惩罚为零、时间与终端项、五项求和、用记录重算。
-- 失效：当前/下一掩码语义、后续状态冻结、无效动作忽略、观测清零、全部失效终止、闲置配平。
-- MAPPO：网络维度、Beta 解析 log probability、PPO ratio、GAE 真终止/超时/失效、单进程与三规模多进程采样、worker 快照恢复、真实 CUDA 更新、完整 checkpoint、精确恢复后采样一致、独立评估、失效样本污染不影响损失、无有效样本不更新。
+原位重写：
+- `tools/validate_coop3d.py`
+- `README.md`
+- `pyproject.toml`
+- `docs/refactor_report.md`
 
-同时通过 `compileall`、`git diff --check`；回放应用脚本通过 Node `--check` 语法检查。仅有 Git 对 Windows 行尾转换的提示，没有差异空白错误。
+三份场景YAML维持原参数；统一算法配置改为configs/mappo_coop3d.yaml，项目打包范围改为env、algorithm、tools。v1源码恢复副本为tmp/coop3d_v1_before_v2.zip，不属于正式可执行实现。
 
-最终依赖审计检查：只有 `Cooperative3DEnv` 正式仿真类和 `ParallelVectorEnv` 批量包装类；只有四份新 YAML；原 803 个实现路径已删除；正式源码没有旧包导入或旧机制关键词；20 个受保护文件哈希未变化。7 份真实轨迹的 **1,750 个 step 帧**全部逐步重算五项奖励，数值一致且状态有限。机器可读证据：`outputs/coop3d_acceptance_v1/final_audit.json`。
+## C. 版本和变更分类
 
-## 7. 实际 MAPPO 验收结果
+- **A 纯迁移**：模型数据、三自由度方程、RK4、随机/固定场景、Hungarian/nearest和五项奖励的合法输入行为。迁移前保存12个场景、873个转移；状态、12D观测、reward、分配、事件、累计数值计数及终止/截断全部精确匹配。版本字段和Critic状态不在不变断言中，因为它们是本次明确修改的接口。
+- **B 获准的算法/接口调整**：环境身份coop3d-v2.0.0；全局状态60→90；Critic标量→5个体价值；Actor默认trim_centered；vector/rollout/checkpoint/评估同步；严格joint预算、按采样步调度与新日志；新增非学习导航基线。
+- **C 数值与健壮性修复**：GAE/损失选择真正排除无效NaN；有效NaN/Inf显式失败；非法配置类型/非有限参数/故障步号检查；逐步numerical_delta和逐UAV裁剪事件，替代累计max统计；精确保留worker和episode累加器状态。没有改变合法输入的动力学方程、奖励权重或任务几何。
+- **D 尚未解决/未验证**：没有收敛模型；3U5P标准场景的保守导航反馈在重分配后常超时；正式长训练性能与多种子泛化未验证；浏览器视觉交互验收未完成。
 
-命令：
+保持原值：g=9.81、dt=.25s、RK4、v=100–400m/s、γ±85°数值限制、250步、300m完成球、100m安全参考、独占匹配和五项巡检reward。没有武器机制，也没有为了成功率修改任务。
 
-```powershell
+## D. Actor / Critic 接口与数值验证
+
+Actor固定[N,12]，共享128×128 Tanh，输出3维Beta动作。全局状态前60维为最多五架按ID补零的局部观测；后30维为五个点的[x/distance_scale,y/distance_scale,z/altitude_scale,priority,completed,exists]，不存在点槽位全零。未分配点也进入Critic；完成点仍存在。Actor不接收90D全局信息。
+
+Critic为90→128 Tanh→128 Tanh→5，接收[batch,90]，输出[batch,5]，每个UAV只用自己的ID槽位。3UAV场景后两头不参与损失，测试验证其输出层梯度为0。各自reward、advantage、return独立，禁止标量广播。
+
+同一个全局状态、五个不同目标回报的监督拟合测试：五头Critic MSE=5.516228541e-08，旧式标量广播参考MSE=7.440000057。对照仅在测试内构造，没有保留旧算法分支。该监督单元测试不执行环境采样或PPO训练。
+
+GAE覆盖真终止、超时真实末状态自举、跨局切断、当前有效下一失效、无效NaN、有效NaN/Inf报错、多环境部分失效同时超时。向无效观测/动作/logp/reward/value/global slot注入NaN后，更新结果仍与干净输入一致。
+
+## E. 导航控制和任务可达性
+
+控制公式：psi_des=atan2(dy,dx)，gamma_des限制±20°；psi_rate=clip(.8*wrap(error),±.06)，gamma_rate=clip(.6*error,±.03)。A=cosγ+v*gamma_rate/g；B=v*cosγ*psi_rate/g；normal=hypot(A,B)，roll=atan2(B,A)；tangential=sinγ+(225−v)/(g*6)。物理动作按[-π,π]、[-1,2]、[0,8]裁剪，再映射[0,1]。全部增益/限值/目标速度通过NavigationConfig配置，记录饱和及期望/实际角速度；只通过env.step执行，不直接改变飞行状态。
+
+## F. 配平初始化与legacy对照
+
+默认Beta总浓度16，alpha=[8,16/3,2]、beta=[8,32/3,14]；输出层bias=softplus_inverse(parameter−1)，输出权重gain=.01。softplus+1约束未改变，所有层可训练。
+
+采用相同环境seed101/102、相同Torch初始化seed17和各局相同采样seed，共24局未训练策略对照。以下按有效UAV-step加权合并：
+
+|执行方式|初始化|归一化动作均值|归一化动作std|实际μ/ζ/ζ̂均值|γ裁剪率|速度裁剪率|
+|---|---|---|---|---|---:|---:|
+|确定性均值|legacy|0.5084, 0.5056, 0.5083|0.0026, 0.0035, 0.0034|0.0530, 0.5169, 4.0662|83.873%|44.800%|
+|确定性均值|trim_centered|0.5002, 0.3334, 0.1251|0.0000, 0.0000, 0.0000|0.0013, -0.0006, 1.0004|0.000%|0.000%|
+|随机采样|legacy|0.5125, 0.5004, 0.5053|0.2408, 0.2326, 0.2372|0.0739, 0.4846, 3.9509|0.000%|28.600%|
+|随机采样|trim_centered|0.4997, 0.3314, 0.1249|0.1211, 0.1131, 0.0782|-0.0017, -0.0058, 0.9992|0.000%|1.055%|
+
+确定性legacy明显集中于法向过载约4；trim_centered接近1，并保留可量化的随机探索。物理动作包含环境闲置配平覆盖。累计任务进度与逐步分布、物理动作std、每规模/每种子的详细数据见navigation_audit.md和initialization_comparison.json；不以这些未训练策略结果声称收敛。
+
+## G. 三规模小样本审计实际结果
+
+主审计54局：每规模3种策略各5个相同随机种子，固定场景各策略只运行1次。以下标准任务参数没有调整：
+
+|规模|Navigation固定场景|Navigation随机5种子|随机平均完成率|Trim随机成功率|Random随机成功率|
+|---|---|---|---:|---:|---:|
+|3U3P|成功率100%，完成率100%|5/5成功|100%|0%|0%|
+|5U5P|成功率100%，完成率100%|5/5成功|100%|0%|0%|
+|3U5P|成功率0%，完成率60%|1/5成功|76%|0%|0%|
+
+额外手工可达3U5P任务79步完成5/5，各UAV完成数和后续分配事件均记录。它是单独标注的控制/任务接口测试，不替代标准随机场景。
+
+3U5P失败的5局（固定1局、随机4局）均复核：250步超时，无γ/速度裁剪、无法向过载饱和，剩余点最近距离约2.78–5.46km。225m/s和.06rad/s转向上限对应3750m转弯半径、一圈104.72s，长于整局62.5s。重分配的近距离侧后方点会与剩余时限冲突；证据更符合保守导航控制的转向限制，不支持宣称积分错误、动作包线饱和或所有随机场景物理不可达。随机seed104确实完成标准3U5P。详见docs/navigation_audit.md。
+
+每局原始数据包含所要求的成功率/完成率/完成数/长度、初末最近点距离、累计progress、飞行距离、有效UAV-step裁剪率、平均|γ|/速度、初始及逐步最小友机距离、分配切换，以及逐步控制/数值事件。3U5P包含个体完成数、第二/后续目标分配时刻及重分配完成事件。
+
+## H. 自动化测试与静态检查
+
+完整测试：**109 passed，0 failures，0 errors**，最近执行约7.63s。原66个参数化用例所对应的39个测试函数全部保留；只对获准变化更新维度/配置接口断言，新增873步语义回归、90D状态、个体价值拟合、配平、NaN、部分vector预算、导航、seed、checkpoint和CLI等测试。没有删除失败有效用例来制造全通过。
+
+通过compileall、AST依赖检查、git diff --check；Git仅提示Windows行尾转换。环境无算法反向依赖；正式入口没有coop3d包导入；唯一正式仿真定义为env/cooperative_env.py。
+
+受保护文件：本次开始捕获的40个原PDF/outputs文件均未变化；结合上一轮历史数据保护清单，共58个唯一文件SHA-256一致。没有删除历史模型、原outputs、JSON回归数据或PDF。
+
+11份v2真实轨迹的1398个转移逐步重算五项奖励全部一致，状态有限，逐UAV数值事件和step delta求和一致。回放HTML内嵌库/数据并通过脚本语法检查。浏览器内视觉/交互未验证，语法检查不能替代浏览器验收。
+
+机器证据：outputs/coop3d_v2/pytest.xml、final_audit.json；迁移来源/保护清单：docs/v2_migration_manifest.json。
+
+## I. CUDA Smoke Test
+
+环境：PowerShell conda activate uav，Python3.10.21、PyTorch2.11.0+cu128、RTX5060 Laptop GPU。CUDA已检查，没有CPU训练/审计回退。
+
+仅两次短程Smoke调用：2环境、horizon8、1 PPO epoch、minibatch32、测试环境最大8步并在第4步使UAV1失效。短回合仅用于Smoke的故障/超时测试配置，正式三种场景仍250步。第一次严格总预算17，得到2个短rollout更新；第二次恢复到绝对总预算25，新增8个joint transitions和1次更新。
+
+|sampled_steps|PPO update|本次有效个体样本|小批量更新数|Actor loss|Critic loss|entropy|approx KL|
+|---:|---:|---:|---:|---:|---:|---:|---:|
+|16|1|40|2|0.01281602|0.05580967|-2.692407|1.9304454e-05|
+|17|2|3|1|0.00000024|0.00384076|-2.695317|0|
+|25|3|23|1|0.00000002|0.01857367|-2.695529|0|
+
+真实梯度更新改变Actor参数；累计25 joint transitions、3个PPO更新、4个小批量成对更新。预算17和25均精确达到，最后不整除worker数时只推进实际请求的worker。没有正式长训练或百万采样。独立Smoke评估未完成任务（短回合成功率0），不据此评判长期学习能力。
+
+## J. Checkpoint、恢复、日志与录像
+
+保存并重新加载后参数完全一致；原测试增强为：恢复后下一段动作、观测、reward、mask逐元素一致；再执行同一个后续更新，Actor/Critic权重和两个Adam状态逐元素完全一致。
+
+当前Smoke latest为sampled_steps=25、update=3；best为sampled_steps=16、update=1。它们已分别评估，不能将latest录像当作best。旧60D真实历史模型在旧包已移除后仍能给出明确拒绝：incompatible checkpoint: environment/algorithm identity (60D models cannot resume as 90D)。
+
+输出latest.pt、best.pt、run_config.json、training_metrics.jsonl、evaluation_history.csv、run_summary.json全部存在。配置包含版本、90D/5头维度、状态/掩码/预算协议；断点保存sampled_steps、两个Adam、全部RNG、所有worker状态、当前global state及未结束episode统计。默认恢复原配置，只有命令行总预算可以提高。
+
+日志区分累计sampled_steps/joint_episode_count、本rollout训练回合、按有效UAV-step计算的rollout统计与独立评估。记录五项reward、目标距离/减少量、loss/entropy/KL/clip_fraction/gradient_norm、Beta动作mean/std、实际限幅率和分配变化。数值事件按显式delta计数，未使用累计最大值。
+
+真实录像入口已实际执行：指定latest的独立evaluate、指定best的record_episode、规则navigation的record_episode、从JSON重新生成HTML。元数据包含实际checkpoint路径/角色/update/sample count或navigation标签。显示轨迹、速度方向、分配/点完成、控制、失效、数值事件、五项reward和任务进度。render_replay不导入环境或重新执行仿真。
+
+可查看产物：
+- outputs/coop3d_v2/navigation_audit/manual_reachable.html：手工可达3U5P，79步完成。
+- outputs/coop3d_v2/navigation_recording/replay.html：标准3U5P，独立seed104的导航基线。
+- outputs/coop3d_v2/smoke/latest_replay.html：真实Smoke训练latest。
+- outputs/coop3d_v2/best_recording/replay.html：明确指定的best模型。
+- outputs/coop3d_v2/checkpoint_evaluation/：latest的独立CLI评估。
+
+## K. 仍未验证与限制
+
+1. 未运行正式Ubuntu长训练、跨设备随机复现、多训练种子收敛/泛化实验；本轮不要求收敛模型，未用加预算代替修复。
+2. 标准3U5P的导航反馈仍可能在重分配后超时。它有成功样本和独立可达场景，不能据此证明全部随机任务在当前限时都可完成或都不可完成。
+3. 未完成浏览器内视觉交互验收：此前本地源自动访问未获权限批准，本轮未绕过；用户需本地打开HTML检查实际播放、滑块、旋转和状态面板效果。
+4. 同一场景只有小样本诊断；初始化改善控制中心和裁剪不等于解决长期探索/优化。导航不是安全保证，也没有地形、能源或传感器模型。
+5. v1模型有意不兼容v2；原文件均保留，不能作为90D/5头模型直接继续训练。
+
+## L. Ubuntu正式训练及评估命令（仅交付，未执行）
+
+```bash
 conda activate uav
-python -u tools/validate_coop3d.py --output outputs/coop3d_acceptance_v1
+python -c 'import torch; assert torch.cuda.is_available(), "CUDA required"; print(torch.cuda.get_device_name())'
+python -m algorithm.train_mappo --env-config configs/coop3d_3U3P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_3U3P_seed1000
+python -m algorithm.train_mappo --env-config configs/coop3d_5U5P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_5U5P_seed1000
+python -m algorithm.train_mappo --env-config configs/coop3d_3U5P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_3U5P_seed1000
+python -m algorithm.evaluate_mappo --checkpoint outputs/mappo_3U3P_seed1000/best.pt --device cuda --seed-base 20000000 --episodes 5 --output outputs/eval_3U3P_best
+python -m algorithm.evaluate_mappo --checkpoint outputs/mappo_3U3P_seed1000/latest.pt --device cuda --seed-base 20000000 --episodes 5 --output outputs/eval_3U3P_latest
+python -m algorithm.train_mappo --device cuda --total-sampled-steps 2000000 --output-dir outputs/mappo_3U3P_seed1000 --resume outputs/mappo_3U3P_seed1000/latest.pt
 ```
 
-每种规模：10 个不同 PID 的 spawn worker ×250 步，执行 10 个 PPO epoch，真实 Actor/Critic 反向传播，保存并重新加载模型，在独立种子评估并生成 251 帧实际轨迹（初始帧+250 转移）。首轮结果：
-
-| 规模 | 环境转移 | 有效个体样本 | PPO 小批量次数 | Actor loss | Critic loss | 独立评估均回报 | 额外 holdout 均回报 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-|3U3P|2500|7500|590|-0.002466|0.200958|-8.381088|-8.327370|
-|5U5P|2500|12500|980|-0.001616|0.187504|-6.505633|-5.523004|
-|3U5P|2500|7500|590|-0.003646|0.281964|-8.204773|-8.503886|
-
-此处每个小批量均分别更新 Actor 和 Critic。首轮合计 2,160 次小批量成对梯度更新，不是网络前向或初始化检查。三种规模都通过精确模型参数重新加载检查。训练中非有限状态计数均为 0；速度限幅有触发，记录已保存。
-
-又实际执行命令行完整恢复：
-
-```powershell
-python -m coop3d train --output outputs/coop3d_acceptance_v1/3U3P --updates 1 --resume outputs/coop3d_acceptance_v1/3U3P/latest.pt
-python -m coop3d evaluate --checkpoint outputs/coop3d_acceptance_v1/3U3P/latest.pt --output outputs/coop3d_acceptance_v1/cli_holdout --seeds 30000000 30000001
-```
-
-3U3P 从 update=1 成功继续到 update=2，新增 7,500 个体样本和 590 次小批量更新，Critic loss=0.134980。CLI holdout 均回报=-6.242404。最终本次主验收及恢复合计采样 10,000 个环境转移，执行 2,750 次小批量成对更新。
-
-所有短程独立评估及额外 holdout 的完成率/成功率均为 **0**，通常超时 250 步。上述均回报只是工程验证数值，不能解释成学习效果已经达标。初始 Beta 策略的法向过载偏高，确定性均值评估频繁触发 γ/速度限幅，例如 CLI seed=30000000 的 γ 限幅 610 次、速度限幅 271 次，但非有限状态为 0。下一步训练研究应关注这一行为，不能通过隐藏奖励修改掩盖。
-
-`acceptance.json` 保存三规模首轮结果；3U3P 的 `latest.pt`、`evaluation.json` 和 `replay.html` 已更新为恢复后的第 2 次更新结果。`metrics.jsonl` 保留两个更新记录；首轮验收数字没有被重新解释为第二轮数据。
-
-## 8. 回放产物与待解决事项
-
-每种规模目录均有 `best.pt`、`latest.pt`、完整 `config.json`、`metrics.jsonl`、`evaluation.json`、`trajectory.json`、`replay.html`，以及 `holdout_trajectory.json` / `holdout_replay.html`。CLI holdout 另有独立轨迹、报告和页面。HTML 内嵌 Plotly 库及原始记录，不依赖 CDN；UI 只读取记录，不运行环境或改动仿真结果。
-
-主要回放入口：
-
-- `outputs/coop3d_acceptance_v1/3U3P/replay.html`
-- `outputs/coop3d_acceptance_v1/5U5P/replay.html`
-- `outputs/coop3d_acceptance_v1/3U5P/replay.html`
-
-仍然存在的限制：
-
-1. **尚未完成充分训练与多种子性能验证**；仅完成要求的真实短程训练验证，策略成功率目前为 0，不能宣称已收敛。当前任务从 5–12 km 初始距离起飞，包含稀疏完成奖励，长期学习难度需要单独实测。
-2. **浏览器内视觉及交互人工式验收尚未进行**。自动打开本地 HTTP 回放页时，浏览器安全策略报告本地源访问权限未获批准；未改用其他浏览器或绕行。页面生成、离线内嵌结构、脚本语法、真实数据和奖励重算已验证，但实际播放、滑块和三维视角效果仍需用户本地打开检查。
-3. ±85° γ 和速度限幅属于数值约定，短程确定性策略频繁触发限幅。没有将此误称为论文飞行包线，也没有加入未授权的惩罚。
-4. 本基准没有地形、能源、传感器噪声或碰撞损伤模型；100 m 安全项是奖励参考，不能作为严格无碰撞保证。
-5. 原训练产物、原文献和历史数据保留，但不能由新代码加载旧环境 checkpoint 继续训练；新断点严格验证身份和配置。
-
-没有已知未处理的导入/维度错误、NaN 或失效样本参与后续更新的问题。代码未自动提交 Git，也未推送远端。
+以上预算只是可运行示例，未验证足够收敛。代码未自动提交Git或推送远端。

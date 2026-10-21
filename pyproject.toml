@@ -10,8 +10,9 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "PyYAML>=6.0", "torch>=2.0", "plotly>=5.18"]
 
 [tool.setuptools.packages.find]
-include = ["coop3d*"]
+include = ["env*", "algorithm*", "tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+junit_family = "xunit1"

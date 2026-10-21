@@ -1,11 +1,11 @@
 import itertools
 import numpy as np
 import pytest
-from coop3d import Cooperative3DEnv, EnvConfig
-from coop3d.assignment import assign, hungarian
-from coop3d.models import TaskState
-from coop3d.observation import centralized
-from coop3d.reward import compute_rewards
+from env import Cooperative3DEnv, EnvConfig
+from env.assignment import assign, hungarian
+from env.models import TaskState
+from env.observation import centralized
+from env.reward import compute_rewards
 
 LEVEL = np.tile([.5, 1 / 3, 1 / 8], (3, 1))
 
@@ -27,7 +27,7 @@ def test_scale_episode(scale, n, m):
     env = fixed_env(scale=scale)
     obs, info = env.reset(5)
     assert obs.shape == (n, 12)
-    assert info['centralized_state'].shape == (60,)
+    assert info['centralized_state'].shape == (90,)
     assert len(info['waypoints']) == m
     steps = 0
     while True:
@@ -137,14 +137,14 @@ def test_observation_contract_and_padding():
     np.testing.assert_allclose(obs[0, 5:8], [.1, 0, .01])
     assert obs[0, 8] == pytest.approx(np.sqrt(1000**2 + 100**2) / 10000)
     assert obs[0, 9] == 0 and obs[0, 10] == 1 and obs[0, 11] == pytest.approx(.03)
-    s = centralized(obs)
+    s = centralized(obs, env.task, env.config)
     np.testing.assert_array_equal(s[:36], obs.flatten())
-    assert not s[36:].any()
-    assert centralized(np.stack([obs, obs])).shape == (2, 60)
+    assert not s[36:60].any()
+    assert centralized(np.stack([obs, obs]), env.task, env.config).shape == (2, 90)
 
 
 def test_inactive_and_idle_observation():
-    from coop3d.observation import observe
+    from env.observation import observe
     env = fixed_env()
     env.reset(1)
     env.task.active_mask[0] = False

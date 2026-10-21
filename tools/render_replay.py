@@ -22,7 +22,7 @@ const DATA=__DATA__, F=DATA.frames, N=F[0].states.length;
 const COLORS=['#63dcfa','#ffbe73','#c2a5ff','#74e2ad','#ff8fab'];
 const slider=document.getElementById('time'), select=document.getElementById('uav');
 slider.max=F.length-1; for(let i=0;i<N;i++)select.add(new Option('UAV '+i,i));
-document.getElementById('subtitle').textContent=DATA.environment_version+' · '+DATA.config.scale+' · seed '+DATA.seed+' · 数据来自实际环境记录';
+document.getElementById('subtitle').textContent=DATA.environment_version+' · '+DATA.config.scale+' · seed '+DATA.seed+' · '+JSON.stringify(DATA.provenance||{})+' · 实际环境记录';
 let index=0,timer=null;
 const all=F.flatMap(f=>f.states.map(s=>s.slice(0,3))).concat(F[0].waypoints);
 function range(k){const a=all.map(p=>p[k]);const lo=Math.min(...a),hi=Math.max(...a),pad=Math.max(300,(hi-lo)*.08);return [lo-pad,hi+pad]}
@@ -32,13 +32,15 @@ function update(){const f=F[index],tr=[];
  for(let i=0;i<N;i++){const path=F.slice(0,index+1).map(x=>x.states[i]);
  tr.push({type:'scatter3d',mode:'lines',name:'UAV '+i+' 轨迹',x:path.map(s=>s[0]),y:path.map(s=>s[1]),z:path.map(s=>s[2]),line:{color:COLORS[i],width:4}});
  const s=f.states[i];tr.push({type:'scatter3d',mode:'markers',showlegend:false,x:[s[0]],y:[s[1]],z:[s[2]],marker:{size:6,color:f.active_mask[i]?COLORS[i]:'#637084'},text:['UAV '+i+'<br>v='+s[3].toFixed(2)+' m/s<br>γ='+s[4].toFixed(4)+'<br>ψ='+s[5].toFixed(4)+'<br>目标='+f.assignments[i]],hoverinfo:'text'});
+ const vx=s[3]*Math.cos(s[4])*Math.cos(s[5]),vy=s[3]*Math.cos(s[4])*Math.sin(s[5]),vz=s[3]*Math.sin(s[4]);
+ if(f.active_mask[i])tr.push({type:'scatter3d',mode:'lines',showlegend:false,x:[s[0],s[0]+2*vx],y:[s[1],s[1]+2*vy],z:[s[2],s[2]+2*vz],line:{color:'#ffffff',width:6},text:['速度方向 '+s[3].toFixed(1)+' m/s'],hoverinfo:'text'});
  const j=f.assignments[i];if(j>=0){const p=f.waypoints[j];tr.push({type:'scatter3d',mode:'lines',showlegend:false,x:[s[0],p[0]],y:[s[1],p[1]],z:[s[2],p[2]],line:{color:COLORS[i],width:2,dash:'dash'},hoverinfo:'skip'})}}
  tr.push({type:'scatter3d',mode:'markers+text',name:'巡检航路点',x:f.waypoints.map(p=>p[0]),y:f.waypoints.map(p=>p[1]),z:f.waypoints.map(p=>p[2]),text:f.completed.map((c,j)=>'P'+j+(c?' ✓':'')),textposition:'top center',marker:{size:8,symbol:'diamond',color:f.completed.map(c=>c?'#74e2ad':'#ffbe73')},hovertemplate:'%{text}<br>X=%{x}<br>Y=%{y}<br>Z=%{z}<extra></extra>'});
  Plotly.react('plot',tr,layout,{responsive:true,displaylogo:false});
  const i=+select.value,s=f.states[i],r=f.reward_components||{};
  document.getElementById('status').textContent='完成 '+f.completed_waypoints+'/'+f.total_waypoints+(f.success?' · 成功':'');
  document.getElementById('details').textContent='有效: '+!!f.active_mask[i]+'\n位置 (m): '+s.slice(0,3).map(x=>x.toFixed(1)).join(', ')+'\n速度: '+s[3].toFixed(2)+' m/s\nγ / ψ (rad): '+s.slice(4).map(x=>x.toFixed(4)).join(' / ')+'\n分配目标: '+f.assignments[i]+'\n控制 μ, ζ, ζ̂: '+(f.physical_actions?f.physical_actions[i].map(x=>x.toFixed(3)).join(', '):'初始状态')+'\n友机距离 (m): '+f.pairwise_distances[i].map(x=>x.toFixed(1)).join(', ')+'\n\nReward\n'+Object.entries(r).map(([k,v])=>k+': '+v[i].toFixed(5)).join('\n')+'\n总和: '+(f.rewards?f.rewards[i].toFixed(5):'0');
- document.getElementById('events').textContent=JSON.stringify({completion:f.events,failures:f.failures||[]},null,2);
+ document.getElementById('events').textContent=JSON.stringify({completion:f.events,failures:f.failures||[],numerical_delta:f.numerical_delta,numerical_events:f.numerical_events},null,2);
  document.getElementById('clock').textContent='步 '+f.episode_length+' / '+(F.length-1)+' · '+(f.episode_length*DATA.config.dt).toFixed(2)+' s';slider.value=index;
 }
 slider.oninput=()=>{index=+slider.value;update()};select.onchange=update;
@@ -49,3 +51,13 @@ document.getElementById('play').onclick=()=>{if(timer){clearInterval(timer);time
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(content, encoding='utf-8')
     return output
+
+
+def main():
+    import argparse
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--trace',required=True); p.add_argument('--output',required=True)
+    a=p.parse_args(); print(render_replay(a.trace,a.output))
+
+
+if __name__=='__main__': main()

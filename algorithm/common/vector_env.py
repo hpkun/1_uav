@@ -2,15 +2,17 @@
 import multiprocessing as mp
 import os
 import traceback
+import copy
 from dataclasses import dataclass
 import numpy as np
-from .config import EnvConfig
-from .environment import Cooperative3DEnv
+from env.config import EnvConfig
+from env.factory import make_environment
+from .metrics import EpisodeAccumulator
 
 
 def _worker(pipe, config):
     try:
-        env = Cooperative3DEnv(config)
+        env = make_environment(config)
         pipe.send(('ok', os.getpid()))
         while True:
             command, payload = pipe.recv()
@@ -22,12 +24,14 @@ def _worker(pipe, config):
                 value = env.step(payload)
             elif command == 'snapshot':
                 value = dict(task=env.task, rng=env.rng.bit_generator.state, step=env.step_count,
-                             done=env.done, counters=env.counters, assignments=env.assignments)
+                             done=env.done, counters=env.counters, assignments=env.assignments,
+                             numerical_delta=env.numerical_delta, numerical_events=env.numerical_events)
             elif command == 'restore':
                 env.task = payload['task']
                 env.rng.bit_generator.state = payload['rng']
                 env.step_count, env.done = payload['step'], payload['done']
                 env.counters, env.assignments = payload['counters'], payload['assignments']
+                env.numerical_delta, env.numerical_events = payload['numerical_delta'], payload['numerical_events']
                 value = None
             else:
                 raise ValueError(f'unknown worker command {command}')
@@ -51,6 +55,10 @@ class VectorStep:
     infos: list
     current_masks: np.ndarray
     next_masks: np.ndarray
+    states: np.ndarray
+    transition_states: np.ndarray
+    indices: np.ndarray
+    episodes: list
 
 
 class ParallelVectorEnv:
@@ -63,6 +71,7 @@ class ParallelVectorEnv:
         self.episodes = np.zeros(num_envs, dtype=np.int64)
         self.connections, self.processes = [], []
         self.closed = False
+        self.trackers = [EpisodeAccumulator() for _ in range(num_envs)]
         context = mp.get_context('spawn')
         try:
             for _ in range(num_envs):
@@ -98,38 +107,52 @@ class ParallelVectorEnv:
         pairs = [self._receive(pipe) for pipe in self.connections]
         self.observations = np.stack([x[0] for x in pairs])
         self.masks = np.stack([x[1]['active_mask'] for x in pairs])
+        self.states = np.stack([x[1]['centralized_state'] for x in pairs])
+        for tracker, (_, info) in zip(self.trackers, pairs):
+            tracker.reset(info)
         return self.observations.copy()
 
-    def step(self, actions):
-        if np.shape(actions) != (self.num_envs, self.config.num_uavs, 3):
+    def step(self, actions, indices=None):
+        indices = np.arange(self.num_envs) if indices is None else np.asarray(indices, dtype=int)
+        if indices.ndim != 1 or len(indices) == 0 or len(set(indices.tolist())) != len(indices) or np.any((indices < 0) | (indices >= self.num_envs)):
+            raise ValueError('invalid worker indices')
+        if np.shape(actions) != (len(indices), self.config.num_uavs, 3):
             raise ValueError('vector action dimensions mismatch')
-        for pipe, action in zip(self.connections, actions):
-            pipe.send(('step', action))
-        rows = [self._receive(pipe) for pipe in self.connections]
+        for i, action in zip(indices, actions):
+            self.connections[i].send(('step', action))
+        rows = [self._receive(self.connections[i]) for i in indices]
         transition_obs = np.stack([r[0] for r in rows])
         observations = transition_obs.copy()
-        old_masks = self.masks.copy()
+        old_masks = self.masks[indices].copy()
         next_masks = np.stack([r[4]['active_mask'] for r in rows])
-        self.masks = next_masks.copy()
+        self.masks[indices] = next_masks
+        transition_states = np.stack([r[4]['centralized_state'] for r in rows])
+        states = transition_states.copy()
         resetting = []
-        for i, row in enumerate(rows):
+        episodes = []
+        for k, (i, row) in enumerate(zip(indices, rows)):
+            self.trackers[i].add(row[4], row[1])
             if row[2] or row[3]:
+                episodes.append(self.trackers[i].summary(row[4]))
                 self.episodes[i] += 1
                 self.connections[i].send(('reset', self._seed(i)))
-                resetting.append(i)
-        for i in resetting:
-            observations[i], info = self._receive(self.connections[i])
+                resetting.append((k, i))
+        for k, i in resetting:
+            observations[k], info = self._receive(self.connections[i])
             self.masks[i] = info['active_mask']
-        self.observations = observations
+            states[k] = info['centralized_state']
+            self.trackers[i].reset(info)
+        self.observations[indices] = observations
+        self.states[indices] = states
         return VectorStep(observations, transition_obs, np.stack([r[1] for r in rows]),
                           np.array([r[2] for r in rows]), np.array([r[3] for r in rows]),
-                          [r[4] for r in rows], old_masks, next_masks)
+                          [r[4] for r in rows], old_masks, next_masks, states, transition_states, indices, episodes)
 
     def snapshot(self):
         for p in self.connections:
             p.send(('snapshot', None))
         return dict(workers=[self._receive(p) for p in self.connections], episodes=self.episodes.copy(),
-                    observations=self.observations.copy(), masks=self.masks.copy())
+                    observations=self.observations.copy(), masks=self.masks.copy(), states=self.states.copy(), trackers=copy.deepcopy(self.trackers))
 
     def restore(self, state):
         if len(state['workers']) != self.num_envs:
@@ -140,6 +163,7 @@ class ParallelVectorEnv:
             self._receive(p)
         self.episodes = state['episodes'].copy()
         self.observations, self.masks = state['observations'].copy(), state['masks'].copy()
+        self.states, self.trackers = state['states'].copy(), copy.deepcopy(state['trackers'])
 
     def close(self):
         if self.closed:

@@ -12,7 +12,7 @@ from .scenario import generate
 
 class Cooperative3DEnv:
     version = ENVIRONMENT_VERSION
-    observation_dim, state_dim, action_dim = 12, 60, 3
+    observation_dim, state_dim, action_dim = 12, 90, 3
 
     def __init__(self, config=None):
         self.config = config if isinstance(config, EnvConfig) else EnvConfig(**(config or {}))
@@ -20,12 +20,14 @@ class Cooperative3DEnv:
         self.task = None
         self.done = True
 
-    def reset(self, seed=None, *, options=None):
+    def reset(self, seed=None, options=None):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
         self.task = generate(self.config, self.rng, options)
         self.step_count, self.done = 0, False
         self.counters = dict(speed_clips=0, gamma_clips=0, nonfinite_states=0)
+        self.numerical_delta = dict.fromkeys(self.counters, 0)
+        self.numerical_events = {k: np.zeros(self.config.num_uavs, dtype=int) for k in self.counters}
         self.assignments = assign(self.task, self.config.assignment_mode)
         obs = observe(self.task, self.assignments, self.config)
         return obs, self._info(obs, [], False)
@@ -39,7 +41,8 @@ class Cooperative3DEnv:
                     assignments=self.assignments.copy(), states=t.states.copy(), waypoints=t.waypoints.copy(),
                     priorities=t.priorities.copy(), completed=t.completed.copy(),
                     pairwise_distances=pairwise_distances(t.states), events=events,
-                    centralized_state=centralized(obs), numerical_counters=self.counters.copy())
+                    centralized_state=centralized(obs, t, self.config), numerical_counters=self.counters.copy(),
+                    numerical_delta=self.numerical_delta.copy(), numerical_events={k:v.copy() for k,v in self.numerical_events.items()})
 
     def step(self, actions):
         if self.done:
@@ -59,12 +62,18 @@ class Cooperative3DEnv:
         idle = current_mask & (prior_assignment < 0)
         controls[idle] = np.column_stack((np.zeros(idle.sum()), np.sin(t.states[idle, 4]), np.cos(t.states[idle, 4])))
         failures = []
+        prior_counters = self.counters.copy()
+        self.numerical_events = {k: np.zeros(c.num_uavs, dtype=int) for k in self.counters}
         for i in np.flatnonzero(current_mask):
+            before_integration = self.counters.copy()
             t.states[i], finite = rk4(t.states[i], controls[i], c, self.counters)
+            for key in self.counters:
+                self.numerical_events[key][i] = self.counters[key] - before_integration[key]
             if not finite:
                 t.active_mask[i] = False
                 failures.append(dict(uav_id=int(i), reason='nonfinite_integration'))
         self.step_count += 1
+        self.numerical_delta = {k: self.counters[k] - prior_counters[k] for k in self.counters}
         for i in c.failure_events.get(self.step_count, []):
             if t.active_mask[i]:
                 t.active_mask[i] = False

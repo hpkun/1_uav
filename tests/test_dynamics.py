@@ -1,9 +1,9 @@
 import math
 import numpy as np
 import pytest
-from coop3d import EnvConfig
-from coop3d.dynamics import derivatives, physical_actions, velocity_vector, wrap_angle
-from coop3d.integrator import rk4
+from env import EnvConfig
+from env.dynamics import derivatives, physical_actions, velocity_vector, wrap_angle
+from env.integrator import rk4
 
 
 def integrate(state, control, config=None):

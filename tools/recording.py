@@ -1,20 +1,8 @@
 """Lossless JSON trajectory recording; replay uses only stored simulator output."""
 import json
 from pathlib import Path
-import numpy as np
-from .config import ENVIRONMENT_VERSION
-
-
-def serializable(value):
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {k: serializable(v) for k, v in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [serializable(v) for v in value]
-    return value
+from env.config import ENVIRONMENT_VERSION
+from algorithm.common.serialization import serializable
 
 
 class TrajectoryRecorder:

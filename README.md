@@ -1,62 +1,80 @@
-# Coop3D 三维多无人机协同巡检基准
+# Coop3D v2.0 三维协同巡检基准
 
-唯一环境为 `coop3d-v1.0.0` / `coop3d.Cooperative3DEnv`。3U3P、5U5P、3U5P 仅通过场景配置改变数量。无人机协作访问静态三维航路点；算法仅保留标准 MAPPO。
+非武器化三维多UAV航路点巡检：3U3P、5U5P、3U5P。唯一环境 `coop3d-v2.0.0`，算法 `mappo-coop3d-v2.0.0`。环境在 `env/`，MAPPO 在 `algorithm/`，导航诊断及录像在 `tools/`。旧 `coop3d/` 包已移除，没有兼容转发入口。
 
-## PowerShell 运行
+本轮完成环境语义回归、90D集中状态、五个体价值Critic、Beta配平初始化、NaN安全GAE、严格采样预算、导航可达性审计和短程CUDA Smoke Test；没有运行正式长训练。
 
-所有项目命令使用 Windows `uav` Conda 环境。训练、模型审计和评估强制要求 CUDA。环境及网络数学测试可在 CPU 上运行。
+## 当前机器：PowerShell / uav
 
 ```powershell
 & 'C:\Users\HPK\anaconda3\shell\condabin\conda-hook.ps1'
 conda activate uav
 python -m pytest -q
-python -m coop3d train --env-config configs/coop3d_3U3P.yaml --train-config configs/coop3d_mappo.yaml --output outputs/my_3U3P --updates 100
-python -m coop3d train --env-config configs/coop3d_3U3P.yaml --train-config configs/coop3d_mappo.yaml --output outputs/my_3U3P --updates 10 --resume outputs/my_3U3P/latest.pt
-python -m coop3d evaluate --checkpoint outputs/my_3U3P/best.pt --output outputs/my_3U3P_holdout --seeds 20000000 20000001
-python -m coop3d replay --trace outputs/my_3U3P/trajectory.json --output outputs/my_3U3P/replay.html
-python tools/validate_coop3d.py --output outputs/new_acceptance
+python -m compileall -q env algorithm tools tests
+python -m tools.audit_navigation --output outputs/my_navigation_audit
+python -m tools.validate_coop3d --output outputs/my_v2_smoke
 ```
 
-新训练和评估要求输出目录为空。`--updates` 表示本次额外执行的更新次数；恢复时配置必须完全一致。完整断点包含模型、两个 Adam 优化器、CPU/CUDA/Python/NumPy 随机状态及所有工作进程的环境和 RNG 状态。仅加载自己信任的本地 checkpoint。
+审计工具默认每规模每策略5个随机种子，加1个固定场景；不启动学习。validate工具只运行2环境、8步horizon、1 PPO epoch：总预算先17，再从断点继续至25个joint transitions。已有输出目录不会被新运行覆盖。
 
-默认每次更新采样 10 × 250 个环境转移，执行 10 轮 PPO；每次更新评估独立种子，以成功率、平均完成率、平均回报的字典序选择 `best.pt`，同时保存 `latest.pt`、配置快照和逐更新指标。三种规模分别训练，不承诺跨规模迁移。
+## Ubuntu 正式训练示例（本轮未执行）
+
+在用户准备好的Ubuntu项目目录中：
+
+```bash
+conda activate uav
+python -c 'import torch; assert torch.cuda.is_available(), "CUDA required"; print(torch.cuda.get_device_name())'
+
+python -m algorithm.train_mappo --env-config configs/coop3d_3U3P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_3U3P_seed1000
+python -m algorithm.train_mappo --env-config configs/coop3d_5U5P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_5U5P_seed1000
+python -m algorithm.train_mappo --env-config configs/coop3d_3U5P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_3U5P_seed1000
+```
+
+以上只是用户自行执行的命令示例，不代表这个预算已经足以收敛。`sampled_steps`严格指全部环境的joint transitions之和。最后一次rollout和vector step可缩短，预算不会因batch对齐超出。
+
+恢复时默认使用断点原配置；总预算可以提高，不能悄悄改变任务规则或优化参数：
+
+```bash
+python -m algorithm.train_mappo --device cuda --total-sampled-steps 2000000 --output-dir outputs/mappo_3U3P_seed1000 --resume outputs/mappo_3U3P_seed1000/latest.pt
+```
+
+## 独立评估与指定模型录像
+
+```bash
+python -m algorithm.evaluate_mappo --checkpoint outputs/mappo_3U3P_seed1000/best.pt --device cuda --seed-base 20000000 --episodes 5 --output outputs/eval_3U3P_best
+python -m algorithm.evaluate_mappo --checkpoint outputs/mappo_3U3P_seed1000/latest.pt --device cuda --seed-base 20000000 --episodes 5 --output outputs/eval_3U3P_latest
+python -m tools.record_episode --checkpoint outputs/mappo_3U3P_seed1000/best.pt --device cuda --seed 20000010 --output outputs/replay_3U3P_best
+python -m tools.record_episode --policy navigation --env-config configs/coop3d_3U5P.yaml --seed 101 --output outputs/replay_navigation
+python -m tools.render_replay --trace outputs/replay_navigation/trajectory.json --output outputs/replay_navigation/replay.html
+```
+
+训练、模型评估与checkpoint审计强制CUDA，缺少CUDA明确失败。旧60D checkpoint不能恢复为v2。模型保存包括两个网络/Adam、完整配置与维度协议、sampled_steps、所有RNG、worker状态及episode统计。只加载可信本地checkpoint。best与latest的评估分别记录，录像元数据标明实际模型来源。
 
 ## 环境接口
 
 ```python
 import numpy as np
-from coop3d import Cooperative3DEnv, EnvConfig
-env = Cooperative3DEnv(EnvConfig(scale='3U5P'))
+from env.config import EnvConfig
+from env.factory import make_environment
+
+env = make_environment(EnvConfig(scale='3U5P'))
 observations, info = env.reset(seed=7)
-actions = np.tile([0.5, 1/3, 1/8], (3, 1))
+actions = np.tile([.5, 1/3, 1/8], (3, 1))
 observations, rewards, terminated, truncated, info = env.step(actions)
+assert observations.shape == (3, 12)
+assert info['centralized_state'].shape == (90,)
 ```
 
-`reset(seed, options=...)` 支持显式 `states[N,6]`、`waypoints[M,3]`、`priorities[M]`、`active_mask[N]`。状态顺序是 `[x,y,z,v,gamma,psi]`，右手系 z 向上。固定内置场景设置 `random_scenario=False`。确定性故障示例：`EnvConfig(failure_events={20: [1]})`。
+Actor只使用12D局部观测；Critic使用90D全局状态并输出5个UAV价值槽位，3UAV时只用前3项。后30维显式编码全部航路点，包含未分配的点。
 
-动作 `[N,3]` 取值 `[0,1]`，映射为滚转角 `[-π,π]`、切向过载 `[-1,2]`、法向过载 `[0,8]`。失效动作忽略；无任务有效 UAV 用同一动力学下的配平过载巡航。没有空间边界终止规则。每步信息包含状态、实际控制、前后掩码、前后分配、完成事件、五项奖励、友机距离和数值诊断。终止后必须 reset。
+动力学、五项巡检奖励、Hungarian独占分配、0.25s/RK4、100–400m/s、±85°数值保护、250步、300m完成半径及100m安全参考保持不变。无任务配平、故障当步掩码和终止语义见 [环境规范](docs/environment_spec.md)。
 
-## 参数与结果
+默认Actor使用Beta `trim_centered` 初始化，动作均值接近 `[.5,1/3,1/8]`，浓度16，仍保留探索。优化参数与mask/GAE/预算/日志协议见 [MAPPO规范](docs/mappo_spec.md)。
 
-RK4：`g=9.81`、`dt=0.25 s`、速度 `100–400 m/s`、最多 250 步。±85° 航迹倾角限幅是数值稳定性假设，不是论文明确规定的飞行包线。Actor 固定 12 维；Critic 将局部观测补足五架并拼接成 60 维，输出一个集中状态价值。巡检球半径 300 m；步末位置判定，最小 UAV ID 唯一记账。Hungarian 独占匹配，提供 `nearest` 贪心最近分配基线。
+## 诊断结果与回放
 
-完整归一化、奖励、失效时序、GAE 和自行补充的约定见 [技术规范](docs/coop3d_spec.md)。实际执行及结果见 [重构验收报告](docs/refactor_report.md)。短程训练只验证训练闭环，不代表策略已收敛。
+实际小样本审计：导航在3U3P、5U5P的固定场景和各5个随机种子上成功；3U5P随机成功1/5，固定场景完成3/5后超时。额外手工可达多任务场景79步完成5/5。它证明控制接口可用，不能据此声称所有随机场景都可完成。[完整导航审计](docs/navigation_audit.md)包含失败复核和两种Actor初始化的实际对照。
 
-`trajectory.json` 保存真实环境状态和事件，`replay.html` 是无需联网的独立页面。浏览器打开后支持播放/暂停、滑块、视角旋转、轨迹、完成标志、分配连线和逐 UAV 状态查询。页面只展示记录，不重新运行环境。
+回放由真实JSON记录生成，HTML内嵌Plotly，可离线查看。支持播放/暂停、滑块、三维旋转、轨迹、速度方向、点完成与分配、控制、失效、限幅事件、五项奖励和逐UAV查询。渲染不执行环境。当前仍未完成浏览器内视觉交互验收，不能将脚本语法检查视为浏览器验证。
 
-## 项目结构
-
-```text
-coop3d/
-  config.py models.py dynamics.py integrator.py scenario.py
-  assignment.py observation.py reward.py environment.py
-  vector_env.py recording.py replay.py __main__.py
-  mappo/                Beta Actor、集中 Critic、GAE、PPO、保存/恢复、评估
-configs/coop3d_*.yaml    三种场景及一份 MAPPO 配置
-tests/test_coop3d_*.py   自动化测试
-tools/validate_coop3d.py 三规模 CUDA 验收
-docs/                   技术规范、迁移清单、验收报告
-outputs/                训练产物与回放（不纳入 Git）
-```
-
-原始 PDF、已有模型、JSON 回归数据保留，旧数据不构成兼容入口。旧依赖清单为 `docs/migration_inventory.json`；清理前源码恢复副本为 `tmp/pre_coop3d_source_backup.zip`。
+详细文件清单、测试和CUDA结果见 [重构报告](docs/refactor_report.md)。已有outputs、历史模型和原始PDF均保留。v1恢复副本在 `tmp/coop3d_v1_before_v2.zip`，迁移前参考轨迹在 `tests/fixtures/coop3d_v1_semantics.json.gz`。

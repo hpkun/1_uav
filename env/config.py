@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 import yaml
 
-ENVIRONMENT_VERSION = 'coop3d-v1.0.0'
+ENVIRONMENT_VERSION = 'coop3d-v2.0.0'
 SCALES = {'3U3P': (3, 3), '5U5P': (5, 5), '3U5P': (3, 5)}
 
 
@@ -44,19 +44,27 @@ class EnvConfig:
     def __post_init__(self):
         if isinstance(self.scenario, dict):
             self.scenario = ScenarioConfig(**self.scenario)
+        for k in self.failure_events:
+            if not (type(k) is int or isinstance(k,str) and k.isdecimal()):
+                raise ValueError('failure event steps must be integer IDs')
         self.failure_events = {int(k): list(v) for k, v in self.failure_events.items()}
         if self.scale not in SCALES or self.assignment_mode not in ('hungarian', 'nearest'):
             raise ValueError('unsupported scale or assignment mode')
         for key in ('gravity', 'dt', 'v_min', 'v_max', 'denominator_epsilon', 'completion_radius', 'safe_distance', 'distance_scale', 'altitude_scale'):
-            if not math.isfinite(getattr(self, key)) or getattr(self, key) <= 0:
+            if isinstance(getattr(self,key),bool) or not math.isfinite(getattr(self, key)) or getattr(self, key) <= 0:
                 raise ValueError(f'{key} must be finite and positive')
-        if not self.v_min < self.v_max or not 0 < self.gamma_limit < math.pi / 2:
+        if not self.v_min < self.v_max or not math.isfinite(self.gamma_limit) or not 0 < self.gamma_limit < math.pi / 2:
             raise ValueError('invalid speed or gamma limits')
-        if not isinstance(self.max_steps, int) or not 1 <= self.max_steps <= 250:
+        if type(self.max_steps) is not int or not 1 <= self.max_steps <= 250:
             raise ValueError('max_steps must be an integer in [1,250]')
         s = self.scenario
+        if type(self.random_scenario) is not bool:
+            raise ValueError('random_scenario must be boolean')
         for key in ('uav_altitude', 'initial_speed', 'initial_gamma', 'waypoint_x', 'waypoint_y', 'waypoint_z'):
-            low, high = getattr(s, key)
+            bounds = getattr(s, key)
+            if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+                raise ValueError(f'{key} must have two bounds')
+            low, high = bounds
             if not all(map(math.isfinite, (low, high))) or low > high:
                 raise ValueError(f'invalid sampling range: {key}')
         if not self.v_min <= s.initial_speed[0] <= s.initial_speed[1] <= self.v_max:
@@ -66,10 +74,10 @@ class EnvConfig:
         for key in ('formation_half_width', 'heading_jitter', 'initial_min_separation'):
             if not math.isfinite(getattr(s, key)) or getattr(s, key) < 0:
                 raise ValueError(f'invalid scenario {key}')
-        if not isinstance(s.max_sampling_attempts, int) or s.max_sampling_attempts < 1:
+        if type(s.max_sampling_attempts) is not int or s.max_sampling_attempts < 1:
             raise ValueError('max_sampling_attempts must be positive')
         for step, ids in self.failure_events.items():
-            if step < 1 or any(not isinstance(i, int) or not 0 <= i < self.num_uavs for i in ids):
+            if step < 1 or step > self.max_steps or any(type(i) is not int or not 0 <= i < self.num_uavs for i in ids):
                 raise ValueError('invalid deterministic failure event')
 
     @property
@@ -85,4 +93,7 @@ class EnvConfig:
 
     @classmethod
     def load(cls, path):
-        return cls(**yaml.safe_load(Path(path).read_text(encoding='utf-8')))
+        data = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
+        if not isinstance(data, dict):
+            raise ValueError('environment configuration must be a mapping')
+        return cls(**data)

@@ -1,4 +1,4 @@
-"""12D local observations and exactly 60D padded centralized input."""
+"""12D actor observations and a 90D critic-only task-complete state."""
 import numpy as np
 from .dynamics import wrap_angle
 from .models import pairwise_distances
@@ -22,10 +22,18 @@ def observe(task, assignments, config):
     return obs
 
 
-def centralized(observations):
+def centralized(observations, task, config):
     obs = np.asarray(observations)
     if obs.shape[-1] != 12 or obs.shape[-2] > 5:
         raise ValueError('expected [..., N<=5,12] observations')
     result = np.zeros((*obs.shape[:-2], 5, 12), dtype=obs.dtype)
     result[..., :obs.shape[-2], :] = obs
-    return result.reshape(*obs.shape[:-2], 60)
+    points = np.zeros((*obs.shape[:-2], 5, 6), dtype=obs.dtype)
+    m = len(task.waypoints)
+    if m > 5:
+        raise ValueError('at most five waypoints supported')
+    points[..., :m, :3] = task.waypoints / np.array([config.distance_scale, config.distance_scale, config.altitude_scale])
+    points[..., :m, 3] = task.priorities
+    points[..., :m, 4] = task.completed
+    points[..., :m, 5] = 1
+    return np.concatenate((result.reshape(*obs.shape[:-2], 60), points.reshape(*obs.shape[:-2], 30)), axis=-1)
