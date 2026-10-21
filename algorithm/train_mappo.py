@@ -56,11 +56,18 @@ def default_output_dir(seed: int) -> Path:
 
 
 def ensure_fresh_output_directory(output_dir: Path) -> None:
-    """Create or accept an empty directory, rejecting any existing contents."""
+    """Accept an empty run directory or a terminal.log opened by shell tee.
+
+    The shell can create terminal.log before Python starts. All training
+    artifacts still block a fresh run, so existing results cannot be overwritten.
+    """
     if output_dir.exists():
         if not output_dir.is_dir():
             raise RuntimeError(f"fresh output_dir is not a directory: {output_dir}")
-        if any(output_dir.iterdir()):
+        if any(
+            entry.name != "terminal.log" or entry.is_symlink() or not entry.is_file()
+            for entry in output_dir.iterdir()
+        ):
             raise RuntimeError(
                 f"fresh training output_dir is non-empty: {output_dir}; "
                 "choose a new run directory"
@@ -348,14 +355,18 @@ def main() -> None:
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--output-dir")
     parser.add_argument("--resume")
-    parser.add_argument("--env-config", default="configs/persistent_wave_v2_environment.yaml")
-    parser.add_argument("--algorithm-config", default="configs/mappo_persistent_wave.yaml")
+    parser.add_argument("--env-config", default="configs/combat_environment.yaml")
+    parser.add_argument("--algorithm-config", default="configs/mappo.yaml")
     parser.add_argument("--smoke", action="store_true", default=None)
     args = parser.parse_args()
     env_path = resolved(args.env_config)
     env_config = yaml.safe_load(env_path.read_text(encoding="utf-8"))
     algorithm_path = resolved(args.algorithm_config)
     algorithm_config = yaml.safe_load(algorithm_path.read_text(encoding="utf-8"))
+    if algorithm_config.get("algorithm") == "MAPPO-CA":
+        from algorithm.eaa_mappo.entry import run_variant
+        run_variant(args)
+        return
     configured_seed = int(algorithm_config["training"]["seed"])
     path_seed = configured_seed if args.seed is None else args.seed
     output_dir, resume_checkpoint = resolve_run_paths(
@@ -427,7 +438,6 @@ def main() -> None:
         "smoke": runner.smoke,
         "environment_config_path": str(env_path),
         "algorithm_config_path": str(algorithm_path),
-        "environment_variant": startup["environment_variant"],
         "environment_version": str(env_config["environment_version"]),
         "algorithm": "MAPPO",
         "effective_hidden_dim": startup["effective_hidden_dim"],
@@ -440,6 +450,7 @@ def main() -> None:
             None if resume_checkpoint is None else str(resume_checkpoint)
         ),
         "training_gamma": startup["gamma"],
+        "training_gae_lambda": startup["gae_lambda"],
         "environment_config_sha256": config_sha256(env_config),
         "algorithm_config_sha256": config_sha256(algorithm_config),
     }

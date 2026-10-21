@@ -1,80 +1,125 @@
-"""Headless incremental Matplotlib renderer for recorded combat traces."""
-from __future__ import annotations
-import argparse, json, sys
+"""Internal trace-only PNG/MP4 renderer; official CLI: replay_combat.py."""
+import argparse
+import json
 from pathlib import Path
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, FFMpegWriter, writers
-from matplotlib.lines import Line2D
+import sys
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
-from tools.combat_visualization import (blue_losses_at_frame, extract_death_frames, extract_events,
-    infer_method_display_name, read_trace, recent_events, trace_frame_to_render_index,
-    trajectory_slice, heading_endpoint)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.combat_visualization import read_trace
 
-def set_line(line, xyz):
-    line.set_data(xyz[:, 0], xyz[:, 1]); line.set_3d_properties(xyz[:, 2])
 
-def render(trace_path: Path, metadata_path: Path, preview_path: Path, mp4_path: Path | None,
-           fps=30, stride=4, dpi=100, elev=25, azim=-55, trail_length=0, heading=True,
-           preview_frame=None, event_hold_seconds=1.0, final_hold_seconds=2.0):
-    if not trace_path.is_file(): raise FileNotFoundError(f"trace not found: {trace_path}; run recorder first")
-    if not metadata_path.is_file(): raise FileNotFoundError(f"metadata not found: {metadata_path}; run recorder first")
-    trace = read_trace(trace_path); metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if int(metadata.get("trace_schema_version", -1)) != 1: raise ValueError("unsupported trace schema")
-    n = len(trace["steps"]); stride = max(1, int(stride)); fps = max(1, int(fps))
-    rendered = list(range(0, n, stride)); rendered += [] if rendered[-1] == n - 1 else [n - 1]
-    events = metadata.get("events") or extract_events(trace); deaths = extract_death_frames(trace)
-    event_render_frames = [trace_frame_to_render_index(rendered, int(e.get("trace_frame", 0))) for e in events]
-    fig = plt.figure(figsize=(12.8, 7.2), dpi=dpi); ax = fig.add_subplot(111, projection="3d")
-    radius=float(metadata.get("arena_radius",5000)); ax.set_xlim(-radius,radius); ax.set_ylim(-radius,radius)
-    h=np.concatenate([(-trace["red_kinematics"][...,2]).ravel(),(-trace["blue_kinematics"][...,2]).ravel()]); h=h[np.isfinite(h)]
-    ax.set_zlim(0,max(500.,float(h.max()+100) if h.size else 500.)); ax.set_xlabel("X / m"); ax.set_ylabel("Y / m"); ax.set_zlabel("Altitude / m"); ax.view_init(elev=elev,azim=azim)
-    c=np.linspace(0,2*np.pi,128); ax.plot(radius*np.cos(c),radius*np.sin(c),np.zeros_like(c),color="lightgray",lw=.7)
-    red_lines=[ax.plot([],[],[],color="crimson",lw=1.2)[0] for _ in range(4)]
-    styles=["-","--",":"]; blue_lines=[[ax.plot([],[],[],color="royalblue",ls=styles[w],lw=1.)[0] for _ in range(4)] for w in range(trace["blue_kinematics"].shape[1])]
-    red_markers=[ax.plot([],[],[],marker="o",color="crimson",ls="None",ms=5)[0] for _ in range(4)]; blue_markers=[ax.plot([],[],[],marker="o",color="royalblue",ls="None",ms=5)[0] for _ in range(4)]
-    red_labels=[ax.text(0,0,0,f"R{i+1}",color="crimson",fontsize=8) for i in range(4)]; blue_labels=[ax.text(0,0,0,f"B{i+1}",color="royalblue",fontsize=8) for i in range(4)]
-    red_heads=[ax.plot([],[],[],color="crimson",lw=.8)[0] for _ in range(4)] if heading else []; blue_heads=[ax.plot([],[],[],color="royalblue",lw=.8)[0] for _ in range(4)] if heading else []
-    death_artists=[]
-    for death in deaths:
-        x,y,z=death["position"]; color="crimson" if death["side"]=="red" else "royalblue"; death_artists.append((death,ax.plot([x],[y],[-z],marker="x",color=color,ms=7,ls="None")[0]))
-    overlay=fig.text(.02,.95,"",va="top",family="monospace"); event_text=fig.text(.98,.08,"",ha="right",va="bottom",family="monospace",color="dimgray")
-    fig.legend(handles=[Line2D([],[],color="crimson",label="Red UAV"),Line2D([],[],color="royalblue",label="Blue UAV"),Line2D([],[],color="royalblue",ls="-",label="Blue Wave 1"),Line2D([],[],color="royalblue",ls="--",label="Blue Wave 2"),Line2D([],[],color="royalblue",ls=":",label="Blue Wave 3")],loc="upper right")
-    hold=max(0,round(fps*float(final_hold_seconds))); animation_frames=rendered+[rendered[-1]]*hold
-    def update(index):
-        frame=animation_frames[index]; start=max(0,frame-int(trail_length)) if trail_length else 0
-        for a,line in enumerate(red_lines):
-            data=trajectory_slice(trace["red_kinematics"][:,a],frame,trail_length); valid=np.isfinite(data[:,0]); set_line(line,data[valid][:,[0,1,2]]*np.array([1,1,-1])) if valid.any() else set_line(line,np.empty((0,3)))
-            alive=bool(trace["red_alive"][frame,a]); state=trace["red_kinematics"][frame,a]; red_markers[a].set_visible(alive); red_labels[a].set_visible(alive)
-            if alive: set_line(red_markers[a],state[[0,1,2]][None]*np.array([1,1,-1])); red_labels[a].set_position((state[0],state[1])); red_labels[a].set_3d_properties(-state[2])
-            if heading: red_heads[a].set_visible(alive); set_line(red_heads[a],np.array([[state[0],state[1],-state[2]],heading_endpoint(state)*np.array([1,1,-1])])) if alive else None
-        active=max(0,min(len(blue_lines)-1,int(trace["active_wave"][frame])-1))
-        for w in range(len(blue_lines)):
-            for a,line in enumerate(blue_lines[w]):
-                data=trajectory_slice(trace["blue_kinematics"][:,w,a],frame,trail_length); valid=np.isfinite(data[:,0]); set_line(line,data[valid][:,[0,1,2]]*np.array([1,1,-1])) if valid.any() else set_line(line,np.empty((0,3)))
-        for a,marker in enumerate(blue_markers):
-            alive=bool(trace["blue_alive"][frame,active,a]); state=trace["blue_kinematics"][frame,active,a]; marker.set_visible(alive); blue_labels[a].set_visible(alive)
-            if alive: set_line(marker,state[[0,1,2]][None]*np.array([1,1,-1])); blue_labels[a].set_position((state[0],state[1])); blue_labels[a].set_3d_properties(-state[2])
-            if heading: blue_heads[a].set_visible(alive); set_line(blue_heads[a],np.array([[state[0],state[1],-state[2]],heading_endpoint(state)*np.array([1,1,-1])])) if alive else None
-        for death,artist in death_artists: artist.set_visible(frame>=death["frame"])
-        final=index>=len(rendered); total=int(metadata.get("total_waves",3)); overlay.set_text(f"{infer_method_display_name(metadata)}\nCheckpoint: {metadata.get('checkpoint_sampled_steps','?')}\nEpisode seed: {metadata.get('episode_seed','?')}\n\nSim Time: {trace['time_s'][frame]:.1f} s\nWave: {int(trace['active_wave'][frame])} / {total}\nWaves Cleared: {int(trace['waves_cleared'][frame])}\nRed Alive: {int(trace['red_alive'][frame].sum())} / 4\nBlue Alive: {int(trace['blue_alive'][frame,active].sum())} / 4\nTotal Blue Losses: {blue_losses_at_frame(deaths, frame)}")
-        if final: event_text.set_text(f"{'MISSION SUCCESS' if metadata.get('red_success') or metadata.get('waves_cleared',0)==total else 'TIMEOUT' if metadata.get('termination_reason')=='red_failure_timeout' else 'DRAW' if 'draw' in str(metadata.get('termination_reason','')) else 'RED FAILURE'}\nWaves Cleared: {metadata.get('waves_cleared',0)} / {total}\nRed Survivors: {metadata.get('final_red_survivors',0)} / 4\nTotal Blue Losses: {metadata.get('total_blue_losses',0)}\nEpisode Return: {metadata.get('episode_return',0):.2f}\nSimulation Time: {metadata.get('simulation_time_s',0):.1f} s")
+class CombatScene:
+    """Persistent artists keep long 8v8 MP4 rendering practical."""
+    def __init__(self, ax, trace, metadata):
+        from matplotlib.lines import Line2D
+        self.ax, self.trace, self.metadata = ax, trace, metadata
+        radius = float(metadata['arena_radius'])
+        altitude = max(4000, max(float(-trace[f'{side}_kinematics'][:, :, 2].min()) for side in ('red', 'blue')))
+        angle = np.linspace(0, 2*np.pi, 120)
+        ax.plot(radius*np.cos(angle), radius*np.sin(angle), np.zeros_like(angle), color='gray', alpha=.5)
+        ax.set(xlim=(-radius, radius), ylim=(-radius, radius), zlim=(0, altitude),
+               xlabel='X (m)', ylabel='Y (m)', zlabel='Altitude (m)')
+        ax.view_init(elev=35, azim=-60)
+        self.agents = []
+        for side, color, label in (('red', '#df3348', 'R'), ('blue', '#2484d0', 'B')):
+            for agent in range(trace[f'{side}_alive'].shape[1]):
+                line, = ax.plot([], [], [], color=color, alpha=.35, linewidth=1.1)
+                marker, = ax.plot([], [], [], color=color, marker='o', markersize=6, linestyle='')
+                text = ax.annotate(f'{label}{agent+1}', xy=(0, 0), xytext=(0, 0),
+                    fontsize=8, color=color, ha='center', va='center',
+                    bbox=dict(facecolor='white', alpha=.85, edgecolor='none', pad=.8),
+                    arrowprops=dict(arrowstyle='-', color=color, linewidth=.5, alpha=.55))
+                self.agents.append((side, agent, line, marker, text))
+        self.event_artists = []
+        self.previous_frame = 0
+        ax.legend(handles=[Line2D([], [], color='#df3348', marker='o', label='Red alive'),
+            Line2D([], [], color='#2484d0', marker='o', label='Blue alive'),
+            Line2D([], [], color='gray', marker='x', linestyle='', label='Destroyed'),
+            Line2D([], [], color='green', linestyle='--', label='Hit'),
+            Line2D([], [], color='orange', linestyle='--', label='Miss')], loc='upper left', fontsize=8)
+
+    def draw(self, frame, all_events=False):
+        from mpl_toolkits.mplot3d import proj3d
+        trace = self.trace
+        projected = {'red': [], 'blue': []}
+        for side, agent, line, marker, text in self.agents:
+            alive = trace[f'{side}_alive']
+            values = trace[f'{side}_kinematics']
+            deaths = np.flatnonzero(~alive[:frame+1, agent])
+            last = int(deaths[0]) if len(deaths) else frame
+            path = values[:last+1, agent]
+            line.set_data_3d(path[:, 0], path[:, 1], -path[:, 2])
+            x, y, z = values[last, agent, :3]
+            marker.set_data_3d([x], [y], [-z])
+            marker.set_marker('o' if alive[frame, agent] else 'x')
+            px, py, _ = proj3d.proj_transform(x, y, -z, self.ax.get_proj())
+            text.xy = (px, py)
+            projected[side].append((py, px, agent, text))
+        # Separate labels in two compact columns; leader lines identify clustered UAVs.
+        for side, points in projected.items():
+            points.sort(key=lambda p: (p[0], p[2]))
+            center_x = float(np.mean([p[1] for p in points])) + (-.022 if side == 'red' else .022)
+            center_y = float(np.mean([p[0] for p in points]))
+            for i, (_, _, _, text) in enumerate(points):
+                text.set_position((center_x, center_y+(i-(len(points)-1)/2)*.006))
+        for artist in self.event_artists:
+            artist.remove()
+        self.event_artists = []
+        # Include events in skipped simulation steps rather than losing them to stride.
+        lower = -1 if all_events else int(trace['steps'][min(self.previous_frame, frame)])
+        upper = int(trace['steps'][frame])
+        for event in self.metadata.get('events', []):
+            if event['type'] == 'fire_attempt' and lower < event['step'] <= upper:
+                pair = np.asarray([event['start'], event['end']])
+                artist, = self.ax.plot(pair[:, 0], pair[:, 1], -pair[:, 2],
+                    color='green' if event['hit'] else 'orange', linestyle='--',
+                    alpha=.35 if all_events else .95, linewidth=1 if all_events else 2)
+                self.event_artists.append(artist)
+        self.previous_frame = frame
+        survivors = [int(trace[f'{side}_alive'][frame].sum()) for side in ('red', 'blue')]
+        self.ax.set_title(f"{self.metadata.get('algorithm', 'Combat')} | seed {self.metadata['episode_seed']}\n"
+            f"t={trace['time_s'][frame]:.1f}s | step={upper} | Red {survivors[0]} / Blue {survivors[1]}"
+            f"{self.metadata.get('playback_label', '')}")
+
+
+def render(trace_path: str | Path, metadata_path: str | Path, output: str | Path,
+           stride: int = 1, fps: float | None = None) -> Path:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation
+    if stride <= 0 or (fps is not None and fps <= 0):
+        raise ValueError('stride and fps must be positive')
+    metadata = json.loads(Path(metadata_path).read_text(encoding='utf-8'))
+    trace = read_trace(trace_path,metadata)
+    fps = 1/float(metadata['dt']) if fps is None else fps
+    if Path(output).suffix.lower() == '.mp4':
+        from tools.combat_video import configure_ffmpeg
+        configure_ffmpeg()
+    if Path(output).suffix.lower() in ('.mp4', '.gif'):
+        metadata['playback_label'] = f" | ~{fps*stride*metadata['dt']:g}x playback"
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig = plt.figure(figsize=(12, 9))
+    ax = fig.add_subplot(111, projection='3d')
+    scene = CombatScene(ax, trace, metadata)
+
+    try:
+        if output.suffix.lower() in ('.gif', '.mp4'):
+            frames = sorted(set(range(0, len(trace['steps']), stride)) | {len(trace['steps'])-1})
+            animation = FuncAnimation(fig, scene.draw, frames=frames, interval=1000/fps, repeat=False)
+            animation.save(output, writer='pillow' if output.suffix.lower() == '.gif' else 'ffmpeg', fps=fps)
         else:
-            active_events=[e for e, rendered_frame in zip(events, event_render_frames) if rendered_frame<=index and index-rendered_frame<max(1,round(fps*event_hold_seconds))]
-            labels=[f"WAVE {e['wave']} CLEARED" if e['type']=='wave_cleared' else f"WAVE {e['wave']} SPAWNED" if e['type']=='wave_spawned' else e['type'].upper().replace('_',' ')+f" +{e.get('count',1)}" for e in active_events[-5:]]
-            event_text.set_text("\n".join(labels))
-        if index==0 or index==len(animation_frames)-1 or index%25==0: print(f"[RENDER] frame {index+1}/{len(animation_frames)} step={int(frame)}",flush=True)
-        return []
-    target=n//2 if preview_frame is None else int(preview_frame); target_index=min(range(len(rendered)),key=lambda i:abs(rendered[i]-target)); update(target_index); fig.savefig(preview_path,dpi=dpi)
-    if mp4_path is not None:
-        if not writers.is_available("ffmpeg"): raise RuntimeError("ffmpeg is required for MP4 rendering")
-        FuncAnimation(fig,update,frames=len(animation_frames),interval=1000/fps,blit=False).save(mp4_path,writer=FFMpegWriter(fps=fps),dpi=dpi)
-    plt.close(fig)
+            scene.draw(len(trace['steps'])-1, all_events=True)
+            fig.savefig(output, dpi=150, bbox_inches='tight')
+    finally:
+        plt.close(fig)
+    return output
 
-def main():
-    p=argparse.ArgumentParser(); p.add_argument("--input-dir"); p.add_argument("--trace"); p.add_argument("--metadata"); p.add_argument("--output"); p.add_argument("--preview"); p.add_argument("--fps",type=int,default=30); p.add_argument("--frame-stride",type=int,default=4); p.add_argument("--dpi",type=int,default=100); p.add_argument("--elev",type=float,default=25); p.add_argument("--azim",type=float,default=-55); p.add_argument("--trail-length",type=int,default=0); p.add_argument("--no-heading",action="store_true"); p.add_argument("--preview-frame",type=int); p.add_argument("--event-hold-seconds",type=float,default=1.0); p.add_argument("--final-hold-seconds",type=float,default=2.0); a=p.parse_args(); d=Path(a.input_dir) if a.input_dir else None; trace=Path(a.trace) if a.trace else d/"episode_trace.npz"; metadata=Path(a.metadata) if a.metadata else d/"metadata.json"; output=Path(a.output) if a.output else (None if a.preview else d/"episode.mp4"); preview=Path(a.preview) if a.preview else (output.with_name("preview.png") if output else Path("preview.png")); render(trace,metadata,preview,output,a.fps,a.frame_stride,a.dpi,a.elev,a.azim,a.trail_length,not a.no_heading,a.preview_frame,a.event_hold_seconds,a.final_hold_seconds)
-if __name__ == "__main__": main()
+
+
+if __name__ == '__main__':
+    raise SystemExit('Internal module. Use the official entry: python -u tools/replay_combat.py --help')

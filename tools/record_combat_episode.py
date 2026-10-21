@@ -1,11 +1,9 @@
-"""Record one deterministic, qualitative persistent-wave combat episode."""
-from __future__ import annotations
-
+"""Internal deterministic recorder. User CLI: tools/replay_combat.py."""
 import argparse
 from pathlib import Path
+from typing import Any
 import sys
 import time
-
 import numpy as np
 import torch
 import yaml
@@ -14,15 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from algorithm.common.checkpoint import validate_checkpoint_for_evaluation
 from algorithm.common.protocol import config_sha256
-from algorithm.modular_mappo.factory import build_modular_mappo_trainer
-from algorithm.modular_mappo.protocol import validate_modular_checkpoint
-from algorithm.modular_mappo.trainer import MODULAR_MAPPO_IMPL_VERSION
-from algorithm.modules.wave_survival_pbrs import mission_context_numpy
-from algorithm.train_modular_mappo import load_config
-from tools.combat_visualization import (FEATURE_NAMES, TRACE_SCHEMA_VERSION,
-    RecordingPersistentWaveCombatEnv, append_frame, assert_episode_seed_allowed,
-    checkpoint_sha256, dump_metadata, ensure_fresh_output, write_trace, extract_events)
+from algorithm.mappo.factory import build_mappo_trainer
+from algorithm.madsac.factory import build_madsac_trainer
+from algorithm.madsac.protocol import validate_madsac_checkpoint
+from tools.combat_visualization import (FEATURE_NAMES, FRAME_FIELDS, TRANSITION_FIELDS,
+    TRACE_SCHEMA_VERSION, COOLDOWN_FIELDS, RecordingCombatEnv, append_frame, checkpoint_sha256,
+    dump_metadata, ensure_fresh_output, write_trace)
 
 
 def resolved(value: str | Path) -> Path:
@@ -30,116 +27,183 @@ def resolved(value: str | Path) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--env-config", required=True)
-    parser.add_argument("--episode-seed", required=True, type=int)
-    parser.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--wall-timeout-s", type=float, default=0.0)
-    args = parser.parse_args()
-    if args.device != "cuda":
-        raise RuntimeError("CUDA is required for deterministic recording")
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for deterministic recording")
-    assert_episode_seed_allowed(args.episode_seed)
-    checkpoint = resolved(args.checkpoint)
-    env_path = resolved(args.env_config)
-    output_dir = resolved(args.output_dir)
-    if "<" in str(args.checkpoint) or ">" in str(args.checkpoint):
-        raise ValueError("--checkpoint still contains a placeholder; replace <chosen_run> with a real run directory")
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"checkpoint not found: {checkpoint}; replace <chosen_run> with an existing run directory")
-    if not env_path.is_file():
-        raise FileNotFoundError(f"environment config not found: {env_path}")
+def record(trainer: Any, env_config: dict[str, Any], seed: int, output_dir: str | Path,
+           metadata: dict[str, Any] | None = None, wall_timeout_s: float = 0) -> dict[str, Any]:
+    if str((metadata or {}).get('algorithm', '')).lower() == 'ippo' and not 20_000_000 <= seed < 30_000_000:
+        raise ValueError('IPPO recording seeds must be in [20000000,30000000)')
+    output_dir = Path(output_dir)
     ensure_fresh_output(output_dir)
-    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    extra = state.get("extra", {})
-    algorithm_config = extra.get("algorithm_config")
-    if not isinstance(algorithm_config, dict):
-        raise RuntimeError("checkpoint lacks self-describing algorithm_config")
-    env_config = yaml.safe_load(env_path.read_text(encoding="utf-8"))
-    validate_modular_checkpoint(state, env_config, algorithm_config)
-    architecture = extra.get("network_architecture", {})
-    hidden_dim = int(architecture.get("hidden_dim", algorithm_config["network"]["actor_hidden_layers"][0]))
-    trainer = build_modular_mappo_trainer(algorithm_config, "cuda", hidden_dim,
-                                          int(extra.get("training_total_sampled_steps", algorithm_config["training"]["total_sampled_steps"])))
-    trainer.load(checkpoint)
-    env = RecordingPersistentWaveCombatEnv(env_config)
-    observation, reset_info = env.reset(args.episode_seed)
-    alive = env.red_alive_mask.copy()
-    actor_hidden, critic_hidden = trainer.initial_hidden(1)
-    actor_phase_reset_flags = np.ones(1, dtype=bool)
-    episode_mask = np.zeros(1, dtype=np.float32)
-    frames = {key: [] for key in ("red_kinematics", "red_alive", "blue_kinematics", "blue_alive", "steps", "time_s", "active_wave", "waves_cleared")}
-    transitions = {key: [] for key in ("red_actions", "local_rewards", "team_reward", "terminated", "truncated", "wave_cleared_this_step", "spawned_next_wave", "red_step_fire_attempts", "blue_step_fire_attempts", "red_step_weapon_hits", "blue_step_weapon_hits", "red_step_attack_kills", "blue_step_attack_kills", "red_boundary_exit_delta", "blue_boundary_exit_delta", "red_ground_loss_delta", "blue_ground_loss_delta")}
-    append_frame(frames, env, env.wave_index, env.waves_cleared, 0.0)
-    previous_counts = {side: {event: 0 for event in ("boundary_exits", "ground_losses")} for side in ("red", "blue")}
-    start = time.time()
-    info = reset_info
+    env = RecordingCombatEnv(env_config)
+    observation, _ = env.reset(seed)
+    algorithm_diagnostics = []
+    if hasattr(trainer, 'recording_step_data'):
+        trainer.begin_episode(seed, deterministic=True)
+    frames = {key: [] for key in FRAME_FIELDS}
+    transitions = {key: [] for key in TRANSITION_FIELDS}
+    append_frame(frames, env)
+    initial_ammo = {side: getattr(env,side+'_ammo',None) for side in ('red','blue')}
+    initial_ammo = {k:None if v is None else np.asarray(v).tolist() for k,v in initial_ammo.items()}
+    has_cooldown = all(hasattr(env,side+'_fire_cooldown_steps') for side in ('red','blue'))
+    if has_cooldown:
+        transitions.update({name:[] for name in COOLDOWN_FIELDS})
+    targets_available = None
+    start = time.monotonic()
+    recurrent = hasattr(getattr(trainer, 'actor', None), 'gru_hidden_dim')
+    if recurrent:
+        hidden = np.zeros((env.team_size, trainer.actor.gru_hidden_dim), dtype=np.float32)
+        episode_start = np.array(1., dtype=np.float32)
     while True:
-        wave = np.asarray([env.wave_index], dtype=np.int64)
-        total = np.asarray([env.total_waves], dtype=np.int64)
-        context = mission_context_numpy(
-            trainer, wave, total, env.blue_alive_mask[None],
-            np.asarray([env.steps]), env.max_steps,
-        )
-        context = trainer.actor_context_numpy(wave, alive[None], context)
-        phase_kwargs = {"wave_indices":np.asarray([env.wave_index]),"actor_phase_reset_flags":actor_phase_reset_flags} if trainer.recurrent.wave_boundary_reset else {}
-        actions, _, _, actor_hidden = trainer.act(observation[None], alive[None], deterministic=True, return_policy_data=True, context=context, hidden=actor_hidden, episode_mask=episode_mask, **phase_kwargs)
-        _, critic_hidden = trainer.values_step(observation[None], alive[None], context, critic_hidden, episode_mask)
-        next_observation, reward, terminated, truncated, info = env.step(actions[0])
-        for key in transitions:
-            if key == "red_actions": value = actions[0]
-            elif key == "local_rewards": value = reward
-            elif key == "team_reward": value = float(np.sum(reward))
-            elif key == "terminated": value = bool(terminated)
-            elif key == "truncated": value = bool(truncated)
-            elif key in ("wave_cleared_this_step", "spawned_next_wave"): value = bool(info.get(key, False))
-            elif key.endswith("_delta"):
-                side = key.split("_")[0]
-                event = "boundary_exits" if "boundary" in key else "ground_losses"
-                current = int(info.get(f"{side}_{event}", 0)); value = current - previous_counts[side][event]
-                previous_counts[side][event] = current
-            else: value = int(info.get(key, 0))
-            transitions[key].append(value)
-        alive = np.asarray(info["red_alive_mask"], dtype=np.float32)
-        actor_hidden = trainer.recurrent.apply_alive(actor_hidden, alive[None])
-        critic_hidden = trainer.recurrent.apply_alive(critic_hidden, alive[None])
-        episode_mask[:] = 1.0
-        actor_phase_reset_flags[:] = bool(info.get("spawned_next_wave",False))
-        append_frame(frames, env, env.wave_index, env.waves_cleared, env.steps * env.dt, info)
-        observation = next_observation
+        if recurrent:
+            action, _, _, hidden = trainer.act(observation, env.red_alive_mask,
+                hidden, episode_start, deterministic=True)
+        else:
+            action = trainer.act(observation[None], env.red_alive_mask[None], deterministic=True)[0]
+        observation, reward, terminated, truncated, info = env.step(action)
+        if hasattr(trainer, 'recording_step_data'):
+            diagnostic = trainer.recording_step_data()
+            diagnostic.update(next_alive=env.red_alive_mask.copy(), episode_done=bool(terminated or truncated))
+            algorithm_diagnostics.append(diagnostic)
+        if recurrent:
+            hidden *= env.red_alive_mask[:, None]
+            episode_start = np.array(0., dtype=np.float32)
+        transitions['red_actions'].append(info['executed_red_actions'])
+        transitions['blue_actions'].append(np.asarray(info.get('executed_blue_actions',env.observed_actions.get('blue'))).copy())
+        available = 'blue_pursuit_target_indices' in info
+        if targets_available is not None and available != targets_available:
+            raise RuntimeError('Blue target availability changed during recording')
+        targets_available = available
+        transitions['blue_pursuit_target_indices'].append(np.asarray(info['blue_pursuit_target_indices'],dtype=np.int64).copy() if available else np.full(env.team_size,-1,dtype=np.int64))
+        for side in ('red','blue'):
+            ammo = info.get(side+'_ammo',getattr(env,side+'_ammo',None))
+            transitions[side+'_ammo'].append(np.full(env.team_size,-1,dtype=np.int64) if ammo is None else np.asarray(ammo,dtype=np.int64).copy())
+            if has_cooldown:transitions[side+'_cooldown'].append(getattr(env,side+'_fire_cooldown_steps').copy())
+        transitions['local_rewards'].append(np.asarray(reward).copy())
+        transitions['reward_components'].append(np.stack([info[f'{name}_rewards'] for name in ('r1', 'r2', 'r3', 'r4')]))
+        transitions['terminated'].append(terminated)
+        transitions['truncated'].append(truncated)
+        append_frame(frames, env)
         if terminated or truncated:
+            if recurrent:
+                hidden.fill(0.)
             break
-        if args.wall_timeout_s > 0 and time.time() - start > args.wall_timeout_s:
-            raise RuntimeError(f"recording exceeded configured wall timeout: {args.wall_timeout_s}s")
-    arrays = write_trace(output_dir / "episode_trace.npz", frames, transitions)
-    metadata = {
-        "trace_schema_version": TRACE_SCHEMA_VERSION,
-        "checkpoint_path": str(checkpoint), "checkpoint_sha256": checkpoint_sha256(checkpoint),
-        "checkpoint_sampled_steps": int(state.get("sampled_steps", 0)), "checkpoint_training_seed": extra.get("training_seed"),
-        "algorithm": state.get("algorithm"), "modular_mappo_impl_version": state.get("modular_mappo_impl_version"),
-        "baseline_mappo_impl_version": state.get("baseline_mappo_impl_version"), "enabled_modules": state.get("enabled_modules", []),
-        "module_config_sha256": state.get("module_config_sha256"), "algorithm_config_sha256": extra.get("algorithm_config_sha256"),
-        "environment_variant": extra.get("environment_variant"), "environment_version": extra.get("environment_version"),
-        "environment_config_sha256": extra.get("environment_config_sha256"),
-        "episode_seed": args.episode_seed, "episode_role": "qualitative_visualization_only",
-        "not_used_for_quantitative_metrics": True, "dt": env.dt, "max_steps": env.max_steps,
-        "arena_radius": env.arena_radius, "total_waves": env.total_waves, "deterministic_policy": True,
-        "recorded_frames": int(len(frames["steps"])), "episode_steps": int(env.steps), "simulation_time_s": float(env.steps * env.dt),
-        "termination_reason": info.get("termination_reason"), "red_success": bool(info.get("red_success", False)),
-        "waves_cleared": int(env.waves_cleared), "final_red_survivors": int(env.red_alive_mask.sum()),
-        "final_blue_survivors": int(env.blue_alive_mask.sum()), "total_blue_losses": int(info.get("blue_losses", 0)),
-        "episode_return": float(np.sum([sum(x) for x in transitions["local_rewards"]])), "reserved_formal_seed": False,
-        "feature_names": FEATURE_NAMES, "trace_shapes": arrays,
-    }
-    # Keep event metadata optional and derive it from the exact transition arrays.
-    metadata["events"] = extract_events({key: np.asarray(value) for key, value in {**frames, **transitions}.items()})
-    dump_metadata(output_dir / "metadata.json", metadata)
-    print(metadata)
+        if wall_timeout_s > 0 and time.monotonic() - start > wall_timeout_s:
+            raise RuntimeError('recording exceeded wall timeout')
+    shapes = write_trace(output_dir / 'episode_trace.npz', frames, transitions, dt=env.dt)
+    result = dict(metadata or {})
+    if algorithm_diagnostics:
+        from algorithm.acirl.recording import save_diagnostics
+        result.update(save_diagnostics(output_dir, algorithm_diagnostics))
+    result.update({'trace_schema_version': TRACE_SCHEMA_VERSION, 'feature_names': FEATURE_NAMES,
+         'reward_component_names': ['R1','R2','R3','R4'], 'reward_component_axis': 1, 'agent_axis': 2,
+        'transition_state_alignment': 'transition[t]: frame[t] -> frame[t+1]; ammo/cooldown are post-transition',
+        'blue_target_source': 'info.blue_pursuit_target_indices' if targets_available else 'unavailable_in_this_environment',
+        'blue_target_available': bool(targets_available), 'initial_ammo': initial_ammo,
+        'cooldown_units': 'simulation_steps', 'cooldown_available': has_cooldown,
+        'weapon_config': env.config['weapon'], 'arena_config': env.config['arena'],
+        'weapon_class': type(env.weapon).__name__,
+        'episode_seed': int(seed), 'dt': env.dt, 'max_steps': env.max_steps,
+        'arena_radius': env.arena_radius, 'environment_version': env.environment_version,
+        'environment_config_sha256': config_sha256(env_config),
+        'deterministic_policy': True, 'episode_steps': env.steps,
+        'simulation_time_s': env.steps * env.dt, 'termination_reason': info['termination_reason'],
+        'red_win': info['red_win'], 'blue_win': info['blue_win'], 'draw': info['draw'],
+        'red_survivors': info['red_survivors'], 'blue_survivors': info['blue_survivors'],
+        'episode_return': float(np.asarray(transitions['local_rewards']).sum()),
+        'events': env.events, 'trace_shapes': shapes,
+        **{f'{side}_{event}': info[f'{side}_{event}'] for side in ('red', 'blue')
+           for event in ('fire_attempts', 'weapon_hits', 'attack_kills', 'boundary_exits', 'ground_losses')},
+        **{f'episode_{name}_total': info[f'episode_{name}_total'] for name in ('r1', 'r2', 'r3', 'r4')},
+    })
+    result['combat_counts'] = {side:dict(env.combat_counts[side]) for side in ('red','blue')}
+    for side in ('red','blue'):
+        for field in ('ammo_used','ceiling_losses'):
+            result[side+'_'+field] = env.combat_counts[side].get(field)
+    from tools.combat_trace import read_trace
+    trace = read_trace(output_dir / 'episode_trace.npz',result)
+    if str(result.get('algorithm', '')).lower() == 'ippo':
+        from algorithm.ippo.diagnostics import trace_diagnostics
+        dump_metadata(output_dir / 'ippo_flight_diagnostics.json', trace_diagnostics(trace, result))
+    dump_metadata(output_dir / 'metadata.json', result)
+    return result
 
 
-if __name__ == "__main__":
-    main()
+def load_recording_policy(checkpoint, env_config, config, device='cuda'):
+    """Use official validation, factory and load; no alternate actor implementation."""
+    if torch.device(device).type != 'cuda' or not torch.cuda.is_available():
+        raise RuntimeError('CUDA is required for checkpoint recording')
+    checkpoint = Path(checkpoint)
+    original_hash = checkpoint_sha256(checkpoint)
+    state = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    extra = state.get('extra', {})
+    algorithm = str(state['algorithm']).lower()
+    if state.get('checkpoint_family') in ('eaa_mappo_v338', 'eaa_mappo_v339', 'eaa_mappo_v341'):
+        from algorithm.eaa_mappo.evaluation import load_checkpoint
+        trainer = load_checkpoint(checkpoint, config, env_config, device)
+    elif algorithm == 'acirl':
+        from algorithm.acirl.evaluation import load_checkpoint
+        trainer = load_checkpoint(checkpoint, env_config, config, device)
+    elif algorithm == 'matd3':
+        from algorithm.matd3.protocol import validate_checkpoint
+        from algorithm.matd3.factory import build_matd3_trainer
+        validate_checkpoint(state, env_config, config)
+        trainer = build_matd3_trainer(config, device, extra['training_seed'])
+        trainer.load(checkpoint, env_config, config)
+    elif algorithm == 'maddpg':
+        from algorithm.maddpg.protocol import validate_checkpoint, require_cuda
+        from algorithm.maddpg.factory import build_maddpg_trainer
+        require_cuda(device)
+        validate_checkpoint(state, env_config, config)
+        trainer = build_maddpg_trainer(config, device, extra['training_seed'])
+        trainer.load(checkpoint, env_config, config)
+    elif algorithm == 'ippo':
+        from algorithm.ippo.evaluation import load_checkpoint
+        trainer = load_checkpoint(checkpoint, config, env_config, device)
+    elif algorithm == 'mappo':
+        validate_checkpoint_for_evaluation(state, env_config, config)
+        if extra.get('algorithm_config_sha256') != config_sha256(config):
+            raise RuntimeError('checkpoint algorithm config fingerprint mismatch')
+        from algorithm.common.critic_protocol import checkpoint_widths
+        actor_width, critic_width = checkpoint_widths(state)
+        trainer = build_mappo_trainer(config, device, actor_width, critic_width)
+        trainer.load(checkpoint)
+    elif algorithm == 'maac':
+        from algorithm.maac.protocol import validate_checkpoint
+        from algorithm.maac.trainer import MAACTrainer
+        validate_checkpoint(state, env_config, config)
+        trainer = MAACTrainer(env_config, config, device, state['training_seed'], extra['training_smoke'])
+        trainer.load(checkpoint)
+    elif algorithm == 'madsac':
+        validate_madsac_checkpoint(state, env_config, config, expected_training_seed=extra['training_seed'])
+        trainer = build_madsac_trainer(config, device, extra['network_architecture']['hidden_dim'], extra['training_seed'])
+        trainer.load_for_evaluation(checkpoint)
+    else:
+        import importlib
+        modules = {'rmappo': 'rmappo', 'ea-mappo': 'ea_mappo', 'stea-mappo': 'stea_mappo'}
+        if algorithm not in modules:
+            raise ValueError(f'unsupported algorithm: {algorithm}')
+        name = modules[algorithm]
+        protocol = importlib.import_module(f'algorithm.{name}.protocol')
+        factory = importlib.import_module(f'algorithm.{name}.factory')
+        protocol.validate_checkpoint(state, env_config, config)
+        trainer = getattr(factory, f'build_{name}_trainer')(config, device,
+            seed=extra['training_seed'], smoke=bool(extra['training_smoke']))
+        trainer.load(checkpoint)
+    if 'environment_config_sha256' in extra and extra['environment_config_sha256'] != config_sha256(env_config):
+        raise RuntimeError('checkpoint environment config fingerprint mismatch')
+    if extra.get('algorithm_config_sha256') != config_sha256(config):
+        raise RuntimeError('checkpoint algorithm config fingerprint mismatch')
+    if checkpoint_sha256(checkpoint) != original_hash:
+        raise RuntimeError('checkpoint changed during load; use a stable checkpoint snapshot')
+    return trainer, state, {'algorithm': state['algorithm'], 'checkpoint_path': str(checkpoint),
+        'checkpoint_sha256': original_hash,
+        'environment_config_sha256': config_sha256(env_config),
+        'checkpoint_sampled_steps': int(state['sampled_steps']),
+        'training_seed': extra.get('training_seed',state.get('training_seed')),
+        'observation_dim': extra.get('observation_dim'), 'action_dim': extra.get('action_dim'),
+        'num_agents': extra.get('num_agents'),
+        'algorithm_config_sha256': config_sha256(config)}
+
+
+
+if __name__ == '__main__':
+    raise SystemExit('Internal module. Use the official entry: python -u tools/replay_combat.py --help')

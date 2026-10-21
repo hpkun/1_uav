@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from .networks import CentralizedMLPCritic, CentralizedValueCritic, SharedMAPPOActor
+from algorithm.common.policy_protocol import validate_trainer_policy_protocol
 
 
 MAPPO_IMPL_VERSION = 2
@@ -16,6 +17,29 @@ MAPPO_IMPL_VERSION = 2
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (values * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+@torch.no_grad()
+def raw_gae_diagnostics(advantages, returns, old_values, alive_masks) -> dict[str, float]:
+    """Detached, population statistics of the fixed rollout before normalization."""
+    live = alive_masks > 0.5
+    advantage, target, value = (tensor[live] for tensor in (advantages, returns, old_values))
+    if not advantage.numel():
+        return {key: 0.0 for key in (
+            'raw_advantage_mean', 'raw_advantage_std', 'raw_advantage_abs_mean',
+            'raw_advantage_abs_p50', 'raw_advantage_abs_p90', 'raw_advantage_abs_p99',
+            'raw_advantage_min', 'raw_advantage_max', 'return_target_mean',
+            'return_target_std', 'old_value_mean', 'old_value_std')}
+    absolute = advantage.abs()
+    quantiles = torch.quantile(absolute, absolute.new_tensor([.5, .9, .99]))
+    return dict(raw_advantage_mean=float(advantage.mean()),
+        raw_advantage_std=float(advantage.std(unbiased=False)),
+        raw_advantage_abs_mean=float(absolute.mean()),
+        raw_advantage_abs_p50=float(quantiles[0]), raw_advantage_abs_p90=float(quantiles[1]),
+        raw_advantage_abs_p99=float(quantiles[2]), raw_advantage_min=float(advantage.min()),
+        raw_advantage_max=float(advantage.max()), return_target_mean=float(target.mean()),
+        return_target_std=float(target.std(unbiased=False)), old_value_mean=float(value.mean()),
+        old_value_std=float(value.std(unbiased=False)))
 
 
 def compute_gae(
@@ -88,11 +112,18 @@ class MAPPOTrainer:
         log_std_min: float = -5.0,
         log_std_max: float = 2.0,
         critic_type: str = "attention",
+        policy_std_mode: str = "state_dependent",
+        log_std_init: float = -.5,
+        mean_head_init_gain: float = .01,
+        target_kl: float | None = None,
+        critic_hidden_dim: int | None = None,
     ) -> None:
         self.device = torch.device(device)
         if self.device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA requested but unavailable")
         self.num_agents = int(num_agents)
+        self.observation_dim = int(observation_dim)
+        self.action_dim = int(action_dim)
         self.gamma = float(gamma)
         self.gae_lambda = float(gae_lambda)
         self.clip_ratio = float(clip_ratio)
@@ -100,6 +131,9 @@ class MAPPOTrainer:
         self.entropy_coefficient = float(entropy_coefficient)
         self.max_grad_norm = float(max_grad_norm)
         self.ppo_epochs = int(ppo_epochs)
+        self.target_kl = None if target_kl is None else float(target_kl)
+        if self.target_kl is not None and (not np.isfinite(self.target_kl) or self.target_kl <= 0):
+            raise ValueError("target_kl must be positive or None")
         self.minibatch_size = int(minibatch_size)
         self.normalize_advantages = bool(normalize_advantages)
         self.clip_value_loss = bool(clip_value_loss)
@@ -110,15 +144,19 @@ class MAPPOTrainer:
         self.critic_type=str(critic_type)
         if self.critic_type not in {"attention","mlp"}:raise ValueError(f"unsupported critic_type: {self.critic_type}")
         self.attention_heads=int(attention_heads)
+        self.actor_hidden_dim = int(hidden_dim)
+        self.critic_hidden_dim = int(hidden_dim if critic_hidden_dim is None else critic_hidden_dim)
+        if min(self.actor_hidden_dim, self.critic_hidden_dim) <= 0:
+            raise ValueError("actor/critic hidden dimensions must be positive")
 
         self.actor = SharedMAPPOActor(
             observation_dim, action_dim, hidden_dim, log_std_min, log_std_max,
-            actor_activation,
+            actor_activation, policy_std_mode, log_std_init, mean_head_init_gain,
         ).to(self.device)
         if self.critic_type=="attention":
-            self.critic=CentralizedValueCritic(observation_dim,hidden_dim,attention_heads,critic_activation).to(self.device)
+            self.critic=CentralizedValueCritic(observation_dim,self.critic_hidden_dim,attention_heads,critic_activation).to(self.device)
         else:
-            self.critic=CentralizedMLPCritic(observation_dim,num_agents,hidden_dim,critic_activation).to(self.device)
+            self.critic=CentralizedMLPCritic(observation_dim,num_agents,self.critic_hidden_dim,critic_activation).to(self.device)
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(), lr=actor_learning_rate
         )
@@ -130,6 +168,28 @@ class MAPPOTrainer:
         self.critic_update_count = 0
         self.sampled_steps = 0
         self.vector_steps = 0
+
+    def policy_protocol(self):
+        return dict(policy_std_mode=self.actor.policy_std_mode, log_std_init=self.actor.log_std_init,
+                    mean_head_init_gain=self.actor.mean_head_init_gain, target_kl=self.target_kl)
+
+    def _epoch_exceeds_target(self, rows):
+        return bool(rows and self.target_kl is not None
+                    and np.mean([row["approx_kl"] for row in rows]) > self.target_kl)
+
+    def _stability_metrics(self, epoch_rows):
+        valid = [rows for rows in epoch_rows if rows]
+        metrics = dict(configured_ppo_epochs=float(self.ppo_epochs), effective_ppo_epochs=float(len(valid)),
+            kl_early_stop=float(bool(valid) and self._epoch_exceeds_target(valid[-1])),
+            target_kl=0. if self.target_kl is None else self.target_kl,
+            target_kl_enabled=float(self.target_kl is not None),
+            last_epoch_mean_kl=float(np.mean([row["approx_kl"] for row in valid[-1]])) if valid else 0.)
+        if self.actor.policy_std_mode == "state_independent":
+            values = self.actor.log_std_parameter.detach().clamp(self.actor.log_std_min, self.actor.log_std_max)
+            for index, name in enumerate(("heading", "pitch", "speed")):
+                metrics[f"policy_log_std_{name}"] = float(values[index])
+                metrics[f"policy_sigma_{name}"] = float(values[index].exp())
+        return metrics
 
     @torch.no_grad()
     def act(
@@ -201,6 +261,7 @@ class MAPPOTrainer:
                 rewards, values, next_values, dones, alive_masks,
                 next_alive_masks, self.gamma, self.gae_lambda,
             )
+            gae_metrics = raw_gae_diagnostics(advantages, returns, values, alive_masks)
             if self.normalize_advantages:
                 live_advantages = advantages[alive_masks > 0.5]
                 advantages = (
@@ -237,6 +298,8 @@ class MAPPOTrainer:
                 raw_act = raw_actions[indices]
                 old_log = old_log_probs[indices]
                 mask = alive_masks[indices]
+                if not (mask > .5).any():
+                    continue
                 old_value = old_values[indices]
                 target_return = returns[indices]
                 advantage = advantages[indices]
@@ -322,6 +385,8 @@ class MAPPOTrainer:
                     metric_rows.append(row)
                     this_epoch.append({**pre_step, "epoch": float(epoch)})
             epoch_rows.append(this_epoch)
+            if self._epoch_exceeds_target(this_epoch):
+                break
 
         self.ppo_update_count += 1
         live = alive_masks > 0.5
@@ -353,11 +418,15 @@ class MAPPOTrainer:
         for key, value in first_minibatch.items():
             metrics[f"first_minibatch_{key}"] = value
         for epoch, rows in enumerate(epoch_rows):
+            if not rows:
+                continue
             for key in rows[0]:
                 if key != "epoch":
                     metrics[f"epoch_{epoch}_{key}"] = float(np.mean([
                         row[key] for row in rows
                     ]))
+        metrics.update(self._stability_metrics(epoch_rows))
+        metrics.update(gae_metrics)
         if not np.all(np.isfinite(list(metrics.values()))):
             raise FloatingPointError(f"non-finite MAPPO update: {metrics}")
         return metrics
@@ -376,7 +445,10 @@ class MAPPOTrainer:
             "critic_updates": self.critic_update_count,
             "sampled_steps": self.sampled_steps,
             "vector_steps": self.vector_steps,
-            "extra": extra or {},
+            "extra": {**(extra or {}), **self.policy_protocol(),
+                      **({"algorithm_config_sha256": self.algorithm_config_sha256}
+                         if hasattr(self, "algorithm_config_sha256") else {}),
+                      "training_gamma": self.gamma, "training_gae_lambda": self.gae_lambda},
         }
 
     def save(self, path: str | Path, extra: dict[str, Any] | None = None) -> None:
@@ -398,6 +470,13 @@ class MAPPOTrainer:
                 "checkpoint MAPPO implementation mismatch: old checkpoints are "
                 "read-only diagnostics and cannot resume formal training"
             )
+        validate_trainer_policy_protocol(state, self.policy_protocol())
+        for key, expected in (("training_gamma", self.gamma), ("training_gae_lambda", self.gae_lambda)):
+            if key in state.get("extra", {}) and state["extra"][key] != expected:
+                raise RuntimeError(f"checkpoint {key} mismatch: expected {expected}, got {state['extra'][key]}")
+        recorded_hash = state.get("extra", {}).get("algorithm_config_sha256")
+        if hasattr(self, "algorithm_config_sha256") and recorded_hash is not None and recorded_hash != self.algorithm_config_sha256:
+            raise RuntimeError("checkpoint algorithm_config_sha256 mismatch")
         self.actor.load_state_dict(state["actor"])
         self.critic.load_state_dict(state["critic"])
         if legacy:

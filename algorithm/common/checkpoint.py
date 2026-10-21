@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from env.config import ENVIRONMENT_VERSION
-from env.combat_env import MultiUAVCombatEnv
-from env.observation import observation_dim_from_config
+from env.config import ENVIRONMENT_VERSION, validate_config, environment_dimensions
 from algorithm.common.protocol import config_sha256
+from algorithm.common.policy_protocol import validate_policy_protocol
+from algorithm.common.critic_protocol import validate_mappo_architecture
 
 
 def _checkpoint_extra(state: dict[str, Any]) -> dict[str, Any]:
@@ -14,8 +14,6 @@ def _checkpoint_extra(state: dict[str, Any]) -> dict[str, Any]:
     return extra if isinstance(extra, dict) else {}
 
 
-def _environment_variant(config: dict[str, Any]) -> str:
-    return str(config.get("environment_variant", "direct_v2_3"))
 
 
 def _configured_dimensions(
@@ -56,6 +54,7 @@ def _validate_common_checkpoint_contract(
     env_config: dict[str, Any],
     algorithm_config: dict[str, Any],
 ) -> None:
+    validate_config(env_config)
     from algorithm.mappo.trainer import MAPPO_IMPL_VERSION
 
     if state.get("algorithm") != "MAPPO":
@@ -79,12 +78,14 @@ def _validate_common_checkpoint_contract(
     checkpoint_critic_type=str(state.get("critic_type",extra.get("critic_type","attention")))
     if checkpoint_critic_type!=configured_critic_type:
         raise RuntimeError(f"checkpoint critic_type mismatch: expected {configured_critic_type!r}, got {checkpoint_critic_type!r}")
+    validate_policy_protocol(state, algorithm_config)
+    validate_mappo_architecture(state, algorithm_config)
+    for key, expected in (("training_gamma", algorithm_config["training"]["gamma"]),
+                          ("training_gae_lambda", algorithm_config["training"]["gae_lambda"])):
+        if key in extra and extra[key] != expected:
+            raise RuntimeError(f"checkpoint {key} mismatch: expected {expected}, got {extra[key]}")
     configured = _configured_dimensions(algorithm_config)
-    environment = (
-        observation_dim_from_config(env_config.get("observation", {})),
-        MultiUAVCombatEnv.action_dim,
-        int(env_config.get("scenario", {}).get("team_size", MultiUAVCombatEnv.team_size)),
-    )
+    environment = environment_dimensions(env_config)
     if configured != environment:
         raise RuntimeError(
             "algorithm/environment dimensions mismatch: configured "
@@ -103,20 +104,15 @@ def _validate_common_checkpoint_contract(
 def validate_checkpoint_environment(
     state: dict[str, Any], env_config: dict[str, Any]
 ) -> None:
+    validate_config(env_config)
     extra = _checkpoint_extra(state)
     version = extra.get("environment_version")
-    if version != ENVIRONMENT_VERSION:
+    expected_version = str(env_config["environment_version"])
+    if version != expected_version:
         raise RuntimeError(
             "checkpoint environment_version mismatch: expected "
-            f"{ENVIRONMENT_VERSION}, got {version!r}; environment semantics "
+            f"{expected_version}, got {version!r}; environment semantics "
             "are incompatible"
-        )
-    expected_variant = _environment_variant(env_config)
-    checkpoint_variant = str(extra.get("environment_variant", "direct_v2_3"))
-    if checkpoint_variant != expected_variant:
-        raise RuntimeError(
-            "checkpoint environment_variant mismatch: expected "
-            f"{expected_variant!r}, got {checkpoint_variant!r}"
         )
 
 
@@ -127,22 +123,13 @@ def validate_checkpoint_for_resume(
 ) -> None:
     """Validate a checkpoint for strict continuation of the original run."""
     _validate_common_checkpoint_contract(state, env_config, algorithm_config)
-    expected_variant = _environment_variant(env_config)
-    checkpoint_variant = str(
-        _checkpoint_extra(state).get("environment_variant", "direct_v2_3")
-    )
-    if checkpoint_variant != expected_variant:
-        raise RuntimeError(
-            "checkpoint environment_variant mismatch: expected "
-            f"{expected_variant!r}, got {checkpoint_variant!r}"
-        )
     extra = _checkpoint_extra(state)
     for label, expected in (
         ("environment_config_sha256", config_sha256(env_config)),
         ("algorithm_config_sha256", config_sha256(algorithm_config)),
     ):
         recorded = extra.get(label)
-        if recorded is not None and recorded != expected:
+        if (recorded is not None or env_config['environment_version'] in ('3.39', '3.40', '3.41')) and recorded != expected:
             raise RuntimeError(
                 f"checkpoint {label} mismatch: expected {expected!r}, "
                 f"got {recorded!r}"
@@ -150,47 +137,26 @@ def validate_checkpoint_for_resume(
 
 
 def validate_checkpoint_for_evaluation(
-    state: dict[str, Any],
-    env_config: dict[str, Any],
-    algorithm_config: dict[str, Any],
-    allow_cross_variant: bool = False,
+    state: dict[str, Any], env_config: dict[str, Any], algorithm_config: dict[str, Any],
 ) -> None:
-    """Validate strict evaluation, optionally allowing only variant transfer."""
+    """Validate the combat and network contract for evaluation."""
     _validate_common_checkpoint_contract(state, env_config, algorithm_config)
-    target_variant = _environment_variant(env_config)
-    checkpoint_variant = str(
-        _checkpoint_extra(state).get("environment_variant", "direct_v2_3")
-    )
-    if checkpoint_variant != target_variant and not allow_cross_variant:
-        raise RuntimeError(
-            "checkpoint environment_variant mismatch: expected "
-            f"{target_variant!r}, got {checkpoint_variant!r}; pass explicit "
-            "allow_cross_variant=True only for policy-transfer evaluation"
-        )
+    if env_config['environment_version'] in ('3.39', '3.40', '3.41'):
+        for key, expected in (('environment_config_sha256', config_sha256(env_config)),
+                              ('algorithm_config_sha256', config_sha256(algorithm_config))):
+            if _checkpoint_extra(state).get(key) != expected:
+                raise RuntimeError(f'checkpoint {key} mismatch')
+    recorded = _checkpoint_extra(state).get("environment_config_sha256")
+    if recorded is not None and recorded != config_sha256(env_config):
+        raise RuntimeError("checkpoint environment_config_sha256 mismatch")
 
 
-def evaluation_selection_key(
-    record: dict[str, Any], environment_variant: str
-) -> tuple[float, ...]:
-    """Return the variant-specific lexicographic best-checkpoint key."""
-    if environment_variant in {"persistent_wave_v1", "persistent_wave_v2"}:
-        waves_cleared = record.get(
-            "average_waves_cleared", record.get("mean_waves_cleared", 0.0)
-        )
-        final_clear = record.get(
-            "clear_wave_3_probability", record.get("win_rate", 0.0)
-        )
-        return (
-            float(final_clear),
-            float(waves_cleared),
-            float(record["average_return"]),
-            -float(record["average_red_loss"]),
-        )
-    return (
-        float(record["win_rate"]),
-        float(record["average_return"]),
-        -float(record["average_red_loss"]),
-    )
+
+def evaluation_selection_key(record: dict[str, Any]) -> tuple[float, ...]:
+    """Rank checkpoints by Red win rate, return, then fewer Red losses."""
+    return (float(record["win_rate"]), float(record["average_return"]),
+            -float(record["average_red_loss"]))
+
 
 
 __all__ = [

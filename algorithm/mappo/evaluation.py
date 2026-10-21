@@ -19,7 +19,6 @@ def evaluate_mappo_checkpoint(
     environment_config: dict[str, Any],
     device: str,
     evaluation_seeds: Iterable[int],
-    allow_cross_variant: bool = False,
 ) -> dict[str, Any]:
     """Load one checkpoint and evaluate it under an explicit target protocol."""
     checkpoint = Path(checkpoint_path)
@@ -35,12 +34,10 @@ def evaluate_mappo_checkpoint(
         state,
         environment_config,
         algorithm_config,
-        allow_cross_variant=allow_cross_variant,
     )
     extra = state.get("extra", {})
     required_protocol_fields = (
         "environment_version",
-        "environment_variant",
         "observation_dim",
         "action_dim",
         "num_agents",
@@ -76,25 +73,14 @@ def evaluate_mappo_checkpoint(
         first_weight = state.get("actor", {}).get("backbone.0.weight")
         if hasattr(first_weight, "shape"):
             effective_hidden_dim = int(first_weight.shape[0])
-    configured_hidden_dim = int(
-        algorithm_config["network"]["actor_hidden_layers"][0]
+    from algorithm.common.critic_protocol import checkpoint_widths
+    actor_width, critic_width = checkpoint_widths(state)
+    trainer = build_mappo_trainer(
+        algorithm_config, device, hidden_dim=actor_width, critic_hidden_dim=critic_width
     )
-    if (
-        effective_hidden_dim is not None
-        and int(effective_hidden_dim) != configured_hidden_dim
-    ):
-        trainer = build_mappo_trainer(
-            algorithm_config, device, hidden_dim=int(effective_hidden_dim)
-        )
-    else:
-        trainer = build_mappo_trainer(algorithm_config, device)
     trainer.load(checkpoint)
     result: dict[str, Any] = dict(
         evaluate(trainer, environment_config, seeds)
-    )
-    checkpoint_variant = str(extra.get("environment_variant", "direct_v2_3"))
-    evaluation_variant = str(
-        environment_config.get("environment_variant", "direct_v2_3")
     )
     network = algorithm_config["network"]
     result.update({
@@ -121,12 +107,9 @@ def evaluate_mappo_checkpoint(
         "provided_algorithm_config_sha256": provided_algorithm_hash,
         "protocol_complete": protocol_complete,
         "checkpoint_environment_version": extra.get("environment_version"),
-        "checkpoint_environment_variant": checkpoint_variant,
         "evaluation_environment_version": str(
             environment_config["environment_version"]
         ),
-        "evaluation_environment_variant": evaluation_variant,
-        "cross_variant_evaluation": checkpoint_variant != evaluation_variant,
         "mappo_impl_version": state.get("mappo_impl_version"),
         "holdout_seed_base": seeds[0],
         "holdout_seed_end": seeds[-1],

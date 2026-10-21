@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import numpy as np
+from enum import Enum
+from dataclasses import dataclass
 
 from .math_utils import wrap_angle
 from .models import AircraftState
@@ -61,115 +63,89 @@ class NearestTargetPursuitPolicy:
         return np.stack([self.action(state, targets) for state in team])
 
 
-class GroundAwareNearestTargetPursuitPolicy(NearestTargetPursuitPolicy):
-    """Nearest-target pursuit with a stateless time-to-ground pitch guard."""
 
-    def __init__(self, config: dict, action_config: dict,
-                 aircraft_config: dict) -> None:
+
+class SternPhase(Enum):
+    PURE_PURSUIT = "PURE_PURSUIT"
+    RELATIVE_BEARING = "RELATIVE_BEARING"
+    OFFSET_RECIPROCAL = "OFFSET_RECIPROCAL"
+    CONVERT = "CONVERT"
+
+
+@dataclass
+class SternState:
+    locked_target_index: int | None = None
+    phase: SternPhase = SternPhase.PURE_PURSUIT
+    relative_bearing_heading: float | None = None
+    turn_side: int | None = None
+
+
+class SternConversionPolicy(NearestTargetPursuitPolicy):
+    """Independent deterministic target locks and four heading phases.
+
+    State transitions are evaluated once per decision; no weapon logic lives here.
+    A reacquisition decision uses pure pursuit before any new conversion begins.
+    """
+    def __init__(self, config: dict, action_config: dict, team_size: int) -> None:
         super().__init__(config, action_config)
-        guard = config.get("ground_avoidance", {})
-        self.guard_time_constants = float(guard["guard_time_constants"])
-        self.downward_speed_epsilon = float(
-            guard.get("downward_speed_epsilon", 1e-6)
-        )
-        self.pitch_time_constant = float(
-            action_config["controller"]["pitch_time_constant"]
-        )
-        self.theta_max = float(aircraft_config["theta_max"])
-        if self.guard_time_constants <= 0.0:
-            raise ValueError("guard_time_constants must be positive")
-        if self.downward_speed_epsilon < 0.0:
-            raise ValueError("downward_speed_epsilon must be non-negative")
-        self.reset_diagnostics()
+        self.team_size = team_size
+        self.reset()
 
-    def reset_diagnostics(self) -> None:
-        self.total_decision_steps = 0
-        self.override_steps = 0
-        self.activation_count = 0
-        self.maximum_activation_duration_steps = 0
-        self._previous_override = np.zeros(4, dtype=bool)
-        self._current_duration = np.zeros(4, dtype=np.int64)
-        self.last_override_mask = np.zeros(4, dtype=bool)
+    def reset(self) -> None:
+        self.states = [SternState() for _ in range(self.team_size)]
 
-    def reset_transient_state(self) -> None:
-        self._previous_override.fill(False)
-        self._current_duration.fill(0)
-        self.last_override_mask.fill(False)
+    @staticmethod
+    def target_coordinates(own: AircraftState, target: AircraftState) -> tuple[float, float]:
+        dx, dy = own.x - target.x, own.y - target.y
+        c, s = np.cos(target.psi), np.sin(target.psi)
+        return float(dx*c + dy*s), float(-dx*s + dy*c)
 
-    def ground_risk(
-        self, own: AircraftState, commanded_pitch: float,
-        guard_time_constants: float | None = None,
-    ) -> tuple[bool, float | None]:
-        downward_current = max(-own.v * np.sin(own.theta), 0.0)
-        downward_commanded = max(-own.v * np.sin(commanded_pitch), 0.0)
-        downward_speed = max(downward_current, downward_commanded)
-        if downward_speed <= self.downward_speed_epsilon:
-            return False, None
-        time_to_ground = own.altitude / downward_speed
-        multiplier = (
-            self.guard_time_constants
-            if guard_time_constants is None else float(guard_time_constants)
-        )
-        return bool(time_to_ground <= multiplier * self.pitch_time_constant), float(
-            time_to_ground
-        )
+    def action(self, own: AircraftState, targets: list[AircraftState], aircraft_index: int = 0) -> np.ndarray:
+        state = self.states[aircraft_index]
+        if not own.alive:
+            return np.zeros(3, dtype=np.float32)
+        j = state.locked_target_index
+        reacquired = j is None or j >= len(targets) or not targets[j].alive
+        if reacquired:
+            state = SternState(locked_target_index=self.nearest_target_index(own, targets))
+            self.states[aircraft_index] = state
+        if state.locked_target_index is None:
+            return np.zeros(3, dtype=np.float32)
+        target = targets[state.locked_target_index]
+        dx, dy, dz = target.x-own.x, target.y-own.y, target.z-own.z
+        distance = float(np.sqrt(dx*dx+dy*dy+dz*dz))
+        longitudinal, lateral = self.target_coordinates(own, target)
+        cfg = self.config
+        if not reacquired:
+            if state.phase is SternPhase.PURE_PURSUIT and distance <= cfg["turn_range"]:
+                parity_side = 1 if aircraft_index % 2 == 0 else -1
+                candidate_plus = float(wrap_angle(own.psi + cfg["turn_angle"]))
+                candidate_minus = float(wrap_angle(own.psi - cfg["turn_angle"]))
+                state.turn_side = parity_side
+                if abs(lateral) > 1e-6:
+                    # Project each existing heading candidate onto the target's
+                    # left axis, choosing the larger outward lateral motion.
+                    score_plus = np.sign(lateral) * np.sin(candidate_plus - target.psi)
+                    score_minus = np.sign(lateral) * np.sin(candidate_minus - target.psi)
+                    if score_plus > score_minus:
+                        state.turn_side = 1
+                    elif score_minus > score_plus:
+                        state.turn_side = -1
+                state.relative_bearing_heading = candidate_plus if state.turn_side == 1 else candidate_minus
+                state.phase = SternPhase.RELATIVE_BEARING
+            elif state.phase is SternPhase.RELATIVE_BEARING and abs(lateral) >= cfg["required_lateral_displacement"]:
+                state.phase = SternPhase.OFFSET_RECIPROCAL
+            elif state.phase is SternPhase.OFFSET_RECIPROCAL and longitudinal <= 0 and distance <= cfg["conversion_range"]:
+                state.phase = SternPhase.CONVERT
+        heading = float(np.arctan2(dy, dx))
+        if state.phase is SternPhase.RELATIVE_BEARING:
+            heading = state.relative_bearing_heading
+        elif state.phase is SternPhase.OFFSET_RECIPROCAL:
+            heading = float(wrap_angle(target.psi + np.pi))
+        return self.action_toward(own, heading, float(np.arctan2(own.z-target.z, np.hypot(dx,dy))), float(cfg["desired_speed"]))
 
-    def _action_and_override(
-        self, own: AircraftState, targets: list[AircraftState]
-    ) -> tuple[np.ndarray, bool]:
-        target_index = self.nearest_target_index(own, targets) if own.alive else None
-        if target_index is None:
-            return np.zeros(3, dtype=np.float32), False
-        target = targets[target_index]
-        dx, dy = target.x - own.x, target.y - own.y
-        horizontal = float(np.hypot(dx, dy))
-        desired_heading = float(np.arctan2(dy, dx))
-        desired_pitch = float(np.arctan2(own.z - target.z, horizontal))
-        baseline = self.action_toward(
-            own, desired_heading, desired_pitch, float(self.config["desired_speed"])
-        )
-        override, _ = self.ground_risk(own, desired_pitch)
-        if override:
-            baseline = self.action_toward(
-                own, desired_heading, self.theta_max,
-                float(self.config["desired_speed"]),
-            )
-        return baseline, override
-
-    def team_actions(
-        self, team: list[AircraftState], targets: list[AircraftState]
-    ) -> np.ndarray:
-        rows = [self._action_and_override(state, targets) for state in team]
-        actions = np.stack([row[0] for row in rows])
-        mask = np.asarray([row[1] for row in rows], dtype=bool)
-        alive = np.asarray([state.alive for state in team], dtype=bool)
-        self.total_decision_steps += int(alive.sum())
-        self.override_steps += int(mask.sum())
-        self.activation_count += int(np.sum(mask & ~self._previous_override))
-        self._current_duration = np.where(mask, self._current_duration + 1, 0)
-        if self._current_duration.size:
-            self.maximum_activation_duration_steps = max(
-                self.maximum_activation_duration_steps,
-                int(self._current_duration.max()),
-            )
-        self._previous_override = mask
-        self.last_override_mask = mask
-        return actions
-
-    def diagnostics(self) -> dict[str, int | float]:
-        return {
-            "blue_ground_guard_decision_steps": self.total_decision_steps,
-            "blue_ground_guard_override_steps": self.override_steps,
-            "blue_ground_guard_activations": self.activation_count,
-            "blue_ground_guard_activation_ratio": (
-                self.override_steps / max(self.total_decision_steps, 1)
-            ),
-            "blue_ground_guard_max_duration_steps": (
-                self.maximum_activation_duration_steps
-            ),
-        }
+    def team_actions(self, team: list[AircraftState], targets: list[AircraftState]) -> np.ndarray:
+        return np.stack([self.action(state, targets, index) for index, state in enumerate(team)])
 
 
-__all__ = [
-    "GroundAwareNearestTargetPursuitPolicy", "NearestTargetPursuitPolicy",
-]
+__all__ = ["NearestTargetPursuitPolicy", "SternConversionPolicy", "SternPhase", "SternState"]

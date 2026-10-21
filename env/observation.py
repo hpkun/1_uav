@@ -1,4 +1,4 @@
-"""Exact 52-dimensional paper-constrained local observation contract."""
+"""Fixed entity ordering with 13*N local features; the legacy alias is 52."""
 from __future__ import annotations
 
 import numpy as np
@@ -7,17 +7,13 @@ from .math_utils import wrap_angle
 from .models import AircraftState
 from .geometry import engagement_geometry
 
-BASE_OBSERVATION_DIM = 52
-# Backward-compatible name for the frozen paper observation.
-OBSERVATION_DIM = BASE_OBSERVATION_DIM
-OWN_FIRE_READY_DIM = 1
+OBSERVATION_DIM = 52
 
 
-def observation_dim_from_config(cfg: dict) -> int:
-    """Resolve the opt-in schema without changing the legacy 52D default."""
-    return BASE_OBSERVATION_DIM + (
-        OWN_FIRE_READY_DIM if bool(cfg.get("include_own_fire_ready", False)) else 0
-    )
+def observation_dim_for_team_size(team_size: int) -> int:
+    if isinstance(team_size, bool) or int(team_size) != team_size or team_size < 2:
+        raise ValueError("team_size must be an integer >= 2")
+    return 13 * int(team_size)
 
 
 def flight_path_frame(state: AircraftState) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -82,23 +78,16 @@ def build_team_observations(
     opponents: list[AircraftState],
     cfg: dict,
     last_executed_phi: np.ndarray | None = None,
-    own_fire_ready: np.ndarray | None = None,
 ) -> np.ndarray:
-    include_ready = bool(cfg.get("include_own_fire_ready", False))
-    observation_dim = observation_dim_from_config(cfg)
+    if len(team) != len(opponents):
+        raise ValueError("combat observations require equally sized teams")
+    observation_dim = observation_dim_for_team_size(len(team))
     phis = (
         np.zeros(len(team), dtype=float)
         if last_executed_phi is None else np.asarray(last_executed_phi, dtype=float)
     )
     if phis.shape != (len(team),):
         raise ValueError("last_executed_phi must match team size")
-    ready = None
-    if include_ready:
-        if own_fire_ready is None:
-            raise ValueError("FireReady observation requires own_fire_ready")
-        ready = np.asarray(own_fire_ready, dtype=np.float32)
-        if ready.shape != (len(team),) or not np.all(np.isin(ready, (0.0, 1.0))):
-            raise ValueError("own_fire_ready must be a binary vector matching team size")
     observations = []
     for own_index, own in enumerate(team):
         if not own.alive:
@@ -118,16 +107,15 @@ def build_team_observations(
         ally_slots = [_ally_slot(own, ally, frame, cfg) for ally in allies]
         enemy_slots = [_enemy_slot(own, enemy, cfg) for enemy in opponents]
         values = np.concatenate([self_features, *ally_slots, *enemy_slots])
-        if include_ready:
-            values = np.concatenate((values, np.asarray([ready[own_index]], np.float32)))
         observations.append(values.astype(np.float32))
     result = np.stack(observations)
-    if result.shape != (4, observation_dim) or not np.all(np.isfinite(result)):
+    if result.shape != (len(team), observation_dim) or not np.all(np.isfinite(result)):
         raise FloatingPointError("invalid combat observation")
     return result
 
 
 __all__ = [
-    "BASE_OBSERVATION_DIM", "OBSERVATION_DIM", "OWN_FIRE_READY_DIM",
-    "observation_dim_from_config", "build_team_observations", "flight_path_frame",
+    "OBSERVATION_DIM",
+    "observation_dim_for_team_size",
+    "build_team_observations", "flight_path_frame",
 ]

@@ -1,21 +1,22 @@
-"""Paper-Constrained Direct 4v4 Combat Environment V2.3."""
+"""Version-isolated Multi-UAV Combat Environments v2.3 through v2.9."""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import math
 import numpy as np
 
-from .config import ENVIRONMENT_VERSION, aircraft_spec, load_config
+from .config import ENVIRONMENT_VERSION, aircraft_spec, load_config, validate_config, environment_dimensions
 from .dynamics import PointMassDynamics
 from .integrator import RK4Integrator
 from .models import AircraftState
 from .control import action_to_control
-from .fixed_policy import NearestTargetPursuitPolicy
+from .fixed_policy import NearestTargetPursuitPolicy, SternConversionPolicy
 from .geometry import engagement_geometry
-from .observation import OBSERVATION_DIM, build_team_observations, observation_dim_from_config
+from .observation import OBSERVATION_DIM, build_team_observations
 from .reward import paper_state_reward_components
 from .scenario import random_combat_states
-from .weapon import FireState, WeaponEnvelope
+from .weapon import FireState, WeaponEnvelope, PairFireState, RearAspectWeaponEnvelope
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -23,19 +24,150 @@ DEFAULT_COMBAT_CONFIG = PROJECT_ROOT / "configs/combat_environment.yaml"
 
 
 class MultiUAVCombatEnv:
-    """Four learned Red UAVs versus deterministic nearest-target Blue UAVs."""
+    """Versioned N-vs-N combat; the default remains v2.3 4v4."""
 
     team_size, observation_dim, action_dim = 4, OBSERVATION_DIM, 3
     environment_version = ENVIRONMENT_VERSION
 
+    def __new__(cls, config=DEFAULT_COMBAT_CONFIG):
+        if cls is MultiUAVCombatEnv:
+            candidate = config if isinstance(config, dict) else load_config(config)
+            if str(candidate.get('environment_version')) == '3.41':
+                from .combat_v341 import CombatEnvironmentV341
+                return object.__new__(CombatEnvironmentV341)
+            if str(candidate.get('environment_version')) == '3.40':
+                from .combat_v340 import CombatEnvironmentV340
+                return object.__new__(CombatEnvironmentV340)
+            if str(candidate.get('environment_version')) == '3.39':
+                from .combat_v339 import CombatEnvironmentV339
+                return object.__new__(CombatEnvironmentV339)
+            if str(candidate.get('environment_version')) == '3.38':
+                from .combat_v338 import CombatEnvironmentV338
+                return object.__new__(CombatEnvironmentV338)
+            if str(candidate.get('environment_version')) == '3.37':
+                from .combat_v337 import CombatEnvironmentV337
+                return object.__new__(CombatEnvironmentV337)
+            if str(candidate.get('environment_version')) == '3.36':
+                from .combat_v336 import CombatEnvironmentV336
+                return object.__new__(CombatEnvironmentV336)
+            if str(candidate.get('environment_version')) == '3.35':
+                from .combat_v335 import CombatEnvironmentV335
+                return object.__new__(CombatEnvironmentV335)
+            if str(candidate.get('environment_version')) == '3.34':
+                from .combat_v334 import CombatEnvironmentV334
+                return object.__new__(CombatEnvironmentV334)
+            if str(candidate.get('environment_version')) == '3.33':
+                from .combat_v333 import CombatEnvironmentV333
+                return object.__new__(CombatEnvironmentV333)
+            if str(candidate.get('environment_version')) == '3.32':
+                from .combat_v332 import CombatEnvironmentV332
+                return object.__new__(CombatEnvironmentV332)
+            if str(candidate.get('environment_version')) == '3.31':
+                from .combat_v331 import CombatEnvironmentV331
+                return object.__new__(CombatEnvironmentV331)
+            if str(candidate.get('environment_version')) == '3.30':
+                from .combat_v330 import CombatEnvironmentV330
+                return object.__new__(CombatEnvironmentV330)
+            if str(candidate.get('environment_version')) == '3.29':
+                from .combat_v329 import CombatEnvironmentV329
+                return object.__new__(CombatEnvironmentV329)
+            if str(candidate.get('environment_version')) == '3.28':
+                from .combat_v328 import CombatEnvironmentV328
+                return object.__new__(CombatEnvironmentV328)
+            if str(candidate.get('environment_version')) == '3.27':
+                from .combat_v327 import CombatEnvironmentV327
+                return object.__new__(CombatEnvironmentV327)
+            if str(candidate.get('environment_version')) == '3.26':
+                from .combat_v326 import CombatEnvironmentV326
+                return object.__new__(CombatEnvironmentV326)
+            if str(candidate.get('environment_version')) == '3.25':
+                from .combat_v325 import CombatEnvironmentV325
+                return object.__new__(CombatEnvironmentV325)
+            if str(candidate.get('environment_version')) == '3.24':
+                from .combat_v324 import CombatEnvironmentV324
+                return object.__new__(CombatEnvironmentV324)
+            if str(candidate.get('environment_version')) == '3.23':
+                from .combat_v323 import CombatEnvironmentV323
+                return object.__new__(CombatEnvironmentV323)
+            if str(candidate.get('environment_version')) == '3.22':
+                from .combat_v322 import CombatEnvironmentV322
+                return object.__new__(CombatEnvironmentV322)
+            if str(candidate.get('environment_version')) == '3.21':
+                from .combat_v321 import CombatEnvironmentV321
+                return object.__new__(CombatEnvironmentV321)
+            if str(candidate.get('environment_version')) == '3.20':
+                from .combat_v320 import CombatEnvironmentV320
+                return object.__new__(CombatEnvironmentV320)
+            if str(candidate.get('environment_version')) == '3.19':
+                from .combat_v319 import CombatEnvironmentV319
+                return object.__new__(CombatEnvironmentV319)
+            if str(candidate.get('environment_version')) == '3.17':
+                from .combat_v317 import CombatEnvironmentV317
+                return object.__new__(CombatEnvironmentV317)
+            if str(candidate.get('environment_version')) == '3.18':
+                from .combat_v318 import CombatEnvironmentV318
+                return object.__new__(CombatEnvironmentV318)
+            if str(candidate.get('environment_version')) == '3.16':
+                from .combat_v316 import CombatEnvironmentV316
+                return object.__new__(CombatEnvironmentV316)
+            if str(candidate.get('environment_version')) == '3.15':
+                from .combat_v315 import CombatEnvironmentV315
+                return object.__new__(CombatEnvironmentV315)
+            if str(candidate.get('environment_version')) == '3.14':
+                from .combat_v314 import CombatEnvironmentV314
+                return object.__new__(CombatEnvironmentV314)
+            if str(candidate.get('environment_version')) == '3.13':
+                from .combat_v313 import CombatEnvironmentV313
+                return object.__new__(CombatEnvironmentV313)
+            if str(candidate.get('environment_version')) == '3.12':
+                from .combat_v312 import CombatEnvironmentV312
+                return object.__new__(CombatEnvironmentV312)
+            if str(candidate.get('environment_version')) == '3.11':
+                from .combat_v311 import CombatEnvironmentV311
+                return object.__new__(CombatEnvironmentV311)
+            if str(candidate.get('environment_version')) == '3.10':
+                from .combat_v310 import CombatEnvironmentV310
+                return object.__new__(CombatEnvironmentV310)
+            if str(candidate.get('environment_version')) == '3.9':
+                from .combat_v39 import CombatEnvironmentV39
+                return object.__new__(CombatEnvironmentV39)
+            if str(candidate.get('environment_version')) == '3.8':
+                from .combat_v38 import CombatEnvironmentV38
+                return object.__new__(CombatEnvironmentV38)
+            if str(candidate.get('environment_version')) == '3.7':
+                from .combat_v37 import CombatEnvironmentV37
+                return object.__new__(CombatEnvironmentV37)
+            if str(candidate.get('environment_version')) == '3.6':
+                from .combat_v36 import CombatEnvironmentV36
+                return object.__new__(CombatEnvironmentV36)
+            if str(candidate.get('environment_version')) == '3.5':
+                from .combat_v35 import CombatEnvironmentV35
+                return object.__new__(CombatEnvironmentV35)
+            if str(candidate.get('environment_version')) == '3.4':
+                from .combat_v34 import CombatEnvironmentV34
+                return object.__new__(CombatEnvironmentV34)
+            if str(candidate.get('environment_version')) == '3.3':
+                from .combat_v33 import CombatEnvironmentV33
+                return object.__new__(CombatEnvironmentV33)
+            if str(candidate.get('environment_version')) == '3.2':
+                from .combat_v32 import CombatEnvironmentV32
+                return object.__new__(CombatEnvironmentV32)
+            if str(candidate.get('environment_version')) == '3.1':
+                from .combat_v31 import CombatEnvironmentV31
+                return object.__new__(CombatEnvironmentV31)
+            if str(candidate.get('environment_version')) == '3.0':
+                from .combat_v30 import CombatEnvironmentV30
+                return object.__new__(CombatEnvironmentV30)
+        return object.__new__(cls)
+
     def __init__(
         self, config: str | Path | dict[str, Any] = DEFAULT_COMBAT_CONFIG
     ) -> None:
-        self.config = load_config(config) if not isinstance(config, dict) else config
-        if str(self.config.get("environment_version")) != ENVIRONMENT_VERSION:
-            raise ValueError(f"environment_version must be {ENVIRONMENT_VERSION}")
+        self.config = load_config(config) if not isinstance(config, dict) else validate_config(config)
+        self.environment_version = str(self.config["environment_version"])
+        self._uses_pair_rear_aspect_protocol = self.environment_version in {"2.4", "2.5", "2.6", "2.7", "2.8", "2.9"}
+        self.observation_dim, self.action_dim, self.team_size = environment_dimensions(self.config)
         self.spec = aircraft_spec(self.config)
-        self.observation_dim = observation_dim_from_config(self.config["observation"])
         self.dt = float(self.config["simulation"]["dt"])
         self.max_steps = int(self.config["simulation"]["max_steps"])
         self.arena_radius = float(self.config["arena"]["radius"])
@@ -44,18 +176,26 @@ class MultiUAVCombatEnv:
         self.fixed_policy = NearestTargetPursuitPolicy(
             self.config["blue_policy"], self.config["action"]
         )
-        self.weapon = WeaponEnvelope(**self.config["weapon"])
+        if self.environment_version in {"2.6", "2.7", "2.8", "2.9"}:
+            self.fixed_policy = SternConversionPolicy(self.config["blue_policy"], self.config["action"], self.team_size)
+        weapon_class = RearAspectWeaponEnvelope if self._uses_pair_rear_aspect_protocol else WeaponEnvelope
+        self.weapon = weapon_class(**self.config["weapon"])
         self.rng = np.random.default_rng()
         self.red: list[AircraftState] = []
         self.blue: list[AircraftState] = []
-        self.red_fire_states = [FireState() for _ in range(self.team_size)]
-        self.blue_fire_states = [FireState() for _ in range(self.team_size)]
+        self.red_fire_states = self._new_fire_states()
+        self.blue_fire_states = self._new_fire_states()
         self.red_last_executed_phi = np.zeros(self.team_size, dtype=np.float32)
         self.blue_last_executed_phi = np.zeros(self.team_size, dtype=np.float32)
         self.steps = 0
         self.combat_counts: dict[str, dict[str, int]] = {}
         self.first_steps: dict[str, dict[str, int | None]] = {}
         self.episode_reward_components: dict[str, np.ndarray] = {}
+
+    def _new_fire_states(self):
+        if self._uses_pair_rear_aspect_protocol:
+            return PairFireState(self.team_size)
+        return [FireState() for _ in range(self.team_size)]
 
     @property
     def red_alive_mask(self) -> np.ndarray:
@@ -83,18 +223,20 @@ class MultiUAVCombatEnv:
         }
 
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        if self.environment_version in {"2.6", "2.7", "2.8", "2.9"}:
+            self.fixed_policy.reset()
         self.rng = np.random.default_rng(seed)
         self.red, self.blue, radial_angle = random_combat_states(
             self.rng, **self.config["scenario"]
         )
-        self.red_fire_states = [FireState() for _ in range(self.team_size)]
-        self.blue_fire_states = [FireState() for _ in range(self.team_size)]
+        self.red_fire_states = self._new_fire_states()
+        self.blue_fire_states = self._new_fire_states()
         self.red_last_executed_phi.fill(0.0)
         self.blue_last_executed_phi.fill(0.0)
         self.steps = 0
         self._reset_metrics()
         return self._observations(), {
-            "environment_version": ENVIRONMENT_VERSION,
+            "environment_version": self.environment_version,
             "radial_angle": radial_angle,
             "red_alive_mask": self.red_alive_mask,
             "blue_alive_mask": self.blue_alive_mask,
@@ -104,8 +246,6 @@ class MultiUAVCombatEnv:
         return build_team_observations(
             self.red, self.blue, self.config["observation"],
             self.red_last_executed_phi,
-            np.asarray([state.armed for state in self.red_fire_states], dtype=np.float32)
-            if self.observation_dim > OBSERVATION_DIM else None,
         )
 
     @staticmethod
@@ -113,7 +253,9 @@ class MultiUAVCombatEnv:
         return [state.copy() for state in states]
 
     def _advance(self, states: list[AircraftState], actions: np.ndarray) -> np.ndarray:
-        phis = np.zeros(self.team_size, dtype=np.float32)
+        # v3.14 exposes phi in float64 observations: retain the actual control
+        # value, including +/-pi/2. Historical versions keep float32 traces.
+        phis = np.zeros(self.team_size, dtype=np.float64 if self.environment_version == '3.14' else np.float32)
         for index, state in enumerate(states):
             if state.alive:
                 control = action_to_control(state, actions[index], self.config["action"])
@@ -144,6 +286,19 @@ class MultiUAVCombatEnv:
         return results[0], results[1], results[2], results[3]
 
     def _in_fire_window(self, attacker: AircraftState, target: AircraftState) -> bool:
+        if self._uses_pair_rear_aspect_protocol:
+            # Reject cheap necessary conditions before the full 3-D geometry.
+            if not attacker.alive or not target.alive:
+                return False
+            dx, dy, dz = target.x-attacker.x, target.y-attacker.y, target.z-attacker.z
+            distance = math.sqrt(dx*dx+dy*dy+dz*dz)
+            if not self.weapon.range_min <= distance <= self.weapon.range_max:
+                return False
+            los = math.atan2(dy,dx) if dx or dy else attacker.psi
+            aspect = abs((target.psi-los+math.pi) % (2*math.pi)-math.pi)
+            if aspect > self.weapon.target_aspect_angle_max:
+                return False
+            return self.weapon.qualifies(engagement_geometry(attacker,target),attacker.v,target.v)
         return bool(
             attacker.alive and target.alive
             and self.weapon.in_fire_window(engagement_geometry(attacker, target))
@@ -174,6 +329,8 @@ class MultiUAVCombatEnv:
         fire_states: list[FireState],
         side: str,
     ) -> list[tuple[int, int, bool]]:
+        if self._uses_pair_rear_aspect_protocol:
+            return self._pair_entry_attempts(attackers, targets, fire_states, side)
         attempts: list[tuple[int, int, bool]] = []
         for attacker_index, attacker in enumerate(attackers):
             fire_state = fire_states[attacker_index]
@@ -197,6 +354,30 @@ class MultiUAVCombatEnv:
         if attempt_count and self.first_steps[side]["attempt"] is None:
             self.first_steps[side]["attempt"] = self.steps
         if hit_count and self.first_steps[side]["hit"] is None:
+            self.first_steps[side]["hit"] = self.steps
+        return attempts
+
+    def _pair_entry_attempts(self, attackers, targets, fire_states: PairFireState, side):
+        attempts = []
+        for attacker_index, attacker in enumerate(attackers):
+            candidates = []
+            for target_index, target in enumerate(targets):
+                qualified = self._in_fire_window(attacker, target)
+                if not qualified:
+                    fire_states.armed[attacker_index, target_index] = True
+                elif fire_states.armed[attacker_index, target_index]:
+                    geometry = engagement_geometry(attacker, target)
+                    candidates.append((geometry.distance, target_index, geometry))
+            if candidates:
+                _, target_index, geometry = min(candidates, key=lambda row: (row[0], row[1]))
+                fire_states.armed[attacker_index, target_index] = False
+                attempts.append((attacker_index, target_index, self.weapon.attempt_hit(geometry, self.rng)))
+        self.combat_counts[side]["fire_attempts"] += len(attempts)
+        hits = sum(hit for _, _, hit in attempts)
+        self.combat_counts[side]["weapon_hits"] += hits
+        if attempts and self.first_steps[side]["attempt"] is None:
+            self.first_steps[side]["attempt"] = self.steps
+        if hits and self.first_steps[side]["hit"] is None:
             self.first_steps[side]["hit"] = self.steps
         return attempts
 
@@ -288,7 +469,7 @@ class MultiUAVCombatEnv:
         red_survivors = int(self.red_alive_mask.sum())
         blue_survivors = int(self.blue_alive_mask.sum())
         info: dict[str, Any] = {
-            "environment_version": ENVIRONMENT_VERSION,
+            "environment_version": self.environment_version,
             "red_success": red_win,
             "red_win": red_win,
             "blue_win": blue_win,
@@ -338,14 +519,14 @@ class MultiUAVCombatEnv:
         if red_actions.shape != (self.team_size, self.action_dim) or not np.all(
             np.isfinite(red_actions)
         ):
-            raise ValueError("red_actions must be finite with shape (4, 3)")
+            raise ValueError(f"red_actions must be finite with shape ({self.team_size}, 3)")
         if blue_actions is None:
             blue_actions = self.fixed_policy.team_actions(self.blue, self.red)
         blue_actions = np.asarray(blue_actions, dtype=np.float32)
         if blue_actions.shape != (self.team_size, self.action_dim) or not np.all(
             np.isfinite(blue_actions)
         ):
-            raise ValueError("blue_actions must be finite with shape (4, 3)")
+            raise ValueError(f"blue_actions must be finite with shape ({self.team_size}, 3)")
 
         executed_red = np.clip(red_actions, -1.0, 1.0) * self.red_alive_mask[:, None]
         executed_blue = np.clip(blue_actions, -1.0, 1.0) * self.blue_alive_mask[:, None]
