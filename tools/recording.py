@@ -10,8 +10,11 @@ class TrajectoryRecorder:
         self.data = dict(environment_version=ENVIRONMENT_VERSION, config=config.to_dict(), seed=int(seed),
                          frames=[serializable(initial_info)])
 
-    def append(self, info):
-        self.data['frames'].append(serializable(info))
+    def append(self, info, *, policy_diagnostics=None):
+        frame = serializable(info)
+        if policy_diagnostics is not None:
+            frame['policy_diagnostics'] = serializable(policy_diagnostics)
+        self.data['frames'].append(frame)
 
     def save(self, path):
         p = Path(path)

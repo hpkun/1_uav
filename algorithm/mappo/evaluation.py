@@ -6,7 +6,7 @@ from algorithm.common.runtime import require_cuda
 from algorithm.common.metrics import EpisodeAccumulator, episode_metrics
 
 
-def evaluate(trainer, env_config, seeds, trace_path=None, *, provenance=None):
+def evaluate(trainer, env_config, seeds, trace_path=None, *, provenance=None, policy_diagnostics=False):
     require_cuda(str(trainer.device))
     summaries=[]
     for episode,seed in enumerate(seeds):
@@ -21,10 +21,19 @@ def evaluate(trainer, env_config, seeds, trace_path=None, *, provenance=None):
         while True:
             with torch.no_grad():
                 clean=np.where(info['active_mask'][:,None],obs,0)
-                actions,_=trainer.actor.act(trainer.tensor(clean),deterministic=True)
+                actor_input=trainer.tensor(clean)
+                actions,logp=trainer.actor.act(actor_input,deterministic=True)
+                diagnostics=None
+                if recorder and policy_diagnostics:
+                    # Extra deterministic forward only for a NEW audit recording.
+                    # No sampling, parameter updates or simulator changes.
+                    dist=trainer.actor.distribution(actor_input)
+                    diagnostics=dict(selection='mean',normalized_actions=actions.cpu().numpy(),
+                        beta_alpha=dist.concentration1.cpu().numpy(),beta_beta=dist.concentration0.cpu().numpy(),
+                        log_probability=logp.cpu().numpy(),entropy=dist.entropy().sum(-1).cpu().numpy())
             obs,reward,term,trunc,info=env.step(actions.cpu().numpy())
             tracker.add(info,reward)
-            if recorder: recorder.append(info)
+            if recorder: recorder.append(info,policy_diagnostics=diagnostics)
             if term or trunc: break
         summary=tracker.summary(info)
         summary.update(seed=int(seed),incomplete=info['incomplete'],all_inactive=info['all_inactive'],numerical_counters=info['numerical_counters'])
