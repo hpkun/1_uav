@@ -122,7 +122,7 @@ def _reference(counts, minibatch, normalize, order, ratios, entropy_coef=.001):
     r, slots = np.array(rewards),np.array(ids,dtype=int)
     a=r.copy()
     for i,c in enumerate(counts):
-        if c and normalize:
+        if c>1 and normalize:
             a[slots==i]=(a[slots==i]-a[slots==i].mean())/(a[slots==i].std()+1e-8)
     answers=[]
     participation=np.zeros(len(counts),dtype=int)
@@ -186,7 +186,7 @@ def ppo_boundaries():
                              expected_per_minibatch=per_batch, metrics=result,
                              sampled_steps=t.sampled_steps, updates=t.updates,
                              gae_definition='terminal rewards i*10+t+1, V=0, A=R=rewards on valid slots'))
-        # Real Beta: singleton policy advantage vanishes, entropy gradient need not.
+        # Real Beta: singleton retains its raw policy advantage and entropy.
         t=ProtocolMAPPOTrainer(ProtocolTrainConfig(ppo_epochs=1))
         t.actor_optimizer=torch.optim.SGD(t.actor.parameters(),lr=0)
         t.critic_optimizer=torch.optim.SGD(t.critic.parameters(),lr=0)

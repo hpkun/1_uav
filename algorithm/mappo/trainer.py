@@ -17,13 +17,15 @@ def finite_selected(name, value, mask):
 
 
 @torch.no_grad()
-def standardize_advantages(adv, slots, *, per_agent):
-    """Existing population-std+1e-8 rule, including singleton -> zero."""
+def standardize_advantages(adv, slots, *, per_agent, preserve_singletons=True):
+    """Population-std+1e-8; preserve singleton policy signal in Xu protocol."""
     if not per_agent:
         return (adv-adv.mean())/(adv.std(unbiased=False)+1e-8)
     adv = adv.clone()
     for slot in slots.unique():
         selected = slots == slot
+        if preserve_singletons and int(selected.sum()) == 1:
+            continue
         adv[selected] = (adv[selected]-adv[selected].mean())/(adv[selected].std(unbiased=False)+1e-8)
     return adv
 
@@ -236,7 +238,8 @@ class MAPPOTrainer:
             if not torch.isfinite(value).all(): raise FloatingPointError(f'nonfinite valid {name}')
         if not ((actions>0)&(actions<1)).all(): raise ValueError('PPO actions must be inside (0,1)')
         if c.normalize_advantages:
-            adv = standardize_advantages(adv, slots, per_agent=per_agent)
+            adv = standardize_advantages(adv, slots, per_agent=per_agent,
+                preserve_singletons=getattr(c,'preserve_singleton_advantages',False))
         observer = None
         if diagnostic is not None:
             diagnostic.update(status='ok', advantage_after=advantage_statistics(adv,slots,n),
@@ -301,11 +304,7 @@ def clean_protocol_state(states, masks):
 
 
 class ProtocolMAPPOTrainer(MAPPOTrainer):
-    """Executable generic 12/60 optimizer; accepts externally supplied Rollout.
-
-    No simulator collector, target/geometry construction or reward computation.
-    This is not a complete Xu task/training reproduction.
-    """
+    """12/60 PPO optimizer, with real Xu air-combat vector collection."""
     from .paper_protocol import ALGORITHM_VERSION as algorithm_version, PROTOCOL as protocol
 
     def __init__(self, config=None, *, device=None):
@@ -313,8 +312,12 @@ class ProtocolMAPPOTrainer(MAPPOTrainer):
             raise TypeError('12/60 updater requires ProtocolTrainConfig')
         self._initialize(config or ProtocolTrainConfig(), device, ProtocolCritic)
 
-    def collect(self, *args, **kwargs):
-        raise RuntimeError('12/60 protocol has no task/reward collector; supply explicit Rollout arrays')
+    def collect(self, vector, joint_steps=None, *, episode_limit=None):
+        from algorithm.common.aircombat_vector import AirCombatVectorEnv
+        from .aircombat_rollout import collect
+        if not isinstance(vector,AirCombatVectorEnv):
+            raise RuntimeError('no task/reward collector for non-aircombat vector; supply explicit Rollout arrays')
+        return collect(self,vector,joint_steps,episode_limit=episode_limit)
 
     @torch.no_grad()
     def sample_actions(self, observations, masks, *, deterministic=False):

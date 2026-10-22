@@ -1,10 +1,36 @@
-# Coop3D 巡检与独立 MAPPO 数组协议
+# Xu (2026) APH-MAPPO 三维空战与历史巡检基准
+
+当前空战入口为 `python -m algorithm.aircombat`，独立环境位于 `env/aircombat/`：支持 **3v3、5v5、3v5**，Red 共享 Beta Actor 学习，Blue 使用论文 Table I 的 15 动作、aggregate-sum 80/20 规则。Actor/Critic 为 **12D/60D**，与历史巡检 12D/90D 存档互斥。
+
+默认环境参数、训练表 III 参数、论文外假设、逐文件变更及验证结果见 [前三阶段实施报告](docs/xu2026_aircombat_implementation.md)。`shootdown_r0=10` 是**论文未报告的实验占位值**，可以通过 `--r0` 修改。未进行正式 5000 回合 × 5 种子实验，也未声称论文性能复现。
+
+在 PowerShell 的 `uav` 环境运行（CUDA 必须可用）：
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'
+(& conda 'shell.powershell' 'hook') | Out-String | Invoke-Expression
+conda activate uav
+python -m pytest -q
+python -m tools.validate_aircombat --output outputs/my_aircombat_acceptance
+
+# 以下正式预算命令仅为使用示例，本次没有执行。
+python -m algorithm.aircombat train --scale 3v3 --output outputs/aircombat_3v3
+python -m algorithm.aircombat train --scale 5v5 --output outputs/aircombat_5v5
+python -m algorithm.aircombat train --scale 3v5 --output outputs/aircombat_3v5
+python -m algorithm.aircombat evaluate outputs/aircombat_3v3/latest.pt --episodes 200
+```
+
+`train.jsonl` 记录完成回合数、联合环境步数、PPO 更新数、回合 return、五项奖励、Blue 击落数、Red 存活数、全消灭胜率及数值异常。checkpoint 在 rollout/PPO 更新边界按完成回合阈值保存，并保留 worker 完整状态；如果同一 rollout 跨过保存阈值，实际保存回合数会高于该阈值。恢复必须使用相同环境和训练配置。
+
+下面保留历史巡检任务的说明与入口；它们不属于新的论文空战训练路径。
+
+## 历史巡检任务与早期数组协议
 
 非武器化三维多UAV航路点巡检：3U3P、5U5P、3U5P。环境 `coop3d-v3.0.0`，巡检算法 `mappo-coop3d-v3.0.0`。环境在 `env/`，MAPPO 在 `algorithm/`，导航诊断及录像在 `tools/`。旧 `coop3d/` 包已移除，没有兼容转发入口。
 
 本轮完成环境语义回归、90D集中状态、五个体价值Critic、Beta配平初始化、NaN安全GAE、严格采样预算、导航可达性审计和短程CUDA Smoke Test；没有运行正式长训练。
 
-2026-10-22 实施整改：实际环境已移除±85°限制并复用原式RHS/RK4；动力学及γ特征改变，**旧v2 checkpoint明确拒绝直接恢复**，历史数据未改写。独立 `ProtocolMAPPOTrainer` 使用12D Actor/60D Critic、逐个体有效样本归一化、无½的价值MSE，支持外部数组优化及独立checkpoint，没有任务/Reward采样器。最新结论和验证见 [整改报告](docs/xu2026_rectification.md)。仍未实现原论文对抗环境；默认rollout1500、单局250，RegionCompetition不再存在。
+早期整改记录：巡检环境移除±85°限制并复用原式RHS/RK4；动力学及γ特征改变，**旧v2 checkpoint明确拒绝直接恢复**，历史数据未改写。早期独立数组协议的结果见 [历史整改报告](docs/xu2026_rectification.md)。本次已将 `ProtocolMAPPOTrainer` 连接真实空战；当前结论以上面的空战实施报告为准。
 
 ## 当前机器：PowerShell / uav
 

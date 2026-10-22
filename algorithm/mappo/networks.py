@@ -25,6 +25,10 @@ class Actor(nn.Module):
             nn.init.orthogonal_(self.network[-1].weight, gain=output_weight_gain)
             with torch.no_grad():
                 self.network[-1].bias.copy_(inverse)
+        elif initialization_mode == 'symmetric':
+            # Unpublished, symmetric Beta initialization without trim prior.
+            nn.init.orthogonal_(self.network[-1].weight, gain=output_weight_gain)
+            nn.init.zeros_(self.network[-1].bias)
         elif initialization_mode != 'legacy':
             raise ValueError('unknown actor initialization')
 

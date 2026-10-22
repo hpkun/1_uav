@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "coop3d"
 version = "1.0.0"
-description = "Cooperative three-dimensional UAV spatial inspection MAPPO benchmark"
+description = "Xu APH-MAPPO 3D multi-UAV air combat and historical inspection benchmark"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "PyYAML>=6.0", "torch>=2.0", "plotly>=5.18"]
 

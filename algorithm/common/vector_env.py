@@ -10,9 +10,9 @@ from env.factory import make_environment
 from .metrics import EpisodeAccumulator
 
 
-def _worker(pipe, config):
+def _worker(pipe, config, environment_factory=make_environment):
     try:
-        env = make_environment(config)
+        env = environment_factory(config)
         pipe.send(('ok', os.getpid()))
         while True:
             command, payload = pipe.recv()
@@ -23,15 +23,18 @@ def _worker(pipe, config):
             elif command == 'step':
                 value = env.step(payload)
             elif command == 'snapshot':
-                value = dict(task=env.task, rng=env.rng.bit_generator.state, step=env.step_count,
+                value = env.snapshot() if hasattr(env,'snapshot') else dict(task=env.task, rng=env.rng.bit_generator.state, step=env.step_count,
                              done=env.done, counters=env.counters, assignments=env.assignments,
                              numerical_delta=env.numerical_delta, numerical_events=env.numerical_events)
             elif command == 'restore':
-                env.task = payload['task']
-                env.rng.bit_generator.state = payload['rng']
-                env.step_count, env.done = payload['step'], payload['done']
-                env.counters, env.assignments = payload['counters'], payload['assignments']
-                env.numerical_delta, env.numerical_events = payload['numerical_delta'], payload['numerical_events']
+                if hasattr(env,'restore'):
+                    env.restore(payload)
+                else:
+                    env.task = payload['task']
+                    env.rng.bit_generator.state = payload['rng']
+                    env.step_count, env.done = payload['step'], payload['done']
+                    env.counters, env.assignments = payload['counters'], payload['assignments']
+                    env.numerical_delta, env.numerical_events = payload['numerical_delta'], payload['numerical_events']
                 value = None
             else:
                 raise ValueError(f'unknown worker command {command}')
@@ -62,7 +65,8 @@ class VectorStep:
 
 
 class ParallelVectorEnv:
-    def __init__(self, config=None, num_envs=10, seed=1, forbidden_seeds=(), timeout=60):
+    def __init__(self, config=None, num_envs=10, seed=1, forbidden_seeds=(), timeout=60,
+                 *, environment_factory=make_environment, accumulator_factory=EpisodeAccumulator):
         if num_envs < 1:
             raise ValueError('num_envs must be positive')
         self.config = config or EnvConfig()
@@ -71,12 +75,12 @@ class ParallelVectorEnv:
         self.episodes = np.zeros(num_envs, dtype=np.int64)
         self.connections, self.processes = [], []
         self.closed = False
-        self.trackers = [EpisodeAccumulator() for _ in range(num_envs)]
+        self.trackers = [accumulator_factory() for _ in range(num_envs)]
         context = mp.get_context('spawn')
         try:
             for _ in range(num_envs):
                 parent, child = context.Pipe()
-                process = context.Process(target=_worker, args=(child, self.config), daemon=True)
+                process = context.Process(target=_worker, args=(child, self.config, environment_factory), daemon=True)
                 process.start()
                 child.close()
                 self.connections.append(parent)

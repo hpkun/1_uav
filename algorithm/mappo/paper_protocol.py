@@ -1,18 +1,17 @@
-"""Xu p.7 Eq.(25)/p.8 Table III: independent array/network protocol.
+"""Xu Eq.(25)/Table III: 12/60 protocol, also used by env.aircombat.
 
-No target selection, geometry-to-observation chain, or reward is implemented.
-The Coop3D runner/checkpoints remain a distinct 12/90/5 protocol.
+Historical inspection remains a distinct 12/90/5 protocol.
 """
 from dataclasses import dataclass
 
 import numpy as np
 
-ALGORITHM_VERSION = 'mappo-array-12x60-v1.0.0'
+ALGORITHM_VERSION = 'mappo-array-12x60-v1.1.0'
 PROTOCOL = dict(actor_input=12, actor_action=3, critic_input=60, critic_output=5,
                 state_layout='five explicitly supplied Eq25 raw slots, UAV ID order, zero padded',
                 value_loss='sum of per-UAV valid means of squared errors, no half',
                 actor_loss='sum of per-UAV valid mean clipped PPO and entropy',
-                observation_source='external raw slots; no task/geometry/reward adapter',
+                observation_source='explicit raw Eq25 slots; env.aircombat supplies actual target geometry',
                 shared_parameters='shared actor and five-head critic: engineering assumption')
 
 

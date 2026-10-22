@@ -106,11 +106,13 @@ def _validate_array_checkpoint(payload):
         raise ValueError('incompatible checkpoint: incomplete array protocol') from exc
 
 
-def save_protocol_checkpoint(path, trainer):
-    """Save only the independent generic updater, never an environment/reward.
+def save_protocol_checkpoint(path, trainer, *, env_config=None, vector=None):
+    """Save the 12/60 updater, optionally with complete aircombat vector state.
 
     A JSON identity inside the torch ZIP is checked before trusted unpickling.
     The five-head/shared-parameter/reduction assumptions are part of identity.
+    Combat snapshots are emitted only at completed rollout/update boundaries;
+    the phase tag means no unconsumed partial rollout needs serialization.
     """
     from algorithm.mappo.paper_protocol import ALGORITHM_VERSION as identity, PROTOCOL as protocol
     if trainer.algorithm_version != identity or trainer.protocol != protocol:
@@ -121,6 +123,17 @@ def save_protocol_checkpoint(path, trainer):
                    updates=trainer.updates, sampled_steps=trainer.sampled_steps, training_episode_count=trainer.training_episode_count,
                    torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all(),
                    numpy_rng=np.random.get_state(), python_rng=random.getstate())
+    header = dict(algorithm_version=identity, protocol=protocol)
+    if env_config is not None:
+        from env.aircombat.config import ENVIRONMENT_VERSION as combat_version
+        from env.aircombat.config import AirCombatConfig
+        if not isinstance(env_config,AirCombatConfig) or vector is None:
+            raise ValueError('aircombat checkpoint requires config and worker snapshot')
+        payload.update(environment_version=combat_version,env_config=env_config.to_dict(),
+                       reproduction_assumptions=env_config.reproduction_assumptions(),
+                       train_assumptions=trainer.config.reproduction_assumptions(),
+                       vector=vector.snapshot(),phase='between_rollouts_after_update')
+        header['environment_version'] = combat_version
     _validate_array_checkpoint(payload)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -128,11 +141,11 @@ def save_protocol_checkpoint(path, trainer):
     torch.save(payload, temp)
     with zipfile.ZipFile(temp, 'a') as archive:
         prefix = next(n for n in archive.namelist() if n.endswith('/data.pkl')).rsplit('/', 1)[0]
-        archive.writestr(prefix+'/protocol.json', json.dumps(dict(algorithm_version=identity, protocol=protocol)))
+        archive.writestr(prefix+'/protocol.json', json.dumps(header))
     temp.replace(p)
 
 
-def read_protocol_checkpoint(path):
+def read_protocol_checkpoint(path, *, environment_version=None):
     from algorithm.mappo.paper_protocol import ALGORITHM_VERSION as identity, PROTOCOL as protocol
     from .runtime import require_cuda
     require_cuda('cuda')
@@ -140,7 +153,10 @@ def read_protocol_checkpoint(path):
         with zipfile.ZipFile(path) as archive:
             name = next(n for n in archive.namelist() if n.endswith('/protocol.json'))
             header = json.loads(archive.read(name))
-            if header != dict(algorithm_version=identity, protocol=protocol):
+            expected = dict(algorithm_version=identity, protocol=protocol)
+            if environment_version is not None:
+                expected['environment_version'] = environment_version
+            if header != expected:
                 raise ValueError('incompatible checkpoint: array protocol identity')
     except (zipfile.BadZipFile, StopIteration, KeyError, json.JSONDecodeError) as exc:
         raise ValueError('incompatible checkpoint: no 12/60 protocol identity') from exc
@@ -149,12 +165,19 @@ def read_protocol_checkpoint(path):
     return payload
 
 
-def restore_protocol_checkpoint(payload, trainer):
+def restore_protocol_checkpoint(payload, trainer, *, env_config=None, vector=None):
     _validate_array_checkpoint(payload)
     if trainer.algorithm_version != payload['algorithm_version'] or trainer.protocol != payload['protocol']:
         raise ValueError('incompatible checkpoint: trainer identity')
     if trainer.config.to_dict() != payload['train_config']:
         raise ValueError('checkpoint configuration mismatch')
+    if env_config is not None:
+        from env.aircombat.config import ENVIRONMENT_VERSION as combat_version
+        if (payload.get('environment_version')!=combat_version or payload.get('env_config')!=env_config.to_dict()
+                or payload.get('phase')!='between_rollouts_after_update' or payload.get('vector') is None):
+            raise ValueError('incompatible aircombat checkpoint/configuration/phase')
+        if vector is not None:
+            vector.restore(payload['vector'])
     trainer.actor.load_state_dict(payload['actor'])
     trainer.critic.load_state_dict(payload['critic'])
     trainer.actor_optimizer.load_state_dict(payload['actor_optimizer'])

@@ -51,7 +51,7 @@ class TrainConfig:
             raise ValueError('evaluation seeds must be nonempty and unique')
         if self.seed in self.evaluation_seeds:
             raise ValueError('training and evaluation seeds must be independent')
-        if self.initialization_mode not in ('trim_centered', 'legacy'):
+        if self.initialization_mode not in ('trim_centered', 'legacy', 'symmetric'):
             raise ValueError('invalid initialization_mode')
         if not math.isfinite(self.beta_concentration) or self.beta_concentration <= 8:
             raise ValueError('beta_concentration must exceed 8 for softplus+1 trim parameters')
@@ -78,7 +78,7 @@ class TrainConfig:
 
 @dataclass
 class ProtocolTrainConfig(TrainConfig):
-    """Independent 12/60 updater settings; no simulator/reward adapter.
+    """12/60 updater and Xu air-combat training settings.
 
     Extra settings are engineering assumptions inherited explicitly from
     TrainConfig, not author-published Beta/normalization/Adam details.
@@ -86,6 +86,10 @@ class ProtocolTrainConfig(TrainConfig):
     checkpoint_interval_episodes: int = 50
     evaluation_episodes: int = 200
     training_seed_index: int = 1
+    initialization_mode: str = 'symmetric'
+    preserve_singleton_advantages: bool = True
+    training_episodes: int = 5000
+    independent_training_seeds: int = 5
 
     def __post_init__(self):
         super().__post_init__()
@@ -93,6 +97,21 @@ class ProtocolTrainConfig(TrainConfig):
             raise ValueError('invalid checkpoint_interval_episodes')
         if type(self.training_seed_index) is not int or self.training_seed_index < 0:
             raise ValueError('invalid training_seed_index')
+        if type(self.preserve_singleton_advantages) is not bool:
+            raise ValueError('invalid preserve_singleton_advantages')
+        for key in ('training_episodes', 'independent_training_seeds'):
+            if type(getattr(self,key)) is not int or getattr(self,key)<1:
+                raise ValueError(f'invalid {key}')
+
+    def reproduction_assumptions(self):
+        return dict(initialization=self.initialization_mode, beta_parameters='softplus(raw)+1; small symmetric output weights',
+                    output_weight_gain=self.output_weight_gain, adam_epsilon=self.adam_epsilon,
+                    max_grad_norm=self.max_grad_norm, normalize_advantages=self.normalize_advantages,
+                    advantage_normalization='per agent population std+1e-8; singleton kept raw' if self.preserve_singleton_advantages else 'singleton centered to zero',
+                    beta_epsilon=self.beta_epsilon, loss_reduction='sum of per-agent valid means; MSE without half',
+                    timeout='bootstrap real final state; stop GAE at episode boundary',
+                    checkpoint_timing='completed-episode thresholds checked after PPO update; crossing may overshoot interval',
+                    budget='collect full per-worker horizons; exact episode budget via final active-worker waves')
 
     def worker_seeds(self):
         """Published initial-worker rule (Xu p.8); no per-episode reseeding."""

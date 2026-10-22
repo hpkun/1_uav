@@ -104,8 +104,8 @@ def test_ppo_hand_answers_sample_counts_and_clipping(ppo_cases,name):
         assert d[f'{label}_gradient_clip_fraction']==expected
     if name=='singleton':
         assert d['advantage_before'][0]['mean']==1 and d['advantage_before'][0]['std']==0
-        assert d['advantage_after'][0]['mean']==d['advantage_after'][0]['std']==0
-        assert row['actual']['policy_loss']==0 and row['actual']['actor_norm_mean']==0
+        assert d['advantage_after'][0]['mean']==1 and d['advantage_after'][0]['std']==0
+        assert row['actual']['policy_loss']==-1 and row['actual']['actor_norm_mean']==1
         assert d['singleton_uavs']==[0]
     if name=='two_samples':
         assert d['advantage_before'][0]['mean']==1.5 and d['advantage_before'][0]['std']==.5
@@ -116,7 +116,7 @@ def test_ppo_hand_answers_sample_counts_and_clipping(ppo_cases,name):
 
 def test_real_beta_singleton_keeps_entropy_gradient(ppo_cases):
     real=ppo_cases['real_beta_singleton']
-    assert real['policy_loss']==0
+    assert real['policy_loss']==pytest.approx(-1)
     assert real['numerical_diagnostics']['actor_gradient_norm']['max']>0
     assert real['numerical_diagnostics']['beta_parameters']['finite']
 
