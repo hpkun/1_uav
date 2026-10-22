@@ -12,6 +12,7 @@ from algorithm.mappo.config import ProtocolTrainConfig
 from algorithm.mappo.trainer import ProtocolMAPPOTrainer
 from algorithm.common.checkpoint import read_protocol_checkpoint,restore_protocol_checkpoint
 from algorithm.aircombat import train,evaluate
+from algorithm.common.aircombat_progress import format_evaluation
 
 SEEDS=(1,2,3,4,5)  # Published count; concrete five indices are a disclosed choice.
 CATALOG={
@@ -31,22 +32,31 @@ for factor,(field,values,baseline) in FACTORS.items():
             CATALOG[f'{factor}_{value}']=dict(family='coefficient',scale='3v3',env={field:value})
 
 
-def configurations(name,seed=1,*,smoke=False):
+def configurations(name,seed=1,*,smoke=False,episodes=None):
+    if episodes is not None and (type(episodes) is not int or episodes not in (2500,5000)):
+        raise ValueError('experiment episodes must be 2500 or 5000')
+    if smoke and episodes is not None:raise ValueError('--episodes cannot be combined with --smoke')
     if name not in CATALOG:raise ValueError(f'unknown experiment {name}')
     entry=CATALOG[name]
     allowed=(1,) if entry['family']=='coefficient' else SEEDS
     if seed not in allowed:raise ValueError(f'{name} training seeds must be {allowed}')
     env=AirCombatConfig(scale=entry['scale'],**entry.get('env',{}))
     cfg=ProtocolTrainConfig(training_seed_index=seed,seed=1000*seed,**entry.get('training',{}))
+    if episodes is not None:cfg=replace(cfg,training_episodes=episodes)
     if smoke:
         cfg=replace(cfg,training_episodes=2,num_envs=2,horizon=8,ppo_epochs=1,evaluation_episodes=2,
                     checkpoint_interval_episodes=1)
     return env,cfg
 
 
-def manifest(name,seed=1,*,smoke=False):
-    env,cfg=configurations(name,seed,smoke=smoke)
+def budget_kind(episodes):
+    return 'paper_5000' if episodes==5000 else 'half_budget_diagnostic' if episodes==2500 else 'short_validation'
+
+
+def manifest(name,seed=1,*,smoke=False,episodes=None):
+    env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
     return dict(experiment=name,family=CATALOG[name]['family'],training_seed=seed,is_smoke=smoke,
+                training_budget_kind=budget_kind(cfg.training_episodes),training_episode_target=cfg.training_episodes,
                 environment=env.to_dict(),training=cfg.to_dict(),
                 final_evaluation=dict(episodes=cfg.evaluation_episodes,seed_start=10000000+10000*seed),
                 checkpoint_targets=list(range(cfg.checkpoint_interval_episodes,cfg.training_episodes+1,cfg.checkpoint_interval_episodes)))
@@ -85,20 +95,25 @@ def load_model(checkpoint):
     return trainer,env,payload
 
 
-def final_evaluation(checkpoint,output,*,episodes=None):
+def final_evaluation(checkpoint,output,*,episodes=None,console=True):
     trainer,env,payload=load_model(checkpoint)
     count=trainer.config.evaluation_episodes if episodes is None else episodes
     if type(count) is not int or count<1:raise ValueError('evaluation episodes must be positive')
     start=10000000+10000*trainer.config.training_seed_index
+    if console:print(f'[EVAL] starting independent n={count} | Model {Path(checkpoint).resolve()}',flush=True)
     result=evaluate(trainer,env,list(range(start,start+count)))
     result.update(checkpoint=str(Path(checkpoint).resolve()),completed_training_episodes=payload['training_episode_count'],
                   training_seed=trainer.config.training_seed_index,environment=env.to_dict())
+    result.update(training_episode_target=trainer.config.training_episodes,
+                  training_budget_kind=budget_kind(trainer.config.training_episodes))
     write_json(output,result)
+    if console:print(format_evaluation(result,Path(checkpoint).resolve()),flush=True)
     return result
 
 
-def run_experiment(name,seed,root,*,smoke=False,resume=None):
-    env,cfg=configurations(name,seed,smoke=smoke)
+def run_experiment(name,seed,root=None,*,smoke=False,resume=None,episodes=None,console=True,log_every_updates=5):
+    env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
+    if root is None:root='outputs/xu_iv_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv'
     output=run_directory(root,name,seed)
     if not resume and ((output/'train.jsonl').exists() or (output/'latest.pt').exists()):
         raise FileExistsError('existing training run; use --resume or a fresh root')
@@ -106,10 +121,11 @@ def run_experiment(name,seed,root,*,smoke=False,resume=None):
         payload=read_protocol_checkpoint(resume,environment_version=ENVIRONMENT_VERSION)
         if AirCombatConfig(**payload['env_config'])!=env or ProtocolTrainConfig(**payload['train_config'])!=cfg:
             raise ValueError('resume experiment configuration mismatch')
-    write_json(output/'experiment.json',manifest(name,seed,smoke=smoke))
+    write_json(output/'experiment.json',manifest(name,seed,smoke=smoke,episodes=episodes))
     # train() refuses accidental reuse, and resume verifies exact configurations.
-    trainer=train(env,cfg,output,resume=resume)
-    final_evaluation(output/'latest.pt',output/'final_evaluation.json')
+    trainer=train(env,cfg,output,resume=resume,console=console,log_every_updates=log_every_updates)
+    final_evaluation(output/'latest.pt',output/'final_evaluation.json',console=console)
+    if console:print(f'[DONE] experiment={name} | budget={budget_kind(cfg.training_episodes)} | output={output}',flush=True)
     return trainer
 
 
@@ -153,7 +169,9 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     plan=sub.add_parser('plan');plan.add_argument('--output',default='configs/xu_iv/plan.json')
     t=sub.add_parser('train');t.add_argument('--experiment',choices=tuple(CATALOG),required=True)
-    t.add_argument('--seed',type=int,default=1);t.add_argument('--root',default='outputs/xu_iv')
+    t.add_argument('--seed',type=int,default=1);t.add_argument('--root',help='default: outputs/xu_iv_2500 for 2500, outputs/xu_iv for 5000')
+    t.add_argument('--episodes',type=int,choices=(2500,5000),help='completed-episode target; default paper budget 5000')
+    t.add_argument('--log-every-updates',type=int,default=5);t.add_argument('--quiet',action='store_true')
     t.add_argument('--smoke',action='store_true');t.add_argument('--resume')
     e=sub.add_parser('evaluate');e.add_argument('checkpoint');e.add_argument('--output',required=True)
     e.add_argument('--episodes',type=int)
@@ -161,7 +179,8 @@ def main(argv=None):
     b.add_argument('--checkpoints',nargs='+',required=True);b.add_argument('--output',required=True);b.add_argument('--smoke',action='store_true')
     args=p.parse_args(argv)
     if args.command=='plan':print(f"Exported {len(export_plan(args.output)['training_runs'])} formal single-seed runs (none started)")
-    elif args.command=='train':run_experiment(args.experiment,args.seed,args.root,smoke=args.smoke,resume=args.resume)
+    elif args.command=='train':run_experiment(args.experiment,args.seed,args.root,smoke=args.smoke,resume=args.resume,
+                                            episodes=args.episodes,console=not args.quiet,log_every_updates=args.log_every_updates)
     elif args.command=='evaluate':final_evaluation(args.checkpoint,args.output,episodes=args.episodes)
     else:blue_sensitivity(args.checkpoints,args.output,kind=args.kind,smoke=args.smoke)
 

@@ -24,6 +24,16 @@ python -m algorithm.aircombat evaluate outputs/aircombat_3v3/latest.pt --episode
 
 第四节全部主实验、消融、单因素和Blue敏感性配置及正式命令见 [第四节实验报告](docs/xu2026_section_iv_experiments.md)。`python -m algorithm.experiments plan` 仅导出37个独立训练任务，**不启动训练**。静态图表入口为 `python -m tools.report_aircombat`，典型场景轨迹入口为 `python -m tools.aircombat_trajectories`。
 
+训练终端默认每5次PPO更新显示摘要，并在首次更新、50回合节点和训练结束时显示；checkpoint及最终独立评估另行显示。`--log-every-updates N`调整频率，`--quiet`关闭终端展示，完整JSONL/回合/PPO文件照常保存。最近100个已完成回合的统计为空时显示N/A。详见 [入口与日志说明](docs/aircombat_training_console.md)。
+
+`algorithm.experiments train --episodes 2500` 只改变完成回合目标，标记为半预算诊断；默认输出根目录为 `outputs/xu_iv_2500`。默认5000回合仍输出到 `outputs/xu_iv`。可以通过`--root`显式指定不同目录；2500与5000保持独立训练，不能跨预算恢复。Ubuntu示例（本次未执行正式预算）：
+
+```bash
+conda activate uav
+python -m algorithm.experiments train --experiment main_3v3 --seed 1 --episodes 2500 --root outputs/xu_iv_2500
+python -m algorithm.experiments train --experiment main_3v3 --seed 1 --episodes 5000 --root outputs/xu_iv_5000
+```
+
 下面保留历史巡检任务的说明与入口；它们不属于新的论文空战训练路径。
 
 ## 历史巡检任务与早期数组协议
