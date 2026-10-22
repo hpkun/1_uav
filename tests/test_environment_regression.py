@@ -49,17 +49,35 @@ def compare(actual,expected,path='',*,rtol=1e-12,atol=1e-12):
 
 
 @pytest.mark.parametrize('case_index',range(12))
-def test_original_semantic_trajectory(case_index):
+def test_unaffected_historical_transitions_with_explicit_v3_observation_units(case_index):
     with gzip.open(Path(__file__).parent/'fixtures/coop3d_v1_semantics.json.gz','rt',encoding='utf-8') as f: case=json.load(f)[case_index]
-    env=make_environment(EnvConfig(**case['config']))
+    # The frozen fixture is untouched. All its trajectories are away from the
+    # retired gamma projection: continue comparing their physical states,
+    # events and rewards at the original tolerance. Only the explicitly changed
+    # gamma feature unit and the added zero failure counter need schema mapping.
+    assert all(s['info']['numerical_counters']['gamma_clips']==0 for s in case['steps'])
+    config=case['config'].copy()
+    assert config.pop('gamma_limit')==np.deg2rad(85)
+    env=make_environment(EnvConfig(**config))
+
+    def observations_in_new_units(observations, state_info):
+        result=np.array(observations,dtype=np.float32)
+        states=np.asarray(state_info['states'])
+        active=np.asarray(state_info['active_mask'],dtype=bool)
+        result[active,2]=states[active,4]/np.pi
+        return result
+
+    def info_in_new_schema(expected):
+        return {**expected,'numerical_counters':{**expected['numerical_counters'],'integration_failures':0}}
+
     obs,info=env.reset(case['seed'],options=case['options'])
-    compare(obs,case['initial_observations'],path='/initial/observations')
-    compare({k:info[k] for k in case['initial'] if k in info},case['initial'],path='/initial/info')
+    compare(obs,observations_in_new_units(case['initial_observations'],case['initial']),path='/initial/observations')
+    compare({k:info[k] for k in case['initial'] if k in info},info_in_new_schema(case['initial']),path='/initial/info')
     for t,step in enumerate(case['steps']):
         obs,r,term,trunc,info=env.step(step['actions'])
-        compare(obs,step['observations'],path=f'/steps/{t}/observations')
+        compare(obs,observations_in_new_units(step['observations'],step['info']),path=f'/steps/{t}/observations')
         compare(r,step['rewards'],path=f'/steps/{t}/rewards')
-        compare({k:info[k] for k in step['info'] if k in info},step['info'],path=f'/steps/{t}/info')
+        compare({k:info[k] for k in step['info'] if k in info},info_in_new_schema(step['info']),path=f'/steps/{t}/info')
         assert (term,trunc)==(step['terminated'],step['truncated'])
 
 

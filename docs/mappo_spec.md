@@ -1,8 +1,10 @@
-# MAPPO v2 协议与训练说明
+# 巡检MAPPO与独立12/60数组协议
+
+新增独立 `ProtocolMAPPOTrainer(ProtocolTrainConfig)`、`ProtocolCritic` 和显式五槽打包器；使用无½、逐个体有效均值的损失，五个独立价值头以grad=None跳过无样本Adam更新。其身份为`mappo-array-12x60-v1.0.0`，使用独立checkpoint API，只接受外部raw数组，无任务/Reward采样链。五头/共享干/Beta初始化/优势归一化为工程假设，见 [整改及测试](xu2026_rectification.md)。下文90D/池化/½MSE仅描述巡检算法。
 
 ## 网络与初始化
 
-算法身份 `mappo-coop3d-v2.0.0`。环境仅通过 factory 创建，无算法内动力学/任务奖励副本。
+巡检算法身份 `mappo-coop3d-v3.0.0`，环境`coop3d-v3.0.0`。因动力学和γ特征改变，旧v2模型拒绝直接加载；新checkpoint同版本才按配置恢复。环境仅通过 factory 创建，无算法内动力学/任务奖励副本。
 
 共享 Actor：12→128 Tanh→128 Tanh→6，形成3维独立Beta，联合log probability/entropy按三维求和。参数保持softplus+1。正式默认 `initialization_mode=trim_centered`、`beta_concentration=16`、输出权重正交gain=.01：
 
@@ -60,7 +62,7 @@ optimization记录loss、entropy、approx_kl、clip_fraction、gradient_norm。i
 
 训练、评估和checkpoint审计强制CUDA，不CPU回退；环境和数学单元测试本身可用CPU。正式长训练命令仅写在README及报告，本轮未执行。
 
-## 日志维护说明（不改变 v2 算法/Checkpoint 身份）
+## 历史日志维护记录（v2时期；以下描述当时的修改）
 
 修复前的 `optimization.actor_loss` 错记为纯 PPO policy loss。新日志分别保存 `policy_loss` 与 `actor_total_loss=policy_loss−entropy_coef*entropy`，其中均值采用原有逐小批量等权统计；`actor_loss` 保留为真实 `actor_total_loss` 的兼容别名。原有历史 JSONL/CSV、模型和报告表格不重写，读取历史值时将旧 actor_loss 解释为 policy_loss，未记录的总损失显示 N/A。Beta 熵为微分熵，可以为负。
 

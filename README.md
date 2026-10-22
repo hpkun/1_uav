@@ -1,10 +1,10 @@
-# Coop3D v2.0 三维协同巡检基准
+# Coop3D 巡检与独立 MAPPO 数组协议
 
-非武器化三维多UAV航路点巡检：3U3P、5U5P、3U5P。唯一环境 `coop3d-v2.0.0`，算法 `mappo-coop3d-v2.0.0`。环境在 `env/`，MAPPO 在 `algorithm/`，导航诊断及录像在 `tools/`。旧 `coop3d/` 包已移除，没有兼容转发入口。
+非武器化三维多UAV航路点巡检：3U3P、5U5P、3U5P。环境 `coop3d-v3.0.0`，巡检算法 `mappo-coop3d-v3.0.0`。环境在 `env/`，MAPPO 在 `algorithm/`，导航诊断及录像在 `tools/`。旧 `coop3d/` 包已移除，没有兼容转发入口。
 
 本轮完成环境语义回归、90D集中状态、五个体价值Critic、Beta配平初始化、NaN安全GAE、严格采样预算、导航可达性审计和短程CUDA Smoke Test；没有运行正式长训练。
 
-2026-10-22：RegionCompetition整套实现已移除；最新结论见 [Xu严格审计](docs/xu2026_strict_audit.md)。当前可运行环境继续是历史巡检任务，尚不是原论文对抗环境。算法默认每环境rollout现为1500步，单局上限仍250；已有checkpoint按保存配置恢复。独立论文动力学与12维字段协议只用于数学核验，不接入训练。
+2026-10-22 实施整改：实际环境已移除±85°限制并复用原式RHS/RK4；动力学及γ特征改变，**旧v2 checkpoint明确拒绝直接恢复**，历史数据未改写。独立 `ProtocolMAPPOTrainer` 使用12D Actor/60D Critic、逐个体有效样本归一化、无½的价值MSE，支持外部数组优化及独立checkpoint，没有任务/Reward采样器。最新结论和验证见 [整改报告](docs/xu2026_rectification.md)。仍未实现原论文对抗环境；默认rollout1500、单局250，RegionCompetition不再存在。
 
 ## 当前机器：PowerShell / uav
 
@@ -69,7 +69,7 @@ assert info['centralized_state'].shape == (90,)
 
 Actor只使用12D局部观测；Critic使用90D全局状态并输出5个UAV价值槽位，3UAV时只用前3项。后30维显式编码全部航路点，包含未分配的点。
 
-旧Coop3D的动力学、五项巡检奖励、Hungarian独占分配、0.25s/RK4、100–400m/s、±85°历史额外约束、250步、300m完成半径及100m安全参考保留。±85°没有论文依据，不是必要数值防护。无任务配平、故障当步掩码和终止语义见 [环境规范](docs/environment_spec.md)。
+保留五项巡检奖励、Hungarian独占分配、0.25s/RK4、100–400m/s、250步、300m完成半径及100m安全参考。动力学无γ裁剪；分母奇点/阶段跨越失败明确记录并失效，末态速度裁剪是工程选择。巡检γ特征改为γ/π，并非作者归一化。无任务配平、故障当步掩码和终止语义见 [环境规范](docs/environment_spec.md)。
 
 默认Actor使用Beta `trim_centered` 初始化，动作均值接近 `[.5,1/3,1/8]`，浓度16，仍保留探索。优化参数与mask/GAE/预算/日志协议见 [MAPPO规范](docs/mappo_spec.md)。
 

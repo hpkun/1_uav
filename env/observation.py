@@ -9,7 +9,8 @@ def observe(task, assignments, config):
     distances = pairwise_distances(task.states)
     for i in np.flatnonzero(task.active_mask):
         x, y, z, v, gamma, psi = task.states[i]
-        obs[i, :5] = [1, (v - config.v_min) / (config.v_max - config.v_min), gamma / config.gamma_limit, psi / np.pi, z / config.altitude_scale]
+        # Historical inspection feature, not Eq.(25) normalization. No clipping.
+        obs[i, :5] = [1, (v - config.v_min) / (config.v_max - config.v_min), gamma / np.pi, psi / np.pi, z / config.altitude_scale]
         j = assignments[i]
         if j >= 0:
             relative = task.waypoints[j] - np.array([x, y, z])
@@ -19,6 +20,8 @@ def observe(task, assignments, config):
             obs[i, 10] = 1
         others = np.flatnonzero(task.active_mask & (np.arange(len(obs)) != i))
         obs[i, 11] = distances[i, others].min() / config.distance_scale if len(others) else 0
+    if not np.isfinite(obs).all():
+        raise FloatingPointError('inspection observations cannot be represented as finite float32')
     return obs
 
 
@@ -36,4 +39,7 @@ def centralized(observations, task, config):
     points[..., :m, 3] = task.priorities
     points[..., :m, 4] = task.completed
     points[..., :m, 5] = 1
-    return np.concatenate((result.reshape(*obs.shape[:-2], 60), points.reshape(*obs.shape[:-2], 30)), axis=-1)
+    state = np.concatenate((result.reshape(*obs.shape[:-2], 60), points.reshape(*obs.shape[:-2], 30)), axis=-1)
+    if not np.isfinite(state).all():
+        raise FloatingPointError('inspection centralized state is nonfinite')
+    return state

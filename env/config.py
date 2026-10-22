@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 import yaml
 
-ENVIRONMENT_VERSION = 'coop3d-v2.0.0'
+ENVIRONMENT_VERSION = 'coop3d-v3.0.0'
 SCALES = {'3U3P': (3, 3), '5U5P': (5, 5), '3U5P': (3, 5)}
 
 
@@ -31,7 +31,6 @@ class EnvConfig:
     dt: float = 0.25
     v_min: float = 100.0
     v_max: float = 400.0
-    gamma_limit: float = math.radians(85)  # Legacy constraint (C), not a necessary singularity guard or paper envelope.
     denominator_epsilon: float = 1e-6
     max_steps: int = 250
     completion_radius: float = 300.0
@@ -53,8 +52,8 @@ class EnvConfig:
         for key in ('gravity', 'dt', 'v_min', 'v_max', 'denominator_epsilon', 'completion_radius', 'safe_distance', 'distance_scale', 'altitude_scale'):
             if isinstance(getattr(self,key),bool) or not math.isfinite(getattr(self, key)) or getattr(self, key) <= 0:
                 raise ValueError(f'{key} must be finite and positive')
-        if not self.v_min < self.v_max or not math.isfinite(self.gamma_limit) or not 0 < self.gamma_limit < math.pi / 2:
-            raise ValueError('invalid speed or gamma limits')
+        if not self.v_min < self.v_max or self.denominator_epsilon >= 1:
+            raise ValueError('invalid speed limits or singularity tolerance')
         if type(self.max_steps) is not int or not 1 <= self.max_steps <= 250:
             raise ValueError('max_steps must be an integer in [1,250]')
         s = self.scenario
@@ -69,8 +68,6 @@ class EnvConfig:
                 raise ValueError(f'invalid sampling range: {key}')
         if not self.v_min <= s.initial_speed[0] <= s.initial_speed[1] <= self.v_max:
             raise ValueError('initial_speed outside speed limits')
-        if not -self.gamma_limit <= s.initial_gamma[0] <= s.initial_gamma[1] <= self.gamma_limit:
-            raise ValueError('initial_gamma outside numerical limits')
         for key in ('formation_half_width', 'heading_jitter', 'initial_min_separation'):
             if not math.isfinite(getattr(s, key)) or getattr(s, key) < 0:
                 raise ValueError(f'invalid scenario {key}')

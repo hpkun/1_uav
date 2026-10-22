@@ -213,7 +213,7 @@ def test_separation_and_single_valid():
         np.testing.assert_allclose(sum(p.values()), total)
 
 
-@pytest.mark.parametrize('kwargs', [{'scale': 'bad'}, {'dt': 0}, {'v_min': 401}, {'gamma_limit': np.pi / 2}, {'max_steps': 251}, {'failure_events': {1: [3]}}, {'scenario': {'initial_speed': [1, 5]}}])
+@pytest.mark.parametrize('kwargs', [{'scale': 'bad'}, {'dt': 0}, {'v_min': 401}, {'denominator_epsilon': 1}, {'max_steps': 251}, {'failure_events': {1: [3]}}, {'scenario': {'initial_speed': [1, 5]}}])
 def test_invalid_config(kwargs):
     with pytest.raises(ValueError):
         EnvConfig(**kwargs)

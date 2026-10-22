@@ -1,5 +1,7 @@
 # Xu 2026 严格核对与 Region 删除记录（2026-10-22）
 
+> 后续实际整改已完成，当前代码状态以 [动力学与独立MAPPO整改](xu2026_rectification.md) 为准：运行路径的85°及gamma_limit已移除，身份升级并拒绝旧模型；独立60D更新器已可执行。本文保留为此前审计/删除记录，其“历史运行路径仍有85°、未接入方程层”等状态已过期；原文页码/公式及Reward文献表仍有效。
+
 ## 结论与实施边界
 
 RegionCompetition 的环境、算法、三份配置、两个工具、两份测试和三份专属文档已删除，其公共适配钩子已撤销。没有新增替代任务，没有运行正式训练。所有既有 outputs、模型和两份原始 PDF 保留；核验方式及结果见文末。
@@ -143,7 +145,7 @@ p.7 式(20)：rᵢ = rᵢⱼ̂ + r̂ᵢⱼ̂ + r̃ᵢ + r*ᵢⱼ̂ + r*ᵢ，对
 - 式(26)逐个体按有效数归一化；代码共享Actor/五头Critic，合并全部有效个体样本。失效后不同个体样本数不等会改变加权；不能宣称严格同式(26)的逐个体优化。无有效样本跳过、无效观测/状态/梯度排除符合p.8原则。
 - p.8式(27)印出的δ=Oₜ[r+γ Oₜ₊₁Vₜ₊₁−Vₜ]，A=δ+γλ bₜ Oₜ₊₁Aₜ₊₁，b为nonterminal。**δ行未显式乘终止b**，终止状态如何令V为0未展开。当前实现额外用terminated门控bootstrap：真正终止不自举；truncated使用真实末状态自举，但切断跨回合carry；rollout尾可自举。不能把当前完整逻辑逐字称为印刷式(27)。250步若为有限时域终局，是否应该自举仍需明确任务价值定义，不能直接改gamma。
 - 当前/后继mask分别控制当步奖励保留与后继bootstrap，使用where而非0×NaN。vector env分开保存真实transition状态和reset状态，bootstrap不读取reset值。partial worker从不执行额外转移，padding mask=0。
-- 默认完整rollout为10×1500=**15000 joint transitions**，单局250步则一个worker的rollout可以跨多局；不是把1500改成episode上限。全有效3机时45000个体样本，10×ceil(45000/128)=3520次actor及对应critic优化；5机时75000个体样本，5870次。故障/提前budget停止会减少实际有效样本，不把joint步数乘UAV后仍称环境步。
+- 默认完整rollout为10×1500=**15000 joint transitions**，单局250步则一个worker的rollout可以跨多局；不是把1500改成episode上限。全有效3机时45000个体样本，10×ceil(45000/128)=3520次actor及对应critic优化；5机时75000个体样本，5860次（订正此前算术笔误）。故障/提前budget停止会减少实际有效样本，不把joint步数乘UAV后仍称环境步。
 - checkpoint保存12/90/5协议、完整配置、两网络/两Adam、RNG、worker及episode状态，维度/身份不兼容时拒绝；没有把旧60D或Region模型当作当前90D模型加载。新默认horizon不覆写恢复配置。独立验证没有混进训练回合统计；反复用于选best的种子属于验证集，不能充作最终独立测试集。
 
 现有 `test_paper_math_audit.py` 对真实 `update` 做手算对照：ρ=(1.4,.7,1.1)，A=(−2,1,3)，policy=−.4；测试熵项、优势标准化、个体价值索引及无效头梯度。GAE终止/截断/NaN mask、partial budget、checkpoint连续恢复等原有回归保留。**本轮没有发现新增的确证 PPO/GAE 代数Bug**；已确认的是上述论文协议差异，不能用测试通过抹去。

@@ -4,10 +4,13 @@ import torch
 from env.factory import make_environment
 from algorithm.common.runtime import require_cuda
 from algorithm.common.metrics import EpisodeAccumulator, episode_metrics
+from algorithm.common.protocol import ALGORITHM_VERSION, PROTOCOL
 
 
 def evaluate(trainer, env_config, seeds, trace_path=None, *, provenance=None, policy_diagnostics=False):
     require_cuda(str(trainer.device))
+    if trainer.algorithm_version != ALGORITHM_VERSION or trainer.protocol != PROTOCOL:
+        raise ValueError('inspection evaluator cannot evaluate the independent array protocol; no task adapter')
     summaries=[]
     for episode,seed in enumerate(seeds):
         env=make_environment(env_config)

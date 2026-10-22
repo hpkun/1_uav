@@ -4,6 +4,7 @@ import pytest
 from env import EnvConfig
 from env.dynamics import derivatives, physical_actions, velocity_vector, wrap_angle
 from env.integrator import rk4
+from env.paper_dynamics import DynamicsDomainError
 
 
 def integrate(state, control, config=None):
@@ -73,12 +74,14 @@ def test_angle_wrap():
     assert wrap_angle(3 * math.pi) == pytest.approx(-math.pi)
 
 
-def test_singular_derivative_and_gamma_clip():
+def test_singular_derivative_rejected_and_runtime_gamma_not_clipped():
     c = EnvConfig()
-    assert np.isfinite(derivatives([0, 0, 3000, 0, math.pi / 2, 0], [1, 1, 8], c)).all()
-    state, counts = integrate([0, 0, 3000, 200, c.gamma_limit, 0], [0, 2, 8])
-    assert state[4] == c.gamma_limit
-    assert counts['gamma_clips'] == 1
+    with pytest.raises(DynamicsDomainError):
+        derivatives([0, 0, 3000, 0, math.pi / 2, 0], [1, 1, 8], c)
+    gamma = math.radians(86)
+    state, counts = integrate([0, 0, 3000, 200, gamma, 0], [0, math.sin(gamma), math.cos(gamma)])
+    assert state[4] == gamma
+    assert counts['gamma_clips'] == 0
 
 
 def test_nonfinite_protection():

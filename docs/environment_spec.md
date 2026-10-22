@@ -1,12 +1,12 @@
-# Coop3D v2.0 环境规范
+# Coop3D v3.0 环境规范
 
 ## 身份与边界
 
-唯一版本 `coop3d-v2.0.0`，唯一环境类 `env.cooperative_env.Cooperative3DEnv`。算法与工具通过 `env.factory.make_environment()` 构造环境；`env/` 不导入 algorithm、tools 或 torch。3U3P、5U5P、3U5P 只改变配置规模。原 v1 环境任务规则保持不变，12 个迁移前场景的 873 个转移以测试 fixture 独立保存并精确回归。
+当前版本 `coop3d-v3.0.0`，环境类 `env.cooperative_env.Cooperative3DEnv`。算法与工具通过 `env.factory.make_environment()` 构造环境；`env/` 不导入 algorithm、tools 或 torch。3U3P、5U5P、3U5P 只改变配置规模。旧任务规则保留，但无γ裁剪动力学及γ特征单位改变，拒绝v2 checkpoint。12个旧场景873个未触及限幅的转移继续核验物理状态/Reward/事件；fixture不改，测试显式映射新观测单位及诊断字段，容差未放宽。
 
 `reset(seed=None, options=None) -> observations, info`；`step(actions) -> observations, rewards, terminated, truncated, info`。N 架 UAV 的观测 `[N,12]`、奖励 `[N]`、掩码 `[N]`、状态 `[N,6]`，点坐标 `[M,3]`。info 中 `centralized_state` 固定 `[90]`，仅供 Critic。
 
-## 动力学与任务规则（未改变）
+## 动力学与保留的任务规则
 
 状态 `[x,y,z,v,γ,ψ]`，右手系 z 向上，单位 m、m/s、rad。有效性独立维护。控制 `[μ,ζ,ζ̂]`：
 
@@ -17,9 +17,9 @@ dγ=g/v*(ζ̂*cosμ-cosγ)
 dψ=g*ζ̂*sinμ/(v*cosγ)
 ```
 
-历史兼容实现采用经典 RK4、g=9.81、dt=.25 s、速度100–400 m/s、γ限幅±85°、ψ环绕[-π,π)。±85°是无论文依据的额外约束（C类），不是必要数值防护或论文飞行包线。导数使用epsilon=1e-6替代分母，中间阶段也裁剪γ；这会改变原方程，不能冒称严格复现。非有限输入报错，非有限积分保留前个有限状态、记录并使 UAV 失效。没有直接增量修改速度或姿态的运动模型。独立 `env/paper_dynamics.py` 仅核验原式，不做γ/速度/分母投影、不连接本环境，见 [逐公式审计](xu2026_strict_audit.md)。
+运行路径复用 `env/paper_dynamics.py` 的原式RHS/经典RK4，无γ阈值、阶段裁剪或末态投影，无分母替代。g=9.81、RK4、eps=1e-6及奇点拒绝/失效都是明确数值假设；dt=.25、v100–400来自论文。v接近零、cosγ接近零、阶段跨越坐标极点时保留最后有限状态、记录`integration_failures`和失败reason/detail、使该机失效。环境末态速度裁剪和ψ环绕[-π,π)是工程实现；没有NaN/Inf继续进入网络，`gamma_clips`为兼容日志保留的恒零列。见 [实际整改](xu2026_rectification.md)。
 
-动作 `[0,1]^3` 映射 `[2πa0−π,3a1−1,8a2]`。有效动作须有限合法，失效动作忽略。无任务有效 UAV 用 `[0,sinγ,cosγ]` 配平巡航，仍积分同一动力学。
+动作 `[0,1]^3` 映射 `[2πa0−π,3a1−1,8a2]`。有效动作须有限合法，失效动作忽略。无任务有效UAV配平用ζ=sinγ、ζ̂=abs(cosγ)，cosγ≥0时μ=0，否则μ=π，仍积分同一动力学，不使用负法向载荷。这是保留的巡检规则，并非论文任务。
 
 未完成点与有效 UAV 每步独占 Hungarian：`d/10000+.2*|wrap(atan2(dy,dx)−ψ)|/π−.1*p`。优先级默认1，合法[0,1]。任务多于 UAV 时点等待，反之 UAV 闲置。nearest 对全部距离对排序后贪心独占，同距按 UAV/点 ID，作为非学习分配对照。
 
@@ -45,7 +45,7 @@ step 顺序：存当前状态、mask、分配 → 积分 → 故障注入 → �
 |---|---|
 |0|active 0/1|
 |1|`(v-v_min)/(v_max-v_min)`|
-|2|`γ/gamma_limit`|
+|2|`γ/π`（巡检工程特征，无clip，不是论文归一化）|
 |3|`wrap(ψ)/π`|
 |4|`z/altitude_scale`，默认5000m|
 |5–7|`(assigned_point-position)/distance_scale`，默认10000m|

@@ -39,7 +39,9 @@ def generate(config, rng, options=None):
         raise ValueError('scenario must be finite')
     if np.any((priorities < 0) | (priorities > 1)) or not np.isin(active, (0, 1)).all():
         raise ValueError('priorities and active flags outside valid ranges')
-    if np.any((states[:, 3] < config.v_min) | (states[:, 3] > config.v_max)) or np.any(abs(states[:, 4]) > config.gamma_limit):
-        raise ValueError('initial flight state outside numerical limits')
+    if np.any((states[:, 3] < config.v_min) | (states[:, 3] > config.v_max)):
+        raise ValueError('initial speed outside published range')
+    if np.any(np.abs(np.cos(states[active.astype(bool), 4])) <= config.denominator_epsilon):
+        raise ValueError('initial flight state at angle-coordinate singularity')
     states[:, 5] = wrap_angle(states[:, 5])
     return TaskState(states, points, priorities, np.zeros(m, dtype=bool), active.astype(bool))

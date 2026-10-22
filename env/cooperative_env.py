@@ -25,7 +25,8 @@ class Cooperative3DEnv:
             self.rng = np.random.default_rng(seed)
         self.task = generate(self.config, self.rng, options)
         self.step_count, self.done = 0, False
-        self.counters = dict(speed_clips=0, gamma_clips=0, nonfinite_states=0)
+        # gamma_clips is a deprecated, always-zero historical log column.
+        self.counters = dict(speed_clips=0, gamma_clips=0, nonfinite_states=0, integration_failures=0)
         self.numerical_delta = dict.fromkeys(self.counters, 0)
         self.numerical_events = {k: np.zeros(self.config.num_uavs, dtype=int) for k in self.counters}
         self.assignments = assign(self.task, self.config.assignment_mode)
@@ -60,18 +61,20 @@ class Cooperative3DEnv:
         # Idle UAVs hold current speed, heading and flight-path angle using
         # the same differential equations (trim loads, never state increments).
         idle = current_mask & (prior_assignment < 0)
-        controls[idle] = np.column_stack((np.zeros(idle.sum()), np.sin(t.states[idle, 4]), np.cos(t.states[idle, 4])))
+        cg = np.cos(t.states[idle, 4])
+        controls[idle] = np.column_stack((np.where(cg >= 0, 0., np.pi), np.sin(t.states[idle, 4]), np.abs(cg)))
         failures = []
         prior_counters = self.counters.copy()
         self.numerical_events = {k: np.zeros(c.num_uavs, dtype=int) for k in self.counters}
         for i in np.flatnonzero(current_mask):
             before_integration = self.counters.copy()
-            t.states[i], finite = rk4(t.states[i], controls[i], c, self.counters)
+            diagnostic = {}
+            t.states[i], finite = rk4(t.states[i], controls[i], c, self.counters, diagnostics=diagnostic)
             for key in self.counters:
                 self.numerical_events[key][i] = self.counters[key] - before_integration[key]
             if not finite:
                 t.active_mask[i] = False
-                failures.append(dict(uav_id=int(i), reason='nonfinite_integration'))
+                failures.append(dict(uav_id=int(i), reason='integration_failed', detail=diagnostic['reason']))
         self.step_count += 1
         self.numerical_delta = {k: self.counters[k] - prior_counters[k] for k in self.counters}
         for i in c.failure_events.get(self.step_count, []):

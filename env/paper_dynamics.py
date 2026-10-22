@@ -1,6 +1,6 @@
 """Standalone equation checks for Xu (2026), pp.2-3 Eqs.(1)-(2).
 
-Not an environment, task, or training entry point. Gravity is caller supplied:
+Shared by the runtime and standalone checks; no task or training logic. Gravity is caller supplied:
 the paper names g but does not publish its numerical value. RK4, the singularity
 threshold and failed-step handling below are disclosed numerical choices.
 No gamma, speed, altitude or position projection is applied to the equations.

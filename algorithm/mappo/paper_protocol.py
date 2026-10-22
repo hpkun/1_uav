@@ -1,11 +1,19 @@
-"""Xu p.7 Eq.(25)/p.8 Table III: read-only protocol, no task/training wiring.
+"""Xu p.7 Eq.(25)/p.8 Table III: independent array/network protocol.
 
 No target selection, geometry-to-observation chain, or reward is implemented.
-The historical Coop3D runner/checkpoints remain a distinct 12/90/5 protocol.
+The Coop3D runner/checkpoints remain a distinct 12/90/5 protocol.
 """
 from dataclasses import dataclass
 
 import numpy as np
+
+ALGORITHM_VERSION = 'mappo-array-12x60-v1.0.0'
+PROTOCOL = dict(actor_input=12, actor_action=3, critic_input=60, critic_output=5,
+                state_layout='five explicitly supplied Eq25 raw slots, UAV ID order, zero padded',
+                value_loss='sum of per-UAV valid means of squared errors, no half',
+                actor_loss='sum of per-UAV valid mean clipped PPO and entropy',
+                observation_source='external raw slots; no task/geometry/reward adapter',
+                shared_parameters='shared actor and five-head critic: engineering assumption')
 
 
 # Index, original symbol, raw SI unit. Observation normalization is unpublished.
@@ -34,6 +42,23 @@ def validate_observation_slots(slots):
     if np.any(a[valid == 0] != 0):
         raise ValueError('invalid slots must be entirely zero')
     return a.copy()
+
+
+def pack_centralized_slots(slots, masks):
+    """Explicit [...,N,12] -> [...,60], N<=5; never accept or slice 90D.
+
+    Packing five slots is a declared interface assumption: Eq.(14)'s complete
+    relationship set to Table III's 60D mapping is not fully published.
+    """
+    a = validate_observation_slots(slots)
+    m = np.asarray(masks)
+    if a.ndim < 2 or not 1 <= a.shape[-2] <= 5 or m.shape != a.shape[:-1]:
+        raise ValueError('expected 1..5 local slots with matching UAV masks')
+    if not np.isin(m, (0, 1)).all() or not np.array_equal(a[..., 0], m):
+        raise ValueError('current UAV masks must match explicit slot flags')
+    result = np.zeros((*a.shape[:-2], 5, 12), dtype=a.dtype)
+    result[..., :a.shape[-2], :] = a
+    return result.reshape(*a.shape[:-2], 60)
 
 
 @dataclass(frozen=True)

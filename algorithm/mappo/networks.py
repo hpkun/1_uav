@@ -1,4 +1,4 @@
-"""12D shared Beta actor; 90D centralized critic with five fixed UAV heads."""
+"""Shared 12D Beta actor; separate 90D inspection and 60D protocol critics."""
 import torch
 from torch import nn
 from torch.distributions import Beta
@@ -53,3 +53,23 @@ class Critic(nn.Module):
         if states.shape[-1] != 90 or not torch.isfinite(states).all():
             raise FloatingPointError('critic requires finite 90D global state')
         return self.network(states)
+
+
+class ProtocolCritic(nn.Module):
+    """Table III 60->128 Tanh->128 Tanh, five individual value heads.
+
+    Five heads/shared trunk are an engineering assumption, not published
+    output-head topology. No waypoint features and no 90D slicing adapter.
+    """
+    def __init__(self):
+        super().__init__()
+        self.network = mlp(60, 5)[:-1]
+        # Separate Parameters let Adam skip an absent head (grad=None),
+        # including its momentum/step counter, rather than merely zeroing grad.
+        self.value_heads = nn.ModuleList(nn.Linear(128, 1) for _ in range(5))
+
+    def forward(self, states):
+        if states.shape[-1] != 60 or not torch.isfinite(states).all():
+            raise FloatingPointError('protocol critic requires finite 60D state')
+        features = self.network(states)
+        return torch.cat([head(features) for head in self.value_heads], dim=-1)

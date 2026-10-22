@@ -74,3 +74,26 @@ class TrainConfig:
         if not isinstance(data, dict):
             raise ValueError('algorithm configuration must be a mapping')
         return cls(**data)
+
+
+@dataclass
+class ProtocolTrainConfig(TrainConfig):
+    """Independent 12/60 updater settings; no simulator/reward adapter.
+
+    Extra settings are engineering assumptions inherited explicitly from
+    TrainConfig, not author-published Beta/normalization/Adam details.
+    """
+    checkpoint_interval_episodes: int = 50
+    evaluation_episodes: int = 200
+    training_seed_index: int = 1
+
+    def __post_init__(self):
+        super().__post_init__()
+        if type(self.checkpoint_interval_episodes) is not int or self.checkpoint_interval_episodes < 1:
+            raise ValueError('invalid checkpoint_interval_episodes')
+        if type(self.training_seed_index) is not int or self.training_seed_index < 0:
+            raise ValueError('invalid training_seed_index')
+
+    def worker_seeds(self):
+        """Published initial-worker rule (Xu p.8); no per-episode reseeding."""
+        return tuple(1000*self.training_seed_index+r for r in range(self.num_envs))

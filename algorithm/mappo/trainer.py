@@ -3,8 +3,9 @@ from dataclasses import dataclass
 import math
 import numpy as np
 import torch
-from .config import TrainConfig
-from .networks import Actor, Critic
+from .config import TrainConfig, ProtocolTrainConfig
+from .networks import Actor, Critic, ProtocolCritic
+from algorithm.common.protocol import ALGORITHM_VERSION, PROTOCOL
 from algorithm.common.runtime import require_cuda
 from algorithm.common.metrics import COMPONENTS, target_distances
 
@@ -35,6 +36,10 @@ def clean_global(states, masks):
 def gae(rewards, values, next_values, current_masks, next_masks, terminated, truncated, gamma, lam):
     if rewards.shape != values.shape or rewards.shape != next_values.shape or rewards.shape != current_masks.shape or rewards.shape != next_masks.shape:
         raise ValueError('GAE tensor dimensions mismatch')
+    if rewards.ndim != 3 or terminated.shape != rewards.shape[:-1] or truncated.shape != rewards.shape[:-1]:
+        raise ValueError('GAE requires [T,E,N] samples and [T,E] boundaries')
+    if terminated.dtype != torch.bool or truncated.dtype != torch.bool:
+        raise ValueError('GAE boundaries must be boolean')
     if not torch.isfinite(current_masks).all() or not torch.isfinite(next_masks).all():
         raise FloatingPointError('nonfinite GAE masks')
     if not (((current_masks==0)|(current_masks==1)).all() and ((next_masks==0)|(next_masks==1)).all()):
@@ -77,13 +82,21 @@ class Rollout:
 
 
 class MAPPOTrainer:
+    algorithm_version = ALGORITHM_VERSION
+    protocol = PROTOCOL
+
     def __init__(self, config=None, *, device=None):
-        self.config = config or TrainConfig()
+        if isinstance(config, ProtocolTrainConfig):
+            raise TypeError('12/60 configuration requires the independent ProtocolMAPPOTrainer')
+        self._initialize(config or TrainConfig(), device, Critic)
+
+    def _initialize(self, config, device, critic_class):
+        self.config = config
         self.device = require_cuda(device or 'cuda')
         torch.set_num_threads(self.config.torch_threads)
         torch.manual_seed(self.config.seed)
         self.actor = Actor(self.config.initialization_mode,self.config.beta_concentration,self.config.output_weight_gain).to(self.device)
-        self.critic = Critic().to(self.device)
+        self.critic = critic_class().to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),lr=self.config.actor_lr,eps=self.config.adam_epsilon)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=self.config.critic_lr,eps=self.config.adam_epsilon)
         self.updates, self.sampled_steps = 0, 0
@@ -97,7 +110,7 @@ class MAPPOTrainer:
         if type(budget) is not int or budget < 1 or budget > self.config.horizon*vector.num_envs:
             raise ValueError('rollout budget outside [1,horizon*num_envs]')
         rows, episodes, e, n = [], [], vector.num_envs, vector.config.num_uavs
-        totals = dict(valid_uav_steps=0, gamma_clips=0, speed_clips=0, assignment_switches=0, distance_sum=0.,distance_count=0,distance_reduction=0.)
+        totals = dict(valid_uav_steps=0, gamma_clips=0, speed_clips=0, integration_failures=0, assignment_switches=0, distance_sum=0.,distance_count=0,distance_reduction=0.)
         self.rollout_components = dict.fromkeys(COMPONENTS,0.)
         executed_actions = []
         remaining = budget
@@ -133,7 +146,7 @@ class MAPPOTrainer:
             executed_actions.append(actions[masks].cpu().numpy())
             for info in transition.infos:
                 totals['valid_uav_steps'] += int(info['current_active_mask'].sum())
-                for key in ('gamma_clips','speed_clips'): totals[key] += info['numerical_delta'][key]
+                for key in ('gamma_clips','speed_clips','integration_failures'): totals[key] += info['numerical_delta'][key]
                 for key in COMPONENTS: self.rollout_components[key] += float(info['reward_components'][key].sum())
                 totals['assignment_switches'] += int(((info['transition_assignments'] != info['assignments']) & info['next_active_mask']).sum())
                 before,after = target_distances(info,previous=True),target_distances(info)
@@ -146,13 +159,16 @@ class MAPPOTrainer:
         acts = np.concatenate(executed_actions,axis=0)
         self.rollout_metrics = dict(sampled_steps=budget, valid_uav_steps=totals['valid_uav_steps'],
             gamma_clip_rate=totals['gamma_clips']/denominator,speed_clip_rate=totals['speed_clips']/denominator,
-            numerical_events={k:totals[k] for k in ('gamma_clips','speed_clips')},
+            numerical_events={k:totals[k] for k in ('gamma_clips','speed_clips','integration_failures')},
             assignment_switches=totals['assignment_switches'],mean_target_distance=totals['distance_sum']/max(1,totals['distance_count']),
             target_distance_reduction=totals['distance_reduction'],reward_components_mean={k:v/denominator for k,v in self.rollout_components.items()},
             beta_action_mean=acts.mean(0).tolist() if len(acts) else [0.]*3,beta_action_std=acts.std(0).tolist() if len(acts) else [0.]*3)
         return Rollout(*(torch.stack([r[i] for r in rows]) for i in range(11))),episodes
 
     def update(self, rollout):
+        return self._update(rollout, 90, clean_global, .5, False)
+
+    def _update(self, rollout, state_dim, clean_state, value_scale, per_agent):
         c = self.config
         with torch.no_grad():
             advantages,returns = gae(rollout.rewards,rollout.values,rollout.next_values,rollout.current_masks,
@@ -168,35 +184,113 @@ class MAPPOTrainer:
         joint_valid = rollout.current_masks.bool().any(-1)
         # Invalid global states in padding must not enter a critic forward.
         state_clean = torch.zeros_like(rollout.states)
-        state_clean[joint_valid] = clean_global(rollout.states[joint_valid],rollout.current_masks[joint_valid])
-        states = state_clean.unsqueeze(-2).expand(-1,-1,n,-1).reshape(-1,90)[valid]
+        state_clean[joint_valid] = clean_state(rollout.states[joint_valid],rollout.current_masks[joint_valid])
+        states = state_clean.unsqueeze(-2).expand(-1,-1,n,-1).reshape(-1,state_dim)[valid]
         slots = torch.arange(n,device=self.device).expand_as(rollout.current_masks).flatten()[valid]
         adv,target = advantages.flatten()[valid],returns.flatten()[valid]
         for name,value in [('observation',obs),('global state',states),('action',actions),('old log probability',old_log),('return',target)]:
             if not torch.isfinite(value).all(): raise FloatingPointError(f'nonfinite valid {name}')
         if not ((actions>0)&(actions<1)).all(): raise ValueError('PPO actions must be inside (0,1)')
-        if c.normalize_advantages: adv = (adv-adv.mean())/(adv.std(unbiased=False)+1e-8)
+        if c.normalize_advantages:
+            if per_agent:
+                adv = adv.clone()
+                for slot in slots.unique():
+                    selected = slots == slot
+                    adv[selected] = (adv[selected]-adv[selected].mean())/(adv[selected].std(unbiased=False)+1e-8)
+            else:
+                adv = (adv-adv.mean())/(adv.std(unbiased=False)+1e-8)
         metrics=[]
         for _ in range(c.ppo_epochs):
             for idx in torch.randperm(len(obs),device=self.device).split(c.minibatch_size):
                 logp,entropy = self.actor.evaluate(obs[idx],actions[idx])
                 log_ratio = logp-old_log[idx]
                 ratio = log_ratio.exp()
-                policy = -torch.minimum(ratio*adv[idx],ratio.clamp(1-c.clip,1+c.clip)*adv[idx]).mean()
-                actor_loss = policy-c.entropy_coef*entropy.mean()
+                def reduce_valid(samples):
+                    if not per_agent:
+                        return samples.mean()
+                    # Eq.(26) defines L_i separately. Sum the valid-agent means
+                    # for shared parameters; this aggregation is an assumption.
+                    return torch.stack([samples[slots[idx] == slot].mean() for slot in slots[idx].unique()]).sum()
+                policy = -reduce_valid(torch.minimum(ratio*adv[idx],ratio.clamp(1-c.clip,1+c.clip)*adv[idx]))
+                entropy_reduced = reduce_valid(entropy)
+                actor_loss = policy-c.entropy_coef*entropy_reduced
                 values = self.critic(states[idx]).gather(1,slots[idx,None]).squeeze(1)
-                critic_loss = .5*(values-target[idx]).square().mean()
+                critic_loss = value_scale*reduce_valid((values-target[idx]).square())
                 if not torch.isfinite(actor_loss+critic_loss): raise FloatingPointError('nonfinite PPO loss')
                 self.actor_optimizer.zero_grad(set_to_none=True); actor_loss.backward()
                 actor_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(),c.max_grad_norm,error_if_nonfinite=True)
                 self.actor_optimizer.step()
                 self.critic_optimizer.zero_grad(set_to_none=True); critic_loss.backward()
+                if per_agent and isinstance(self.critic, ProtocolCritic):
+                    present = set(slots[idx].tolist())
+                    for slot, head in enumerate(self.critic.value_heads):
+                        if slot not in present:
+                            for parameter in head.parameters():
+                                parameter.grad = None
                 critic_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(),c.max_grad_norm,error_if_nonfinite=True)
                 self.critic_optimizer.step()
-                metrics.append([policy.item(),actor_loss.item(),critic_loss.item(),entropy.mean().item(),((ratio-1)-log_ratio).mean().item(),
+                metrics.append([policy.item(),actor_loss.item(),critic_loss.item(),entropy_reduced.item(),((ratio-1)-log_ratio).mean().item(),
                                 ((ratio-1).abs()>c.clip).float().mean().item(),math.hypot(actor_norm.item(),critic_norm.item())])
         self.updates += 1
         result=dict(zip(('policy_loss','actor_total_loss','critic_loss','entropy','approx_kl','clip_fraction','gradient_norm'),np.mean(metrics,axis=0).tolist()))
         result['actor_loss']=result['actor_total_loss']  # Compatibility alias; old logs used policy_loss here.
         result.update(valid_samples=len(obs),optimizer_steps=len(metrics),update=self.updates)
         return result
+
+
+def clean_protocol_state(states, masks):
+    if states.shape[-1] != 60 or not 1 <= masks.shape[-1] <= 5 or states.shape[:-1] != masks.shape[:-1]:
+        raise ValueError('12/60 protocol state/mask dimensions mismatch')
+    full = torch.zeros((*masks.shape[:-1], 5), dtype=torch.bool, device=masks.device)
+    full[..., :masks.shape[-1]] = masks.bool()
+    slots = states.reshape(*states.shape[:-1], 5, 12)
+    slots = torch.where(full.unsqueeze(-1), slots, torch.zeros_like(slots))
+    if not torch.isfinite(slots).all() or not torch.equal(slots[..., 0], full.to(states.dtype)):
+        raise ValueError('protocol state requires finite valid slots with flag=1')
+    return slots.flatten(-2)
+
+
+class ProtocolMAPPOTrainer(MAPPOTrainer):
+    """Executable generic 12/60 optimizer; accepts externally supplied Rollout.
+
+    No simulator collector, target/geometry construction or reward computation.
+    This is not a complete Xu task/training reproduction.
+    """
+    from .paper_protocol import ALGORITHM_VERSION as algorithm_version, PROTOCOL as protocol
+
+    def __init__(self, config=None, *, device=None):
+        if config is not None and not isinstance(config, ProtocolTrainConfig):
+            raise TypeError('12/60 updater requires ProtocolTrainConfig')
+        self._initialize(config or ProtocolTrainConfig(), device, ProtocolCritic)
+
+    def collect(self, *args, **kwargs):
+        raise RuntimeError('12/60 protocol has no task/reward collector; supply explicit Rollout arrays')
+
+    @torch.no_grad()
+    def sample_actions(self, observations, masks, *, deterministic=False):
+        """Return the SAME interior Beta actions used for stored logp.
+
+        Externally supplied raw slots only; invalid slots return zero/no logp.
+        Clamping and Beta initialization are explicit engineering assumptions.
+        """
+        obs, m = self.tensor(observations), self.tensor(masks)
+        if obs.shape[:-1] != m.shape or obs.shape[-1] != 12 or not (((m == 0) | (m == 1)).all()):
+            raise ValueError('invalid actor protocol dimensions/masks')
+        clean = torch.where(m.bool().unsqueeze(-1), obs, torch.zeros_like(obs))
+        if not torch.equal(clean[..., 0], m):
+            raise ValueError('actor slot flags disagree with current masks')
+        actions, _ = self.actor.act(clean, deterministic=deterministic)
+        actions = actions.clamp(self.config.beta_epsilon, 1-self.config.beta_epsilon)
+        logp, _ = self.actor.evaluate(clean, actions)
+        return (torch.where(m.bool().unsqueeze(-1), actions, torch.zeros_like(actions)),
+                torch.where(m.bool(), logp, torch.zeros_like(logp)))
+
+    def update(self, rollout):
+        obs, masks = rollout.observations, rollout.current_masks
+        if obs.ndim != 4 or obs.shape[-1] != 12 or obs.shape[:-1] != masks.shape:
+            raise ValueError('protocol rollout requires [T,E,N,12] observations and matching masks')
+        states = clean_protocol_state(rollout.states, masks)
+        local = states.reshape(*states.shape[:-1], 5, 12)[..., :obs.shape[-2], :]
+        if not torch.equal(obs[masks.bool()], local[masks.bool()]):
+            raise ValueError('actor observations and explicit centralized slots disagree')
+        return self._update(rollout, 60, clean_protocol_state, 1., True)
