@@ -1,0 +1,4 @@
+scale: 3v3
+blue_policy: region_safe
+max_steps: 250
+num_regions: 3
