@@ -4,6 +4,8 @@
 
 本轮完成环境语义回归、90D集中状态、五个体价值Critic、Beta配平初始化、NaN安全GAE、严格采样预算、导航可达性审计和短程CUDA Smoke Test；没有运行正式长训练。
 
+2026-10-22：RegionCompetition整套实现已移除；最新结论见 [Xu严格审计](docs/xu2026_strict_audit.md)。当前可运行环境继续是历史巡检任务，尚不是原论文对抗环境。算法默认每环境rollout现为1500步，单局上限仍250；已有checkpoint按保存配置恢复。独立论文动力学与12维字段协议只用于数学核验，不接入训练。
+
 ## 当前机器：PowerShell / uav
 
 ```powershell
@@ -67,7 +69,7 @@ assert info['centralized_state'].shape == (90,)
 
 Actor只使用12D局部观测；Critic使用90D全局状态并输出5个UAV价值槽位，3UAV时只用前3项。后30维显式编码全部航路点，包含未分配的点。
 
-动力学、五项巡检奖励、Hungarian独占分配、0.25s/RK4、100–400m/s、±85°数值保护、250步、300m完成半径及100m安全参考保持不变。无任务配平、故障当步掩码和终止语义见 [环境规范](docs/environment_spec.md)。
+旧Coop3D的动力学、五项巡检奖励、Hungarian独占分配、0.25s/RK4、100–400m/s、±85°历史额外约束、250步、300m完成半径及100m安全参考保留。±85°没有论文依据，不是必要数值防护。无任务配平、故障当步掩码和终止语义见 [环境规范](docs/environment_spec.md)。
 
 默认Actor使用Beta `trim_centered` 初始化，动作均值接近 `[.5,1/3,1/8]`，浓度16，仍保留探索。优化参数与mask/GAE/预算/日志协议见 [MAPPO规范](docs/mappo_spec.md)。
 

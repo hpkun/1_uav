@@ -1,4 +1,8 @@
-"""Paper equations (1)-(2), in a right handed, z-up coordinate system."""
+"""Historical Coop3D dynamics: Xu equations plus legacy, non-paper gamma clipping.
+
+For standalone unmodified-equation checks use env.paper_dynamics; this module's
+85-degree/denominator projections are retained for historical model compatibility.
+"""
 import numpy as np
 
 

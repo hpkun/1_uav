@@ -31,7 +31,7 @@ class EnvConfig:
     dt: float = 0.25
     v_min: float = 100.0
     v_max: float = 400.0
-    gamma_limit: float = math.radians(85)  # Numerical assumption, not a paper envelope.
+    gamma_limit: float = math.radians(85)  # Legacy constraint (C), not a necessary singularity guard or paper envelope.
     denominator_epsilon: float = 1e-6
     max_steps: int = 250
     completion_radius: float = 300.0

@@ -7,7 +7,7 @@ entropy_coef: 0.001
 ppo_epochs: 10
 minibatch_size: 128
 num_envs: 10
-horizon: 250
+horizon: 1500
 seed: 1000
 evaluation_seeds: [10000000, 10000001, 10000002, 10000003, 10000004]
 evaluation_episodes: 5

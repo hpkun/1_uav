@@ -77,14 +77,6 @@ class Rollout:
 
 
 class MAPPOTrainer:
-    state_dim = 90
-    clean_state = staticmethod(clean_global)
-
-    def estimate_advantages(self, rollout):
-        c = self.config
-        return gae(rollout.rewards,rollout.values,rollout.next_values,rollout.current_masks,
-                   rollout.next_masks,rollout.terminated,rollout.truncated,c.gamma,c.gae_lambda)
-
     def __init__(self, config=None, *, device=None):
         self.config = config or TrainConfig()
         self.device = require_cuda(device or 'cuda')
@@ -163,7 +155,8 @@ class MAPPOTrainer:
     def update(self, rollout):
         c = self.config
         with torch.no_grad():
-            advantages,returns = self.estimate_advantages(rollout)
+            advantages,returns = gae(rollout.rewards,rollout.values,rollout.next_values,rollout.current_masks,
+                                    rollout.next_masks,rollout.terminated,rollout.truncated,c.gamma,c.gae_lambda)
         n = rollout.observations.shape[-2]
         valid = rollout.current_masks.flatten().bool()
         if not valid.any():
@@ -175,8 +168,8 @@ class MAPPOTrainer:
         joint_valid = rollout.current_masks.bool().any(-1)
         # Invalid global states in padding must not enter a critic forward.
         state_clean = torch.zeros_like(rollout.states)
-        state_clean[joint_valid] = self.clean_state(rollout.states[joint_valid],rollout.current_masks[joint_valid])
-        states = state_clean.unsqueeze(-2).expand(-1,-1,n,-1).reshape(-1,self.state_dim)[valid]
+        state_clean[joint_valid] = clean_global(rollout.states[joint_valid],rollout.current_masks[joint_valid])
+        states = state_clean.unsqueeze(-2).expand(-1,-1,n,-1).reshape(-1,90)[valid]
         slots = torch.arange(n,device=self.device).expand_as(rollout.current_masks).flatten()[valid]
         adv,target = advantages.flatten()[valid],returns.flatten()[valid]
         for name,value in [('observation',obs),('global state',states),('action',actions),('old log probability',old_log),('return',target)]:

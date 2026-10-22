@@ -1,4 +1,7 @@
-"""Classic RK4 with explicit numerical diagnostics and finite-state recovery."""
+"""Historical Coop3D RK4 and projections, retained for old trajectory compatibility.
+
+The gamma projection is not a constraint published in Xu's paper.
+"""
 import numpy as np
 from .dynamics import derivatives, wrap_angle
 

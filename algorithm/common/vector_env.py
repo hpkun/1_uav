@@ -62,9 +62,6 @@ class VectorStep:
 
 
 class ParallelVectorEnv:
-    worker_target = staticmethod(_worker)
-    tracker_factory = EpisodeAccumulator
-
     def __init__(self, config=None, num_envs=10, seed=1, forbidden_seeds=(), timeout=60):
         if num_envs < 1:
             raise ValueError('num_envs must be positive')
@@ -74,12 +71,12 @@ class ParallelVectorEnv:
         self.episodes = np.zeros(num_envs, dtype=np.int64)
         self.connections, self.processes = [], []
         self.closed = False
-        self.trackers = [self.tracker_factory() for _ in range(num_envs)]
+        self.trackers = [EpisodeAccumulator() for _ in range(num_envs)]
         context = mp.get_context('spawn')
         try:
             for _ in range(num_envs):
                 parent, child = context.Pipe()
-                process = context.Process(target=self.worker_target, args=(child, self.config), daemon=True)
+                process = context.Process(target=_worker, args=(child, self.config), daemon=True)
                 process.start()
                 child.close()
                 self.connections.append(parent)

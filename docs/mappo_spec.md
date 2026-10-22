@@ -36,7 +36,7 @@ PPO ratio=`exp(new_logp-old_logp)`，clipped surrogate；有效优势标准化�
 
 ## 并行、严格预算与种子
 
-默认10环境，horizon250。`sampled_steps`是所有环境joint transitions之和，不是agent steps；25个joint transitions在3UAV场景最多对应75个体转移。
+默认10环境，horizon1500（Xu p.8表III）；单局上限仍为250步。完整rollout为15000个joint transitions，允许跨多局；旧checkpoint中保存的horizon原值继续用于恢复。`sampled_steps`是所有环境joint transitions之和，不是agent steps；25个joint transitions在3UAV场景最多对应75个体转移。
 
 预算为绝对总量。最后rollout可缩短，最后vector step可只推进部分worker，其余worker不step、不reset、不计样本。buffer剩余槽位current mask=0。相同worker序列保持可恢复性。自动reset前后观测/90D状态分别保存在`transition_observations`/`transition_states`与`observations`/`states`，bootstrap只读前者。
 

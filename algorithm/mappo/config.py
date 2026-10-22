@@ -15,7 +15,7 @@ class TrainConfig:
     ppo_epochs: int = 10
     minibatch_size: int = 128
     num_envs: int = 10
-    horizon: int = 250
+    horizon: int = 1500  # Xu Table III rollout; not the 250-step episode limit.
     seed: int = 1000
     evaluation_seeds: tuple = (10000000, 10000001, 10000002)
     # Additional engineering defaults, not specified by the task/paper:

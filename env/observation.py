@@ -1,4 +1,4 @@
-"""12D actor observations and a 90D critic-only task-complete state."""
+"""Historical inspection observations (not Xu Eq.25) and 90D critic input."""
 import numpy as np
 from .dynamics import wrap_angle
 from .models import pairwise_distances
