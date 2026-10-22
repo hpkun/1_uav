@@ -1,5 +1,6 @@
 """MAPPO with individual centralized values, NaN-safe GAE and exact joint budgets."""
 from dataclasses import dataclass
+from contextlib import nullcontext
 import math
 import numpy as np
 import torch
@@ -13,6 +14,18 @@ from algorithm.common.metrics import COMPONENTS, target_distances
 def finite_selected(name, value, mask):
     if not torch.isfinite(value[mask]).all():
         raise FloatingPointError(f'nonfinite {name} in valid samples')
+
+
+@torch.no_grad()
+def standardize_advantages(adv, slots, *, per_agent):
+    """Existing population-std+1e-8 rule, including singleton -> zero."""
+    if not per_agent:
+        return (adv-adv.mean())/(adv.std(unbiased=False)+1e-8)
+    adv = adv.clone()
+    for slot in slots.unique():
+        selected = slots == slot
+        adv[selected] = (adv[selected]-adv[selected].mean())/(adv[selected].std(unbiased=False)+1e-8)
+    return adv
 
 
 def clean_global(states, masks):
@@ -79,6 +92,21 @@ class Rollout:
     next_masks: torch.Tensor
     terminated: torch.Tensor
     truncated: torch.Tensor
+
+
+def validate_rollout_shape(rollout, state_dim):
+    """Validate batch axes/protocol, including the no-valid early-return path."""
+    obs = rollout.observations
+    if obs.ndim != 4 or obs.shape[-1] != 12 or not (obs.shape[0] and obs.shape[1] and 1 <= obs.shape[2] <= 5):
+        raise ValueError('rollout requires nonempty [T,E,N<=5,12] observations')
+    shape = obs.shape[:-1]
+    if rollout.states.shape != (*shape[:2], state_dim):
+        raise ValueError(f'rollout requires matching {state_dim}D centralized states')
+    if rollout.actions.shape != (*shape, 3):
+        raise ValueError('rollout action axes disagree with observations')
+    for name in ('log_probs','values','next_values','rewards','current_masks','next_masks'):
+        if getattr(rollout,name).shape != shape:
+            raise ValueError(f'rollout {name} axes disagree with observations')
 
 
 class MAPPOTrainer:
@@ -168,16 +196,32 @@ class MAPPOTrainer:
     def update(self, rollout):
         return self._update(rollout, 90, clean_global, .5, False)
 
-    def _update(self, rollout, state_dim, clean_state, value_scale, per_agent):
+    def _update(self, rollout, state_dim, clean_state, value_scale, per_agent, diagnostics=False):
+        validate_rollout_shape(rollout, state_dim)
         c = self.config
         with torch.no_grad():
             advantages,returns = gae(rollout.rewards,rollout.values,rollout.next_values,rollout.current_masks,
                                     rollout.next_masks,rollout.terminated,rollout.truncated,c.gamma,c.gae_lambda)
         n = rollout.observations.shape[-2]
         valid = rollout.current_masks.flatten().bool()
+        diagnostic = None
+        if diagnostics:
+            from .diagnostics import UpdateObserver, advantage_statistics
+            all_slots = torch.arange(n,device=self.device).expand_as(rollout.current_masks).flatten()[valid]
+            counts = torch.bincount(all_slots,minlength=n).tolist()
+            diagnostic = dict(per_uav_valid_samples=counts, active_uav_count=sum(v>0 for v in counts),
+                              advantage_before=advantage_statistics(advantages.flatten()[valid],all_slots,n),
+                              singleton_uavs=[i for i,v in enumerate(counts) if v==1],
+                              normalized=c.normalize_advantages,
+                              excluded_invalid_positions=int((~valid).sum()), invalid_samples_in_loss=0)
         if not valid.any():
-            return dict(policy_loss=0.,actor_total_loss=0.,actor_loss=0.,critic_loss=0.,entropy=0.,approx_kl=0.,clip_fraction=0.,gradient_norm=0.,
+            result = dict(policy_loss=0.,actor_total_loss=0.,actor_loss=0.,critic_loss=0.,entropy=0.,approx_kl=0.,clip_fraction=0.,gradient_norm=0.,
                         valid_samples=0,optimizer_steps=0,update=self.updates)
+            if diagnostic is not None:
+                diagnostic.update(status='skipped_no_valid_samples', advantage_after=diagnostic['advantage_before'],
+                                  **UpdateObserver(self.actor,self.critic,n,c.max_grad_norm).report())
+                result['numerical_diagnostics'] = diagnostic
+            return result
         obs = rollout.observations.reshape(-1,12)[valid]
         actions = rollout.actions.reshape(-1,3)[valid]
         old_log = rollout.log_probs.flatten()[valid]
@@ -192,49 +236,55 @@ class MAPPOTrainer:
             if not torch.isfinite(value).all(): raise FloatingPointError(f'nonfinite valid {name}')
         if not ((actions>0)&(actions<1)).all(): raise ValueError('PPO actions must be inside (0,1)')
         if c.normalize_advantages:
-            if per_agent:
-                adv = adv.clone()
-                for slot in slots.unique():
-                    selected = slots == slot
-                    adv[selected] = (adv[selected]-adv[selected].mean())/(adv[selected].std(unbiased=False)+1e-8)
-            else:
-                adv = (adv-adv.mean())/(adv.std(unbiased=False)+1e-8)
+            adv = standardize_advantages(adv, slots, per_agent=per_agent)
+        observer = None
+        if diagnostic is not None:
+            diagnostic.update(status='ok', advantage_after=advantage_statistics(adv,slots,n),
+                              valid_inputs_finite=True,
+                              beta_actions=dict(finite=bool(torch.isfinite(actions).all()),min=actions.min().item(),max=actions.max().item()))
+            observer = UpdateObserver(self.actor,self.critic,n,c.max_grad_norm)
         metrics=[]
-        for _ in range(c.ppo_epochs):
-            for idx in torch.randperm(len(obs),device=self.device).split(c.minibatch_size):
-                logp,entropy = self.actor.evaluate(obs[idx],actions[idx])
-                log_ratio = logp-old_log[idx]
-                ratio = log_ratio.exp()
-                def reduce_valid(samples):
-                    if not per_agent:
-                        return samples.mean()
-                    # Eq.(26) defines L_i separately. Sum the valid-agent means
-                    # for shared parameters; this aggregation is an assumption.
-                    return torch.stack([samples[slots[idx] == slot].mean() for slot in slots[idx].unique()]).sum()
-                policy = -reduce_valid(torch.minimum(ratio*adv[idx],ratio.clamp(1-c.clip,1+c.clip)*adv[idx]))
-                entropy_reduced = reduce_valid(entropy)
-                actor_loss = policy-c.entropy_coef*entropy_reduced
-                values = self.critic(states[idx]).gather(1,slots[idx,None]).squeeze(1)
-                critic_loss = value_scale*reduce_valid((values-target[idx]).square())
-                if not torch.isfinite(actor_loss+critic_loss): raise FloatingPointError('nonfinite PPO loss')
-                self.actor_optimizer.zero_grad(set_to_none=True); actor_loss.backward()
-                actor_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(),c.max_grad_norm,error_if_nonfinite=True)
-                self.actor_optimizer.step()
-                self.critic_optimizer.zero_grad(set_to_none=True); critic_loss.backward()
-                if per_agent and isinstance(self.critic, ProtocolCritic):
-                    present = set(slots[idx].tolist())
-                    for slot, head in enumerate(self.critic.value_heads):
-                        if slot not in present:
-                            for parameter in head.parameters():
-                                parameter.grad = None
-                critic_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(),c.max_grad_norm,error_if_nonfinite=True)
-                self.critic_optimizer.step()
-                metrics.append([policy.item(),actor_loss.item(),critic_loss.item(),entropy_reduced.item(),((ratio-1)-log_ratio).mean().item(),
-                                ((ratio-1).abs()>c.clip).float().mean().item(),math.hypot(actor_norm.item(),critic_norm.item())])
+        with observer if observer is not None else nullcontext():
+            for _ in range(c.ppo_epochs):
+                for idx in torch.randperm(len(obs),device=self.device).split(c.minibatch_size):
+                    logp,entropy = self.actor.evaluate(obs[idx],actions[idx])
+                    log_ratio = logp-old_log[idx]
+                    ratio = log_ratio.exp()
+                    def reduce_valid(samples):
+                        if not per_agent:
+                            return samples.mean()
+                        # Eq.(26) defines L_i separately. Sum the valid-agent means
+                        # for shared parameters; this aggregation is an assumption.
+                        return torch.stack([samples[slots[idx] == slot].mean() for slot in slots[idx].unique()]).sum()
+                    policy = -reduce_valid(torch.minimum(ratio*adv[idx],ratio.clamp(1-c.clip,1+c.clip)*adv[idx]))
+                    entropy_reduced = reduce_valid(entropy)
+                    actor_loss = policy-c.entropy_coef*entropy_reduced
+                    values = self.critic(states[idx]).gather(1,slots[idx,None]).squeeze(1)
+                    critic_loss = value_scale*reduce_valid((values-target[idx]).square())
+                    if not torch.isfinite(actor_loss+critic_loss): raise FloatingPointError('nonfinite PPO loss')
+                    self.actor_optimizer.zero_grad(set_to_none=True); actor_loss.backward()
+                    actor_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(),c.max_grad_norm,error_if_nonfinite=True)
+                    self.actor_optimizer.step()
+                    self.critic_optimizer.zero_grad(set_to_none=True); critic_loss.backward()
+                    if per_agent and isinstance(self.critic, ProtocolCritic):
+                        present = set(slots[idx].tolist())
+                        for slot, head in enumerate(self.critic.value_heads):
+                            if slot not in present:
+                                for parameter in head.parameters():
+                                    parameter.grad = None
+                    critic_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(),c.max_grad_norm,error_if_nonfinite=True)
+                    self.critic_optimizer.step()
+                    if observer is not None:
+                        observer.minibatch(slots[idx],actor_norm,critic_norm)
+                    metrics.append([policy.item(),actor_loss.item(),critic_loss.item(),entropy_reduced.item(),((ratio-1)-log_ratio).mean().item(),
+                                    ((ratio-1).abs()>c.clip).float().mean().item(),math.hypot(actor_norm.item(),critic_norm.item())])
         self.updates += 1
         result=dict(zip(('policy_loss','actor_total_loss','critic_loss','entropy','approx_kl','clip_fraction','gradient_norm'),np.mean(metrics,axis=0).tolist()))
         result['actor_loss']=result['actor_total_loss']  # Compatibility alias; old logs used policy_loss here.
         result.update(valid_samples=len(obs),optimizer_steps=len(metrics),update=self.updates)
+        if diagnostic is not None:
+            diagnostic.update(observer.report())
+            result['numerical_diagnostics'] = diagnostic
         return result
 
 
@@ -285,12 +335,19 @@ class ProtocolMAPPOTrainer(MAPPOTrainer):
         return (torch.where(m.bool().unsqueeze(-1), actions, torch.zeros_like(actions)),
                 torch.where(m.bool(), logp, torch.zeros_like(logp)))
 
-    def update(self, rollout):
-        obs, masks = rollout.observations, rollout.current_masks
-        if obs.ndim != 4 or obs.shape[-1] != 12 or obs.shape[:-1] != masks.shape:
-            raise ValueError('protocol rollout requires [T,E,N,12] observations and matching masks')
-        states = clean_protocol_state(rollout.states, masks)
-        local = states.reshape(*states.shape[:-1], 5, 12)[..., :obs.shape[-2], :]
-        if not torch.equal(obs[masks.bool()], local[masks.bool()]):
-            raise ValueError('actor observations and explicit centralized slots disagree')
-        return self._update(rollout, 60, clean_protocol_state, 1., True)
+    def update(self, rollout, *, diagnostics=True):
+        try:
+            validate_rollout_shape(rollout,60)
+            obs, masks = rollout.observations, rollout.current_masks
+            states = clean_protocol_state(rollout.states, masks)
+            local = states.reshape(*states.shape[:-1], 5, 12)[..., :obs.shape[-2], :]
+            if not torch.equal(obs[masks.bool()], local[masks.bool()]):
+                raise ValueError('actor observations and explicit centralized slots disagree')
+            result = self._update(rollout, 60, clean_protocol_state, 1., True, diagnostics)
+            if diagnostics:
+                self.last_update_diagnostics = result['numerical_diagnostics']
+            return result
+        except (ValueError, FloatingPointError, RuntimeError) as exc:
+            if diagnostics:
+                self.last_update_diagnostics = dict(status='rejected',error=type(exc).__name__,reason=str(exc))
+            raise
