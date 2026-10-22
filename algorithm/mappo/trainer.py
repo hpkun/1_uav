@@ -205,7 +205,15 @@ class MAPPOTrainer:
             advantages,returns = gae(rollout.rewards,rollout.values,rollout.next_values,rollout.current_masks,
                                     rollout.next_masks,rollout.terminated,rollout.truncated,c.gamma,c.gae_lambda)
         n = rollout.observations.shape[-2]
-        valid = rollout.current_masks.flatten().bool()
+        physical_valid = rollout.current_masks.flatten().bool()
+        loss_mask = rollout.current_masks.bool()
+        unmasked = per_agent and not getattr(c,'ppo_masking',True)
+        if unmasked:
+            # Remove ONLY loss masking. GAE above and centralized slot cleaning
+            # below continue to use physical masks. Non-executed worker padding
+            # never becomes an experimental sample.
+            loss_mask = loss_mask.any(-1,keepdim=True).expand_as(loss_mask)
+        valid = loss_mask.flatten()
         diagnostic = None
         if diagnostics:
             from .diagnostics import UpdateObserver, advantage_statistics
@@ -215,7 +223,7 @@ class MAPPOTrainer:
                               advantage_before=advantage_statistics(advantages.flatten()[valid],all_slots,n),
                               singleton_uavs=[i for i,v in enumerate(counts) if v==1],
                               normalized=c.normalize_advantages,
-                              excluded_invalid_positions=int((~valid).sum()), invalid_samples_in_loss=0)
+                              excluded_invalid_positions=int((~valid).sum()), invalid_samples_in_loss=int((valid&~physical_valid).sum()))
         if not valid.any():
             result = dict(policy_loss=0.,actor_total_loss=0.,actor_loss=0.,critic_loss=0.,entropy=0.,approx_kl=0.,clip_fraction=0.,gradient_norm=0.,
                         valid_samples=0,optimizer_steps=0,update=self.updates)
@@ -238,8 +246,11 @@ class MAPPOTrainer:
             if not torch.isfinite(value).all(): raise FloatingPointError(f'nonfinite valid {name}')
         if not ((actions>0)&(actions<1)).all(): raise ValueError('PPO actions must be inside (0,1)')
         if c.normalize_advantages:
-            adv = standardize_advantages(adv, slots, per_agent=per_agent,
+            selected_physical = physical_valid[valid]
+            normalized = standardize_advantages(adv[selected_physical], slots[selected_physical], per_agent=per_agent,
                 preserve_singletons=getattr(c,'preserve_singleton_advantages',False))
+            adv = adv.clone()
+            adv[selected_physical] = normalized
         observer = None
         if diagnostic is not None:
             diagnostic.update(status='ok', advantage_after=advantage_statistics(adv,slots,n),
@@ -284,7 +295,9 @@ class MAPPOTrainer:
         self.updates += 1
         result=dict(zip(('policy_loss','actor_total_loss','critic_loss','entropy','approx_kl','clip_fraction','gradient_norm'),np.mean(metrics,axis=0).tolist()))
         result['actor_loss']=result['actor_total_loss']  # Compatibility alias; old logs used policy_loss here.
-        result.update(valid_samples=len(obs),optimizer_steps=len(metrics),update=self.updates)
+        result.update(valid_samples=int(physical_valid.sum()),optimizer_steps=len(metrics),update=self.updates)
+        if unmasked:
+            result['loss_samples'] = len(obs)
         if diagnostic is not None:
             diagnostic.update(observer.report())
             result['numerical_diagnostics'] = diagnostic
@@ -312,12 +325,12 @@ class ProtocolMAPPOTrainer(MAPPOTrainer):
             raise TypeError('12/60 updater requires ProtocolTrainConfig')
         self._initialize(config or ProtocolTrainConfig(), device, ProtocolCritic)
 
-    def collect(self, vector, joint_steps=None, *, episode_limit=None):
+    def collect(self, vector, joint_steps=None, *, episode_limit=None, checkpoint_callback=None):
         from algorithm.common.aircombat_vector import AirCombatVectorEnv
         from .aircombat_rollout import collect
         if not isinstance(vector,AirCombatVectorEnv):
             raise RuntimeError('no task/reward collector for non-aircombat vector; supply explicit Rollout arrays')
-        return collect(self,vector,joint_steps,episode_limit=episode_limit)
+        return collect(self,vector,joint_steps,episode_limit=episode_limit,checkpoint_callback=checkpoint_callback)
 
     @torch.no_grad()
     def sample_actions(self, observations, masks, *, deterministic=False):

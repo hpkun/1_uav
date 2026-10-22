@@ -33,5 +33,16 @@ def assignment_matrices(state, config):
     _, ha, _, hb = pair_advantages(state.friendly_states,state.adversarial_states,config)
     live = state.friendly_alive[:,None] & state.adversarial_alive[None,:]
     ha, hb = np.where(live,ha,0.), np.where(live,hb,0.)
-    assignments, f = aph_assign(ha,hb,state.friendly_alive,state.adversarial_alive,config.attack_eta)
+    if config.assignment_mode=='aph':
+        assignments, f = aph_assign(ha,hb,state.friendly_alive,state.adversarial_alive,config.attack_eta)
+    else:
+        # IV.C ablation: independent nearest live target; stable ID breaks ties.
+        assignments = np.full(len(state.friendly_alive),-1,dtype=np.int64)
+        f = np.zeros(ha.shape,dtype=np.int64)
+        targets = np.flatnonzero(state.adversarial_alive)
+        for i in np.flatnonzero(state.friendly_alive):
+            if len(targets):
+                distance = np.linalg.norm(state.adversarial_states[targets,:3]-state.friendly_states[i,:3],axis=-1)
+                assignments[i] = targets[np.argmin(distance)]
+                f[i,assignments[i]] = 1
     return assignments, ha, hb, f

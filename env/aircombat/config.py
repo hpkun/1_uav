@@ -21,6 +21,9 @@ class AirCombatConfig:
     terminal_e2: float = 25.
     attack_dwell_steps: int = 2
     opponent_best_probability: float = .8
+    assignment_mode: str = 'aph'
+    allied_penalty_enabled: bool = True
+    opponent_aggregation: str = 'aggregate-sum'
     # Unpublished engineering choices; NOT additional paper constants.
     gravity: float = 9.81
     denominator_epsilon: float = 1e-6
@@ -32,6 +35,12 @@ class AirCombatConfig:
     def __post_init__(self):
         if self.scale not in SCALES:
             raise ValueError('scale must be 3v3, 5v5 or 3v5')
+        if self.assignment_mode not in ('aph','nearest'):
+            raise ValueError('invalid assignment_mode')
+        if type(self.allied_penalty_enabled) is not bool:
+            raise ValueError('invalid allied_penalty_enabled')
+        if self.opponent_aggregation not in ('aggregate-sum','opportunistic-max','threat-aware-maximin'):
+            raise ValueError('invalid opponent_aggregation')
         for key in ('dt', 'tau_max', 'tau_min', 'alpha_max', 'v_min', 'v_max',
                     'gravity', 'denominator_epsilon', 'geometry_epsilon', 'terminal_e2'):
             if not math.isfinite(getattr(self, key)) or getattr(self, key) <= 0:

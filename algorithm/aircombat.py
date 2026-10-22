@@ -17,33 +17,39 @@ from algorithm.common.aircombat_vector import AirCombatVectorEnv, CombatEpisodeA
 from algorithm.common.checkpoint import save_protocol_checkpoint,read_protocol_checkpoint,restore_protocol_checkpoint
 
 
-def evaluate(trainer, env_config, seeds, *, scenario=None):
+def evaluate(trainer, env_config, seeds, *, scenario=None, episodes_per_seed=1):
     require_cuda(str(trainer.device))
     seeds = tuple(seeds)
     if not seeds or any(type(s) is not int or s<0 for s in seeds):
         raise ValueError('evaluation requires nonnegative integer seeds')
     if set(seeds)&set(trainer.config.worker_seeds()):
         raise ValueError('evaluation seeds overlap training workers')
+    if type(episodes_per_seed) is not int or episodes_per_seed<1:
+        raise ValueError('episodes_per_seed must be positive')
     summaries = []
     for seed in seeds:
         env = AirCombatEnv(env_config)
-        obs,info = env.reset(seed,options={'scenario':scenario} if scenario else None)
-        tracker = CombatEpisodeAccumulator()
-        tracker.reset(info)
-        while True:
-            actions,_ = trainer.sample_actions(obs,info['active_mask'],deterministic=True)
-            obs,reward,terminated,truncated,info = env.step(actions.cpu().numpy())
-            tracker.add(info,reward)
-            if terminated or truncated:
-                summary = tracker.summary(info)
-                summary['seed'] = seed
-                summaries.append(summary)
-                break
-    return dict(**combat_metrics(summaries),episodes=summaries)
+        for episode_index in range(episodes_per_seed):
+            obs,info = env.reset(seed if episode_index==0 else None,options={'scenario':scenario} if scenario else None)
+            tracker = CombatEpisodeAccumulator();tracker.reset(info)
+            while True:
+                actions,_ = trainer.sample_actions(obs,info['active_mask'],deterministic=True)
+                obs,reward,terminated,truncated,info = env.step(actions.cpu().numpy())
+                tracker.add(info,reward)
+                if terminated or truncated:
+                    summary = tracker.summary(info)
+                    summary.update(seed=seed,episode_index=episode_index)
+                    summaries.append(summary)
+                    break
+    return dict(**combat_metrics(summaries),episodes=summaries,evaluation_protocol=dict(
+        seeds=list(seeds),episodes_per_seed=episodes_per_seed,policy='deterministic Beta mean',
+        reset='seed once per group; subsequent episodes continue independent Generator stream'))
 
 
 def train(env_config, train_config, output, *, resume=None):
     require_cuda('cuda')
+    if env_config.opponent_aggregation!='aggregate-sum' or env_config.opponent_best_probability!=.8:
+        raise ValueError('Blue variants are evaluation-only; training requires aggregate-sum p=.8')
     output = Path(output)
     output.mkdir(parents=True,exist_ok=True)
     random.seed(train_config.seed)
@@ -59,6 +65,11 @@ def train(env_config, train_config, output, *, resume=None):
                 records = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines() if line.strip()]
                 records = [r for r in records if r['updates']<=trainer.updates and r['sampled_steps']<=trainer.sampled_steps]
                 log.write_text(''.join(json.dumps(r,ensure_ascii=False)+'\n' for r in records),encoding='utf-8')
+            index=output/'checkpoints.jsonl'
+            if index.exists():
+                rows=[json.loads(x) for x in index.read_text(encoding='utf-8').splitlines() if x.strip()]
+                rows=[r for r in rows if r['completed_episodes']<=trainer.training_episode_count and r['updates']<=trainer.updates]
+                index.write_text(''.join(json.dumps(r)+'\n' for r in rows),encoding='utf-8')
         elif log.exists() or (output/'latest.pt').exists():
             raise ValueError('output already contains training state; use --resume or a fresh directory')
         manifest = dict(environment=env_config.to_dict(),training=train_config.to_dict(),
@@ -66,23 +77,23 @@ def train(env_config, train_config, output, *, resume=None):
                         training_assumptions=train_config.reproduction_assumptions(),
                         cuda=torch.cuda.get_device_name(0))
         (output/'config.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
-        interval = train_config.checkpoint_interval_episodes
-        last_bucket = trainer.training_episode_count//interval
-        while trainer.training_episode_count<train_config.training_episodes:
+        def target_checkpoint(t,v):
+            path=output/f'episodes_{t.training_episode_count:06d}.pt'
+            save_protocol_checkpoint(path,t,env_config=env_config,vector=v)
+            row=dict(target_episode=t.training_episode_count,completed_episodes=t.training_episode_count,
+                     updates=t.updates,sampled_steps=t.sampled_steps,phase='collecting_rollout',path=path.name)
+            with (output/'checkpoints.jsonl').open('a',encoding='utf-8') as stream:
+                stream.write(json.dumps(row)+'\n')
+        while trainer.training_episode_count<train_config.training_episodes or getattr(trainer,'pending_collection',None) is not None:
             remaining = train_config.training_episodes-trainer.training_episode_count
-            rollout,episodes = trainer.collect(vector,episode_limit=remaining)
+            rollout,episodes = trainer.collect(vector,episode_limit=max(1,remaining),checkpoint_callback=target_checkpoint)
             update = trainer.update(rollout)
             record = dict(completed_episodes=trainer.training_episode_count,sampled_steps=trainer.sampled_steps,
                           updates=trainer.updates,episode_metrics=combat_metrics(episodes),
-                          rollout=trainer.rollout_metrics,ppo=update)
+                          rollout=trainer.rollout_metrics,ppo=update,episodes=episodes)
             with log.open('a',encoding='utf-8') as stream:
                 stream.write(json.dumps(record,ensure_ascii=False,allow_nan=False)+'\n')
             print(json.dumps({k:v for k,v in record.items() if k!='ppo'},ensure_ascii=False),flush=True)
-            bucket = trainer.training_episode_count//interval
-            if bucket>last_bucket:
-                save_protocol_checkpoint(output/f'episodes_{trainer.training_episode_count:06d}.pt',trainer,
-                                         env_config=env_config,vector=vector)
-                last_bucket = bucket
         save_protocol_checkpoint(output/'latest.pt',trainer,env_config=env_config,vector=vector)
     return trainer
 

@@ -12,6 +12,14 @@ TABLE_I = np.array([[0,1,0],[0,1,2],[0,0,-1],
 BLUE_CONTROLS = TABLE_I[:,[0,2,1]].copy()
 
 
+def aggregate_scores(pair_scores, mode='aggregate-sum'):
+    """Eq.(22)/(24), Blue listed first; variants only for post-training tests."""
+    if mode=='aggregate-sum': return np.sum(pair_scores)
+    if mode=='opportunistic-max': return np.max(pair_scores)
+    if mode=='threat-aware-maximin': return np.min(pair_scores)
+    raise ValueError('unknown Blue aggregation')
+
+
 def candidate_scores(blue_state, red_states, config):
     """Pure virtual evaluation; no live state, counters, dwell or RNG mutation."""
     scores = np.full(15,-np.inf)
@@ -21,7 +29,7 @@ def candidate_scores(blue_state, red_states, config):
         if ok:
             g, offense, defense, _ = pair_advantages(candidate[None,:],red_states,config)
             speed = (candidate[3]-config.v_min)/(config.v_max-config.v_min)
-            scores[k] = np.sum(speed*g.cos_alpha_i+offense-defense.T)
+            scores[k] = aggregate_scores(speed*g.cos_alpha_i+offense-defense.T,config.opponent_aggregation)
     return scores
 
 

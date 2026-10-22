@@ -137,7 +137,10 @@ class ParallelVectorEnv:
         for k, (i, row) in enumerate(zip(indices, rows)):
             self.trackers[i].add(row[4], row[1])
             if row[2] or row[3]:
-                episodes.append(self.trackers[i].summary(row[4]))
+                summary=self.trackers[i].summary(row[4])
+                if 'friendly_states' in row[4]:
+                    summary.update(worker_id=int(i),worker_episode_index=int(self.episodes[i]))
+                episodes.append(summary)
                 self.episodes[i] += 1
                 self.connections[i].send(('reset', self._seed(i)))
                 resetting.append((k, i))

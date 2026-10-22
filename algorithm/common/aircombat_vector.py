@@ -11,6 +11,7 @@ class CombatEpisodeAccumulator:
         self.parts = dict.fromkeys(COMPONENTS,0.)
         self.steps = self.valid_steps = self.numerical_failures = 0
         self.numerical_events = []
+        self.risks = {k:np.zeros(len(self.reward)) for k in ('proximity','shared_exposure')}
 
     def add(self, info, reward):
         self.reward += reward
@@ -21,12 +22,18 @@ class CombatEpisodeAccumulator:
             self.numerical_events.append(dict(step=info['episode_length'],failures=info['failures']))
         for k in COMPONENTS:
             self.parts[k] += float(info['reward_components'][k].sum())
+        for k in self.risks:
+            self.risks[k] += info['risk_terms'][k]
 
     def summary(self, info):
         return dict(episode_return=float(self.reward.mean()), episode_length=self.steps,
                     win=info['win'], outcome=info['outcome'],blue_shot_down=info['blue_shot_down'],
                     red_survivors=info['red_survivors'],numerical_failures=self.numerical_failures,
                     numerical_events=self.numerical_events.copy(),
+                    proximity_risk=float(self.risks['proximity'].mean()),
+                    shared_exposure_risk=float(self.risks['shared_exposure'].mean()),
+                    risk_totals_by_uav={k:v.tolist() for k,v in self.risks.items()},
+                    reward_components_total={k:v/len(self.reward) for k,v in self.parts.items()},
                     reward_components_mean={k:v/max(1,self.valid_steps) for k,v in self.parts.items()})
 
 
@@ -36,6 +43,11 @@ def combat_metrics(episodes):
     result = {k:float(np.mean([e[v] for e in episodes])) if episodes else None for k,v in fields.items()}
     result['completed_episodes'] = len(episodes)
     result['numerical_failures'] = sum(e['numerical_failures'] for e in episodes)
+    result['termination_counts'] = dict(normal=sum(e.get('outcome') in ('win','red_eliminated','mutual_elimination') for e in episodes),
+                                       timeout=sum(e.get('outcome')=='timeout' for e in episodes),
+                                       numerical_failure=sum(e.get('outcome')=='numerical_failure' for e in episodes))
+    for key in ('proximity_risk','shared_exposure_risk'):
+        result[key] = float(np.mean([e[key] for e in episodes])) if episodes and all(key in e for e in episodes) else None
     result['reward_components_mean'] = {k:float(np.mean([e['reward_components_mean'][k] for e in episodes]))
                                         if episodes else None for k in COMPONENTS}
     return result

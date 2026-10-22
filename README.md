@@ -20,7 +20,9 @@ python -m algorithm.aircombat train --scale 3v5 --output outputs/aircombat_3v5
 python -m algorithm.aircombat evaluate outputs/aircombat_3v3/latest.pt --episodes 200
 ```
 
-`train.jsonl` 记录完成回合数、联合环境步数、PPO 更新数、回合 return、五项奖励、Blue 击落数、Red 存活数、全消灭胜率及数值异常。checkpoint 在 rollout/PPO 更新边界按完成回合阈值保存，并保留 worker 完整状态；如果同一 rollout 跨过保存阈值，实际保存回合数会高于该阈值。恢复必须使用相同环境和训练配置。
+`train.jsonl` 记录完成回合数、联合环境步数、PPO 更新数、逐回合 return、五项奖励、Blue 击落数、Red 存活数、全消灭胜率及三类结束原因。第四节实验入口已支持**精确完成回合目标 checkpoint**，包括4950；中途存档保留半个rollout和预采样动作，恢复不提前触发PPO更新。独立评估保存在单独的 `final_evaluation.json`。
+
+第四节全部主实验、消融、单因素和Blue敏感性配置及正式命令见 [第四节实验报告](docs/xu2026_section_iv_experiments.md)。`python -m algorithm.experiments plan` 仅导出37个独立训练任务，**不启动训练**。静态图表入口为 `python -m tools.report_aircombat`，典型场景轨迹入口为 `python -m tools.aircombat_trajectories`。
 
 下面保留历史巡检任务的说明与入口；它们不属于新的论文空战训练路径。
 

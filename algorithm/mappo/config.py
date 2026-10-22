@@ -90,6 +90,7 @@ class ProtocolTrainConfig(TrainConfig):
     preserve_singleton_advantages: bool = True
     training_episodes: int = 5000
     independent_training_seeds: int = 5
+    ppo_masking: bool = True
 
     def __post_init__(self):
         super().__post_init__()
@@ -99,6 +100,8 @@ class ProtocolTrainConfig(TrainConfig):
             raise ValueError('invalid training_seed_index')
         if type(self.preserve_singleton_advantages) is not bool:
             raise ValueError('invalid preserve_singleton_advantages')
+        if type(self.ppo_masking) is not bool:
+            raise ValueError('invalid ppo_masking')
         for key in ('training_episodes', 'independent_training_seeds'):
             if type(getattr(self,key)) is not int or getattr(self,key)<1:
                 raise ValueError(f'invalid {key}')
@@ -110,7 +113,8 @@ class ProtocolTrainConfig(TrainConfig):
                     advantage_normalization='per agent population std+1e-8; singleton kept raw' if self.preserve_singleton_advantages else 'singleton centered to zero',
                     beta_epsilon=self.beta_epsilon, loss_reduction='sum of per-agent valid means; MSE without half',
                     timeout='bootstrap real final state; stop GAE at episode boundary',
-                    checkpoint_timing='completed-episode thresholds checked after PPO update; crossing may overshoot interval',
+                    checkpoint_timing='exact completed episode; retain partial rollout/wave and pre-sampled actions; no extra PPO update',
+                    masking_ablation='loss-only; physical/GAE/normalization masks retained; dead actions=.5 with exact logp, GAE target=0',
                     budget='collect full per-worker horizons; exact episode budget via final active-worker waves')
 
     def worker_seeds(self):

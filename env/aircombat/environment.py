@@ -10,7 +10,7 @@ from .geometry import pair_advantages
 from .opponent import choose_blue_controls
 from .observations import observe
 from .combat import resolve_attacks
-from .rewards import compute_rewards, COMPONENTS
+from .rewards import compute_rewards, COMPONENTS, allied_risk_terms
 
 
 class AirCombatEnv:
@@ -88,11 +88,13 @@ class AirCombatEnv:
                 self.counters['integration_failures'] += 1
             rewards = np.zeros(c.num_uavs)
             parts = {k:rewards.copy() for k in COMPONENTS}
+            risks = dict(proximity=rewards.copy(),shared_exposure=rewards.copy())
         else:
             s.friendly_states,s.adversarial_states = next_red,next_blue
             _,ra,ba,posture = pair_advantages(next_red,next_blue,c)
             events = resolve_attacks(s,ra,ba,c.attack_dwell_steps)
             rewards,parts = compute_rewards(s,current,assignment,ra,ba,posture,events,c)
+            risks = allied_risk_terms(next_red,s.friendly_alive,s.adversarial_alive,ba,c)
         terminated = bool(failures or not s.friendly_alive.any() or not s.adversarial_alive.any())
         truncated = bool(not terminated and s.step_count>=c.max_steps)
         self.done = terminated or truncated
@@ -101,6 +103,7 @@ class AirCombatEnv:
         info = self._info(central,events,bool(failures))
         info.update(current_active_mask=current,next_active_mask=s.friendly_alive.copy(),
                     transition_assignments=assignment,reward_components=parts,
+                    risk_terms=risks,terminated=terminated,truncated=truncated,
                     numerical_delta={k:self.counters[k]-before_counters[k] for k in self.counters},
                     failures=failures,blue_action_indices=choices,
                     red_controls=red_controls,blue_controls=blue_controls)
@@ -111,7 +114,7 @@ class AirCombatEnv:
                                   counters=self.counters,rng=self.rng.bit_generator.state))
 
     def restore(self, payload):
-        if payload['config'] != self.config.to_dict():
+        if AirCombatConfig(**payload['config']).to_dict() != self.config.to_dict():
             raise ValueError('environment snapshot configuration mismatch')
         p = copy.deepcopy(payload)
         self.state,self.done,self.counters = p['state'],p['done'],p['counters']
