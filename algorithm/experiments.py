@@ -13,6 +13,7 @@ from algorithm.mappo.trainer import ProtocolMAPPOTrainer
 from algorithm.common.checkpoint import read_protocol_checkpoint,restore_protocol_checkpoint
 from algorithm.aircombat import train,evaluate
 from algorithm.common.aircombat_progress import format_evaluation
+from algorithm.common.checkpoint_policy import checkpoint_policy,checkpoint_targets
 
 SEEDS=(1,2,3,4,5)  # Published count; concrete five indices are a disclosed choice.
 CATALOG={
@@ -59,7 +60,7 @@ def manifest(name,seed=1,*,smoke=False,episodes=None):
                 training_budget_kind=budget_kind(cfg.training_episodes),training_episode_target=cfg.training_episodes,
                 environment_version=ENVIRONMENT_VERSION,environment=env.to_dict(),training=cfg.to_dict(),
                 final_evaluation=dict(episodes=cfg.evaluation_episodes,seed_start=10000000+10000*seed),
-                checkpoint_targets=list(range(cfg.checkpoint_interval_episodes,cfg.training_episodes+1,cfg.checkpoint_interval_episodes)))
+                checkpoint_policy=checkpoint_policy(cfg),checkpoint_targets=checkpoint_targets(cfg))
 
 
 def run_directory(root,name,seed):return Path(root)/name/f'seed_{seed}'
@@ -115,13 +116,18 @@ def run_experiment(name,seed,root=None,*,smoke=False,resume=None,episodes=None,c
     env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
     if root is None:root='outputs/xu_iv_v2_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv_v2'
     output=run_directory(root,name,seed)
-    if not resume and ((output/'train.jsonl').exists() or (output/'latest.pt').exists()):
+    if not resume and ((output/'train.jsonl').exists() or any(output.glob('*.pt'))):
         raise FileExistsError('existing training run; use --resume or a fresh root')
     if resume:
         payload=read_protocol_checkpoint(resume,environment_version=ENVIRONMENT_VERSION)
         if AirCombatConfig(**payload['env_config'])!=env or ProtocolTrainConfig(**payload['train_config'])!=cfg:
             raise ValueError('resume experiment configuration mismatch')
-    write_json(output/'experiment.json',manifest(name,seed,smoke=smoke,episodes=episodes))
+    if not resume or not (output/'experiment.json').exists():
+        plan=manifest(name,seed,smoke=smoke,episodes=episodes)
+        if resume:
+            policy=payload.get('checkpoint_policy',checkpoint_policy(cfg,legacy=True))
+            plan.update(checkpoint_policy=policy,checkpoint_targets=checkpoint_targets(cfg,policy))
+        write_json(output/'experiment.json',plan)
     # train() refuses accidental reuse, and resume verifies exact configurations.
     trainer=train(env,cfg,output,resume=resume,console=console,log_every_updates=log_every_updates)
     final_evaluation(output/'latest.pt',output/'final_evaluation.json',console=console)

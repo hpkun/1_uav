@@ -53,7 +53,7 @@
 
 ## C. 全部配置与正式协议
 
-统一默认：每配置独立训练；5个训练种子索引s=1～5；每种子5000个**完成回合**；max_steps250；10个worker；每worker horizon1500；每50完成回合精确checkpoint目标；最终每模型200个独立评估回合。worker初始seed=1000*s+r（r=0～9）。具体索引1～5是本地明确选择，论文只给出了数量和公式。
+统一默认：每配置独立训练；5个训练种子索引s=1～5；每种子5000个**完成回合**；max_steps250；10个worker；每worker horizon1500；每50完成回合触发checkpoint回调，后续新训练默认每250回合实际写盘，并额外保留4950；最终每模型200个独立评估回合。worker初始seed=1000*s+r（r=0～9）。具体索引1～5是本地明确选择，论文只给出了数量和公式。
 
 Actor/Critic均128/128 Tanh，Beta，学习率3e-4，gamma=.954，lambda=.95，clip=.2，entropy=.001，10个PPO epochs，minibatch128，保持表III。正式命令不使用smoke参数。
 

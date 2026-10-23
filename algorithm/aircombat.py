@@ -17,6 +17,7 @@ from algorithm.common.runtime import require_cuda
 from algorithm.common.aircombat_vector import AirCombatVectorEnv, CombatEpisodeAccumulator, combat_metrics
 from algorithm.common.checkpoint import save_protocol_checkpoint,read_protocol_checkpoint,restore_protocol_checkpoint
 from algorithm.common.aircombat_progress import TrainingConsole
+from algorithm.common.checkpoint_policy import checkpoint_policy,checkpoint_targets
 
 
 def evaluate(trainer, env_config, seeds, *, scenario=None, episodes_per_seed=1):
@@ -61,12 +62,21 @@ def train(env_config, train_config, output, *, resume=None, console=True, log_ev
     random.seed(train_config.seed)
     np.random.seed(train_config.seed)
     trainer = ProtocolMAPPOTrainer(train_config)
+    trainer.checkpoint_policy = checkpoint_policy(train_config)
     log = output/'train.jsonl'
     history=[]
     with AirCombatVectorEnv(env_config,train_config.num_envs,train_config.training_seed_index) as vector:
         if resume:
             payload = read_protocol_checkpoint(resume,environment_version=ENVIRONMENT_VERSION)
             restore_protocol_checkpoint(payload,trainer,env_config=env_config,vector=vector)
+            # An older snapshot must not overwrite models from its future.
+            for path in output.glob('episodes_*.pt'):
+                if int(path.stem.removeprefix('episodes_'))>trainer.training_episode_count:
+                    raise FileExistsError('newer checkpoints exist; resume in a fresh directory')
+            if (output/'latest.pt').exists():
+                latest=read_protocol_checkpoint(output/'latest.pt',environment_version=ENVIRONMENT_VERSION)
+                if latest['sampled_steps']>trainer.sampled_steps or latest['updates']>trainer.updates:
+                    raise FileExistsError('newer latest.pt exists; resume in a fresh directory')
             # Remove stale rows beyond this resume boundary before appending.
             if log.exists():
                 records = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines() if line.strip()]
@@ -78,19 +88,26 @@ def train(env_config, train_config, output, *, resume=None, console=True, log_ev
                 rows=[json.loads(x) for x in index.read_text(encoding='utf-8').splitlines() if x.strip()]
                 rows=[r for r in rows if r['completed_episodes']<=trainer.training_episode_count and r['updates']<=trainer.updates]
                 index.write_text(''.join(json.dumps(r)+'\n' for r in rows),encoding='utf-8')
-        elif log.exists() or (output/'latest.pt').exists():
+        elif log.exists() or any(output.glob('*.pt')):
             raise ValueError('output already contains training state; use --resume or a fresh directory')
         manifest = dict(environment_version=ENVIRONMENT_VERSION,environment=env_config.to_dict(),training=train_config.to_dict(),
                         reproduction_assumptions=env_config.reproduction_assumptions(),
                         training_assumptions=train_config.reproduction_assumptions(),
+                        checkpoint_policy=trainer.checkpoint_policy,
+                        checkpoint_targets=checkpoint_targets(train_config,trainer.checkpoint_policy),
                         cuda=torch.cuda.get_device_name(0))
         (output/'config.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
         display=TrainingConsole(train_config.training_episodes,enabled=console,every=log_every_updates,
                                 start_steps=trainer.sampled_steps,history=history,started_at=started_at)
         display.start(trainer,vector,env_config,output,resume=resume)
         if console:display.emit(f"[START] GPU name: {torch.cuda.get_device_name(0)}")
+        targets=set(checkpoint_targets(train_config,trainer.checkpoint_policy))
         def target_checkpoint(t,v):
+            if t.training_episode_count not in targets:
+                return
             path=output/f'episodes_{t.training_episode_count:06d}.pt'
+            if path.exists():
+                raise FileExistsError(f'checkpoint already exists; resume in a fresh directory: {path}')
             save_protocol_checkpoint(path,t,env_config=env_config,vector=v)
             row=dict(target_episode=t.training_episode_count,completed_episodes=t.training_episode_count,
                      updates=t.updates,sampled_steps=t.sampled_steps,phase='collecting_rollout',path=path.name)

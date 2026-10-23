@@ -6,7 +6,11 @@
 
 ## 入口与预算
 
-`python -m algorithm.experiments train`支持`--episodes 2500`和`--episodes 5000`，省略仍是5000。只替换`ProtocolTrainConfig.training_episodes`；正式10环境、每环境horizon1500、单回合250步、PPO参数、种子、50回合checkpoint目标和最终200局独立评估均保持原值。
+`python -m algorithm.experiments train`支持`--episodes 2500`和`--episodes 5000`，省略仍是5000。只替换`ProtocolTrainConfig.training_episodes`；正式10环境、每环境horizon1500、单回合250步、PPO参数、种子、50回合checkpoint内部触发和最终200局独立评估均保持原值。后续新训练默认每250回合实际写盘，并额外保留4950回合模型。
+
+模型保存策略：2500预算保存10份中间模型（250、500……2500）及`latest.pt`，共11份；5000预算保存20份250倍数模型及4950、`latest.pt`，共22份。相较原51/101份文件，数量分别减少78.43%/78.22%；只计算中间模型则减少80%/79%。单文件仍保留完整参数、优化器、RNG、worker及pending rollout，实际字节节省取决于各快照的rollout大小。
+
+保存策略独立记录在新checkpoint的`checkpoint_policy`中，不改变`train_config`。无此字段的旧checkpoint恢复后沿用原间隔；冒烟与非50的自定义间隔继续逐目标写盘。`experiment.json`、新运行`config.json`及导出计划的`checkpoint_targets`使用同一策略；`checkpoints.jsonl`仅在实际保存成功后追加。恢复已有实验时保留原`experiment.json`。恢复目录存在更晚模型时会拒绝覆盖，应使用新目录续训；不会自动删除或改名历史模型。最终`latest.pt`仍在全部PPO更新完成后保存，可独立加载评估。
 
 2500在experiment.json和final_evaluation.json中明确记录`training_budget_kind=half_budget_diagnostic`、`training_episode_target=2500`；训练config.json和checkpoint原有train_config保存实际2500目标。5000标记为paper_5000。统计工具原有“完成5000回合且独立评估200局”检查保留，半预算不会被标成formal_complete。
 

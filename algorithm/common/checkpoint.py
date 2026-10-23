@@ -124,6 +124,8 @@ def save_protocol_checkpoint(path, trainer, *, env_config=None, vector=None):
                    torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all(),
                    numpy_rng=np.random.get_state(), python_rng=random.getstate())
     header = dict(algorithm_version=identity, protocol=protocol)
+    if hasattr(trainer,'checkpoint_policy'):
+        payload['checkpoint_policy'] = trainer.checkpoint_policy
     if env_config is not None:
         from env.aircombat.config import ENVIRONMENT_VERSION as combat_version
         from env.aircombat.config import AirCombatConfig
@@ -187,6 +189,8 @@ def restore_protocol_checkpoint(payload, trainer, *, env_config=None, vector=Non
     trainer.critic_optimizer.load_state_dict(payload['critic_optimizer'])
     trainer.updates, trainer.sampled_steps = payload['updates'], payload['sampled_steps']
     trainer.training_episode_count = payload['training_episode_count']
+    from .checkpoint_policy import checkpoint_policy
+    trainer.checkpoint_policy = payload.get('checkpoint_policy',checkpoint_policy(trainer.config,legacy=True))
     def to_device(value):
         if isinstance(value,torch.Tensor): return value.to(trainer.device)
         if isinstance(value,dict): return {k:to_device(v) for k,v in value.items()}
