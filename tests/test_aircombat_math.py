@@ -128,8 +128,8 @@ def test_blue_table_virtual_scores_and_no_mutation():
     np.testing.assert_array_equal(blue,before[0]); np.testing.assert_array_equal(red,before[1])
     # Independent scalar reconstruction of all 15 candidates.
     for k,u in enumerate(BLUE_CONTROLS):
-        candidate,ok = rk4(blue,u,C,dict(speed_clips=0,nonfinite_states=0))
-        assert ok
+        from env.aircombat.framed_dynamics import advance,initial_frame
+        candidate,_,_ = advance(blue,u,initial_frame(blue),C)
         total = 0
         for target in red:
             r = target[:3]-candidate[:3]

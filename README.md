@@ -1,5 +1,9 @@
 # Xu (2026) APH-MAPPO 三维空战与历史巡检基准
 
+当前空战默认协议已升级为 **xu-aircombat-v2.0.0**：连续标架积分处理垂直方向，真正仿真故障显式中断采样。极区延续是论文未公开的工程假设；旧v1 checkpoint不能恢复v2训练。数学说明见 [动力学v2](docs/dynamics_v2.md)，408项测试和CUDA实测见 [修复验收报告](docs/dynamics_v2_validation.md)。新正式实验从头写入 `outputs/xu_iv_v2`，不混用旧统计。
+
+运行遵循 `AGENTS.md`：优先WSL Ubuntu的 `uav` Conda环境，CUDA训练/评估必须可用；下文PowerShell命令保留为WSL不可用时的替代示例。
+
 当前空战入口为 `python -m algorithm.aircombat`，独立环境位于 `env/aircombat/`：支持 **3v3、5v5、3v5**，Red 共享 Beta Actor 学习，Blue 使用论文 Table I 的 15 动作、aggregate-sum 80/20 规则。Actor/Critic 为 **12D/60D**，与历史巡检 12D/90D 存档互斥。
 
 默认环境参数、训练表 III 参数、论文外假设、逐文件变更及验证结果见 [前三阶段实施报告](docs/xu2026_aircombat_implementation.md)。`shootdown_r0=10` 是**论文未报告的实验占位值**，可以通过 `--r0` 修改。未进行正式 5000 回合 × 5 种子实验，也未声称论文性能复现。

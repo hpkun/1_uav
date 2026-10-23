@@ -65,6 +65,7 @@ class TrainingConsole:
                   f" | Episodes {trainer.training_episode_count}/{self.total}"
                   f" | Workers {len(vector.worker_pids)} (spawn) | GPU {trainer.device}"
                   f" | horizon={trainer.config.horizon} | max_steps={env_config.max_steps}"
+                  f" | integrator={env_config.integrator}"
                   f" | log_every_updates={self.every} | output={output}"
                   + (f" | resume={resume}" if resume else ''))
 

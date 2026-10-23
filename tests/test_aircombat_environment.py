@@ -212,18 +212,18 @@ def test_no_kill_for_bad_cone_or_target_direction(monkeypatch,angle,target_headi
         assert not info['events'] and e.state.adversarial_alive[0]
 
 
-def test_numerical_failure_rolls_back_and_never_becomes_a_shootdown():
+def test_vertical_flight_continues_without_fabricating_failure_or_shootdown():
     e=AirCombatEnv()
     o=chase_options();o['friendly_states'][0,4]=np.pi/2
     e.reset(2,o)
     before=copy.deepcopy(e.state)
     _,reward,term,trunc,info=e.step(np.tile(TRIM,(3,1)))
-    assert term and not trunc and info['numerical_failure'] and not info['win']
+    assert not term and not trunc and not info['numerical_failure'] and not info['win']
     assert info['blue_shot_down']==0
-    assert not info['events'] and not reward.any()
+    assert not info['events'] and np.isfinite(reward).all()
     np.testing.assert_array_equal(e.state.friendly_alive,before.friendly_alive)
-    np.testing.assert_array_equal(e.state.friendly_states,before.friendly_states)
-    np.testing.assert_array_equal(e.state.adversarial_states,before.adversarial_states)
+    assert not np.array_equal(e.state.friendly_states,before.friendly_states)
+    assert info['numerical_diagnostics']['continuation_substeps']>0
 
 
 @pytest.mark.parametrize('scale',['3v3','5v5','3v5'])

@@ -1,5 +1,7 @@
 # 空战训练入口与终端摘要
 
+后续动力学修复已升级至v2，当前默认根目录为 `outputs/xu_iv_v2_2500` / `outputs/xu_iv_v2`，且真正数值故障独立fail-fast。以下记录日志优化阶段的历史设计；当前运行与兼容性以 [动力学v2](dynamics_v2.md) 为准。
+
 本轮只修改 `algorithm/aircombat.py`、`algorithm/experiments.py`，新增纯终端模块 `algorithm/common/aircombat_progress.py` 和针对性测试 `tests/test_aircombat_console.py`，更新README及本文档。环境、奖励、观测、APH、Blue、MAPPO、并行器、rollout收集器和checkpoint序列化实现均未改动。
 
 ## 入口与预算

@@ -74,6 +74,15 @@ def collect(trainer,vector,joint_steps=None,*,episode_limit=None,checkpoint_call
         for dst,src in zip(b['row'],selected):dst[ids]=src
         b['episodes'].extend(tr.episodes)
         for worker,info in zip(ids,tr.infos):
+            if 'numerical_diagnostics' in info:
+                # Observational only; retain the latest cumulative diagnostics
+                # per worker, without affecting rollout arrays or RNG.
+                b.setdefault('frame_diagnostics',{})[int(worker)]=info['numerical_diagnostics'].copy()
+            for event in info.get('numerical_step',[]):
+                if event['pole_entries']:
+                    b.setdefault('continuation_events',[]).append(dict(worker=int(worker),
+                        step=info['episode_length'],**{k:(v.tolist() if isinstance(v,np.ndarray) else v)
+                        for k,v in event.items()}))
             b['valid_count']+=int(info['current_active_mask'].sum())
             b['failures']+=int(info['numerical_failure'])
             b['speed_clips']+=info['numerical_delta']['speed_clips']
@@ -89,6 +98,8 @@ def collect(trainer,vector,joint_steps=None,*,episode_limit=None,checkpoint_call
     trainer.rollout_metrics=dict(sampled_steps=b['sampled'],valid_uav_steps=b['valid_count'],
         numerical_failures=b['failures'],numerical_events=b['numerical_events'],speed_clips=b['speed_clips'],
         reward_components_mean={k:v/max(1,b['valid_count']) for k,v in b['parts'].items()})
+    trainer.rollout_metrics['frame_diagnostics_by_worker']=b.get('frame_diagnostics',{})
+    trainer.rollout_metrics['continuation_events']=b.get('continuation_events',[])
     rollout=Rollout(*(torch.stack([r[i] for r in b['rows']]) for i in range(11)))
     trainer.pending_collection=None
     return rollout,b['episodes']

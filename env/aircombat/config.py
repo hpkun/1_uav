@@ -2,7 +2,7 @@
 from dataclasses import asdict, dataclass
 import math
 
-ENVIRONMENT_VERSION = 'xu-aircombat-v1.0.0'
+ENVIRONMENT_VERSION = 'xu-aircombat-v2.0.0'
 SCALES = {'3v3': (3, 3), '5v5': (5, 5), '3v5': (3, 5)}
 
 
@@ -31,8 +31,20 @@ class AirCombatConfig:
     shootdown_r0: float = 10.  # PAPER DOES NOT REPORT r0; smoke placeholder.
     initial_scenario: str = 'random_training'
     random_min_separation: float = 100.
+    integrator: str = 'frame_rk4'
+    pole_cap_ratio: float = .1
+    frame_alignment_rate: float = 2.
+    frame_normal_substeps: int = 1
+    frame_polar_substeps: int = 8
 
     def __post_init__(self):
+        if self.integrator not in ('frame_rk4','angle_rk4'):
+            raise ValueError('invalid integrator')
+        if not 0 < self.pole_cap_ratio < 1 or not math.isfinite(self.frame_alignment_rate) or self.frame_alignment_rate <= 0:
+            raise ValueError('invalid frame continuation parameters')
+        for key in ('frame_normal_substeps','frame_polar_substeps'):
+            if type(getattr(self,key)) is not int or getattr(self,key)<1:
+                raise ValueError(f'invalid {key}')
         if self.scale not in SCALES:
             raise ValueError('scale must be 3v3, 5v5 or 3v5')
         if self.assignment_mode not in ('aph','nearest'):
@@ -69,8 +81,11 @@ class AirCombatConfig:
 
     def reproduction_assumptions(self):
         return dict(
-            gravity=self.gravity, integrator='classical RK4; reject singular stages/crossings',
-            numerical_failure='rollback whole joint step; end episode without combat death or reward',
+            gravity=self.gravity, integrator=self.integrator,
+            continuation='engineering assumption: smooth polar connection cutoff and bounded closest-chart gauge relaxation',
+            pole_cap_ratio=self.pole_cap_ratio,frame_alignment_rate=self.frame_alignment_rate,
+            frame_substeps=[self.frame_normal_substeps,self.frame_polar_substeps],
+            numerical_failure='explicit SimulationFault; no transition, terminal reward, automatic reset or PPO sample',
             endpoint_projection='speed clipped to [100,400]; heading wrapped; no gamma/height clipping',
             geometry_epsilon=self.geometry_epsilon, zero_distance='zero LOS cosines; no attack; -1/epsilon posture',
             shootdown_r0=dict(value=self.shootdown_r0, source='论文未报告; experimental placeholder'),
@@ -85,5 +100,5 @@ class AirCombatConfig:
                                  distribution='independent uniform; reject positions closer than minimum across both teams',
                                  minimum_separation=self.random_min_separation, rejection_limit=10000),
             ties='lowest stable ID / earliest Table I action',
-            candidate_failure='score -infinity; if fewer than two feasible Blue actions abort numerical episode',
+            candidate_failure='frame mode: explicit fault; angle baseline: infeasible candidate -inf, fewer than two abort; pure copies',
             reset_rng='initial seed 1000*s+r; subsequent resets continue worker Generator stream')

@@ -1,6 +1,6 @@
 """Table I and Eqs.(21)-(23), aggregate-sum 80/20 Blue opponent."""
 import numpy as np
-from env.integrator import rk4
+from .framed_dynamics import advance, initial_frame, SimulationFault
 from .geometry import pair_advantages
 
 # Original table columns: mu, normal load, tangential load.
@@ -20,16 +20,20 @@ def aggregate_scores(pair_scores, mode='aggregate-sum'):
     raise ValueError('unknown Blue aggregation')
 
 
-def candidate_scores(blue_state, red_states, config):
+def candidate_scores(blue_state, red_states, config, frame=None):
     """Pure virtual evaluation; no live state, counters, dwell or RNG mutation."""
     scores = np.full(15,-np.inf)
     for k,control in enumerate(BLUE_CONTROLS):
-        counters = dict(speed_clips=0,nonfinite_states=0,integration_failures=0)
-        candidate,ok = rk4(blue_state,control,config,counters)
-        if ok:
-            g, offense, defense, _ = pair_advantages(candidate[None,:],red_states,config)
-            speed = (candidate[3]-config.v_min)/(config.v_max-config.v_min)
-            scores[k] = aggregate_scores(speed*g.cos_alpha_i+offense-defense.T,config.opponent_aggregation)
+        try:
+            candidate,_,_ = advance(blue_state,control,initial_frame(blue_state) if frame is None else frame,config)
+        except SimulationFault:
+            # Preserve the historical angular baseline's infeasible-candidate
+            # scoring. In the default frame mode every true fault propagates.
+            if config.integrator=='angle_rk4':continue
+            raise
+        g, offense, defense, _ = pair_advantages(candidate[None,:],red_states,config)
+        speed = (candidate[3]-config.v_min)/(config.v_max-config.v_min)
+        scores[k] = aggregate_scores(speed*g.cos_alpha_i+offense-defense.T,config.opponent_aggregation)
     return scores
 
 
@@ -37,7 +41,8 @@ def choose_blue_controls(state, config, rng):
     controls = np.zeros((len(state.adversarial_states),3))
     choices = np.full(len(controls),-1,dtype=int)
     for j in np.flatnonzero(state.adversarial_alive):
-        scores = candidate_scores(state.adversarial_states[j],state.friendly_states[state.friendly_alive],config)
+        frame = None if state.adversarial_frames is None else state.adversarial_frames[j]
+        scores = candidate_scores(state.adversarial_states[j],state.friendly_states[state.friendly_alive],config,frame)
         order = np.argsort(-scores,kind='stable')
         if np.isfinite(scores).sum()<2:
             raise FloatingPointError(f'Blue {j} has fewer than two feasible maneuvers')

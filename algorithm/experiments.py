@@ -57,7 +57,7 @@ def manifest(name,seed=1,*,smoke=False,episodes=None):
     env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
     return dict(experiment=name,family=CATALOG[name]['family'],training_seed=seed,is_smoke=smoke,
                 training_budget_kind=budget_kind(cfg.training_episodes),training_episode_target=cfg.training_episodes,
-                environment=env.to_dict(),training=cfg.to_dict(),
+                environment_version=ENVIRONMENT_VERSION,environment=env.to_dict(),training=cfg.to_dict(),
                 final_evaluation=dict(episodes=cfg.evaluation_episodes,seed_start=10000000+10000*seed),
                 checkpoint_targets=list(range(cfg.checkpoint_interval_episodes,cfg.training_episodes+1,cfg.checkpoint_interval_episodes)))
 
@@ -113,7 +113,7 @@ def final_evaluation(checkpoint,output,*,episodes=None,console=True):
 
 def run_experiment(name,seed,root=None,*,smoke=False,resume=None,episodes=None,console=True,log_every_updates=5):
     env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
-    if root is None:root='outputs/xu_iv_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv'
+    if root is None:root='outputs/xu_iv_v2_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv_v2'
     output=run_directory(root,name,seed)
     if not resume and ((output/'train.jsonl').exists() or (output/'latest.pt').exists()):
         raise FileExistsError('existing training run; use --resume or a fresh root')
@@ -169,7 +169,7 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     plan=sub.add_parser('plan');plan.add_argument('--output',default='configs/xu_iv/plan.json')
     t=sub.add_parser('train');t.add_argument('--experiment',choices=tuple(CATALOG),required=True)
-    t.add_argument('--seed',type=int,default=1);t.add_argument('--root',help='default: outputs/xu_iv_2500 for 2500, outputs/xu_iv for 5000')
+    t.add_argument('--seed',type=int,default=1);t.add_argument('--root',help='default: outputs/xu_iv_v2_2500 for 2500, outputs/xu_iv_v2 for 5000')
     t.add_argument('--episodes',type=int,choices=(2500,5000),help='completed-episode target; default paper budget 5000')
     t.add_argument('--log-every-updates',type=int,default=5);t.add_argument('--quiet',action='store_true')
     t.add_argument('--smoke',action='store_true');t.add_argument('--resume')

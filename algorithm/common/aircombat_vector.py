@@ -30,6 +30,7 @@ class CombatEpisodeAccumulator:
                     win=info['win'], outcome=info['outcome'],blue_shot_down=info['blue_shot_down'],
                     red_survivors=info['red_survivors'],numerical_failures=self.numerical_failures,
                     numerical_events=self.numerical_events.copy(),
+                    numerical_diagnostics=info.get('numerical_diagnostics',{}).copy(),
                     proximity_risk=float(self.risks['proximity'].mean()),
                     shared_exposure_risk=float(self.risks['shared_exposure'].mean()),
                     risk_totals_by_uav={k:v.tolist() for k,v in self.risks.items()},

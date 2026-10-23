@@ -36,7 +36,15 @@ def read_runs(root):
             raise ValueError('training log updates must be strictly increasing')
         result=json.loads(evaluation.read_text(encoding='utf-8')) if evaluation.exists() else None
         if result and result.get('training_seed')!=meta['training_seed']:raise ValueError('evaluation training seed mismatch')
+        if result and 'environment_version' in result and result['environment_version']!=meta.get('environment_version'):
+            raise ValueError('evaluation environment version mismatch')
         runs.append(dict(meta=meta,records=records,evaluation=result,path=str(path.parent.resolve())))
+    versions={r['meta'].get('environment_version','legacy_unversioned') for r in runs}
+    dynamics={json.dumps({k:r['meta']['environment'].get(k) for k in
+        ('integrator','pole_cap_ratio','frame_alignment_rate','frame_normal_substeps','frame_polar_substeps')},sort_keys=True)
+        for r in runs}
+    if len(versions)>1 or len(dynamics)>1:
+        raise ValueError('cannot mix environment versions or dynamics continuations in one report')
     return runs
 
 

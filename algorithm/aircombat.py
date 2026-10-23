@@ -43,7 +43,8 @@ def evaluate(trainer, env_config, seeds, *, scenario=None, episodes_per_seed=1):
                     summary.update(seed=seed,episode_index=episode_index)
                     summaries.append(summary)
                     break
-    return dict(**combat_metrics(summaries),episodes=summaries,evaluation_protocol=dict(
+    return dict(**combat_metrics(summaries),episodes=summaries,environment_version=ENVIRONMENT_VERSION,
+        integrator=env_config.integrator,evaluation_protocol=dict(
         seeds=list(seeds),episodes_per_seed=episodes_per_seed,policy='deterministic Beta mean',
         reset='seed once per group; subsequent episodes continue independent Generator stream'))
 
@@ -79,7 +80,7 @@ def train(env_config, train_config, output, *, resume=None, console=True, log_ev
                 index.write_text(''.join(json.dumps(r)+'\n' for r in rows),encoding='utf-8')
         elif log.exists() or (output/'latest.pt').exists():
             raise ValueError('output already contains training state; use --resume or a fresh directory')
-        manifest = dict(environment=env_config.to_dict(),training=train_config.to_dict(),
+        manifest = dict(environment_version=ENVIRONMENT_VERSION,environment=env_config.to_dict(),training=train_config.to_dict(),
                         reproduction_assumptions=env_config.reproduction_assumptions(),
                         training_assumptions=train_config.reproduction_assumptions(),
                         cuda=torch.cuda.get_device_name(0))
@@ -98,7 +99,16 @@ def train(env_config, train_config, output, *, resume=None, console=True, log_ev
             display.checkpoint(t,path)
         while trainer.training_episode_count<train_config.training_episodes or getattr(trainer,'pending_collection',None) is not None:
             remaining = train_config.training_episodes-trainer.training_episode_count
-            rollout,episodes = trainer.collect(vector,episode_limit=max(1,remaining),checkpoint_callback=target_checkpoint)
+            try:
+                rollout,episodes = trainer.collect(vector,episode_limit=max(1,remaining),checkpoint_callback=target_checkpoint)
+            except (FloatingPointError,RuntimeError,TimeoutError) as exc:
+                # Never update PPO or replace a checkpoint after collection fails.
+                with (output/'simulation_faults.jsonl').open('a',encoding='utf-8') as stream:
+                    stream.write(json.dumps(dict(environment_version=ENVIRONMENT_VERSION,
+                        integrator=env_config.integrator,completed_episodes=trainer.training_episode_count,
+                        updates=trainer.updates,sampled_steps=trainer.sampled_steps,diagnostic=str(exc)),ensure_ascii=False)+'\n')
+                display.emit(f'[FAULT] simulation collection stopped | PPO updates {trainer.updates} | details: simulation_faults.jsonl')
+                raise
             update = trainer.update(rollout)
             record = dict(completed_episodes=trainer.training_episode_count,sampled_steps=trainer.sampled_steps,
                           updates=trainer.updates,episode_metrics=combat_metrics(episodes),

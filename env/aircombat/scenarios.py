@@ -48,6 +48,8 @@ class CombatState:
     step_count: int = 0
     events: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    friendly_frames: np.ndarray = None
+    adversarial_frames: np.ndarray = None
 
 
 def generate(config, rng, options=None):

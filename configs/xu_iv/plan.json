@@ -5,6 +5,9 @@
       "family": "main",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -27,7 +30,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -177,6 +185,9 @@
       "family": "main",
       "training_seed": 2,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -199,7 +210,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -349,6 +365,9 @@
       "family": "main",
       "training_seed": 3,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -371,7 +390,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -521,6 +545,9 @@
       "family": "main",
       "training_seed": 4,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -543,7 +570,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -693,6 +725,9 @@
       "family": "main",
       "training_seed": 5,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -715,7 +750,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -865,6 +905,9 @@
       "family": "main",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "5v5",
         "dt": 0.25,
@@ -887,7 +930,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -1037,6 +1085,9 @@
       "family": "main",
       "training_seed": 2,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "5v5",
         "dt": 0.25,
@@ -1059,7 +1110,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -1209,6 +1265,9 @@
       "family": "main",
       "training_seed": 3,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "5v5",
         "dt": 0.25,
@@ -1231,7 +1290,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -1381,6 +1445,9 @@
       "family": "main",
       "training_seed": 4,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "5v5",
         "dt": 0.25,
@@ -1403,7 +1470,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -1553,6 +1625,9 @@
       "family": "main",
       "training_seed": 5,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "5v5",
         "dt": 0.25,
@@ -1575,7 +1650,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -1725,6 +1805,9 @@
       "family": "main",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v5",
         "dt": 0.25,
@@ -1747,7 +1830,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -1897,6 +1985,9 @@
       "family": "main",
       "training_seed": 2,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v5",
         "dt": 0.25,
@@ -1919,7 +2010,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -2069,6 +2165,9 @@
       "family": "main",
       "training_seed": 3,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v5",
         "dt": 0.25,
@@ -2091,7 +2190,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -2241,6 +2345,9 @@
       "family": "main",
       "training_seed": 4,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v5",
         "dt": 0.25,
@@ -2263,7 +2370,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -2413,6 +2525,9 @@
       "family": "main",
       "training_seed": 5,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v5",
         "dt": 0.25,
@@ -2435,7 +2550,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -2585,6 +2705,9 @@
       "family": "ablation",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -2607,7 +2730,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -2757,6 +2885,9 @@
       "family": "ablation",
       "training_seed": 2,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -2779,7 +2910,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -2929,6 +3065,9 @@
       "family": "ablation",
       "training_seed": 3,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -2951,7 +3090,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -3101,6 +3245,9 @@
       "family": "ablation",
       "training_seed": 4,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -3123,7 +3270,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -3273,6 +3425,9 @@
       "family": "ablation",
       "training_seed": 5,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -3295,7 +3450,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -3445,6 +3605,9 @@
       "family": "ablation",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -3467,7 +3630,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -3617,6 +3785,9 @@
       "family": "ablation",
       "training_seed": 2,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -3639,7 +3810,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -3789,6 +3965,9 @@
       "family": "ablation",
       "training_seed": 3,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -3811,7 +3990,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -3961,6 +4145,9 @@
       "family": "ablation",
       "training_seed": 4,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -3983,7 +4170,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -4133,6 +4325,9 @@
       "family": "ablation",
       "training_seed": 5,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -4155,7 +4350,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -4305,6 +4505,9 @@
       "family": "ablation",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -4327,7 +4530,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -4477,6 +4685,9 @@
       "family": "ablation",
       "training_seed": 2,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -4499,7 +4710,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -4649,6 +4865,9 @@
       "family": "ablation",
       "training_seed": 3,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -4671,7 +4890,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -4821,6 +5045,9 @@
       "family": "ablation",
       "training_seed": 4,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -4843,7 +5070,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -4993,6 +5225,9 @@
       "family": "ablation",
       "training_seed": 5,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -5015,7 +5250,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -5165,6 +5405,9 @@
       "family": "coefficient",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -5187,7 +5430,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -5337,6 +5585,9 @@
       "family": "coefficient",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -5359,7 +5610,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -5509,6 +5765,9 @@
       "family": "coefficient",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -5531,7 +5790,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -5681,6 +5945,9 @@
       "family": "coefficient",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -5703,7 +5970,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -5853,6 +6125,9 @@
       "family": "coefficient",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -5875,7 +6150,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -6025,6 +6305,9 @@
       "family": "coefficient",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -6047,7 +6330,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,
@@ -6197,6 +6485,9 @@
       "family": "coefficient",
       "training_seed": 1,
       "is_smoke": false,
+      "training_budget_kind": "paper_5000",
+      "training_episode_target": 5000,
+      "environment_version": "xu-aircombat-v2.0.0",
       "environment": {
         "scale": "3v3",
         "dt": 0.25,
@@ -6219,7 +6510,12 @@
         "geometry_epsilon": 1e-09,
         "shootdown_r0": 10.0,
         "initial_scenario": "random_training",
-        "random_min_separation": 100.0
+        "random_min_separation": 100.0,
+        "integrator": "frame_rk4",
+        "pole_cap_ratio": 0.1,
+        "frame_alignment_rate": 2.0,
+        "frame_normal_substeps": 1,
+        "frame_polar_substeps": 8
       },
       "training": {
         "actor_lr": 0.0003,

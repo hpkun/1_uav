@@ -59,13 +59,13 @@ def test_budget_metadata_output_roots_and_strict_resume(tmp_path,monkeypatch):
     experiments.run_experiment('main_3v3',1,episodes=2500,console=False)
     experiments.run_experiment('main_3v3',1,episodes=5000,console=False)
     assert saved[0][1]!=saved[1][1]
-    assert str(saved[0][1]).startswith(str(Path('outputs/xu_iv_2500')))
+    assert str(saved[0][1]).startswith(str(Path('outputs/xu_iv_v2_2500')))
     for cfg,path in saved:
         meta=json.loads((path/'experiment.json').read_text(encoding='utf-8'))
         assert meta['training']['training_episodes']==cfg.training_episodes
         assert json.loads((path/'config.json').read_text(encoding='utf-8'))['training']['training_episodes']==cfg.training_episodes
     with pytest.raises(FileExistsError):
-        experiments.run_experiment('main_3v3',1,Path('outputs/xu_iv_2500'),episodes=5000,console=False)
+        experiments.run_experiment('main_3v3',1,Path('outputs/xu_iv_v2_2500'),episodes=5000,console=False)
     env,cfg=experiments.configurations('main_3v3',episodes=2500)
     monkeypatch.setattr(experiments,'read_protocol_checkpoint',lambda *a,**kw:dict(env_config=env.to_dict(),train_config=cfg.to_dict()))
     with pytest.raises(ValueError,match='resume experiment configuration mismatch'):
