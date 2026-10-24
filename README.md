@@ -1,5 +1,7 @@
 # Xu (2026) APH-MAPPO 三维空战与历史巡检基准
 
+新增受控奖励消融 `posture_approach_gated_3v3`：只在Reward结算时门控2000米外的正Posture，默认`main_3v3`仍为原始`paper`模式，APH原始姿态优势不变。公式、严格隔离、466项测试及CUDA实测见 [Approach-Gated Posture报告](docs/approach_gated_posture.md)。该实验不进入论文37项计划或论文表格，本轮未运行正式训练。
+
 当前空战默认协议已升级为 **xu-aircombat-v2.0.0**：连续标架积分处理垂直方向，真正仿真故障显式中断采样。极区延续是论文未公开的工程假设；旧v1 checkpoint不能恢复v2训练。数学说明见 [动力学v2](docs/dynamics_v2.md)，408项测试和CUDA实测见 [修复验收报告](docs/dynamics_v2_validation.md)。新正式实验从头写入 `outputs/xu_iv_v2`，不混用旧统计。
 
 运行遵循 `AGENTS.md`：优先WSL Ubuntu的 `uav` Conda环境，CUDA训练/评估必须可用；下文PowerShell命令保留为WSL不可用时的替代示例。

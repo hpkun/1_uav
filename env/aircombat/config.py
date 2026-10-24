@@ -36,8 +36,14 @@ class AirCombatConfig:
     frame_alignment_rate: float = 2.
     frame_normal_substeps: int = 1
     frame_polar_substeps: int = 8
+    posture_reward_mode: str = 'paper'
+    posture_gate_speed: float = 100.
 
     def __post_init__(self):
+        if self.posture_reward_mode not in ('paper','approach_gated'):
+            raise ValueError('invalid posture_reward_mode')
+        if isinstance(self.posture_gate_speed,bool) or not math.isfinite(self.posture_gate_speed) or self.posture_gate_speed<=0:
+            raise ValueError('invalid posture_gate_speed')
         if self.integrator not in ('frame_rk4','angle_rk4'):
             raise ValueError('invalid integrator')
         if not 0 < self.pole_cap_ratio < 1 or not math.isfinite(self.frame_alignment_rate) or self.frame_alignment_rate <= 0:
@@ -81,6 +87,8 @@ class AirCombatConfig:
 
     def reproduction_assumptions(self):
         return dict(
+            posture_reward_mode=self.posture_reward_mode,posture_gate_speed=self.posture_gate_speed,
+            posture_gate='reward-only experimental ablation; pre-action assigned target; min(self LOS motion, relative closure)',
             gravity=self.gravity, integrator=self.integrator,
             continuation='engineering assumption: smooth polar connection cutoff and bounded closest-chart gauge relaxation',
             pole_cap_ratio=self.pole_cap_ratio,frame_alignment_rate=self.frame_alignment_rate,

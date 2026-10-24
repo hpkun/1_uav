@@ -27,6 +27,9 @@ def read_runs(root):
     runs=[];identities=set()
     for path in sorted(Path(root).glob('*/seed_*/experiment.json')):
         meta=json.loads(path.read_text(encoding='utf-8'))
+        if (meta.get('family')=='reward_ablation' or meta.get('paper_experiment') is False
+                or meta.get('environment',{}).get('posture_reward_mode','paper')!='paper'):
+            continue  # Deliberately excluded from all paper figures/tables.
         identity=(meta['experiment'],meta['training_seed'])
         if identity in identities:raise ValueError('duplicate experiment/seed result')
         identities.add(identity)

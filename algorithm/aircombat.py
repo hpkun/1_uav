@@ -45,6 +45,7 @@ def evaluate(trainer, env_config, seeds, *, scenario=None, episodes_per_seed=1):
                     summaries.append(summary)
                     break
     return dict(**combat_metrics(summaries),episodes=summaries,environment_version=ENVIRONMENT_VERSION,
+        posture_reward_mode=env_config.posture_reward_mode,posture_gate_speed=env_config.posture_gate_speed,
         integrator=env_config.integrator,evaluation_protocol=dict(
         seeds=list(seeds),episodes_per_seed=episodes_per_seed,policy='deterministic Beta mean',
         reset='seed once per group; subsequent episodes continue independent Generator stream'))
@@ -128,6 +129,7 @@ def train(env_config, train_config, output, *, resume=None, console=True, log_ev
                 raise
             update = trainer.update(rollout)
             record = dict(completed_episodes=trainer.training_episode_count,sampled_steps=trainer.sampled_steps,
+                          posture_reward_mode=env_config.posture_reward_mode,posture_gate_speed=env_config.posture_gate_speed,
                           updates=trainer.updates,episode_metrics=combat_metrics(episodes),
                           rollout=trainer.rollout_metrics,ppo=update,episodes=episodes)
             with log.open('a',encoding='utf-8') as stream:

@@ -76,6 +76,8 @@ class AirCombatEnv:
         s,c = self.state,self.config
         current = s.friendly_alive.copy()
         assignment = s.assignments.copy()
+        pre_red,pre_blue=s.friendly_states.copy(),s.adversarial_states.copy()
+        pre_blue_alive=s.adversarial_alive.copy()
         actions = np.asarray(actions,dtype=float)
         if actions.shape != (c.num_uavs,3) or not np.isfinite(actions[current]).all() or np.any((actions[current]<0)|(actions[current]>1)):
             raise ValueError('live Red actions must be finite [N,3] in [0,1]')
@@ -120,7 +122,9 @@ class AirCombatEnv:
         s.friendly_states,s.adversarial_states = next_red,next_blue
         _,ra,ba,posture = pair_advantages(next_red,next_blue,c)
         events = resolve_attacks(s,ra,ba,c.attack_dwell_steps)
-        rewards,parts = compute_rewards(s,current,assignment,ra,ba,posture,events,c)
+        posture_diagnostics={}
+        rewards,parts = compute_rewards(s,current,assignment,ra,ba,posture,events,c,
+            pre_red=pre_red,pre_blue=pre_blue,pre_blue_alive=pre_blue_alive,posture_diagnostics=posture_diagnostics)
         risks = allied_risk_terms(next_red,s.friendly_alive,s.adversarial_alive,ba,c)
         terminated = bool(not s.friendly_alive.any() or not s.adversarial_alive.any())
         truncated = bool(not terminated and s.step_count>=c.max_steps)
@@ -136,7 +140,7 @@ class AirCombatEnv:
                     transition_assignments=assignment,reward_components=parts,
                     risk_terms=risks,terminated=terminated,truncated=truncated,
                     numerical_delta={k:self.counters[k]-before_counters[k] for k in self.counters},
-                    failures=failures,blue_action_indices=choices,
+                    failures=failures,blue_action_indices=choices,posture_diagnostics=posture_diagnostics,
                     red_controls=red_controls,blue_controls=blue_controls,numerical_step=numerical)
         return obs,rewards,terminated,truncated,info
 

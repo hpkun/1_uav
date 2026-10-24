@@ -2,6 +2,7 @@
 import numpy as np
 from env.aircombat import AirCombatConfig, AirCombatEnv
 from env.aircombat.rewards import COMPONENTS
+from env.aircombat.posture_reward import add_statistics,summarize_statistics
 from .vector_env import ParallelVectorEnv
 
 
@@ -11,9 +12,13 @@ class CombatEpisodeAccumulator:
         self.parts = dict.fromkeys(COMPONENTS,0.)
         self.steps = self.valid_steps = self.numerical_failures = 0
         self.numerical_events = []
+        self.posture_totals = {}
         self.risks = {k:np.zeros(len(self.reward)) for k in ('proximity','shared_exposure')}
 
     def add(self, info, reward):
+        if 'posture_diagnostics' in info:
+            if not hasattr(self,'posture_totals'):self.posture_totals={}
+            add_statistics(self.posture_totals,info['posture_diagnostics'])
         self.reward += reward
         self.steps += 1
         self.valid_steps += int(info['current_active_mask'].sum())
@@ -26,7 +31,7 @@ class CombatEpisodeAccumulator:
             self.risks[k] += info['risk_terms'][k]
 
     def summary(self, info):
-        return dict(episode_return=float(self.reward.mean()), episode_length=self.steps,
+        result=dict(episode_return=float(self.reward.mean()), episode_length=self.steps,
                     win=info['win'], outcome=info['outcome'],blue_shot_down=info['blue_shot_down'],
                     red_survivors=info['red_survivors'],numerical_failures=self.numerical_failures,
                     numerical_events=self.numerical_events.copy(),
@@ -36,6 +41,8 @@ class CombatEpisodeAccumulator:
                     risk_totals_by_uav={k:v.tolist() for k,v in self.risks.items()},
                     reward_components_total={k:v/len(self.reward) for k,v in self.parts.items()},
                     reward_components_mean={k:v/max(1,self.valid_steps) for k,v in self.parts.items()})
+        if getattr(self,'posture_totals',None):result['posture_diagnostics']=summarize_statistics(self.posture_totals)
+        return result
 
 
 def combat_metrics(episodes):
@@ -51,6 +58,10 @@ def combat_metrics(episodes):
         result[key] = float(np.mean([e[key] for e in episodes])) if episodes and all(key in e for e in episodes) else None
     result['reward_components_mean'] = {k:float(np.mean([e['reward_components_mean'][k] for e in episodes]))
                                         if episodes else None for k in COMPONENTS}
+    posture_totals={}
+    for e in episodes:
+        if 'posture_diagnostics' in e:add_statistics(posture_totals,e['posture_diagnostics'])
+    if posture_totals:result['posture_diagnostics']=summarize_statistics(posture_totals)
     return result
 
 

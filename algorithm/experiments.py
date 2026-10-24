@@ -24,6 +24,7 @@ CATALOG={
     'without_allied':dict(family='ablation',scale='3v3',env=dict(allied_penalty_enabled=False)),
     'without_masking':dict(family='ablation',scale='3v3',training=dict(ppo_masking=False)),
     'sensitivity_baseline':dict(family='coefficient',scale='3v3'),
+    'posture_approach_gated_3v3':dict(family='reward_ablation',scale='3v3',env=dict(posture_reward_mode='approach_gated')),
 }
 FACTORS={'eta':('attack_eta',(3,5,7),5),'e1':('terminal_e1',(10,20,30),20),
          'e2':('terminal_e2',(15,25,35),25)}
@@ -57,6 +58,7 @@ def budget_kind(episodes):
 def manifest(name,seed=1,*,smoke=False,episodes=None):
     env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
     return dict(experiment=name,family=CATALOG[name]['family'],training_seed=seed,is_smoke=smoke,
+                paper_experiment=CATALOG[name]['family']!='reward_ablation',
                 training_budget_kind=budget_kind(cfg.training_episodes),training_episode_target=cfg.training_episodes,
                 environment_version=ENVIRONMENT_VERSION,environment=env.to_dict(),training=cfg.to_dict(),
                 final_evaluation=dict(episodes=cfg.evaluation_episodes,seed_start=10000000+10000*seed),
@@ -69,6 +71,7 @@ def run_directory(root,name,seed):return Path(root)/name/f'seed_{seed}'
 def export_plan(path):
     tasks=[]
     for name,entry in CATALOG.items():
+        if entry['family']=='reward_ablation':continue
         for seed in ((1,) if entry['family']=='coefficient' else SEEDS):tasks.append(manifest(name,seed))
     data=dict(training_runs=tasks,blue_evaluation=dict(
         probabilities=dict(checkpoint='one fixed main_5v5 seed_1/latest.pt',probabilities=[1.,.8,.6],
@@ -114,7 +117,9 @@ def final_evaluation(checkpoint,output,*,episodes=None,console=True):
 
 def run_experiment(name,seed,root=None,*,smoke=False,resume=None,episodes=None,console=True,log_every_updates=5):
     env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
-    if root is None:root='outputs/xu_iv_v2_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv_v2'
+    if root is None:
+        if CATALOG[name]['family']=='reward_ablation':root=f'outputs/approach_gated_{cfg.training_episodes}'
+        else:root='outputs/xu_iv_v2_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv_v2'
     output=run_directory(root,name,seed)
     if not resume and ((output/'train.jsonl').exists() or any(output.glob('*.pt'))):
         raise FileExistsError('existing training run; use --resume or a fresh root')

@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 from env.aircombat.rewards import COMPONENTS
+from env.aircombat.posture_reward import add_statistics,summarize_statistics
 from .trainer import Rollout,clean_protocol_state
 
 
@@ -74,6 +75,7 @@ def collect(trainer,vector,joint_steps=None,*,episode_limit=None,checkpoint_call
         for dst,src in zip(b['row'],selected):dst[ids]=src
         b['episodes'].extend(tr.episodes)
         for worker,info in zip(ids,tr.infos):
+            if 'posture_diagnostics' in info:add_statistics(b.setdefault('posture_totals',{}),info['posture_diagnostics'])
             if 'numerical_diagnostics' in info:
                 # Observational only; retain the latest cumulative diagnostics
                 # per worker, without affecting rollout arrays or RNG.
@@ -100,6 +102,7 @@ def collect(trainer,vector,joint_steps=None,*,episode_limit=None,checkpoint_call
         reward_components_mean={k:v/max(1,b['valid_count']) for k,v in b['parts'].items()})
     trainer.rollout_metrics['frame_diagnostics_by_worker']=b.get('frame_diagnostics',{})
     trainer.rollout_metrics['continuation_events']=b.get('continuation_events',[])
+    if b.get('posture_totals'):trainer.rollout_metrics['posture_diagnostics']=summarize_statistics(b['posture_totals'])
     rollout=Rollout(*(torch.stack([r[i] for r in b['rows']]) for i in range(11)))
     trainer.pending_collection=None
     return rollout,b['episodes']
