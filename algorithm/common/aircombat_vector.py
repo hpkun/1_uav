@@ -9,7 +9,7 @@ from .vector_env import ParallelVectorEnv
 class CombatEpisodeAccumulator:
     def reset(self, info):
         self.reward = np.zeros(len(info['active_mask']))
-        self.parts = dict.fromkeys(COMPONENTS,0.)
+        self.parts = dict.fromkeys(info.get('reward_component_names',COMPONENTS),0.)
         self.steps = self.valid_steps = self.numerical_failures = 0
         self.numerical_events = []
         self.posture_totals = {}
@@ -25,7 +25,7 @@ class CombatEpisodeAccumulator:
         self.numerical_failures += int(info['numerical_failure'])
         if info['numerical_failure']:
             self.numerical_events.append(dict(step=info['episode_length'],failures=info['failures']))
-        for k in COMPONENTS:
+        for k in self.parts:
             self.parts[k] += float(info['reward_components'][k].sum())
         for k in self.risks:
             self.risks[k] += info['risk_terms'][k]
@@ -45,7 +45,7 @@ class CombatEpisodeAccumulator:
         return result
 
 
-def combat_metrics(episodes):
+def combat_metrics(episodes, *, names=None):
     fields = dict(mean_episode_return='episode_return',mean_episode_length='episode_length',
                   win_rate='win',mean_blue_shot_down='blue_shot_down',mean_red_survivors='red_survivors')
     result = {k:float(np.mean([e[v] for e in episodes])) if episodes else None for k,v in fields.items()}
@@ -56,8 +56,11 @@ def combat_metrics(episodes):
                                        numerical_failure=sum(e.get('outcome')=='numerical_failure' for e in episodes))
     for key in ('proximity_risk','shared_exposure_risk'):
         result[key] = float(np.mean([e[key] for e in episodes])) if episodes and all(key in e for e in episodes) else None
+    names=tuple(episodes[0]['reward_components_mean']) if episodes else (names or COMPONENTS)
+    if any(set(e['reward_components_mean'])!=set(names) for e in episodes):
+        raise ValueError('cannot aggregate different reward definitions')
     result['reward_components_mean'] = {k:float(np.mean([e['reward_components_mean'][k] for e in episodes]))
-                                        if episodes else None for k in COMPONENTS}
+                                        if episodes else None for k in names}
     posture_totals={}
     for e in episodes:
         if 'posture_diagnostics' in e:add_statistics(posture_totals,e['posture_diagnostics'])

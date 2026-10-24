@@ -1,7 +1,14 @@
-"""Exactly five terms, Eq.(20); no inspection shaping or reward scaling."""
+"""Xu Eq.(20), plus a separate explicitly selected Li-inspired experiment."""
 import numpy as np
 
 COMPONENTS = ('attack','posture','allied','shootdown','terminal')
+
+
+def component_names(config):
+    if config.posture_reward_mode=='madsac_inspired':
+        from .madsac_reward import COMPONENTS as names
+        return names
+    return COMPONENTS
 
 
 def allied_risk_terms(red_states, red_alive, blue_alive, blue_advantage, config):
@@ -38,6 +45,9 @@ def allied_penalty(red_states, red_alive, blue_alive, blue_advantage, config):
 def compute_rewards(state, current_mask, transition_assignments, red_advantage,
                     blue_advantage, posture, events, config, *, pre_red=None,pre_blue=None,
                     pre_blue_alive=None,posture_diagnostics=None):
+    if config.posture_reward_mode=='madsac_inspired':
+        from .madsac_reward import compute
+        return compute(state,current_mask,transition_assignments,events,config,pre_red=pre_red)
     parts = {k:np.zeros(len(current_mask)) for k in COMPONENTS}
     for i in np.flatnonzero(current_mask):
         j = transition_assignments[i]

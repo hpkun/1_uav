@@ -57,7 +57,7 @@ def generate(config, rng, options=None):
     explicit = 'friendly_states' in options or 'adversarial_states' in options
     name = options.pop('scenario', config.initial_scenario)
     n, m = config.num_uavs, config.num_adversaries
-    if not explicit and name != 'random_training':
+    if not explicit and name not in ('random_training','head_on'):
         options = {**paper_scenario(name), **options}
         explicit = True
     if explicit:
@@ -77,7 +77,15 @@ def generate(config, rng, options=None):
                     break
             else:
                 raise ValueError('random minimum separation infeasible')
-            states.append([*xyz, rng.uniform(175,230), rng.uniform(-.3,.3), rng.uniform(-np.pi,np.pi)])
+            speed=rng.uniform(175,230)
+            if name=='head_on':
+                # Reserve the two legacy angle draws, without sampling angles:
+                # seeded xyz/v, rejection decisions and subsequent RNG match.
+                rng.random(2)
+                gamma,psi=0.,0. if k<n else np.pi
+            else:
+                gamma,psi=rng.uniform(-.3,.3),rng.uniform(-np.pi,np.pi)
+            states.append([*xyz,speed,gamma,psi])
         red, blue = np.array(states[:n]), np.array(states[n:])
     for a, shape in ((red,(n,6)),(blue,(m,6))):
         if a.shape != shape or not np.isfinite(a).all() or np.any((a[:,3]<config.v_min)|(a[:,3]>config.v_max)):
@@ -90,6 +98,9 @@ def generate(config, rng, options=None):
         alive.append(mask.astype(bool))
     if not alive[0].any() or not alive[1].any():
         raise ValueError('reset requires at least one live UAV on each side')
+    metadata=dict(options.get('metadata',{}))
+    if config.posture_reward_mode=='madsac_inspired':
+        metadata['madsac_battlefield_center']=np.concatenate((red[:,:2],blue[:,:2])).mean(axis=0)
     return CombatState(red, blue, *alive, np.full(n,-1,dtype=np.int64),
                        np.zeros((n,m),dtype=np.int64), np.zeros((m,n),dtype=np.int64),
-                       metadata=options.get('metadata',{}))
+                       metadata=metadata)

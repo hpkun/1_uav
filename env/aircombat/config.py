@@ -38,10 +38,35 @@ class AirCombatConfig:
     frame_polar_substeps: int = 8
     posture_reward_mode: str = 'paper'
     posture_gate_speed: float = 100.
+    # The existing reward selector retains its historical name for checkpoints.
+    madsac_battlefield_radius: float = 8000.
+    madsac_distance_threshold: float = 4000.
+    madsac_event_reward: float = 10.
+    madsac_exit_penalty: float = 10.
+    madsac_guidance_reward: float = .001
+    madsac_aspect_limit_deg: float = 30.
+    madsac_angle_limits_deg: tuple = (30.,15.,5.)
+    madsac_offense_rewards: tuple = (.01,.02,.10)
+    madsac_defense_penalties: tuple = (.015,.025,.15)
 
     def __post_init__(self):
-        if self.posture_reward_mode not in ('paper','approach_gated'):
+        if self.posture_reward_mode not in ('paper','approach_gated','madsac_inspired'):
             raise ValueError('invalid posture_reward_mode')
+        for key in ('madsac_battlefield_radius','madsac_distance_threshold','madsac_event_reward',
+                    'madsac_exit_penalty','madsac_guidance_reward','madsac_aspect_limit_deg'):
+            value=getattr(self,key)
+            if isinstance(value,bool) or not math.isfinite(value) or value<=0:
+                raise ValueError(f'invalid {key}')
+        for key in ('madsac_angle_limits_deg','madsac_offense_rewards','madsac_defense_penalties'):
+            values=tuple(getattr(self,key))
+            if len(values)!=3 or any(isinstance(v,bool) or not math.isfinite(v) or v<=0 for v in values):
+                raise ValueError(f'invalid {key}')
+            object.__setattr__(self,key,values)  # JSON lists and checkpoint tuples have one identity.
+        if not (180>=self.madsac_aspect_limit_deg>0 and 90>=self.madsac_angle_limits_deg[0]
+                >self.madsac_angle_limits_deg[1]>self.madsac_angle_limits_deg[2]):
+            raise ValueError('invalid MADSAC angle intervals')
+        for values in (self.madsac_offense_rewards,self.madsac_defense_penalties):
+            if not values[0]<values[1]<values[2]:raise ValueError('invalid MADSAC reward tiers')
         if isinstance(self.posture_gate_speed,bool) or not math.isfinite(self.posture_gate_speed) or self.posture_gate_speed<=0:
             raise ValueError('invalid posture_gate_speed')
         if self.integrator not in ('frame_rk4','angle_rk4'):
@@ -87,6 +112,16 @@ class AirCombatConfig:
 
     def reproduction_assumptions(self):
         return dict(
+            initial_scenario=self.initial_scenario,
+            head_on='random_training xyz/v and rejection; gamma=0, Red psi=0, Blue psi=pi; reserve legacy angle RNG draws',
+            madsac_inspired=dict(source='Li et al. 2023 Eq.(25); independent reward, no Xu terms',
+                geometry='Fig.2: ATA own horizontal velocity to LOS; AA target horizontal velocity to same LOS; HA LOS elevation to horizontal plane',
+                equation6_ambiguity='printed ATA uses -V2 and reverses LOS, duplicating AA; use Fig.2 own-velocity ATA',
+                degeneracy='zero horizontal LOS/own velocity: no ATA process reward; zero target horizontal velocity: no AA tier; finite sentinel angles; degree comparisons tolerate 1e-12 roundoff',
+                timing='post-motion, post-death survivors for process rewards; pre-action APH target; R1 all actual simultaneous events',
+                adaptation='R41+worst R42 over all surviving Blue; inclusive 4000m allows R3 and R4 together',
+                battlefield='reward-only horizontal circle about mean of ALL initial positions; inside-to-outside transitions only',
+                battlefield_radius=self.madsac_battlefield_radius),
             posture_reward_mode=self.posture_reward_mode,posture_gate_speed=self.posture_gate_speed,
             posture_gate='reward-only experimental ablation; pre-action assigned target; min(self LOS motion, relative closure)',
             gravity=self.gravity, integrator=self.integrator,

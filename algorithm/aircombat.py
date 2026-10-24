@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from env.aircombat import AirCombatConfig, AirCombatEnv
 from env.aircombat.config import ENVIRONMENT_VERSION
+from env.aircombat.rewards import component_names
 from algorithm.mappo.config import ProtocolTrainConfig
 from algorithm.mappo.trainer import ProtocolMAPPOTrainer
 from algorithm.common.runtime import require_cuda
@@ -44,8 +45,9 @@ def evaluate(trainer, env_config, seeds, *, scenario=None, episodes_per_seed=1):
                     summary.update(seed=seed,episode_index=episode_index)
                     summaries.append(summary)
                     break
-    return dict(**combat_metrics(summaries),episodes=summaries,environment_version=ENVIRONMENT_VERSION,
+    return dict(**combat_metrics(summaries,names=component_names(env_config)),episodes=summaries,environment_version=ENVIRONMENT_VERSION,
         posture_reward_mode=env_config.posture_reward_mode,posture_gate_speed=env_config.posture_gate_speed,
+        initial_scenario=env_config.initial_scenario,environment=env_config.to_dict(),
         integrator=env_config.integrator,evaluation_protocol=dict(
         seeds=list(seeds),episodes_per_seed=episodes_per_seed,policy='deterministic Beta mean',
         reset='seed once per group; subsequent episodes continue independent Generator stream'))
@@ -130,7 +132,8 @@ def train(env_config, train_config, output, *, resume=None, console=True, log_ev
             update = trainer.update(rollout)
             record = dict(completed_episodes=trainer.training_episode_count,sampled_steps=trainer.sampled_steps,
                           posture_reward_mode=env_config.posture_reward_mode,posture_gate_speed=env_config.posture_gate_speed,
-                          updates=trainer.updates,episode_metrics=combat_metrics(episodes),
+                          initial_scenario=env_config.initial_scenario,
+                          updates=trainer.updates,episode_metrics=combat_metrics(episodes,names=component_names(env_config)),
                           rollout=trainer.rollout_metrics,ppo=update,episodes=episodes)
             with log.open('a',encoding='utf-8') as stream:
                 stream.write(json.dumps(record,ensure_ascii=False,allow_nan=False)+'\n')

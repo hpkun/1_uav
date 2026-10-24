@@ -1,7 +1,7 @@
 """Real 12/60 transitions, exact episode checkpoint targets and resumable buffer."""
 import numpy as np
 import torch
-from env.aircombat.rewards import COMPONENTS
+from env.aircombat.rewards import component_names
 from env.aircombat.posture_reward import add_statistics,summarize_statistics
 from .trainer import Rollout,clean_protocol_state
 
@@ -36,7 +36,7 @@ def collect(trainer,vector,joint_steps=None,*,episode_limit=None,checkpoint_call
         raise ValueError('episode_limit must be positive')
     b=getattr(trainer,'pending_collection',None)
     if b is None:
-        b=dict(rows=[],row=None,cache=None,cursor=0,episodes=[],parts=dict.fromkeys(COMPONENTS,0.),
+        b=dict(rows=[],row=None,cache=None,cursor=0,episodes=[],parts=dict.fromkeys(component_names(vector.config),0.),
                valid_count=0,sampled=0,failures=0,speed_clips=0,numerical_events=[],budget=budget,
                episode_limit=episode_limit,horizon=c.horizon,num_envs=e,num_uavs=n)
     elif (b['num_envs'],b['num_uavs'],b['horizon'])!=(e,n,c.horizon):

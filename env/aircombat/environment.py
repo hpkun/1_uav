@@ -10,7 +10,7 @@ from .geometry import pair_advantages
 from .opponent import choose_blue_controls
 from .observations import observe
 from .combat import resolve_attacks
-from .rewards import compute_rewards, COMPONENTS, allied_risk_terms
+from .rewards import compute_rewards, component_names, allied_risk_terms
 
 
 class AirCombatEnv:
@@ -68,7 +68,10 @@ class AirCombatEnv:
                             'timeout' if s.step_count>=self.config.max_steps else 'ongoing',
                     blue_shot_down=sum(e['attacker_side']=='Red' for e in s.events),red_survivors=int(s.friendly_alive.sum()),
                     numerical_failure=numerical_failure, numerical_counters=self.counters.copy(),
-                    numerical_diagnostics=self.diagnostics.copy(),integrator=self.config.integrator)
+                    numerical_diagnostics=self.diagnostics.copy(),integrator=self.config.integrator,
+                    reward_component_names=component_names(self.config),
+                    initial_scenario=self.config.initial_scenario,posture_reward_mode=self.config.posture_reward_mode,
+                    reward_context=copy.deepcopy({k:v for k,v in s.metadata.items() if k.startswith('madsac_')}))
 
     def step(self, actions):
         if self.done:
@@ -142,6 +145,8 @@ class AirCombatEnv:
                     numerical_delta={k:self.counters[k]-before_counters[k] for k in self.counters},
                     failures=failures,blue_action_indices=choices,posture_diagnostics=posture_diagnostics,
                     red_controls=red_controls,blue_controls=blue_controls,numerical_step=numerical)
+        if c.posture_reward_mode=='madsac_inspired':
+            info.pop('posture_diagnostics')  # Xu posture diagnostics are inapplicable, not zero.
         return obs,rewards,terminated,truncated,info
 
     def snapshot(self):
