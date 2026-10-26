@@ -324,6 +324,8 @@ class ProtocolMAPPOTrainer(MAPPOTrainer):
         if config is not None and not isinstance(config, ProtocolTrainConfig):
             raise TypeError('12/60 updater requires ProtocolTrainConfig')
         self._initialize(config or ProtocolTrainConfig(), device, ProtocolCritic)
+        self.actor.input_normalization=self.config.observation_normalization
+        self.critic.input_normalization=self.config.observation_normalization
 
     def collect(self, vector, joint_steps=None, *, episode_limit=None, checkpoint_callback=None):
         from algorithm.common.aircombat_vector import AirCombatVectorEnv

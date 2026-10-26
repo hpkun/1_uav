@@ -67,6 +67,7 @@ class TrainingConsole:
                   f" | horizon={trainer.config.horizon} | max_steps={env_config.max_steps}"
                   f" | integrator={env_config.integrator}"
                   f" | init={env_config.initial_scenario}"
+                  f" | input_norm={trainer.config.observation_normalization}"
                   f" | posture={env_config.posture_reward_mode} | gate_speed={env_config.posture_gate_speed:g}m/s"
                   + (f" | reward_radius={env_config.madsac_battlefield_radius:g}m" if env_config.posture_reward_mode=='madsac_inspired' else '')
                   +

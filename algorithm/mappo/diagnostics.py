@@ -48,7 +48,8 @@ def _network_diagnostic(model, inputs, source, actor):
     if x.ndim != 2 or x.shape[1] != width or not len(x):
         raise ValueError('diagnostics require nonempty [samples,input_dimension]')
     report = dict(source=source, samples=len(x), input_dimension=width, dtype=str(x.dtype),
-                  preprocessing='none; dtype/device conversion only',
+                  preprocessing=getattr(model,'input_normalization','none'),
+                  input_statistics='raw inputs before model-boundary scaling',
                   input=[statistics(x[:, i]) for i in range(width)], layers=[])
     if not torch.isfinite(x).all():
         return dict(report, status='nonfinite_input_forward_skipped')

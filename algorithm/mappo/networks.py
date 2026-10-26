@@ -5,6 +5,16 @@ from torch.distributions import Beta
 from torch.nn import functional as F
 
 TRIM_ACTION = (0.5, 1/3, 1/8)
+FIXED_INPUT_SCALES = (1.,400.,torch.pi,torch.pi,torch.pi,10000.,
+                      400.,torch.pi,torch.pi,torch.pi,10000.,10000.)
+
+
+def normalize_inputs(inputs, mode='none'):
+    """Network-boundary only; raw env/rollout slots remain unchanged."""
+    if mode=='none':return inputs
+    if mode!='fixed_scale_v1' or inputs.shape[-1] not in (12,60):
+        raise ValueError('invalid fixed observation normalization mode/dimension')
+    return inputs / inputs.new_tensor(FIXED_INPUT_SCALES*(inputs.shape[-1]//12))
 
 
 def mlp(input_dim, output_dim):
@@ -14,6 +24,7 @@ def mlp(input_dim, output_dim):
 class Actor(nn.Module):
     def __init__(self, initialization_mode='trim_centered', concentration=16.0, output_weight_gain=0.01):
         super().__init__()
+        self.input_normalization = 'none'
         self.network = mlp(12,6)
         if initialization_mode == 'trim_centered':
             if concentration <= 8 or not torch.isfinite(torch.tensor(concentration)):
@@ -35,7 +46,7 @@ class Actor(nn.Module):
     def distribution(self, observations):
         if observations.shape[-1] != 12 or not torch.isfinite(observations).all():
             raise FloatingPointError('actor requires finite 12D valid observations')
-        parameters = F.softplus(self.network(observations)) + 1
+        parameters = F.softplus(self.network(normalize_inputs(observations,self.input_normalization))) + 1
         return Beta(parameters[...,:3],parameters[...,3:])
 
     def act(self, observations, deterministic=False):
@@ -67,6 +78,7 @@ class ProtocolCritic(nn.Module):
     """
     def __init__(self):
         super().__init__()
+        self.input_normalization = 'none'
         self.network = mlp(60, 5)[:-1]
         # Separate Parameters let Adam skip an absent head (grad=None),
         # including its momentum/step counter, rather than merely zeroing grad.
@@ -75,5 +87,5 @@ class ProtocolCritic(nn.Module):
     def forward(self, states):
         if states.shape[-1] != 60 or not torch.isfinite(states).all():
             raise FloatingPointError('protocol critic requires finite 60D state')
-        features = self.network(states)
+        features = self.network(normalize_inputs(states,self.input_normalization))
         return torch.cat([head(features) for head in self.value_heads], dim=-1)

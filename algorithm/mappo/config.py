@@ -91,9 +91,12 @@ class ProtocolTrainConfig(TrainConfig):
     training_episodes: int = 5000
     independent_training_seeds: int = 5
     ppo_masking: bool = True
+    observation_normalization: str = 'none'
 
     def __post_init__(self):
         super().__post_init__()
+        if self.observation_normalization not in ('none','fixed_scale_v1'):
+            raise ValueError('invalid observation_normalization')
         if type(self.checkpoint_interval_episodes) is not int or self.checkpoint_interval_episodes < 1:
             raise ValueError('invalid checkpoint_interval_episodes')
         if type(self.training_seed_index) is not int or self.training_seed_index < 0:
@@ -107,7 +110,11 @@ class ProtocolTrainConfig(TrainConfig):
                 raise ValueError(f'invalid {key}')
 
     def reproduction_assumptions(self):
-        return dict(initialization=self.initialization_mode, beta_parameters='softplus(raw)+1; small symmetric output weights',
+        from .networks import FIXED_INPUT_SCALES
+        return dict(observation_normalization=self.observation_normalization,
+                    fixed_input_scales=list(FIXED_INPUT_SCALES),
+                    input_scaling_assumption='fixed_scale_v1: engineering experiment, not Xu published; no clipping/running statistics; repeat 12D scales for 60D',
+                    initialization=self.initialization_mode, beta_parameters='softplus(raw)+1; small symmetric output weights',
                     output_weight_gain=self.output_weight_gain, adam_epsilon=self.adam_epsilon,
                     max_grad_norm=self.max_grad_norm, normalize_advantages=self.normalize_advantages,
                     advantage_normalization='per agent population std+1e-8; singleton kept raw' if self.preserve_singleton_advantages else 'singleton centered to zero',

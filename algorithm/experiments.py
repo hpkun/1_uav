@@ -26,6 +26,8 @@ CATALOG={
     'sensitivity_baseline':dict(family='coefficient',scale='3v3'),
     'posture_approach_gated_3v3':dict(family='reward_ablation',scale='3v3',env=dict(posture_reward_mode='approach_gated')),
     'headon_xu_3v3':dict(family='headon_experiment',scale='3v3',env=dict(initial_scenario='head_on')),
+    'headon_xu_norm_3v3':dict(family='headon_experiment',scale='3v3',env=dict(initial_scenario='head_on'),
+                              training=dict(observation_normalization='fixed_scale_v1')),
     'headon_madsac_3v3':dict(family='headon_experiment',scale='3v3',env=dict(initial_scenario='head_on',posture_reward_mode='madsac_inspired')),
 }
 NON_PAPER_FAMILIES=('reward_ablation','headon_experiment')
@@ -121,7 +123,8 @@ def final_evaluation(checkpoint,output,*,episodes=None,console=True):
 def run_experiment(name,seed,root=None,*,smoke=False,resume=None,episodes=None,console=True,log_every_updates=5):
     env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
     if root is None:
-        if CATALOG[name]['family']=='reward_ablation':root=f'outputs/approach_gated_{cfg.training_episodes}'
+        if name=='headon_xu_norm_3v3':root=f'outputs/headon_norm_{cfg.training_episodes}'
+        elif CATALOG[name]['family']=='reward_ablation':root=f'outputs/approach_gated_{cfg.training_episodes}'
         elif CATALOG[name]['family']=='headon_experiment':root=f'outputs/headon_{cfg.training_episodes}'
         else:root='outputs/xu_iv_v2_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv_v2'
     output=run_directory(root,name,seed)
