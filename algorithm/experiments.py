@@ -28,9 +28,12 @@ CATALOG={
     'headon_xu_3v3':dict(family='headon_experiment',scale='3v3',env=dict(initial_scenario='head_on')),
     'headon_xu_norm_3v3':dict(family='headon_experiment',scale='3v3',env=dict(initial_scenario='head_on'),
                               training=dict(observation_normalization='fixed_scale_v1')),
+    'headon_xu_norm_signed_3v3':dict(family='observation_ablation',scale='3v3',
+        env=dict(initial_scenario='head_on',observation_encoding='signed_alpha_v1'),
+        training=dict(observation_normalization='fixed_scale_v1')),
     'headon_madsac_3v3':dict(family='headon_experiment',scale='3v3',env=dict(initial_scenario='head_on',posture_reward_mode='madsac_inspired')),
 }
-NON_PAPER_FAMILIES=('reward_ablation','headon_experiment')
+NON_PAPER_FAMILIES=('reward_ablation','headon_experiment','observation_ablation')
 FACTORS={'eta':('attack_eta',(3,5,7),5),'e1':('terminal_e1',(10,20,30),20),
          'e2':('terminal_e2',(15,25,35),25)}
 for factor,(field,values,baseline) in FACTORS.items():
@@ -123,7 +126,8 @@ def final_evaluation(checkpoint,output,*,episodes=None,console=True):
 def run_experiment(name,seed,root=None,*,smoke=False,resume=None,episodes=None,console=True,log_every_updates=5):
     env,cfg=configurations(name,seed,smoke=smoke,episodes=episodes)
     if root is None:
-        if name=='headon_xu_norm_3v3':root=f'outputs/headon_norm_{cfg.training_episodes}'
+        if name=='headon_xu_norm_signed_3v3':root=f'outputs/headon_norm_signed_{cfg.training_episodes}'
+        elif name=='headon_xu_norm_3v3':root=f'outputs/headon_norm_{cfg.training_episodes}'
         elif CATALOG[name]['family']=='reward_ablation':root=f'outputs/approach_gated_{cfg.training_episodes}'
         elif CATALOG[name]['family']=='headon_experiment':root=f'outputs/headon_{cfg.training_episodes}'
         else:root='outputs/xu_iv_v2_2500' if cfg.training_episodes==2500 else 'outputs/xu_iv_v2'

@@ -38,6 +38,7 @@ class AirCombatConfig:
     frame_polar_substeps: int = 8
     posture_reward_mode: str = 'paper'
     posture_gate_speed: float = 100.
+    observation_encoding: str = 'unsigned'
     # The existing reward selector retains its historical name for checkpoints.
     madsac_battlefield_radius: float = 8000.
     madsac_distance_threshold: float = 4000.
@@ -50,6 +51,8 @@ class AirCombatConfig:
     madsac_defense_penalties: tuple = (.015,.025,.15)
 
     def __post_init__(self):
+        if self.observation_encoding not in ('unsigned','signed_alpha_v1'):
+            raise ValueError('invalid observation_encoding')
         if self.posture_reward_mode not in ('paper','approach_gated','madsac_inspired'):
             raise ValueError('invalid posture_reward_mode')
         for key in ('madsac_battlefield_radius','madsac_distance_threshold','madsac_event_reward',
@@ -112,6 +115,8 @@ class AirCombatConfig:
 
     def reproduction_assumptions(self):
         return dict(
+            observation_encoding=self.observation_encoding,
+            signed_alpha='experimental observation-only encoding; alpha_i magnitude unchanged; horizontal velocity cross LOS sign; positive fallback for degenerate projections or |sin bearing|<=1e-12; discontinuous across sign branch/vertical LOS',
             initial_scenario=self.initial_scenario,
             head_on='random_training xyz/v and rejection; gamma=0, Red psi=0, Blue psi=pi; reserve legacy angle RNG draws',
             madsac_inspired=dict(source='Li et al. 2023 Eq.(25); independent reward, no Xu terms',

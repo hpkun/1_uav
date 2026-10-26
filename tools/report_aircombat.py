@@ -27,7 +27,7 @@ def read_runs(root):
     runs=[];identities=set()
     for path in sorted(Path(root).glob('*/seed_*/experiment.json')):
         meta=json.loads(path.read_text(encoding='utf-8'))
-        if (meta.get('family') in ('reward_ablation','headon_experiment') or meta.get('paper_experiment') is False
+        if (meta.get('family') in ('reward_ablation','headon_experiment','observation_ablation') or meta.get('paper_experiment') is False
                 or meta.get('environment',{}).get('initial_scenario')=='head_on'
                 or meta.get('environment',{}).get('posture_reward_mode','paper')!='paper'):
             continue  # Deliberately excluded from all paper figures/tables.

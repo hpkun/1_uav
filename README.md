@@ -1,5 +1,7 @@
 # Xu (2026) APH-MAPPO 三维空战与历史巡检基准
 
+新增观测消融 `headon_xu_norm_signed_3v3`：仅对网络观测中的alpha_i增加左右符号。归一化历史模型在表VII的10局快速战败诊断、编码边界约定和短程CUDA实测见 [有符号观测与快速战败诊断](docs/signed_observation_diagnosis.md)；未启动正式训练。
+
 固定尺度输入实验 `headon_xu_norm_3v3`：仅在网络入口缩放12D/60D物理量，默认旧实验不归一化。重点测试、饱和率对照及CUDA短程结果见 [固定尺度输入实验](docs/fixed_input_normalization.md)；未启动正式训练。
 
 新增独立实验 `headon_xu_3v3` 和 `headon_madsac_3v3`：共同采用随机位置/速度的水平迎头初始化，分别使用 Xu paper 与 Li（2023）MADSAC-inspired 分段奖励。原实验保持不变；几何解释、适配约定、570项回归测试与CUDA短程实测见 [迎头与MADSAC实验报告](docs/headon_madsac.md)。不进入Xu论文正式结果；未执行正式2500/5000回合训练。
