@@ -15,96 +15,157 @@ from .interception_timeline import Timeline
 
 PLAYER = r"""
 const plot = document.getElementById('{plot_id}');
-const frames = DATA.frames, events = DATA.events, result = DATA.result;
+const {frames, keys, events, result} = DATA;
 const slider = document.querySelector('#clock'), rate = document.querySelector('#rate');
-const panel = document.querySelector('#details');
+const panel = document.querySelector('#details'), time = document.querySelector('#time');
 const count = frames[0].entities.length;
 const trails = frames[0].entities.map((_, j) =>
   [0,1,2].map(axis => frames.map(row => row.entities[j].position[axis])));
 const indices = Array.from({length: count + 3}, (_, i) => i + 1);
-const nf = (x, digits=3) => x === null || x === undefined ? 'N/A' : x.toFixed(digits);
-const pretty = x => x === null || x === undefined ? 'N/A' : JSON.stringify(x);
-let index = 0, playing = false, started, origin, pending = false, dirty = false;
-slider.max = frames.length - 1;
-function show(i) {
-  index = Math.max(0, Math.min(i, frames.length - 1));
-  slider.value = index;
-  const row = frames[index];
-  document.querySelector('#time').textContent =
-    row.time.toFixed(3) + ' s · step ' + row.step + ' · frame ' + (index+1) + '/' + frames.length;
-  slider.setAttribute('aria-valuetext', row.time.toFixed(3) + ' seconds');
-  const p = row.entities.filter(e => e.name.startsWith('P') && e.active).length;
-  const e = row.entities.filter(e => e.name.startsWith('E') && e.active).length;
-  const visible = events.filter(event => event.time <= row.time);
+const nf = (x, digits=3) => x == null ? 'N/A' : x.toFixed(digits);
+const vector = x => x == null ? 'N/A' : x.map(v => nf(v, 2)).join(', ');
+const duration = frames.at(-1).time;
+let wanted = 0, shown = -1, pending = false;
+let cursor = 0, playing = false, origin = 0, started = 0, request;
+slider.max = keys.length - 1;
+
+function floorIndex(length, timeAt, t) {
+  let low = 0, high = length;
+  while (low+1 < high) {
+    const middle = (low+high) >> 1;
+    if (timeAt(middle) <= t) low = middle;
+    else high = middle;
+  }
+  return low;
+}
+const keyAt = t => floorIndex(keys.length, k => frames[keys[k]].time, t);
+const visibleEvents = row => events.filter(e => e.time <= row.time);
+function arrowLines(entities) {
+  const points = [];
+  for (const e of entities) {
+    if (!e.velocity || e.speed <= 1e-9) continue;
+    const dir = e.velocity.map(v => v/e.speed);
+    const horizontal = Math.hypot(dir[0],dir[1]);
+    const side = horizontal > 1e-9 ? [-dir[1]/horizontal,dir[0]/horizontal,0] : [1,0,0];
+    const length = Math.min(3,.35*e.speed);
+    const tip = e.position.map((p,i) => p+dir[i]*length);
+    const wing = sign => tip.map((p,i) => p+length*(-.3*dir[i]+sign*.16*side[i]));
+    points.push(e.position, tip, null, wing(1), tip, wing(-1), null);
+  }
+  return points;
+}
+function diagnostics(row, visible) {
+  const pair = row.nearest_pair;
+  const pairs = row.pairs.map(p =>
+    p.pursuer+'/'+p.evader+': '+nf(p.distance)+' m, '+nf(p.relative_speed)+' m/s');
+  const dwell = row.last_recorded_dwell;
+  const dwellText = dwell == null ? 'N/A' : row.entities.filter(e => e.name.startsWith('P')).map(p => {
+    const values = row.entities.filter(e => e.name.startsWith('E')).map(e =>
+      e.name+' '+nf(dwell[Number(p.name.slice(1))][Number(e.name.slice(1))])+' s');
+    return p.name+': '+values.join(', ');
+  }).join(' | ');
+  const rewards = row.rewards == null ? 'N/A' : Object.entries(row.rewards)
+    .map(([name, value]) => name+' '+nf(value)).join(' | ');
   panel.textContent = [
-    'Episode: ' + result + ' | Current: ' + row.outcome,
-    'Active pursuers: ' + p + ' | Active evaders: ' + e,
-    ...row.entities.map(entity => entity.name + ': ' +
-      (entity.active ? nf(entity.speed) + ' m/s' : 'inactive')),
-    'Nearest P–E distance (m): ' + nf(row.distance),
-    'Minimum separation so far (m): ' + nf(row.minimum),
-    'Dwell (s), P × E: ' + pretty(row.dwell),
-    'Velocity commands (m/s), P then E: ' + pretty(row.commands),
-    'Reward components: ' + pretty(row.rewards),
-    'Events: ' + (visible.map(event => event.label).join(' | ') || 'none')
+    'Final result: '+result+' | Current: '+row.outcome+' | State: '+row.state_basis,
+    ...row.entities.map(e => e.name+' '+(e.captured ? 'captured / inactive' : e.active ? 'active' : 'inactive')+
+      ' | position (m): '+vector(e.position)+' | physical velocity (m/s): '+vector(e.velocity)+
+      ' | speed: '+nf(e.speed)+' m/s' +
+      ' | normalized policy action: '+vector(e.action)+' | commanded velocity (m/s): '+vector(e.command)),
+    'Nearest active pair: '+(pair ? pair.pursuer+'/'+pair.evader+' · '+nf(pair.distance)+
+       ' m · relative speed '+nf(pair.relative_speed)+' m/s' : 'N/A'),
+    'Active pairs: '+(pairs.join(' | ') || 'N/A'),
+    'Last recorded diagnostics at '+nf(row.recorded_time)+' s',
+    'Minimum separation: '+nf(row.minimum)+' m | Capture dwell: '+dwellText,
+    'Reward components: '+rewards,
+    'Events: '+(visible.map(e => e.label).join(' | ') || 'none')
   ].join('\n');
-  dirty = true;
-  if (!pending) draw();
+}
+function show(i) {
+  wanted = i;
+  if (!pending && wanted !== shown) draw();
 }
 async function draw() {
   pending = true;
   try {
-    while (dirty) {
-      dirty = false;
-      const row = frames[index], entities = row.entities;
-      const visible = events.filter(event => event.time <= row.time);
-      const arrows = entities.filter(e => e.velocity && e.speed > 1e-9);
+    while (wanted !== shown) {
+      const target = wanted;
+      const row = frames[target], visible = visibleEvents(row);
+      const current = row.entities.filter(e => !e.captured);
+      const arrows = arrowLines(current);
       const xyz = [0,1,2].map(axis => [
-        ...trails.map(trail => trail[axis].slice(0,index+1)),
-        entities.map(e => e.position[axis]),
-        arrows.map(e => e.position[axis]),
-        visible.flatMap(e => e.positions.map(p => p[axis]))
+        ...trails.map(trail => trail[axis].slice(0,target+1)),
+        current.map(e => e.position[axis]),
+        arrows.map(point => point?.[axis] ?? null),
+        visible.map(e => e.position[axis])
       ]);
       const update = {x: xyz[0], y: xyz[1], z: xyz[2]};
-      for (const [axis,key] of ['u','v','w'].entries())
-        update[key] = Array(count+1).fill(undefined).concat([arrows.map(e => e.velocity[axis]),undefined]);
       update.text = Array(count).fill(undefined).concat([
-        entities.map(e => e.name + (e.active ? '' : ' (inactive)')), undefined,
-        visible.flatMap(e => e.positions.map(() => e.label))
+        current.map(e => e.name), undefined,
+        visible.map(e => e.label + '<br>Recorded coordinates (m): ' + e.positions.map(vector).join(' / '))
       ]);
       update['marker.color'] = Array(count).fill(undefined).concat([
-        entities.map(e => e.active ? e.color : '#888888'),undefined,undefined
+        current.map(e => e.active ? e.color : '#888888'),undefined,visible.map(e => e.color)
       ]);
-      await Plotly.restyle(plot, update, indices);
+      update['marker.symbol'] = Array(count+2).fill(undefined).concat([visible.map(e => e.plotly_marker)]);
+      // Wheel motion can finish after Plotly saves its layout camera.
+      // Carry the actual WebGL camera into the same update as the frame.
+      const scene = plot._fullLayout.scene._scene;
+      const camera = scene?.getCamera?.() ?? plot.layout.scene.camera;
+      await Plotly.update(plot, update, {'scene.camera': camera}, indices);
+      shown = target;
+      // Commit the panel with the rendered scene. New scrub requests can
+      // replace queued work while this one Plotly update is in flight.
+      time.textContent = row.time.toFixed(3)+' s · step '+row.step+
+        ' · keyframe '+(keyAt(row.time)+1)+'/'+keys.length;
+      plot.dataset.frame = String(target);
+      diagnostics(row, visible);
+      if (playing || wanted === shown) slider.value = keyAt(row.time);
+      slider.setAttribute('aria-valuetext', row.time.toFixed(3)+' seconds');
     }
   } finally { pending = false; }
 }
+const speed = () => Number(rate.value);
 function tick(now) {
   if (!playing) return;
-  const elapsed = origin + (now-started) * Number(rate.value) / 1000;
-  let next = index;
-  while (next+1 < frames.length && frames[next+1].time <= elapsed) next++;
-  if (next !== index) show(next);
-  if (index === frames.length-1) playing = false;
+  cursor = Math.min(duration, origin + (now-started)*speed()/1000);
+  show(floorIndex(frames.length, i => frames[i].time, cursor));
+  if (cursor >= duration) playing = false;
   else request = requestAnimationFrame(tick);
 }
-function pause() { playing = false; cancelAnimationFrame(request); }
-let request;
-function play() {
+function pause() {
+  if (playing) cursor = Math.min(duration, origin + (performance.now()-started)*speed()/1000);
+  playing = false;
+  cancelAnimationFrame(request);
+}
+function seek(t) {
   pause();
-  if (index === frames.length-1) show(0);
-  origin = frames[index].time;
+  cursor = t;
+  show(floorIndex(frames.length, i => frames[i].time, t));
+}
+function play() {
+  if (playing || duration === 0) return;
+  if (cursor >= duration) seek(0);
+  origin = cursor;
   started = performance.now();
   playing = true;
   request = requestAnimationFrame(tick);
 }
 document.querySelector('#play').onclick = play;
 document.querySelector('#pause').onclick = pause;
-document.querySelector('#restart').onclick = () => { pause(); show(0); play(); };
-document.querySelector('#prev').onclick = () => { pause(); show(index-1); };
-document.querySelector('#next').onclick = () => { pause(); show(index+1); };
-slider.oninput = () => { pause(); show(Number(slider.value)); };
-rate.onchange = () => { if (playing) play(); };
+document.querySelector('#restart').onclick = () => { seek(0); play(); };
+document.querySelector('#prev').onclick = () => seek(frames[keys[Math.max(0,keyAt(frames[wanted].time)-1)]].time);
+document.querySelector('#next').onclick = () => seek(frames[keys[Math.min(keys.length-1,keyAt(frames[wanted].time)+1)]].time);
+slider.oninput = () => seek(frames[keys[Number(slider.value)]].time);
+let previousRate = speed();
+rate.onchange = () => {
+  if (playing) {
+    const now = performance.now();
+    origin = Math.min(duration, origin + (now-started)*previousRate/1000);
+    started = now;
+  }
+  previousRate = speed();
+};
 show(0);
 """
 
@@ -113,7 +174,11 @@ def render(source, output):
     import plotly.graph_objects as go
 
     timeline = Timeline(source)
-    samples = [timeline.at(timestamp) for timestamp in timeline.key_times]
+    times = sorted(set(timeline.key_times + [
+        k / 30 for k in range(math.ceil(timeline.duration * 30)) if k / 30 < timeline.duration
+    ]))
+    samples = [timeline.at(timestamp) for timestamp in times]
+    time_indices = {timestamp: i for i, timestamp in enumerate(times)}
     config = timeline.data["config"]
     center, radius = np.array(config["center"]), config["radius"]
     theta, phi = np.meshgrid(np.linspace(0, 2*np.pi, 32), np.linspace(0, np.pi, 16))
@@ -127,20 +192,22 @@ def render(source, output):
                                      line=dict(color=entity["color"], width=3)))
     figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="markers+text", textposition="top center",
                                  name="Current UAV", marker=dict(size=5)))
-    figure.add_trace(go.Cone(x=[], y=[], z=[], u=[], v=[], w=[], anchor="tail", sizemode="absolute",
-                             sizeref=2, showscale=False, colorscale=[[0, "#485864"], [1, "#485864"]]))
+    figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", name="Velocity direction",
+                                 hoverinfo="skip", line=dict(color="#485864", width=3)))
     figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="markers", name="Events",
-                                 hoverinfo="text", marker=dict(size=7, symbol="diamond", color="#2f9c63")))
+                                 hoverinfo="text", marker=dict(size=12, symbol="x")))
     bounds = timeline.bounds(samples)
     figure.update_layout(uirevision="keep-camera", height=640, margin=dict(t=30, b=0),
-                         scene=dict(aspectmode="data", **{axis+"axis": dict(title=axis+" (m)", range=bounds[i])
+                         scene=dict(aspectmode="data", dragmode="orbit",
+                                    camera=dict(eye=dict(x=2.2, y=2.2, z=1.7)),
+                                    **{axis+"axis": dict(title=axis+" (m)", range=bounds[i])
                                                           for i, axis in enumerate("xyz")}))
-    events = [event | {"label": f"{event['kind']} · {event['time']:.6f} s · step {event['step']}"}
-              for event in timeline.events]
-    data = json.dumps(dict(frames=samples, events=events, result=timeline.data["result"]["outcome"]),
+    data = json.dumps(dict(frames=samples, keys=[time_indices[t] for t in timeline.key_times],
+                           events=timeline.display_events, result=timeline.data["result"]["outcome"]),
                       separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
     script = "const DATA = " + data + ";\n" + PLAYER
-    graph = figure.to_html(full_html=False, include_plotlyjs=True, post_script=script)
+    graph = figure.to_html(full_html=False, include_plotlyjs=True, post_script=script,
+                           config={"scrollZoom": True})
     controls = """
 <h2>UAV interception replay</h2><div>
 <button id="play">Play</button> <button id="pause">Pause</button>
@@ -153,13 +220,16 @@ def render(source, output):
 """
     with Path(output).open("x", encoding="utf-8") as stream:
         stream.write('<!doctype html><meta charset="utf-8"><title>Interception replay</title>'
-                     '<style>body{font:15px system-ui;margin:16px}pre{white-space:pre-wrap}'
+                     '<style>body{font:15px system-ui;margin:16px;display:flex;flex-direction:column}'
+                     '#details{order:1;white-space:pre-wrap}'
                      '#clock{width:min(36vw,420px)}</style>' + controls + graph)
 
 
 def video_times(duration, fps):
+    if not math.isfinite(duration) or duration < 0 or fps <= 0:
+        raise ValueError("finite nonnegative duration and positive fps required")
     count = max(2, math.ceil(duration * fps)) if duration else 1
-    return [k / fps for k in range(count-1)] + [duration]
+    return np.linspace(0., duration, count).tolist()
 
 
 def render_video(source, output, fps=30, width=1280, height=720, elevation=25, azimuth=-55):
@@ -186,43 +256,73 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
     center, radius = timeline.data["config"]["center"], timeline.data["config"]["radius"]
     theta, phi = np.meshgrid(np.linspace(0, 2*np.pi, 28), np.linspace(0, np.pi, 14))
     figure = plt.figure(figsize=(width/100, height/100), dpi=100)
-    axes = figure.add_subplot(projection="3d")
+    axes = figure.add_subplot(projection="3d", computed_zorder=False)
+    axes.view_init(elev=elevation, azim=azimuth)
+    axes.set(xlim=bounds[0], ylim=bounds[1], zlim=bounds[2],
+             xlabel="x (m)", ylabel="y (m)", zlabel="z (m)")
+    axes.set_box_aspect(np.ptp(bounds, axis=1))
+    axes.plot_surface(center[0]+radius*np.cos(theta)*np.sin(phi),
+                      center[1]+radius*np.sin(theta)*np.sin(phi),
+                      center[2]+radius*np.cos(phi), color="#55a868", alpha=.13, zorder=0)
+    paths, points, labels = [], [], []
+    for entity in samples[0]["entities"]:
+        paths.append(axes.plot([], [], [], color=entity["color"], zorder=2)[0])
+        points.append(axes.plot([], [], [], linestyle="none", marker="o",
+                                color=entity["color"], zorder=4)[0])
+        labels.append(axes.text(0, 0, 0, entity["name"], zorder=5))
+    history_positions = np.array([[e["position"] for e in row["entities"]] for row in history])
+    events = []
+    for event in timeline.display_events:
+        marker = axes.plot(*event["position"], linestyle="none", marker=event["mpl_marker"],
+                           markersize=12, markeredgewidth=2.4, color=event["color"], zorder=10)[0]
+        marker.set_visible(False)
+        events.append(marker)
+    title = axes.set_title("")
+    event_text = figure.text(.02, .025, "", fontsize=9)
+    arrows = []
+    history_end = 0
     output = Path(output)
-    with output.open("xb"):
-        pass
+    reserved = False
     try:
+        with output.open("xb"):
+            pass
+        reserved = True
         with tempfile.TemporaryDirectory(dir=output.parent) as folder:
             target = Path(folder) / "video.mp4"
             writer = FFMpegWriter(fps=fps, codec=codec, extra_args=["-pix_fmt", "yuv420p"])
             with writer.saving(figure, str(target), 100):
                 for row in samples:
-                    axes.clear()
-                    axes.view_init(elev=elevation, azim=azimuth)
-                    axes.set(xlim=bounds[0], ylim=bounds[1], zlim=bounds[2],
-                             xlabel="x (m)", ylabel="y (m)", zlabel="z (m)")
-                    axes.set_box_aspect(np.ptp(bounds, axis=1))
-                    axes.plot_surface(center[0]+radius*np.cos(theta)*np.sin(phi),
-                                      center[1]+radius*np.sin(theta)*np.sin(phi),
-                                      center[2]+radius*np.cos(phi), color="#55a868", alpha=.18)
+                    timestamp = row["time"]
+                    while history_end < len(history) and history[history_end]["time"] < timestamp:
+                        history_end += 1
+                    for arrow in arrows:
+                        arrow.remove()
+                    arrows.clear()
                     for i, entity in enumerate(row["entities"]):
-                        past = [sample["entities"][i]["position"] for sample in history
-                                if sample["time"] < row["time"]]
-                        path = np.array(past + [entity["position"]])
-                        axes.plot(*path.T, color=entity["color"])
                         position = entity["position"]
-                        axes.scatter(*position, color=entity["color"] if entity["active"] else "#888888")
-                        axes.text(*position, entity["name"] + ("" if entity["active"] else " inactive"))
-                        if entity["velocity"] is not None:
-                            axes.quiver(*position, *entity["velocity"], length=.3, color=entity["color"])
-                    for event in timeline.events:
-                        if event["time"] <= row["time"]:
-                            axes.scatter(*np.array(event["positions"]).T, marker="D", color="#2f9c63")
-                    axes.set_title(f"{row['time']:.3f} s | step {row['step']} | "
+                        path = np.vstack((history_positions[:history_end, i], position))
+                        paths[i].set_data_3d(*path.T)
+                        points[i].set_data_3d(*([v] for v in position))
+                        points[i].set_visible(not entity["captured"])
+                        labels[i].set_position_3d(position)
+                        labels[i].set_visible(not entity["captured"])
+                        if entity["velocity"] is not None and entity["speed"] > 1e-9:
+                            arrows.append(axes.quiver(*position, *entity["velocity"], length=.3,
+                                                     color=entity["color"], zorder=3))
+                    visible = []
+                    for event, marker in zip(timeline.display_events, events):
+                        show = event["time"] <= timestamp
+                        marker.set_visible(show)
+                        if show:
+                            visible.append(event["label"])
+                    event_text.set_text(" | ".join(visible))
+                    title.set_text(f"{timestamp:.6f} s | step {row['step']} | "
                                    f"{row['outcome']} | result: {timeline.data['result']['outcome']}")
                     writer.grab_frame()
             os.replace(target, output)
     except BaseException:
-        output.unlink(missing_ok=True)
+        if reserved:
+            output.unlink(missing_ok=True)
         raise
     finally:
         plt.close(figure)

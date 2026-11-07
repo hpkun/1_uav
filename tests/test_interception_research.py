@@ -65,7 +65,7 @@ def test_trace_is_passive_and_keeps_physical_time(tmp_path):
     render(tmp_path/"run/trajectory_000.json.gz", destination)
     html = destination.read_text(encoding="utf-8")
     payload, _ = json.JSONDecoder().raw_decode(html.split("const DATA = ", 1)[1])
-    assert [row["time"] for row in payload["frames"]] == timeline.key_times
+    assert [payload["frames"][i]["time"] for i in payload["keys"]] == timeline.key_times
     assert payload["frames"][-1]["dwell"] == frames[-1]["dwell_seconds"].tolist()
     assert len(payload["events"]) == 2
     with pytest.raises(FileExistsError):

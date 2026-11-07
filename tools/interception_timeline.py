@@ -1,6 +1,5 @@
 """Shared trajectory clock and analytic sampling for both replay exporters."""
 from bisect import bisect_right
-from copy import deepcopy
 import gzip
 import json
 from pathlib import Path
@@ -12,6 +11,27 @@ from env.interception.motion import advance
 
 GROUPS = (("pursuers", "active_mask", "P", "#2378bf", 0),
           ("evaders", "evader_mask", "E", "#df6a36", MAX_PURSUERS))
+
+# Plotly Scatter3d and Matplotlib each use their native marker.
+EVENT_STYLES = {
+    "capture": ("Capture", "#dc1824", "x", "x"),
+    "collision": ("Collision", "#ef7900", "diamond", "D"),
+    "breach": ("Breach", "#f0c400", "square", "s"),
+}
+
+
+def display_event(event):
+    kind = event["kind"]
+    title, color, plotly_marker, mpl_marker = EVENT_STYLES[kind]
+    names = list(dict.fromkeys(f"P{i}" if i < MAX_PURSUERS else f"E{i-MAX_PURSUERS}"
+                               for i in event["entities"]))
+    positions = event["positions"]
+    position = (np.mean(positions, axis=0).tolist() if kind == "collision"
+                else positions[1 if kind == "capture" else 0])
+    return dict(kind=kind, time=event["time"], entity_ids=event["entities"],
+                positions=positions, position=position, color=color, plotly_marker=plotly_marker,
+                mpl_marker=mpl_marker,
+                label=f"{title} {' / '.join(names)} · {event['time']:.6f} s")
 
 
 class Timeline:
@@ -31,6 +51,10 @@ class Timeline:
         self.duration = self.times[-1]
         self.events = sorted((event for row in self.frames for event in row["events"]),
                              key=lambda event: event["time"])
+        self.display_events = [display_event(event) for event in self.events]
+        self.events_at = {}
+        for event in self.events:
+            self.events_at.setdefault(event["time"], []).append(event)
         self.captures = {event["entities"][1]: event for event in self.events if event["kind"] == "capture"}
         self.key_times = sorted(set(self.times + [event["time"] for event in self.events]))
         if self.key_times[0] < 0 or self.key_times[-1] > self.duration:
@@ -40,6 +64,8 @@ class Timeline:
                          for i, active in enumerate(self.frames[0][mask]) if active]
 
     def at(self, timestamp):
+        if not np.isfinite(timestamp) or not 0 <= timestamp <= self.duration:
+            raise ValueError(f"replay time must be in [0, {self.duration}] s")
         index = bisect_right(self.times, timestamp) - 1
         before = self.frames[index]
         exact = timestamp == self.times[index]
@@ -50,24 +76,40 @@ class Timeline:
             capture = self.captures.get(global_id)
             captured = capture is not None and capture["time"] <= timestamp
             state = before[key][i]
-            if not exact and commands is not None and before[mask][i]:
+            reconstruct = not exact and commands is not None
+            if reconstruct and before[mask][i] and not captured:
                 tau = self.data["config"]["pursuer_tau" if key == "pursuers" else "evader_tau"]
-                end = capture["time"] if captured else timestamp
-                state = advance(state, commands[global_id], tau, end-before["time"]).tolist()
+                state = advance(state, commands[global_id], tau, timestamp-before["time"]).tolist()
             position = capture["positions"][1] if captured else state[:3]
             # Event coordinates take precedence over reconstructed coordinates.
-            for event in after["events"]:
-                if abs(event["time"]-timestamp) <= 1e-10 and global_id in event["entities"]:
+            for event in self.events_at.get(timestamp, ()):
+                if global_id in event["entities"]:
                     position = event["positions"][event["entities"].index(global_id)]
             active = bool(before[mask][i] and not captured)
-            velocity = state[3:] if active else None
+            velocity = state[3:] if active and (exact or reconstruct) else None
+            actions = after.get("normalized_actions")
             entities.append(dict(name=name, color=color, position=position, velocity=velocity, active=active,
-                                 speed=float(np.linalg.norm(velocity)) if active else None))
+                                 captured=captured,
+                                 action=actions[i] if key == "pursuers" and actions is not None and active else None,
+                                 command=commands[global_id] if commands is not None and active else None,
+                                 speed=float(np.linalg.norm(velocity)) if velocity is not None else None))
+        pursuers = [entity for entity in entities if entity["name"].startswith("P") and entity["active"]]
+        evaders = [entity for entity in entities if entity["name"].startswith("E") and entity["active"]]
+        pairs = []
+        if exact or commands is not None:
+            for p in pursuers:
+                for e in evaders:
+                    pairs.append(dict(pursuer=p["name"], evader=e["name"],
+                                      distance=float(np.linalg.norm(np.subtract(p["position"], e["position"]))),
+                                      relative_speed=float(np.linalg.norm(np.subtract(p["velocity"], e["velocity"])))))
+        pair = min(pairs, key=lambda row: row["distance"], default=None)
         return dict(time=timestamp, step=after["step"], entities=entities, outcome=before["outcome"],
-                    distance=nearest(before.get("distances")) if exact else None,
-                    minimum=before.get("minimum_separation") if exact else None,
+                    nearest_pair=pair, pairs=pairs, distance=pair["distance"] if pair else None,
+                    state_basis="recorded" if exact else "analytic" if commands is not None else "held legacy position",
+                    recorded_time=before["time"], minimum=before.get("minimum_separation"),
                     dwell=before.get("dwell_seconds") if exact else None,
-                    commands=commands, rewards=before.get("reward_parts") or None if exact else None)
+                    last_recorded_dwell=before.get("dwell_seconds"), commands=commands,
+                    rewards=before.get("reward_parts") or None)
 
     def bounds(self, samples):
         config = self.data["config"]
@@ -76,9 +118,3 @@ class Timeline:
         low = np.minimum(points.min(0), center-radius)
         high = np.maximum(points.max(0), center+radius)
         return np.column_stack((low-3, high+3)).tolist()
-
-
-def nearest(matrix):
-    if matrix is None:
-        return None
-    return min((x for row in matrix for x in row if x is not None), default=None)
