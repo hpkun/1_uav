@@ -19,6 +19,20 @@ from tools.interception_report import generate
 from tools.interception_timeline import Timeline
 
 
+def test_capture_and_protection_rates_are_independent():
+    outcomes = ["success", "timeout", "evader_escape", "pursuer_boundary_violation", "breach",
+                "collision", "simulation_failure"]
+    rows = [dict(outcome=outcome, time=1., minimum_separation=2., episode_return=0.,
+                 control_effort=0., reward_parts={}, target_ids=[0,1],
+                 captured_ids=[0,1] if outcome == "success" else [0] if outcome == "timeout" else [])
+            for outcome in outcomes]
+    stats = summarize(rows)
+    assert stats["success_rate"] == stats["evader_escape_rate"] == stats["partial_capture_rate"] == 1/7
+    assert stats["protection_success_rate"] == 2/7
+    assert sum(stats["outcomes"].values()) == 7
+    assert stats["numerical_failure_count"] == 1
+
+
 def exact(left, right):
     if isinstance(left, torch.Tensor):
         assert torch.equal(left, right)
@@ -113,7 +127,7 @@ def test_partial_capture_stays_visible_without_motion(tmp_path):
     _, info = env.reset(12, dict(scenario="custom",
         pursuers=[[-30,-12,15,1.2,0,0], [30,12,15,1.2,0,0], [-15,-20,15,0,0,0],
                   [15,20,15,0,0,0], [0,25,15,0,0,0]],
-        evaders=[[-27.8,-12,15,.6,0,0], [32.6,12,15,.6,0,0]]))
+        evaders=[[-26.8,-12,15,.6,0,0], [33.6,12,15,.6,0,0]]))
     rows = [cli.trace_row(info)]
     actions = np.full((5, 3), .5)
     actions[:2, 0] += 1.2 / 16

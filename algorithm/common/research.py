@@ -11,7 +11,8 @@ import zipfile
 
 from .serialization import serializable
 
-OUTCOMES = ("success", "breach", "collision", "timeout", "simulation_failure")
+OUTCOMES = ("success", "breach", "collision", "timeout", "pursuer_boundary_violation",
+            "evader_escape", "simulation_failure")
 
 
 @dataclass(frozen=True)
@@ -85,14 +86,34 @@ def summarize(rows):
     for target in targets:
         trials = [row for row in rows if target in row["target_ids"]]
         captures = sum(target in row["captured_ids"] for row in trials)
-        target_stats[str(target)] = dict(captures=captures, trials=len(trials), rate=captures / len(trials))
+        capture_times = [row["capture_times"][str(target)] for row in trials
+                         if str(target) in row.get("capture_times", {})]
+        target_stats[str(target)] = dict(captures=captures, trials=len(trials), rate=captures / len(trials),
+                                         mean_capture_time_s=mean(capture_times) if capture_times else None)
     parts = sorted({key for row in rows for key in row["reward_parts"]})
     separations = [row["minimum_separation"] for row in rows]
+    clearances = [row["minimum_surface_clearance"] for row in rows if "minimum_surface_clearance" in row]
+    participation = {}
+    for i in range(5):
+        active = [row for row in rows if row.get("initial", {}).get("active_mask", [False]*5)[i]]
+        if active:
+            participation[str(i)] = dict(trials=len(active),
+                mean_qualified_pair_seconds=mean(row["participation_seconds"][i] for row in active),
+                captures=sum(list(row["capture_owners"].values()).count(i) for row in active))
     partial = [row for row in rows if row.get("captured_ids") and
                len(row["captured_ids"]) < len(row["target_ids"])]
     return dict(episodes=total, outcomes=outcomes, **{
                     name + "_rate": outcomes[name] / total if total else None
-                    for name in OUTCOMES[:4]},
+                    for name in OUTCOMES[:-1]},
+                protection_success_rate=(sum(outcomes[name] for name in ("success", "timeout"))
+                                         / total if total else None),
+                partial_capture_rate=len(partial)/total if total else None,
+                minimum_surface_clearance_m=min(clearances, default=None),
+                mean_minimum_surface_clearance_m=mean(clearances) if clearances else None,
+                near_miss_count=sum(row.get("near_miss_count", 0) for row in rows),
+                collision_types={key: sum(row.get("collision_types", {}).get(key, 0) for row in rows)
+                                 for key in ("PP", "PE", "EE")},
+                pursuer_participation=participation,
                 numerical_failure_count=outcomes["simulation_failure"],
                 all_captured_rate=outcomes["success"] / total if total else None,
                 partial_capture_episodes=len(partial),
@@ -168,6 +189,7 @@ def score(row):
     stats = row["summary"]
     capture = stats["mean_capture_time_s"]
     return (-stats["success_rate"], stats["breach_rate"], stats["collision_rate"],
+            stats.get("pursuer_boundary_violation_rate", 0.), stats.get("evader_escape_rate", 0.),
             float("inf") if capture is None else capture, row["update"])
 
 
@@ -192,7 +214,8 @@ def publish_best(folder, evaluations, update):
     stats = winner["summary"]
     atomic_json(metadata, dict(best_update=winner["update"], best_joint_steps=winner["joint_steps"],
                               best_score={key: stats[key] for key in ("success_rate", "breach_rate",
-                                          "collision_rate", "mean_capture_time_s")},
+                                          "collision_rate", "pursuer_boundary_violation_rate",
+                                          "evader_escape_rate", "mean_capture_time_s")},
                               evaluation_protocol=winner["protocol"],
                               checkpoint_source=winner["checkpoint_source"], checkpoint_sha256=wanted))
 
@@ -200,7 +223,8 @@ def publish_best(folder, evaluations, update):
 def metric_rows(record):
     training = {key: value for key, value in record.items()
                 if key not in ("completed_episodes", "previous")}
-    episodes = [row | dict(update=record["update"], run_id=record["run_id"], scenario="random",
+    episodes = [row | dict(update=record["update"], run_id=record["run_id"],
+                          scenario=row.get("initialization", "random"),
                           episode_length=row["steps"], physical_time=row["time"],
                           reward_components=row["reward_parts"])
                 for row in record["completed_episodes"]]
@@ -225,7 +249,8 @@ def write_views(folder, records, *, append=False):
 
 def evaluation_csv(folder, rows):
     fields = ["update", "joint_steps", "scenario", "seeds", "success_rate", "breach_rate",
-              "collision_rate", "timeout_rate", "mean_capture_time_s", "mean_episode_return"]
+              "collision_rate", "timeout_rate", "pursuer_boundary_violation_rate", "evader_escape_rate",
+              "protection_success_rate", "partial_capture_rate", "mean_capture_time_s", "mean_episode_return"]
     buffer = io.StringIO(newline="")
     writer = csv.DictWriter(buffer, fieldnames=fields)
     writer.writeheader()
@@ -247,6 +272,8 @@ def terminal_line(record, recent):
             f"joint steps {record['joint_steps']} | episodes {record['completed_episodes_total']} | "
             f"window n={window['episodes']}/100 success {show(window['success_rate'], '.1%')} "
             f"breach {show(window['breach_rate'], '.1%')} collision {show(window['collision_rate'], '.1%')} "
+            f"boundary {show(window['pursuer_boundary_violation_rate'], '.1%')} "
+            f"escape {show(window['evader_escape_rate'], '.1%')} "
             f"timeout {show(window['timeout_rate'], '.1%')} return {show(window['mean_episode_return'])} "
             f"capture {show(window['mean_capture_time_s'])} s (n={window['capture_time_samples']}) | "
             f"actor {show(record['actor_total_loss'])} critic {show(record['critic_loss'])} "

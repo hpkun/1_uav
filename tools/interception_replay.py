@@ -77,6 +77,7 @@ function diagnostics(row, visible) {
     'Active pairs: '+(pairs.join(' | ') || 'N/A'),
     'Last recorded diagnostics at '+nf(row.recorded_time)+' s',
     'Minimum separation: '+nf(row.minimum)+' m | Capture dwell: '+dwellText,
+    'Minimum surface clearance: '+nf(row.minimum_surface_clearance)+' m',
     'Reward components: '+rewards,
     'Events: '+(visible.map(e => e.label).join(' | ') || 'none')
   ].join('\n');
@@ -274,6 +275,7 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
     events = []
     for event in timeline.display_events:
         marker = axes.plot(*event["position"], linestyle="none", marker=event["mpl_marker"],
+                           markerfacecolor="none" if event["kind"] == "evader_escape" else event["color"],
                            markersize=12, markeredgewidth=2.4, color=event["color"], zorder=10)[0]
         marker.set_visible(False)
         events.append(marker)

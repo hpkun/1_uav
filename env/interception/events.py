@@ -13,7 +13,7 @@ def _chord(first, last):
     return delta, square, float(np.linalg.norm(first + fraction * delta))
 
 
-def windows(curve, bound, radius, start, stop, tolerance):
+def windows(curve, bound, radius, start, stop, tolerance, *, outside=False):
     intervals = []
 
     def append(left, right):
@@ -28,23 +28,38 @@ def windows(curve, bound, radius, start, stop, tolerance):
         error = bound * width**2 / 8
         maximum = max(np.linalg.norm(first), np.linalg.norm(last))
         roundoff = 32 * np.finfo(float).eps * max(1., maximum, radius)
-        if minimum > radius + error + roundoff:
-            return
-        if maximum + error <= radius:
-            append(left, right)
-            return
+        if outside:
+            if minimum - error >= radius - roundoff:
+                append(left, right)
+                return
+            if maximum + error < radius - roundoff:
+                return
+        else:
+            if minimum > radius + error + roundoff:
+                return
+            if maximum + error <= radius:
+                append(left, right)
+                return
         if width <= tolerance or error <= 1e-12:
             # Resolve the chord against the sphere. The small envelope gives
             # conservative detection of tangencies within spatial resolution.
             limit = radius + error
             if square == 0:
-                append(left, right)
+                if not outside or minimum >= limit - roundoff:
+                    append(left, right)
                 return
             center = -float(first @ delta) / square
             offset = first + center * delta
             extent = np.sqrt(max(0., (limit**2 - float(offset @ offset)) / square))
-            append(left + width * float(np.clip(center - extent, 0., 1.)),
-                   left + width * float(np.clip(center + extent, 0., 1.)))
+            enter = left + width * float(np.clip(center - extent, 0., 1.))
+            leave = left + width * float(np.clip(center + extent, 0., 1.))
+            if outside:
+                if enter > left:
+                    append(left, enter)
+                if leave < right:
+                    append(leave, right)
+            else:
+                append(enter, leave)
             return
         mid = (left + right) / 2
         middle = curve(mid)
@@ -53,6 +68,41 @@ def windows(curve, bound, radius, start, stop, tolerance):
 
     visit(start, stop, curve(start), curve(stop))
     return intervals
+
+
+def boundary_contact(state, target, tau, at, lower, upper, duration, tolerance):
+    """Split each analytic component at its unique possible turning point."""
+    first = None
+    for axis in range(3):
+        initial, command = state[3+axis], target[axis]
+        cuts = [0., duration]
+        turning = None
+        if initial*command < 0.:
+            turning = tau*np.log1p(abs(initial/command))
+            if 0 < turning < duration:
+                cuts.insert(1, turning)
+        for start, stop in zip(cuts, cuts[1:]):
+            left, right = at(start)[axis], at(stop)[axis]
+            speed = 0. if stop == turning else at(stop)[3+axis]
+            upper_exit = right > upper[axis] or (right == upper[axis] and speed > 0)
+            lower_exit = right < lower[axis] or (right == lower[axis] and speed < 0)
+            if not (upper_exit or lower_exit):
+                continue
+            limit = upper[axis] if upper_exit else lower[axis]
+            if left == limit:
+                contact = start
+            else:
+                low, high = start, stop
+                while high-low > tolerance/4:
+                    mid = (low+high)/2
+                    if (at(mid)[axis]-limit)*(1 if upper_exit else -1) >= 0:
+                        high = mid
+                    else:
+                        low = mid
+                contact = high
+            first = contact if first is None else min(first, contact)
+            break
+    return first
 
 
 def intersection(left, right):

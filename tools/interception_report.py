@@ -7,6 +7,7 @@ from statistics import mean, stdev
 from algorithm.common.research import (commit_header, evaluation_records, journal,
                                         read_json, score, summarize)
 from algorithm.common.serialization import write_json
+from env.interception.config import VERSION
 
 
 def series(records):
@@ -77,10 +78,14 @@ def plot(output, curves, evaluations):
     rewards.set(title="Reward components · last 100 episodes", xlabel="Update")
     evaluation = axes.flat[11]
     combined["evaluation"] = {}
-    for metric in ("success_rate", "breach_rate", "collision_rate"):
+    for metric in ("success_rate", "breach_rate", "collision_rate", "pursuer_boundary_violation_rate",
+                   "evader_escape_rate", "protection_success_rate", "partial_capture_rate"):
         values = []
         for update in sorted({r["update"] for rows in evaluations for r in rows}):
-            points = [r["summary"][metric] for rows in evaluations for r in rows if r["update"] == update]
+            points = [r["summary"][metric] for rows in evaluations for r in rows
+                      if r["update"] == update and metric in r["summary"]]
+            if not points:
+                continue
             values.append(dict(update=update, mean=mean(points), n=len(points),
                                std=stdev(points) if len(points) > 1 else None))
         combined["evaluation"][metric] = values
@@ -104,6 +109,8 @@ def generate(folders, output):
     for folder in map(Path, folders):
         head = commit_header(folder / "latest.pt")
         run = head["run"]
+        if run["protocol"]["version"] != VERSION:
+            raise ValueError("historical run requires its original reporting protocol")
         if run != read_json(folder / "config.json"):
             raise ValueError("run config differs from committed metadata")
         records = journal(folder, head)
@@ -119,15 +126,17 @@ def generate(folders, output):
         seeds.add(seed)
         latest_evaluation = next((r["summary"] for r in evaluations[-1] if r["update"] == head["update"]), None)
         best = read_json(folder / "best.json") if (folder / "best.json").exists() else None
+        best_evaluation = None
         if best and evaluations[-1]:
             winner = min(evaluations[-1], key=score)
             if best["best_update"] != winner["update"] or best["checkpoint_sha256"] != winner["checkpoint_sha256"]:
                 raise ValueError("Best metadata is pending reconciliation")
+            best_evaluation = winner["summary"]
         runs.append(dict(path=str(folder), config=run, planned_updates=planned,
                          planned_joint_steps=planned * run["training"]["workers"] * run["training"]["horizon"],
                          completed_updates=head["update"], joint_steps=latest["joint_steps"] if latest else 0,
                          completed_episodes=latest["completed_episodes_total"] if latest else 0,
-                         best=best, latest_evaluation=latest_evaluation,
+                         best=best, best_evaluation=best_evaluation, latest_evaluation=latest_evaluation,
                          update_series=curves[-1], evaluations=evaluations[-1]))
     output.mkdir(parents=True, exist_ok=False)
     combined = plot(output / "training_curves.png", curves, evaluations)
@@ -149,13 +158,16 @@ def generate(folders, output):
         lines.append(f'| {row["path"]} / {seed} | {row["completed_updates"]}/{row["planned_updates"]} | '
                      f'{row["joint_steps"]}/{row["planned_joint_steps"]} | {row["completed_episodes"]} | '
                      f'{selected} | {latest} |')
-    lines.extend(["", "| Seed | Model | Success | Breach | Collision | Mean successful capture (s) |",
-                  "|---:|---|---:|---:|---:|---:|"])
+    lines.extend(["", "| Seed | Model | All captured | Breach | Collision | Boundary | Escape | Timeout | "
+                  "Protection | Partial capture | Mean successful capture (s) |",
+                  "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
     for row in runs:
-        for name, metrics in (("Best", row["best"]["best_score"] if row["best"] else None),
+        for name, metrics in (("Best", row["best_evaluation"]),
                               ("Latest", row["latest_evaluation"])):
             rates = [f"{metrics[key]:.1%}" if metrics else "N/A"
-                     for key in ("success_rate", "breach_rate", "collision_rate")]
+                     for key in ("success_rate", "breach_rate", "collision_rate",
+                                 "pursuer_boundary_violation_rate", "evader_escape_rate", "timeout_rate",
+                                 "protection_success_rate", "partial_capture_rate")]
             duration = metrics["mean_capture_time_s"] if metrics else None
             duration_text = f"{duration:.3f}" if duration is not None else "N/A"
             lines.append(f"| {row['config']['training']['seed']} | {name} | "

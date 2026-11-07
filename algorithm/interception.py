@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
-from env.interception.config import VERSION, MAX_PURSUERS, MAX_EVADERS, SCALES
+from env.interception.config import VERSION, MAX_PURSUERS, MAX_EVADERS, SCALES, TASKS
 from env.interception.scenario import unit
 from algorithm.common.interception_vector import EpisodeAccumulator, InterceptionVectorEnv
 from algorithm.common.interception_checkpoint import PROTOCOL, save, read, restore, load_weights
@@ -123,19 +123,26 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
     return latest
 
 
-def reference_action(info, config, assignments):
+def reference_action(info, config, assignments, *, support=False):
     commands = np.zeros((MAX_PURSUERS, 3))
     for i, j in assignments:
         if not info["evader_mask"][j]:
             continue
         p = info["pursuers"][i]
         e = info["evaders"][j]
+        if config.task != "S0" or config.evader_mode != "goal_seeking" or (
+                config.pursuer_tau != config.evader_tau or config.pursuer_vmax <= config.evader_vmax):
+            delta = e[:3]-p[:3]
+            desired = unit(delta)*(np.linalg.norm(delta) -
+                                    (config.capture_inner_radius+config.capture_outer_radius)/2)
+            commands[i] = e[3:] + .8*desired + 1.2*(e[3:]-p[3:])
+            continue
         # Relative stopping distance under the same first-order lag. Brake
         # early by two control periods, then hold a non-contact offset.
         outward = unit(e[:3] - np.asarray(config.center))
         delta = e[:3] - p[:3]
         axial = delta @ outward
-        gap = axial - 1.4
+        gap = axial - (config.capture_inner_radius+config.capture_outer_radius)/2
         relative_velocity = e[3:] - p[3:]
         closing = -relative_velocity @ outward
         target_speed = config.evader_vmax * config.evader_speed_fraction
@@ -149,6 +156,21 @@ def reference_action(info, config, assignments):
         lateral = delta - axial * outward
         commands[i] = ((relative_command - target_speed) * outward + .75 * lateral +
                        relative_velocity + closing * outward)
+    if support:
+        owners = {i for i, _ in assignments}
+        # Support agents approach a wider standoff. Nearest assignments are
+        # recomputed from current state, so any agent can become the pursuer.
+        for i in np.flatnonzero(info["active_mask"]):
+            if i not in owners:
+                j = min((j for _, j in assignments),
+                        key=lambda j: np.linalg.norm(info["evaders"][j, :3]-info["pursuers"][i, :3]))
+                p, e = info["pursuers"][i], info["evaders"][j]
+                delta = e[:3]-p[:3]
+                commands[i] = e[3:] + .6*unit(delta)*(np.linalg.norm(delta)-7.) + .8*(e[3:]-p[3:])
+            others = np.flatnonzero(info["active_mask"] & (np.arange(MAX_PURSUERS) != i))
+            for j in others:
+                away = info["pursuers"][i, :3]-info["pursuers"][j, :3]
+                commands[i] += 2*max(0., 3.-np.linalg.norm(away))*unit(away)
     return .5 + .5 * commands / np.maximum(config.pursuer_vmax,
                                            np.linalg.norm(commands, axis=-1, keepdims=True))
 
@@ -158,7 +180,8 @@ def trace_row(info, action=None):
     valid = info["active_mask"][:, None] & info["evader_mask"][None, :]
     return {key: info[key] for key in ("pursuers", "evaders", "active_mask", "evader_mask",
                                       "events", "step", "time", "outcome", "minimum_separation",
-                                      "reward_parts")} | dict(commands=info.get("commands"),
+                                      "reward_parts", "task", "initialization", "minimum_center_distance",
+                                      "minimum_surface_clearance", "participation_seconds")} | dict(commands=info.get("commands"),
         physical_time=info["time"], normalized_actions=action, dwell_seconds=info["dwell_seconds"],
         pursuer_speed=np.where(info["active_mask"], np.linalg.norm(p[:, 3:], axis=1), None),
         evader_speed=np.where(info["evader_mask"], np.linalg.norm(e[:, 3:], axis=1), None),
@@ -167,27 +190,23 @@ def trace_row(info, action=None):
 
 
 def episode(config, seed, options, policy, model=None, trace=False, deterministic=True):
-    if policy == "reference" and (config.evader_mode != "goal_seeking" or
-                                  config.pursuer_tau != config.evader_tau or
-                                  config.pursuer_vmax <= config.evader_vmax * config.evader_speed_fraction):
-        raise ValueError("reference controller requires goal_seeking, equal lag and faster pursuers")
     env = InterceptionEnv(config)
     rng = np.random.default_rng([2, seed])
     obs, info = env.reset(np.random.SeedSequence([1, seed]), options)
     accumulator = EpisodeAccumulator()
     accumulator.reset(info)
     frames = [trace_row(info)] if trace else []
-    pursuers = list(np.flatnonzero(info["active_mask"]))
-    assignments = []
-    for j in np.flatnonzero(info["evader_mask"]):
-        i = min(pursuers, key=lambda i: np.linalg.norm(info["pursuers"][i, :3] - info["evaders"][j, :3]))
-        assignments.append((i, j))
-        pursuers.remove(i)
     while True:
         if policy == "random":
             action = rng.random((MAX_PURSUERS, 3))
-        elif policy == "reference":
-            action = reference_action(info, config, assignments)
+        elif policy in ("reference", "paired_reference"):
+            pursuers = list(np.flatnonzero(info["active_mask"]))
+            assignments = []
+            for j in np.flatnonzero(info["evader_mask"]):
+                i = min(pursuers, key=lambda i: np.linalg.norm(info["pursuers"][i, :3]-info["evaders"][j, :3]))
+                assignments.append((i, j))
+                pursuers.remove(i)
+            action = reference_action(info, config, assignments, support=policy == "paired_reference")
         else:
             action = model.act(obs, info["active_mask"], deterministic=deterministic)[0].cpu().numpy()
         try:
@@ -246,7 +265,7 @@ def evaluate(folder, config, options, policy, seeds, model=None, *, identity=Non
     for index, seed in enumerate(seeds):
         row, frames = evaluation_episode(config, seed, options, policy, model, True, deterministic)
         rows.append(row)
-        data = dict(version=VERSION, trace_version=2, time_unit="s", config=asdict(config),
+        data = dict(version=VERSION, trace_version=2, time_unit="s", config=asdict(config), task=config.task,
                     seed=seed, policy=policy, scenario=options, result=row, frames=frames,
                     deterministic=deterministic if model is not None else None, model=identity,
                     entity_ids=dict(pursuers=list(range(MAX_PURSUERS)),
@@ -259,7 +278,8 @@ def evaluate(folder, config, options, policy, seeds, model=None, *, identity=Non
             write_json(path, data)
     summary = summarize(rows)
     write_json(folder / "summary.json", summary | dict(
-        runs=rows, seeds=list(seeds), scenario=options, model=identity, policy=policy,
+        version=VERSION, environment=asdict(config), runs=rows, seeds=list(seeds),
+        scenario=options, model=identity, policy=policy,
         deterministic=deterministic if model is not None else None))
     print(json.dumps(summary, indent=2))
     return summary
@@ -272,6 +292,7 @@ def main(argv=None):
     def environment_flags(command):
         command.add_argument("--env", type=Path, help="JSON overrides of InterceptionConfig")
         command.add_argument("--scale", choices=SCALES)
+        command.add_argument("--task", choices=TASKS)
 
     init = sub.add_parser("validate")
     environment_flags(init)
@@ -322,6 +343,10 @@ def main(argv=None):
         overrides = json.loads(args.env.read_text()) if args.env else {}
         if args.scale:
             overrides["scale"] = args.scale
+        if args.task:
+            overrides["task"] = args.task
+        if "task" in overrides and "scale" not in overrides:
+            overrides["scale"] = TASKS[overrides["task"]][0]
         config = InterceptionConfig(**overrides)
     if args.operation == "train":
         settings = json.loads(args.training.read_text()) if args.training else {}

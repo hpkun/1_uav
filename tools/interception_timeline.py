@@ -17,6 +17,8 @@ EVENT_STYLES = {
     "capture": ("Capture", "#dc1824", "x", "x"),
     "collision": ("Collision", "#ef7900", "diamond", "D"),
     "breach": ("Breach", "#f0c400", "square", "s"),
+    "pursuer_boundary_violation": ("Boundary violation", "#8c43ac", "cross", "+"),
+    "evader_escape": ("Escape", "#168c85", "circle-open", "o"),
 }
 
 
@@ -39,19 +41,23 @@ class Timeline:
         opener = gzip.open if Path(source).suffix == ".gz" else open
         with opener(source, "rt", encoding="utf-8") as stream:
             data = json.load(stream)
-        if data.get("version") != VERSION or data.get("trace_version", 1) not in (1, 2):
+        if data.get("version") not in (VERSION, "uav-interception-v1.0.0") or data.get("trace_version", 1) not in (1, 2):
             raise ValueError("unsupported interception trajectory")
         self.data = data
         self.frames = data["frames"]
         self.times = [float(row["time"]) for row in self.frames]
         if not self.times or self.times[0] != 0 or any(not np.isfinite(t) for t in self.times):
             raise ValueError("invalid trajectory time")
-        if any(b <= a for a, b in zip(self.times, self.times[1:])):
+        # An entity may start at the legal envelope limit and move outward
+        # immediately. Retain both the initial and zero-time terminal records.
+        immediate_exit = self.times == [0., 0.] and self.frames[-1]["outcome"] in (
+            "pursuer_boundary_violation", "evader_escape")
+        if not immediate_exit and any(b <= a for a, b in zip(self.times, self.times[1:])):
             raise ValueError("trajectory time must be strictly increasing")
         self.duration = self.times[-1]
         self.events = sorted((event for row in self.frames for event in row["events"]),
                              key=lambda event: event["time"])
-        self.display_events = [display_event(event) for event in self.events]
+        self.display_events = [display_event(event) for event in self.events if event["kind"] != "near_miss"]
         self.events_at = {}
         for event in self.events:
             self.events_at.setdefault(event["time"], []).append(event)
@@ -107,6 +113,7 @@ class Timeline:
                     nearest_pair=pair, pairs=pairs, distance=pair["distance"] if pair else None,
                     state_basis="recorded" if exact else "analytic" if commands is not None else "held legacy position",
                     recorded_time=before["time"], minimum=before.get("minimum_separation"),
+                    minimum_surface_clearance=before.get("minimum_surface_clearance"),
                     dwell=before.get("dwell_seconds") if exact else None,
                     last_recorded_dwell=before.get("dwell_seconds"), commands=commands,
                     rewards=before.get("reward_parts") or None)

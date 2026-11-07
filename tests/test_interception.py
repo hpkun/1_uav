@@ -1,12 +1,15 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from algorithm.interception import episode
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
 from env.interception.config import MAX_PURSUERS, OBS_DIM, STATE_DIM, SCALES
-from env.interception.events import windows
+from env.interception.events import boundary_contact, windows
 from env.interception.motion import advance, command
 from env.interception.reward import reward_parts
+from tools.interception_pair_audit import paired
 
 
 def actions(x=0., config=None):
@@ -96,7 +99,7 @@ def test_policy_speed_and_snapshot_reproducibility(mode):
         np.testing.assert_allclose(target, 6 * ray / np.linalg.norm(ray))
     elif mode == "reactive_evasion":
         ray = np.array(config.center) - snap["state"].evaders[0, :3]
-        assert not np.allclose(target, 6 * ray / np.linalg.norm(ray))
+        assert target @ ray > 0
 
 
 def test_fixed_maneuver_is_seed_invariant():
@@ -154,35 +157,20 @@ def test_tangency_and_curved_threshold_windows():
     assert not windows(lambda t: np.array([2*t-1, 1.001, 0.]), 0., 1., 0., 1., 1e-7)
 
 
-def test_collision_wins_capture_tie():
-    config = InterceptionConfig(scale="1v1", dt=.5, capture_dwell_steps=2,
-                                evader_mode="constant_velocity", evader_speed_fraction=.25,
-                                constant_direction=(1, 0, 0))
+@pytest.mark.parametrize(("collision_time", "expected"), [(.9, "collision"), (1., "collision"), (1.1, "success")])
+def test_capture_and_independent_collision_event_order(collision_time, expected):
+    config = InterceptionConfig(dt=1.2, evader_mode="constant_velocity",
+                                evader_speed_fraction=.1, constant_direction=(1, 0, 0))
     env = InterceptionEnv(config)
-    custom(env, [[-25, 10, 15, 2.9, 0, 0]], [[-22.3, 10, 15, 1.5, 0, 0]])
-    for _ in range(3):
-        _, _, term, _, info = env.step(actions(2.9))
-    assert term and info["outcome"] == "collision"
-    assert info["time"] == pytest.approx(1.5, abs=1e-7)
-    assert [e["kind"] for e in info["events"]] == ["collision"]
-    assert info["reward_parts"]["capture_event"] == 0
-
-
-@pytest.mark.parametrize(("closing", "expected"), [(1.3, "success"), (1.45, "collision")])
-def test_first_event_wins_when_capture_and_collision_are_in_same_step(closing, expected):
-    config = InterceptionConfig(scale="1v1", dt=1., capture_dwell_steps=1,
-                                evader_mode="constant_velocity", evader_speed_fraction=.25,
-                                constant_direction=(1, 0, 0))
-    env = InterceptionEnv(config)
-    p_speed = 1.5 + closing
-    custom(env, [[-25, 10, 15, p_speed, 0, 0]], [[-22.5, 10, 15, 1.5, 0, 0]])
-    assert not env.step(actions(p_speed))[2]
-    _, _, terminated, _, info = env.step(actions(p_speed))
-    capture_time = .5 / closing + 1.
-    collision_time = 1.9 / closing
+    half_gap = .3+2*collision_time
+    custom(env, [[-30,-12,15,1.2,0,0], [-half_gap,30,15,2,0,0], [half_gap,30,15,-2,0,0]],
+           [[-26.7,-12,15,.6,0,0]])
+    _, _, terminated, _, info = env.step(actions([1.2,2,-2,0,0]))
     assert terminated and info["outcome"] == expected
-    assert info["time"] == pytest.approx(min(capture_time, collision_time), abs=1e-7)
-    assert len(info["events"]) == 1
+    assert info["time"] == pytest.approx(min(collision_time, 1.), abs=1e-7)
+    events = [event for event in info["events"] if event["kind"] != "near_miss"]
+    assert [event["kind"] for event in events] == ["capture" if expected == "success" else "collision"]
+    assert info["reward_parts"]["capture_event"] == (5 if expected == "success" else 0)
 
 
 def test_dwell_resets_when_relative_speed_becomes_excessive():
@@ -190,7 +178,7 @@ def test_dwell_resets_when_relative_speed_becomes_excessive():
                                 evader_mode="constant_velocity", evader_speed_fraction=.01,
                                 constant_direction=(1, 0, 0))
     env = InterceptionEnv(config)
-    custom(env, [[-25, 10, 15, 1.06, 0, 0]], [[-22.95, 10, 15, .06, 0, 0]])
+    custom(env, [[-25, 10, 15, 1.06, 0, 0]], [[-21.95, 10, 15, .06, 0, 0]])
     for _ in range(2):
         _, _, _, _, info = env.step(actions(1.06))
     assert info["dwell_seconds"][0, 0] == pytest.approx(.15, abs=1e-7)
@@ -212,7 +200,7 @@ def test_partial_capture_stable_ids_and_reward():
     env = InterceptionEnv(config)
     custom(env, [[-30, -12, 15, 1.2, 0, 0], [30, 12, 15, 1.2, 0, 0],
                  [-15, -20, 15, 0, 0, 0], [15, 20, 15, 0, 0, 0], [0, 25, 15, 0, 0, 0]],
-           [[-27.8, -12, 15, .6, 0, 0], [32.6, 12, 15, .6, 0, 0]])
+           [[-26.8, -12, 15, .6, 0, 0], [33.6, 12, 15, .6, 0, 0]])
     recorded = []
     for _ in range(20):
         obs, _, term, _, info = env.step(actions([1.2, 1.2, 0, 0, 0]))
@@ -230,11 +218,29 @@ def test_partial_capture_stable_ids_and_reward():
     np.testing.assert_array_equal(recorded[0]["evaders"][0], recorded[1]["evaders"][0])
 
 
+def test_partial_capture_invalidates_later_collision_in_same_step():
+    config = InterceptionConfig(scale="5v2", dt=5., evader_mode="constant_velocity",
+                                evader_speed_fraction=.1, constant_direction=(1,0,0))
+    env = InterceptionEnv(config)
+    custom(env, [[-30,-12,15,1.2,0,0], [30,12,15,0,0,0], [-15,-20,15,0,0,0],
+                 [15,20,15,0,0,0], [0,25,15,0,0,0]],
+           [[-26.8,-12,15,.6,0,0], [40,12,15,.6,0,0]])
+    _, _, term, trunc, info = env.step(actions([1.2,0,0,0,0]))
+    assert not term and not trunc and info["time"] == 5.
+    assert info["evader_mask"].tolist() == [False, True]
+    capture, = info["events"]
+    assert capture["kind"] == "capture" and capture["entity_ids"] == [0,5]
+    assert capture["time"] == pytest.approx(5/6, abs=1e-7)
+    assert info["pursuers"][0,0] > info["evaders"][0,0]
+    np.testing.assert_allclose(info["evaders"][0,:3], capture["positions"][1])
+    assert info["reward_parts"]["capture_event"] == 5.
+
+
 def test_timeout_and_reward_purity():
     config = InterceptionConfig(scale="1v1", dt=1., max_steps=1, evader_mode="constant_velocity",
                                 constant_direction=(0, 1, 0))
     env = InterceptionEnv(config)
-    custom(env, [[20, 0, 15, 0, 0, 0]], [[23, 0, 15, 0, 0, 0]])
+    custom(env, [[20, 0, 15, 0, 0, 0]], [[23.1, 0, 15, 0, 0, 0]])
     _, _, terminated, truncated, info = env.step(actions())
     assert not terminated and truncated and info["outcome"] == "timeout"
     assert reward_parts([3], [3], 0, "timeout", 1., config)["progress"] == 0
@@ -246,6 +252,163 @@ def test_timeout_and_reward_purity():
 def test_reference_proves_safe_solvable_fixture(scale):
     config = InterceptionConfig(scale=scale)
     row, frames = episode(config, 1000, {"scenario": "fixed"}, "reference", trace=True)
-    assert row["outcome"] == "success" and row["minimum_separation"] > config.collision_distance
+    assert row["outcome"] == "success" and row["minimum_surface_clearance"] > 0.
     assert row["reward_parts"]["capture_event"] == 5 * SCALES[scale][1]
     assert frames[-1]["outcome"] == "success"
+
+
+def test_paired_deployment_and_reactive_threat():
+    s1, s2 = (InterceptionConfig(task=task) for task in ("S1", "S2"))
+    assert s1.evader_mode == "goal_seeking" and s2.evader_mode == "reactive_evasion"
+    rows = paired(s1, 1001, "random")
+    for count, row in enumerate(rows, 1):
+        assert row["seed"] == 1001 and row["pair_id"] == rows[2]["pair_id"]
+        assert row["deployment_ids"] == rows[2]["deployment_ids"][:count]
+        assert row["initial"]["evaders"] == rows[2]["initial"]["evaders"]
+        assert row["initial"]["pursuers"][:count] == rows[2]["initial"]["pursuers"][:count]
+        assert sum(row["initial"]["active_mask"]) == count
+    _, a = InterceptionEnv(s1).reset(1001)
+    _, b = InterceptionEnv(s2).reset(1001)
+    np.testing.assert_array_equal(a["pursuers"], b["pursuers"])
+    np.testing.assert_array_equal(a["evaders"], b["evaders"])
+    assert len(set(b["pursuers"][:3, 2])) == 3
+    env = InterceptionEnv(s2)
+    custom(env, [[14,0,15,0,0,0], [0,-16,13,0,0,0], [0,16,20,0,0,0]], [[20,0,15,-3,0,0]])
+    u = env.step(actions())[4]["commands"][5]
+    assert u[0] < 0 and np.linalg.norm(u[1:]) > 1
+    assert np.linalg.norm(u) == pytest.approx(6.)
+
+
+@pytest.mark.parametrize("kind", ["PE", "EE"])
+def test_unequal_collision_envelopes(kind):
+    config = InterceptionConfig(scale="1v1" if kind == "PE" else "5v2", dt=1.,
+                                pursuer_collision_radius=.2, evader_collision_radius=.4,
+                                evader_mode="constant_velocity", constant_direction=(-1,0,0))
+    env = InterceptionEnv(config)
+    if kind == "PE":
+        custom(env, [[0,20,15,8,0,0]], [[2,20,15,-6,0,0]])
+        control, ids, radius = 8, [0,5], .6
+        contact = (2-radius)/14
+    else:
+        p = [[0,-20+i*2,15,0,0,0] for i in range(5)]
+        custom(env, p, [[0,20,15,6,0,0], [2,20,15,-6,0,0]])
+        control, ids, radius = 0, [5,6], .8
+        contact = -config.evader_tau*np.log1p(-(2-radius)/(12*config.evader_tau))
+    _, _, terminated, truncated, info = env.step(actions(control))
+    assert terminated and not truncated and info["outcome"] == "collision"
+    assert info["time"] == pytest.approx(contact, abs=1e-7)
+    event, = info["events"]
+    assert event["entity_ids"] == ids
+    assert event["entity_types"] == (["pursuer","evader"] if kind == "PE" else ["evader","evader"])
+    assert event["center_distance"] == pytest.approx(radius, abs=2e-6)
+    assert event["collision_threshold"] == pytest.approx(radius)
+    assert info["reward_parts"]["capture_event"] == 0
+    assert info["reward_parts"]["progress"] <= 0
+
+
+@pytest.mark.parametrize(("who", "outcome"), [("p", "pursuer_boundary_violation"), ("e", "evader_escape")])
+def test_full_envelope_first_exit(who, outcome):
+    config = InterceptionConfig(scale="1v1", dt=3., evader_mode="constant_velocity",
+                                constant_direction=(1,0,0))
+    env = InterceptionEnv(config)
+    p = [79,20,15,4,0,0] if who == "p" else [60,20,15,0,0,0]
+    e = [79,-20,15,6,0,0] if who == "e" else [40,-20,15,6,0,0]
+    if who == "p":
+        assert advance(p, [-8,0,0], 1.5, config.dt)[0] < 79.7
+    custom(env, [p], [e])
+    _, reward, term, trunc, info = env.step(actions(-8))
+    assert term and not trunc and info["outcome"] == outcome
+    event, = info["events"]
+    assert event["time"] == info["time"] and event["positions"][0][0] == pytest.approx(79.7, abs=1e-6)
+    expected = advance(p if who == "p" else e, [-8,0,0] if who == "p" else [6,0,0], 1.5, info["time"])
+    np.testing.assert_allclose(event["positions"][0]+event["velocities"][0], expected)
+    assert expected[3] > 0
+    parts = info["reward_parts"]
+    assert parts["terminal_success"] == parts["capture_event"] == 0
+    assert parts["collision_safety"] == (-10 if who == "p" else 0)
+    assert parts["time_penalty"] == pytest.approx(-config.step_cost*info["time"]/config.dt)
+    assert reward[0] == pytest.approx(sum(parts.values()))
+
+
+def test_boundary_tangency_without_exit():
+    state = np.array([79.,20.,15.,4.,0.,0.])
+    command = np.array([-8.,0.,0.])
+    tau = 1.5
+    at = lambda t: advance(state, command, tau, t)
+    top = at(tau*np.log1p(.5))[0]
+    assert boundary_contact(state, command, tau, at, [-80,-80,3], [top,80,40], 3., 1e-7) is None
+
+
+@pytest.mark.parametrize(("boundary_time", "expected"), [(.9,"pursuer_boundary_violation"),
+    (1.,"pursuer_boundary_violation"), (1.1,"success")])
+def test_boundary_capture_order(boundary_time, expected):
+    config = InterceptionConfig(dt=1.2, evader_mode="constant_velocity", evader_speed_fraction=.1,
+                                constant_direction=(1,0,0))
+    env = InterceptionEnv(config)
+    custom(env, [[-30,-12,15,1.2,0,0], [79.7-2*boundary_time,30,15,2,0,0], [0,30,15,0,0,0]],
+           [[-26.7,-12,15,.6,0,0]])
+    info = env.step(actions([1.2,2,0,0,0]))[4]
+    assert info["outcome"] == expected
+    assert info["time"] == pytest.approx(min(1., boundary_time), abs=1e-7)
+
+
+def test_inner_and_outer_band_reset():
+    config = InterceptionConfig(scale="1v1", dt=.5, capture_dwell_seconds=2.,
+                                evader_mode="constant_velocity", evader_speed_fraction=.1,
+                                constant_direction=(1,0,0))
+    env = InterceptionEnv(config)
+    p, e = [[-30,20,15,2,0,0]], [[-27,20.9,15,.6,0,0]]
+    custom(env, p, e)
+    dwell = []
+    for _ in range(9):
+        _, _, terminated, _, info = env.step(actions(2))
+        assert not terminated
+        dwell.append(info["dwell_seconds"][0,0])
+    assert 1. < dwell[2] < 2.
+    assert dwell[3] == dwell[4] == 0.
+    assert 0. < dwell[5] < .5 and 1. < dwell[7] < 2.
+    assert dwell[8] == 0.
+    assert info["participation_seconds"][0] > config.capture_dwell_seconds
+    coarse = InterceptionEnv(replace(config, dt=4.5))
+    custom(coarse, p, e)
+    _, _, terminated, _, full = coarse.step(actions(2))
+    assert not terminated and full["dwell_seconds"][0,0] == 0.
+    np.testing.assert_allclose(full["participation_seconds"], info["participation_seconds"], atol=1e-7)
+
+
+def test_independent_pair_clocks():
+    config = InterceptionConfig(evader_mode="constant_velocity", evader_speed_fraction=.1,
+                                constant_direction=(1,0,0))
+    env = InterceptionEnv(config)
+    initial_dx = np.sqrt(5.)+.06
+    custom(env, [[-25-initial_dx,18,15,1.2,0,0], [-25-initial_dx,22,15,1.2,0,0], [0,30,15,0,0,0]],
+           [[-25,20,15,.6,0,0]])
+    for _ in range(4):
+        _, _, terminated, _, info = env.step(actions([1.2,1.2,0,0,0]))
+        assert not terminated
+    np.testing.assert_allclose(info["dwell_seconds"][:2,0], [.3,.3], atol=1e-7)
+    env.step(actions([1.2,1.2,0,0,0]))
+    _, _, terminated, _, info = env.step(actions([1.2,1.2,0,0,0]))
+    assert terminated and info["time"] == pytest.approx(.6, abs=1e-7)
+    assert [event["entity_ids"] for event in info["events"]] == [[0,5]]
+
+
+def test_near_miss_has_no_transition_or_reward_effect():
+    p = [[-2,20,15,8,0,0], [2,20.75,15,-8,0,0], [0,30,15,0,0,0]]
+    e = [[50,0,15,0,0,0]]
+    results = []
+    for clearance in (.3, 0.):
+        env = InterceptionEnv(InterceptionConfig(dt=.1, near_miss_clearance=clearance,
+                                                 evader_mode="constant_velocity"))
+        custom(env, p, e)
+        results.append([env.step(actions([8,-8,0,0,0])) for _ in range(5)])
+    for a, b in zip(*results):
+        np.testing.assert_array_equal(a[0], b[0])
+        np.testing.assert_array_equal(a[1], b[1])
+        assert a[2:4] == b[2:4] == (False, False)
+    events = [event for row in results[0] for event in row[4]["events"]]
+    event, = events
+    assert event["kind"] == "near_miss" and event["entity_ids"] == [0,1]
+    assert event["time"] == pytest.approx((4-np.sqrt(.9**2-.75**2))/16, abs=1e-7)
+    assert results[0][-1][4]["minimum_surface_clearance"] == pytest.approx(.15, abs=.001)
+    assert all(not row[4]["events"] for row in results[1])

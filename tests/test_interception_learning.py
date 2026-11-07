@@ -85,7 +85,8 @@ def test_legacy_checkpoint_is_rejected():
 
 def test_vector_uses_actual_terminal_state_before_reset():
     config = InterceptionConfig(scale="1v1", dt=10., max_steps=1,
-                                evader_mode="constant_velocity", constant_direction=(0,0,1))
+                                evader_mode="constant_velocity", constant_direction=(0,0,1),
+                                evader_speed_fraction=.1)
     with InterceptionVectorEnv(config, 2, 17) as vector:
         result = vector.step(np.full((2,5,3), .5))
         assert result.truncated.all() and not result.terminated.any()
