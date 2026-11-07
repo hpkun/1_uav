@@ -19,7 +19,7 @@ PROTOCOL = dict(version=VERSION, algorithm="uav-interception-mappo-v1",
                 pursuers=MAX_PURSUERS, evaders=MAX_EVADERS)
 
 
-def save(path, model, config, vector, last_log=None):
+def save(path, model, config, vector, last_log=None, *, run=None):
     payload = dict(protocol=PROTOCOL, environment=asdict(config), training=asdict(model.config),
                    actor=model.actor.state_dict(), critic=model.critic.state_dict(),
                    actor_optimizer=model.actor_optimizer.state_dict(),
@@ -28,6 +28,8 @@ def save(path, model, config, vector, last_log=None):
                    numpy_rng=np.random.get_state(), python_rng=random.getstate(),
                    updates=model.updates, steps=model.steps, episodes=model.episodes,
                    vector=vector.snapshot(), last_log=last_log)
+    if run is not None:
+        payload["research_run"] = run
     path = Path(path)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
@@ -37,6 +39,9 @@ def save(path, model, config, vector, last_log=None):
             with zipfile.ZipFile(stream.name, "a") as archive:
                 root = archive.namelist()[0].split("/")[0]
                 archive.writestr(root + "/interception_protocol.json", json.dumps(PROTOCOL))
+                if run is not None:
+                    archive.writestr(root + "/research_commit.json", json.dumps(
+                        dict(run=run, update=model.updates, last_log=last_log), allow_nan=False))
             os.fsync(stream.fileno())
         except BaseException:
             stream.close()

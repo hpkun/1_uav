@@ -20,6 +20,40 @@ python -m pytest -q
 
 用浏览器打开生成的 HTML。轨迹显示双方速度方向、保护球、事件位置、步号、仿真时间和任务结果。新运行目录和 HTML 路径必须尚不存在。续跑读取同一运行目录的原子 `latest.pt`，`--updates` 为本次追加更新数。每次 PPO 更新提交 Checkpoint，再提交相应的 `update_*.json`，恢复时补写最后一条更新日志。恢复粒度为一次完整 PPO 更新。
 
+## 科研记录、定期评估和动态回放
+
+```bash
+root=outputs/interception/research_new
+python -m algorithm.interception run --scenario fixed --out "$root/reference" --gzip
+python -m algorithm.interception run --policy random --scenario random --episodes 3 --out "$root/random"
+python -m algorithm.interception train --training configs/interception_smoke.json --updates 1 \
+  --evaluation-interval-updates 1 --evaluation-episodes 2 --evaluation-seed-base 1000 \
+  --evaluation-scenario random --log-interval 1 --out "$root/train"
+python -m algorithm.interception resume --updates 1 --out "$root/train"
+python -m algorithm.interception evaluate "$root/train/best.pt" --scenario random \
+  --seed 2000 --episodes 3 --out "$root/best_eval"
+python -m algorithm.interception evaluate "$root/train/latest.pt" --scenario fixed \
+  --out "$root/latest_eval"
+python -m tools.interception_replay "$root/reference/trajectory_000.json.gz" "$root/replay.html"
+python -m tools.interception_replay "$root/reference/trajectory_000.json.gz" "$root/replay.mp4" \
+  --fps 15 --width 960 --height 540 --elevation 25 --azimuth -55
+python -m tools.interception_report "$root/train" --out "$root/report"
+# 两个相同实验协议、相同预算、不同训练 seed 的运行目录
+python -m tools.interception_report outputs/interception/seed17 outputs/interception/seed18 \
+  --out outputs/interception/multi_seed_report
+```
+
+- HTML 内嵌 Plotly，支持离线播放、暂停、重播、前后步进、拖动时间轴及 0.5×/1×/2×/4×。滑块定位控制步或步内事件关键帧，播放时钟采用记录的物理秒数。镜头可以旋转和缩放。信息面板中的 N/A 表示该时刻无对应记录。
+- MP4 使用同一轨迹读取器，依据已记录的指令和时间常数进行解析重建，终帧显示真实终止状态。视频时长量化到整帧，常规轨迹误差小于一帧。非常短的非零轨迹至少输出首尾两帧。需要 FFmpeg，可通过 `conda install -c conda-forge ffmpeg` 安装。导出器优先使用可用的 H.264 编码器，也支持 FFmpeg 的 MPEG-4 编码器。
+- 轨迹 v2 保存归一化策略动作、实际执行期望速度和真实状态。动作及指令对应结束于该帧的控制区间。记录还包括双方掩码、速度模长、距离和相对速度矩阵、捕获计时、奖励、模型 SHA256 及真实事件坐标。无效机对为空。读取器兼容原始 JSON 轨迹与 gzip。旧轨迹缺失的诊断显示 N/A。
+- `training_metrics.jsonl` 按 PPO 更新记录损失、熵、KL、clip fraction、有效样本、裁剪前梯度范数、学习率及采样和优化时间。速度为本次采样联合步数除以采样墙钟时间。更新耗时包含采样和优化。一个联合步指一个并行环境的一次联合转移。
+- `episode_metrics.jsonl` 每个完成回合一条，包含 worker 及其回合序号、结局、实际时长、捕获/突破/碰撞数、最小间距、指令强度和奖励分量。回报累计实际 float32 团队奖励，分量求和允许浮点舍入误差。终端展示最近最多 100 个已完成回合，窗口为空时显示 N/A。
+- 定期评估默认关闭。间隔设为正数后启用，同一运行的协议在启动时固定，默认随机场景和 Beta 均值动作。可选 `--evaluation-scenario fixed` 或 `--no-evaluation-deterministic`。单独评估的随机动作选项为 `--stochastic`。评估使用独立环境和固定种子，并恢复 CPU/CUDA Torch RNG。
+- `evaluation_*.json` 保存每局及聚合结果，`evaluation_history.csv` 是派生摘要。结局率分母为全部评估回合，单目标捕获率分母为该 ID 初始有效的回合数，部分捕获表示捕获至少一个且少于全部目标。捕获时长均值和中位数仅统计成功局，另给出全局最小间距、每局最小间距均值和全部回合时长中位数。Control Effort 仍为指令强度积分。
+- `best.pt` 是胜出评估提交对应的 Checkpoint 副本，`best.json` 记录来源、更新数、联合步数、协议、分数和 SHA256。排序依次最大化成功率、最小化突破率、碰撞率、成功平均捕获时长，最后保留更早更新。缺失捕获时长按最差排序。
+- 恢复核对运行身份、配置、连续更新记录及提交链。训练提交后可补写末条记录，评估未提交可补跑，已提交评估可补发 Best，JSONL 和 CSV 可重建。遇到超前日志、记录缺口或缺失且无法重建的历史 Best 会明确报错。已有拦截 v1 Checkpoint 可独立评估。续训要求本版科研提交元数据和对应运行目录。
+- 离线报告读取 JSON 记录与存档 ZIP 的轻量元数据，输出 `report.md`、`summary.json` 和 `training_curves.png`。多种子报告按 Update 对齐，输出均值、样本标准差和有效种子数，检查预算和配置一致性。无需 CUDA。
+
 `validate`、`run`、`train` 支持 `--env 参数.json` 和 `--scale`。JSON 按字段覆盖 `InterceptionConfig`，可改变初始距离、速度比、时间常数或目标策略做敏感性检查。不同难度实验使用独立输出目录。模型评估从存档读取物理参数。训练配置可通过 `--training 参数.json` 覆盖。
 
 `validate`、`run`、`evaluate` 支持 `--scenario fixed|random|custom` 与 `--initial 初态.json`。固定与随机场景可用 `{"distance": 45}` 覆盖目标初始距离。自定义初态使用 `pursuers` 和 `evaders` 两个数组，行数须对应规模，列为 `[x,y,z,vx,vy,vz]`。参考控制器用于验证默认物理设置下的可解性，适用条件是 `goal_seeking`、双方时间常数相等且 Pursuer 比目标指令速度快。它按相对制动距离切换速度并保留捕获间隔。

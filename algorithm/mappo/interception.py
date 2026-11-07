@@ -143,15 +143,20 @@ class MAPPO:
                                                         slots[idx]] - returns[idx]).square().mean()
                 if not torch.isfinite(actor_loss + critic_loss):
                     raise FloatingPointError("nonfinite PPO loss")
+                norms = []
                 for model, optimizer, loss in ((self.actor, self.actor_optimizer, actor_loss),
                                                (self.critic, self.critic_optimizer, critic_loss)):
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), c.max_grad_norm, error_if_nonfinite=True)
+                    norms.append(nn.utils.clip_grad_norm_(model.parameters(), c.max_grad_norm,
+                                                         error_if_nonfinite=True))
                     optimizer.step()
                 metrics.append([policy.item(), critic_loss.item(), entropy.item(),
-                                ((ratio - 1) - log_ratio).mean().item()])
+                                ((ratio - 1) - log_ratio).mean().item(), actor_loss.item(),
+                                ((ratio - 1).abs() > c.clip).float().mean().item(),
+                                norms[0].item(), norms[1].item()])
         self.updates += 1
         self.steps += int(np.prod(rollout.terminated.shape))
-        return dict(zip(("policy_loss", "critic_loss", "entropy", "approx_kl"),
+        return dict(zip(("policy_loss", "critic_loss", "entropy", "approx_kl", "actor_total_loss",
+                         "clip_fraction", "actor_grad_norm", "critic_grad_norm"),
                         np.mean(metrics, axis=0).tolist()), valid_samples=len(obs))

@@ -6,17 +6,20 @@ import json
 import os
 from pathlib import Path
 import random
-import tempfile
 import time
+from uuid import uuid4
 
 import numpy as np
 import torch
 
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
-from env.interception.config import VERSION, MAX_PURSUERS, SCALES
+from env.interception.config import VERSION, MAX_PURSUERS, MAX_EVADERS, SCALES
 from env.interception.scenario import unit
 from algorithm.common.interception_vector import EpisodeAccumulator, InterceptionVectorEnv
-from algorithm.common.interception_checkpoint import save, read, restore, load_weights
+from algorithm.common.interception_checkpoint import PROTOCOL, save, read, restore, load_weights
+from algorithm.common.research import (EvaluationProtocol, atomic_json, commit_header, digest,
+    evaluation_csv, evaluation_records, file_digest, journal, publish_best, read_json,
+    summarize, terminal_line, write_views)
 from algorithm.common.runtime import require_cuda
 from algorithm.common.serialization import serializable, write_json
 from algorithm.mappo.interception import MAPPO, TrainConfig
@@ -36,28 +39,11 @@ def run_lock(folder):
         yield
 
 
-def write_update(folder, record):
-    path = folder / f"update_{record['update']:06}.json"
-    with tempfile.NamedTemporaryFile(dir=folder, mode="w", encoding="utf-8", delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
-            json.dump(serializable(record), stream, indent=2, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        except BaseException:
-            stream.close()
-            temporary.unlink(missing_ok=True)
-            raise
-    try:
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def train(folder, env_config=None, train_config=None, updates=1, resume=False):
+def train(folder, env_config=None, train_config=None, updates=1, resume=False, *,
+          evaluation=None, log_interval=1):
     require_cuda()
-    if updates < 1:
-        raise ValueError("updates must be positive")
+    if updates < 1 or log_interval < 1:
+        raise ValueError("updates and log interval must be positive")
     folder = Path(folder)
     if not resume:
         folder.mkdir(parents=True, exist_ok=False)
@@ -65,8 +51,29 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False):
     with run_lock(folder):
         payload = read(latest) if resume else None
         if resume:
+            head = commit_header(latest)
+            run = head["run"]
+            if (run != payload.get("research_run") or head["update"] != payload["updates"] or
+                    run["environment"] != serializable(payload["environment"]) or
+                    run["training"] != payload["training"] or
+                    payload["steps"] != payload["updates"] * run["training"]["workers"] * run["training"]["horizon"] or
+                    head["last_log"] != payload["last_log"] or read_json(folder / "config.json") != run):
+                raise ValueError("run configuration or commit metadata differs from checkpoint")
             env_config = InterceptionConfig(**payload["environment"])
             train_config = TrainConfig(**payload["training"])
+            evaluation = EvaluationProtocol(**run["evaluation"])
+            records = journal(folder, head, repair=True)
+            if payload["episodes"] != sum(len(row["completed_episodes"]) for row in records):
+                raise ValueError("episode count differs from checkpoint")
+        else:
+            evaluation = evaluation or EvaluationProtocol()
+            run = serializable(dict(id=uuid4().hex, version=VERSION, protocol=PROTOCOL,
+                environment=asdict(env_config), training=asdict(train_config), evaluation=asdict(evaluation),
+                initial_budget_updates=updates, training_scenario="random",
+                seeds=dict(training="[0, seed, worker_id, worker_episode_index]",
+                           evaluation_environment="[1, evaluation_seed]",
+                           evaluation_policy="[3, evaluation_seed]")))
+            records = []
         random.seed(train_config.seed)
         np.random.seed(train_config.seed)
         torch.manual_seed(train_config.seed)
@@ -74,22 +81,40 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False):
         with InterceptionVectorEnv(env_config, train_config.workers, train_config.seed) as vector:
             if payload:
                 restore(payload, model, env_config, vector)
-                if payload["last_log"] is not None:
-                    write_update(folder, payload["last_log"])
             else:
-                write_json(folder / "config.json", dict(version=VERSION, environment=asdict(env_config),
-                                                       training=asdict(train_config)))
-                save(latest, model, env_config, vector)
+                atomic_json(folder / "config.json", run)
+                save(latest, model, env_config, vector, run=run)
+            evaluations = evaluation_records(folder, run, model.updates)
+            complete_evaluation(folder, run, model, env_config, evaluation, evaluations)
+            write_views(folder, records)
+            recent = [row for record in records for row in record["completed_episodes"]][-100:]
+            previous = digest(records[-1]) if records else None
+            planned = model.updates + updates
             try:
                 for _ in range(updates):
+                    start = time.perf_counter()
+                    old_steps = model.steps
                     rollout, episodes = model.collect(vector)
+                    sampled = time.perf_counter()
                     metrics = model.update(rollout)
+                    optimized = time.perf_counter()
                     model.episodes += len(episodes)
-                    record = dict(update=model.updates, joint_steps=model.steps, episodes=model.episodes,
-                                  metrics=metrics, completed_episodes=episodes)
-                    save(latest, model, env_config, vector, record)
-                    write_update(folder, record)
-                    print(json.dumps({k: v for k, v in record.items() if k != "completed_episodes"}), flush=True)
+                    record = serializable(dict(update=model.updates, joint_steps=model.steps,
+                        completed_episodes_total=model.episodes, completed_episodes=episodes,
+                        run_id=run["id"], previous=previous, planned_updates=planned, **metrics,
+                        learning_rates=dict(actor=train_config.actor_lr, critic=train_config.critic_lr),
+                        gradient_norm_basis="before clipping", sampling_time=sampled-start,
+                        optimization_time=optimized-sampled, update_time=optimized-start,
+                        sampling_speed=(model.steps-old_steps)/(sampled-start)))
+                    save(latest, model, env_config, vector, record, run=run)
+                    atomic_json(folder / f"update_{model.updates:06}.json", record)
+                    write_views(folder, [record], append=True)
+                    previous = digest(record)
+                    recent = (recent + episodes)[-100:]
+                    if model.updates % log_interval == 0 or model.updates == planned:
+                        print(terminal_line(record, recent), flush=True)
+                    if evaluation.evaluation_interval_updates and model.updates % evaluation.evaluation_interval_updates == 0:
+                        complete_evaluation(folder, run, model, env_config, evaluation, evaluations)
             except (RuntimeError, FloatingPointError) as exc:
                 write_json(folder / f"failure_{time.time_ns()}.json",
                            dict(error=str(exc), last_committed=str(latest),
@@ -128,13 +153,20 @@ def reference_action(info, config, assignments):
                                            np.linalg.norm(commands, axis=-1, keepdims=True))
 
 
-def trace_row(info):
+def trace_row(info, action=None):
+    p, e = info["pursuers"], info["evaders"]
+    valid = info["active_mask"][:, None] & info["evader_mask"][None, :]
     return {key: info[key] for key in ("pursuers", "evaders", "active_mask", "evader_mask",
                                       "events", "step", "time", "outcome", "minimum_separation",
-                                      "reward_parts")} | {"commands": info.get("commands")}
+                                      "reward_parts")} | dict(commands=info.get("commands"),
+        physical_time=info["time"], normalized_actions=action, dwell_seconds=info["dwell_seconds"],
+        pursuer_speed=np.where(info["active_mask"], np.linalg.norm(p[:, 3:], axis=1), None),
+        evader_speed=np.where(info["evader_mask"], np.linalg.norm(e[:, 3:], axis=1), None),
+        distances=np.where(valid, np.linalg.norm(p[:, None, :3]-e[None, :, :3], axis=-1), None),
+        relative_speeds=np.where(valid, np.linalg.norm(p[:, None, 3:]-e[None, :, 3:], axis=-1), None))
 
 
-def episode(config, seed, options, policy, model=None, trace=False):
+def episode(config, seed, options, policy, model=None, trace=False, deterministic=True):
     if policy == "reference" and (config.evader_mode != "goal_seeking" or
                                   config.pursuer_tau != config.evader_tau or
                                   config.pursuer_vmax <= config.evader_vmax * config.evader_speed_fraction):
@@ -157,7 +189,7 @@ def episode(config, seed, options, policy, model=None, trace=False):
         elif policy == "reference":
             action = reference_action(info, config, assignments)
         else:
-            action = model.act(obs, info["active_mask"], deterministic=True)[0].cpu().numpy()
+            action = model.act(obs, info["active_mask"], deterministic=deterministic)[0].cpu().numpy()
         try:
             obs, rewards, terminated, truncated, info = env.step(action)
         except SimulationFailure as exc:
@@ -165,45 +197,70 @@ def episode(config, seed, options, policy, model=None, trace=False):
             break
         accumulator.add(info, rewards)
         if trace:
-            frames.append(trace_row(info))
+            frames.append(trace_row(info, action))
         if terminated or truncated:
             result = accumulator.summary(info)
             break
     return result | {"seed": seed}, frames
 
 
-def summarize(rows):
-    total = len(rows)
-    successful = [row["time"] for row in rows if row["outcome"] == "success"]
-    outcomes = {name: sum(row["outcome"] == name for row in rows)
-                for name in ("success", "breach", "collision", "timeout", "simulation_failure")}
-    return dict(episodes=total, outcomes=outcomes,
-                success_rate=outcomes["success"] / total,
-                breach_rate=outcomes["breach"] / total,
-                collision_rate=outcomes["collision"] / total,
-                timeout_rate=outcomes["timeout"] / total,
-                numerical_failure_count=outcomes["simulation_failure"],
-                capture_time_samples=len(successful),
-                mean_capture_time_s=float(np.mean(successful)) if successful else None,
-                minimum_separation_m=min(row["minimum_separation"] for row in rows),
-                mean_episode_return=float(np.mean([row["episode_return"] for row in rows])),
-                mean_control_effort=float(np.mean([row["control_effort"] for row in rows])))
+def evaluation_episode(config, seed, options, policy, model, trace, deterministic):
+    if model is None:
+        return episode(config, seed, options, policy, trace=trace)
+    # Evaluation only draws from local environment generators and Torch.
+    with torch.random.fork_rng(devices=list(range(torch.cuda.device_count()))):
+        torch.manual_seed(int(np.random.SeedSequence([3, seed]).generate_state(1)[0]))
+        return episode(config, seed, options, policy, model, trace, deterministic)
 
 
-def evaluate(folder, config, options, policy, seeds, model=None):
+def complete_evaluation(folder, run, model, config, protocol, rows):
+    update = model.updates
+    interval = protocol.evaluation_interval_updates
+    latest = folder / "latest.pt"
+    if interval and update and update % interval == 0:
+        source_hash = file_digest(latest)
+        if rows and rows[-1]["update"] == update:
+            if rows[-1]["checkpoint_sha256"] != source_hash:
+                raise ValueError("evaluation commit differs from latest checkpoint")
+        else:
+            options = dict(scenario=protocol.evaluation_scenario)
+            runs = [evaluation_episode(config, seed, options, "checkpoint", model, False,
+                                       protocol.evaluation_deterministic)[0] for seed in protocol.seeds]
+            result = dict(run_id=run["id"], update=update, joint_steps=model.steps, seeds=protocol.seeds,
+                          protocol=asdict(protocol), summary=summarize(runs), runs=runs,
+                          checkpoint_source=f"latest.pt at update {update}", checkpoint_sha256=source_hash)
+            atomic_json(folder / f"evaluation_{update:06}.json", result)
+            rows.append(result)
+    publish_best(folder, rows, update)
+    evaluation_csv(folder, rows)
+
+
+def evaluate(folder, config, options, policy, seeds, model=None, *, identity=None,
+             compressed=False, deterministic=True):
+    import gzip
     if not seeds:
         raise ValueError("at least one evaluation seed is required")
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=False)
     rows = []
     for index, seed in enumerate(seeds):
-        row, frames = episode(config, seed, options, policy, model, trace=True)
+        row, frames = evaluation_episode(config, seed, options, policy, model, True, deterministic)
         rows.append(row)
-        write_json(folder / f"trajectory_{index:03}.json",
-                   dict(version=VERSION, config=asdict(config), seed=seed, policy=policy,
-                        scenario=options, result=row, frames=frames))
+        data = dict(version=VERSION, trace_version=2, time_unit="s", config=asdict(config),
+                    seed=seed, policy=policy, scenario=options, result=row, frames=frames,
+                    deterministic=deterministic if model is not None else None, model=identity,
+                    entity_ids=dict(pursuers=list(range(MAX_PURSUERS)),
+                                    evaders=list(range(MAX_PURSUERS, MAX_PURSUERS+MAX_EVADERS))))
+        path = folder / f"trajectory_{index:03}.json"
+        if compressed:
+            with gzip.open(str(path) + ".gz", "xt", encoding="utf-8") as stream:
+                json.dump(serializable(data), stream, allow_nan=False, separators=(",", ":"))
+        else:
+            write_json(path, data)
     summary = summarize(rows)
-    write_json(folder / "summary.json", summary | {"runs": rows})
+    write_json(folder / "summary.json", summary | dict(
+        runs=rows, seeds=list(seeds), scenario=options, model=identity, policy=policy,
+        deterministic=deterministic if model is not None else None))
     print(json.dumps(summary, indent=2))
     return summary
 
@@ -228,25 +285,39 @@ def main(argv=None):
     for command in (run, assess):
         command.add_argument("--episodes", type=int, default=1)
         command.add_argument("--out", type=Path, required=True)
+        command.add_argument("--gzip", action="store_true", help="compress trajectory JSON")
     run.add_argument("--policy", choices=("reference", "random"), default="reference")
     assess.add_argument("checkpoint", type=Path)
+    assess.add_argument("--stochastic", action="store_true")
     fit = sub.add_parser("train")
     environment_flags(fit)
     fit.add_argument("--training", type=Path, help="JSON overrides of TrainConfig")
     fit.add_argument("--updates", type=int, default=1)
     fit.add_argument("--out", type=Path, required=True)
+    fit.add_argument("--evaluation-interval-updates", type=int, default=0)
+    fit.add_argument("--evaluation-episodes", type=int, default=5)
+    fit.add_argument("--evaluation-seed-base", type=int, default=1000)
+    fit.add_argument("--evaluation-scenario", choices=("fixed", "random"), default="random")
+    fit.add_argument("--evaluation-deterministic", action=argparse.BooleanOptionalAction, default=True)
     continuation = sub.add_parser("resume")
     continuation.add_argument("--out", type=Path, required=True)
     continuation.add_argument("--updates", type=int, default=1)
+    for command in (fit, continuation):
+        command.add_argument("--log-interval", type=int, default=1)
     args = parser.parse_args(argv)
     if args.operation == "resume":
-        train(args.out, updates=args.updates, resume=True)
+        train(args.out, updates=args.updates, resume=True, log_interval=args.log_interval)
         return
     if args.operation == "evaluate":
+        source_hash = file_digest(args.checkpoint)
         payload = read(args.checkpoint)
+        if file_digest(args.checkpoint) != source_hash:
+            raise ValueError("checkpoint changed during load")
         config = InterceptionConfig(**payload["environment"])
         model = MAPPO(TrainConfig(**payload["training"]))
         load_weights(payload, model)
+        identity = dict(path=str(args.checkpoint.resolve()), sha256=source_hash,
+                        update=payload["updates"], joint_steps=payload["steps"])
     else:
         overrides = json.loads(args.env.read_text()) if args.env else {}
         if args.scale:
@@ -254,7 +325,10 @@ def main(argv=None):
         config = InterceptionConfig(**overrides)
     if args.operation == "train":
         settings = json.loads(args.training.read_text()) if args.training else {}
-        train(args.out, config, TrainConfig(**settings), args.updates)
+        protocol = EvaluationProtocol(**{name: getattr(args, name) for name in
+                                        EvaluationProtocol.__dataclass_fields__})
+        train(args.out, config, TrainConfig(**settings), args.updates,
+              evaluation=protocol, log_interval=args.log_interval)
         return
     options = json.loads(args.initial.read_text()) if args.initial else {}
     options["scenario"] = args.scenario
@@ -269,7 +343,9 @@ def main(argv=None):
     else:
         seeds = list(range(args.seed, args.seed + args.episodes))
         evaluate(args.out, config, options, args.policy if args.operation == "run" else "checkpoint",
-                 seeds, None if args.operation == "run" else model)
+                 seeds, None if args.operation == "run" else model,
+                 identity=None if args.operation == "run" else identity,
+                 compressed=args.gzip, deterministic=not getattr(args, "stochastic", False))
 
 
 if __name__ == "__main__":
