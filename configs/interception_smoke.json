@@ -1,0 +1,7 @@
+{
+  "seed": 17,
+  "workers": 2,
+  "horizon": 96,
+  "epochs": 2,
+  "minibatch": 128
+}

@@ -5,12 +5,9 @@ import traceback
 import copy
 from dataclasses import dataclass
 import numpy as np
-from env.config import EnvConfig
-from env.factory import make_environment
-from .metrics import EpisodeAccumulator
 
 
-def _worker(pipe, config, environment_factory=make_environment):
+def _worker(pipe, config, environment_factory):
     try:
         env = environment_factory(config)
         pipe.send(('ok', os.getpid()))
@@ -23,18 +20,9 @@ def _worker(pipe, config, environment_factory=make_environment):
             elif command == 'step':
                 value = env.step(payload)
             elif command == 'snapshot':
-                value = env.snapshot() if hasattr(env,'snapshot') else dict(task=env.task, rng=env.rng.bit_generator.state, step=env.step_count,
-                             done=env.done, counters=env.counters, assignments=env.assignments,
-                             numerical_delta=env.numerical_delta, numerical_events=env.numerical_events)
+                value = env.snapshot()
             elif command == 'restore':
-                if hasattr(env,'restore'):
-                    env.restore(payload)
-                else:
-                    env.task = payload['task']
-                    env.rng.bit_generator.state = payload['rng']
-                    env.step_count, env.done = payload['step'], payload['done']
-                    env.counters, env.assignments = payload['counters'], payload['assignments']
-                    env.numerical_delta, env.numerical_events = payload['numerical_delta'], payload['numerical_events']
+                env.restore(payload)
                 value = None
             else:
                 raise ValueError(f'unknown worker command {command}')
@@ -65,13 +53,12 @@ class VectorStep:
 
 
 class ParallelVectorEnv:
-    def __init__(self, config=None, num_envs=10, seed=1, forbidden_seeds=(), timeout=60,
-                 *, environment_factory=make_environment, accumulator_factory=EpisodeAccumulator):
+    def __init__(self, config, num_envs, seed, timeout=60,
+                 *, environment_factory, accumulator_factory):
         if num_envs < 1:
             raise ValueError('num_envs must be positive')
-        self.config = config or EnvConfig()
+        self.config = config
         self.num_envs, self.seed, self.timeout = num_envs, seed, timeout
-        self.forbidden_seeds = set(forbidden_seeds)
         self.episodes = np.zeros(num_envs, dtype=np.int64)
         self.connections, self.processes = [], []
         self.closed = False
@@ -100,10 +87,7 @@ class ParallelVectorEnv:
         return payload
 
     def _seed(self, i):
-        value = int(self.seed + self.episodes[i] * self.num_envs + i)
-        if value in self.forbidden_seeds:
-            raise ValueError(f'training seed overlaps evaluation seeds: {value}')
-        return value
+        return np.random.SeedSequence([0, self.seed, i, int(self.episodes[i])])
 
     def reset(self):
         for i, pipe in enumerate(self.connections):
@@ -138,8 +122,7 @@ class ParallelVectorEnv:
             self.trackers[i].add(row[4], row[1])
             if row[2] or row[3]:
                 summary=self.trackers[i].summary(row[4])
-                if 'friendly_states' in row[4]:
-                    summary.update(worker_id=int(i),worker_episode_index=int(self.episodes[i]))
+                summary.update(worker_id=int(i), worker_episode_index=int(self.episodes[i]))
                 episodes.append(summary)
                 self.episodes[i] += 1
                 self.connections[i].send(('reset', self._seed(i)))

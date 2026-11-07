@@ -1,155 +1,80 @@
-# Xu (2026) APH-MAPPO 三维空战与历史巡检基准
+# 三维多无人机协同拦截与追逃
 
-新增观测消融 `headon_xu_norm_signed_3v3`：仅对网络观测中的alpha_i增加左右符号。归一化历史模型在表VII的10局快速战败诊断、编码边界约定和短程CUDA实测见 [有符号观测与快速战败诊断](docs/signed_observation_diagnosis.md)；未启动正式训练。
+默认研究任务是 3v1 区域防护。Pursuer 使用共享策略的 MAPPO，Evader 使用固定行为，双方采用三维多旋翼平动模型。任务成功由非接触式虚拟捕获判定。环境版本为 `uav-interception-v1.0.0`，支持 `1v1`、`3v1`、`5v2`。
 
-固定尺度输入实验 `headon_xu_norm_3v3`：仅在网络入口缩放12D/60D物理量，默认旧实验不归一化。重点测试、饱和率对照及CUDA短程结果见 [固定尺度输入实验](docs/fixed_input_normalization.md)；未启动正式训练。
+## 运行
 
-新增独立实验 `headon_xu_3v3` 和 `headon_madsac_3v3`：共同采用随机位置/速度的水平迎头初始化，分别使用 Xu paper 与 Li（2023）MADSAC-inspired 分段奖励。原实验保持不变；几何解释、适配约定、570项回归测试与CUDA短程实测见 [迎头与MADSAC实验报告](docs/headon_madsac.md)。不进入Xu论文正式结果；未执行正式2500/5000回合训练。
+按仓库运行约定，在 WSL Ubuntu 激活 `uav` Conda 环境。训练、Checkpoint 加载和模型评估要求 CUDA。参考控制与随机基线只运行仿真。依赖见 `requirements.txt`。
 
-新增受控奖励消融 `posture_approach_gated_3v3`：只在Reward结算时门控2000米外的正Posture，默认`main_3v3`仍为原始`paper`模式，APH原始姿态优势不变。公式、严格隔离、466项测试及CUDA实测见 [Approach-Gated Posture报告](docs/approach_gated_posture.md)。该实验不进入论文37项计划或论文表格，本轮未运行正式训练。
-
-当前空战默认协议已升级为 **xu-aircombat-v2.0.0**：连续标架积分处理垂直方向，真正仿真故障显式中断采样。极区延续是论文未公开的工程假设；旧v1 checkpoint不能恢复v2训练。数学说明见 [动力学v2](docs/dynamics_v2.md)，408项测试和CUDA实测见 [修复验收报告](docs/dynamics_v2_validation.md)。新正式实验从头写入 `outputs/xu_iv_v2`，不混用旧统计。
-
-运行遵循 `AGENTS.md`：优先WSL Ubuntu的 `uav` Conda环境，CUDA训练/评估必须可用；下文PowerShell命令保留为WSL不可用时的替代示例。
-
-当前空战入口为 `python -m algorithm.aircombat`，独立环境位于 `env/aircombat/`：支持 **3v3、5v5、3v5**，Red 共享 Beta Actor 学习，Blue 使用论文 Table I 的 15 动作、aggregate-sum 80/20 规则。Actor/Critic 为 **12D/60D**，与历史巡检 12D/90D 存档互斥。
-
-默认环境参数、训练表 III 参数、论文外假设、逐文件变更及验证结果见 [前三阶段实施报告](docs/xu2026_aircombat_implementation.md)。`shootdown_r0=10` 是**论文未报告的实验占位值**，可以通过 `--r0` 修改。未进行正式 5000 回合 × 5 种子实验，也未声称论文性能复现。
-
-在 PowerShell 的 `uav` 环境运行（CUDA 必须可用）：
-
-```powershell
-$env:PYTHONIOENCODING='utf-8'
-(& conda 'shell.powershell' 'hook') | Out-String | Invoke-Expression
+```bash
 conda activate uav
+python -m algorithm.interception validate
+python -m algorithm.interception run --scale 1v1 --out outputs/interception/reference_1v1
+python -m algorithm.interception run --scenario random --policy random --episodes 3 --out outputs/interception/random_3v1
+python -m algorithm.interception train --training configs/interception_smoke.json --updates 1 --out outputs/interception/smoke
+python -m algorithm.interception resume --updates 1 --out outputs/interception/smoke
+python -m algorithm.interception evaluate outputs/interception/smoke/latest.pt --scenario random --episodes 3 --out outputs/interception/eval
+python -m tools.interception_replay outputs/interception/eval/trajectory_000.json outputs/interception/eval/replay.html
 python -m pytest -q
-python -m tools.validate_aircombat --output outputs/my_aircombat_acceptance
-
-# 以下正式预算命令仅为使用示例，本次没有执行。
-python -m algorithm.aircombat train --scale 3v3 --output outputs/aircombat_3v3
-python -m algorithm.aircombat train --scale 5v5 --output outputs/aircombat_5v5
-python -m algorithm.aircombat train --scale 3v5 --output outputs/aircombat_3v5
-python -m algorithm.aircombat evaluate outputs/aircombat_3v3/latest.pt --episodes 200
 ```
 
-`train.jsonl` 记录完成回合数、联合环境步数、PPO 更新数、逐回合 return、五项奖励、Blue 击落数、Red 存活数、全消灭胜率及三类结束原因。第四节实验入口已支持**精确完成回合目标 checkpoint**，包括4950；中途存档保留半个rollout和预采样动作，恢复不提前触发PPO更新。独立评估保存在单独的 `final_evaluation.json`。
+用浏览器打开生成的 HTML。轨迹显示双方速度方向、保护球、事件位置、步号、仿真时间和任务结果。新运行目录和 HTML 路径必须尚不存在。续跑读取同一运行目录的原子 `latest.pt`，`--updates` 为本次追加更新数。每次 PPO 更新提交 Checkpoint，再提交相应的 `update_*.json`，恢复时补写最后一条更新日志。恢复粒度为一次完整 PPO 更新。
 
-第四节全部主实验、消融、单因素和Blue敏感性配置及正式命令见 [第四节实验报告](docs/xu2026_section_iv_experiments.md)。`python -m algorithm.experiments plan` 仅导出37个独立训练任务，**不启动训练**。静态图表入口为 `python -m tools.report_aircombat`，典型场景轨迹入口为 `python -m tools.aircombat_trajectories`。
+`validate`、`run`、`train` 支持 `--env 参数.json` 和 `--scale`。JSON 按字段覆盖 `InterceptionConfig`，可改变初始距离、速度比、时间常数或目标策略做敏感性检查。不同难度实验使用独立输出目录。模型评估从存档读取物理参数。训练配置可通过 `--training 参数.json` 覆盖。
 
-训练终端默认每5次PPO更新显示摘要，并在首次更新、50回合节点和训练结束时显示；checkpoint及最终独立评估另行显示。`--log-every-updates N`调整频率，`--quiet`关闭终端展示，完整JSONL/回合/PPO文件照常保存。最近100个已完成回合的统计为空时显示N/A。详见 [入口与日志说明](docs/aircombat_training_console.md)。
+`validate`、`run`、`evaluate` 支持 `--scenario fixed|random|custom` 与 `--initial 初态.json`。固定与随机场景可用 `{"distance": 45}` 覆盖目标初始距离。自定义初态使用 `pursuers` 和 `evaders` 两个数组，行数须对应规模，列为 `[x,y,z,vx,vy,vz]`。参考控制器用于验证默认物理设置下的可解性，适用条件是 `goal_seeking`、双方时间常数相等且 Pursuer 比目标指令速度快。它按相对制动距离切换速度并保留捕获间隔。
 
-`algorithm.experiments train --episodes 2500` 只改变完成回合目标，标记为半预算诊断；默认输出根目录为 `outputs/xu_iv_2500`。默认5000回合仍输出到 `outputs/xu_iv`。可以通过`--root`显式指定不同目录；2500与5000保持独立训练，不能跨预算恢复。Ubuntu示例（本次未执行正式预算）：
+## 环境协议
 
-```bash
-conda activate uav
-python -m algorithm.experiments train --experiment main_3v3 --seed 1 --episodes 2500 --root outputs/xu_iv_2500
-python -m algorithm.experiments train --experiment main_3v3 --seed 1 --episodes 5000 --root outputs/xu_iv_5000
-```
+| 数据 | 形状及单位 |
+| --- | --- |
+| Pursuer 与 Evader 物理状态 | `[5,6]`、`[2,6]`，float64，位置 m，速度 m/s |
+| Pursuer 动作 | `[5,3]`，有效槽每维 [0,1]。物理指令为三维期望速度 |
+| Actor 观测 | `[5,52]`，float32，每个有效 Pursuer 一行 |
+| Critic 输入与输出 | `[54]` 归一化集中状态，输出 5 个 Pursuer 价值 |
+| 奖励和实体掩码 | `[5]` float32 团队奖励，Pursuer `[5]` 与 Evader `[2]` bool 掩码 |
+| 连续捕获计时 | `[5,2]` 秒数，同时提供除以 dt 的等效步数 |
 
-下面保留历史巡检任务的说明与入口；它们不属于新的论文空战训练路径。
+`reset(seed, options)` 返回 `(observations, info)`。`step(actions)` 返回 `(observations, rewards, terminated, truncated, info)`。`snapshot()` 保存完整配置、双方状态、掩码、捕获计时、目标机动相位、仿真步与时间、累计事件、诊断和 RNG。`restore(snapshot)` 检查版本与配置。
 
-## 历史巡检任务与早期数组协议
+局部观测依次为自身位置与速度、保护球中心相对位置、剩余时间比例、2 个目标槽、4 个按稳定 ID 排序的其他 Pursuer 槽。每个实体槽为相对位置、相对速度与有效标志。全目标信息可观测。集中状态依次为 5 个 Pursuer 槽、2 个 Evader 槽及保护球中心、半径、剩余时间。实体槽含绝对位置、速度及有效标志。位置与半径除以 80 m，速度除以 8 m/s。补零和失效槽置零。事件 ID 0–4 对应 Pursuer，5–6 对应 Evader。
 
-非武器化三维多UAV航路点巡检：3U3P、5U5P、3U5P。环境 `coop3d-v3.0.0`，巡检算法 `mappo-coop3d-v3.0.0`。环境在 `env/`，MAPPO 在 `algorithm/`，导航诊断及录像在 `tools/`。旧 `coop3d/` 包已移除，没有兼容转发入口。
+## 第一版工程参数
 
-本轮完成环境语义回归、90D集中状态、五个体价值Critic、Beta配平初始化、NaN安全GAE、严格采样预算、导航可达性审计和短程CUDA Smoke Test；没有运行正式长训练。
+下表及配置类中的其他默认值均为自主仿真实验参数。
 
-早期整改记录：巡检环境移除±85°限制并复用原式RHS/RK4；动力学及γ特征改变，**旧v2 checkpoint明确拒绝直接恢复**，历史数据未改写。早期独立数组协议的结果见 [历史整改报告](docs/xu2026_rectification.md)。本次已将 `ProtocolMAPPOTrainer` 连接真实空战；当前结论以上面的空战实施报告为准。
+| 项目 | 默认值 |
+| --- | --- |
+| 控制周期、回合上限 | 0.1 s、600 步（60 s） |
+| Pursuer / Evader 速度模长上限 | 8 / 6 m/s |
+| Pursuer / Evader 速度时间常数 | 1.5 / 1.5 s |
+| 初始化区域 | x,y ∈ [−80,80] m，z ∈ [3,40] m |
+| 保护球 | 中心 (0,0,15) m，半径 5 m |
+| 目标生成 | 半径 35–55 m，随机方位与小仰角，双目标分布在相对方向 |
+| Pursuer 防护布置 | 沿目标方位距中心 14 m，横向槽间距 8 m，初速为零 |
+| 捕获 | 同一机对距离 ≤2 m，相对速度 ≤1.5 m/s，连续 5×dt = 0.5 s |
+| 碰撞 | 任一对有效实体距离 ≤0.6 m |
+| 事件时间分辨率、最小间距精度 | 1e−7 s、1 mm |
+| 初态采样 | 最多 128 次，拒绝越界、重叠、初始捕获区/突破与必要可达界不满足 |
+| 目标速度比例 | 1.0 |
+| 恒速方向 | (−1,0,0) |
+| 有界机动幅值、周期 | 0.45、8 s |
+| 反应规避范围、增益 | 15 m、1.2 |
+| 团队奖励 | 捕获 +5/目标，全部捕获 +10，突破 −10，碰撞 −10 |
+| 进度、时间代价 | 进度权重 1、参考距离 40 m，每完整步 −0.01 |
 
-## 当前机器：PowerShell / uav
+区域坐标用于初始化约束，运行中位置由解析运动推进。保护球与实体碰撞决定几何失败。可达检查使用整个时域的双边位移上界，固定参考控制轨迹独立验证基础场景的可解性。
 
-```powershell
-& 'C:\Users\HPK\anaconda3\shell\condabin\conda-hook.ps1'
-conda activate uav
-python -m pytest -q
-python -m compileall -q env algorithm tools tests
-python -m tools.audit_navigation --output outputs/my_navigation_audit
-python -m tools.validate_coop3d --output outputs/my_v2_smoke
-```
+三维动作先映射 `w=2a−1`，再将 `w` 投影到单位速度球并乘以各方速度上限。速度采用指数混合，位置采用同一常值期望速度下的解析积分。最大隐含加速度为 `2 vmax/tau`，默认 Pursuer 10.667 m/s²、Evader 8 m/s²。从静止发出满速指令时分别为 5.333 与 4 m/s²。
 
-审计工具默认每规模每策略5个随机种子，加1个固定场景；不启动学习。validate工具只运行2环境、8步horizon、1 PPO epoch：总预算先17，再从断点继续至25个joint transitions。已有输出目录不会被新运行覆盖。
+四种目标策略为 `constant_velocity`、`goal_seeking`（默认）、`bounded_maneuver` 与 `reactive_evasion`。有界机动用固定相位与当前时刻生成周期偏转。反应规避混合当前目标方向与感知范围内 Pursuer 的位置斥力，并投影到速度球。它只使用当前状态。
 
-## Ubuntu 正式训练示例（本轮未执行）
+步内事件沿解析轨迹搜索。用二阶导数界约束曲线与弦的误差，再细分无法确定的区间，叶区间按弦和小数值包络结算。捕获要求距离与相对速度的阈值区间持续相交。两者任何一项离开阈值都会中断该机对计时。先处理最早事件。容差内同刻按碰撞、突破、捕获顺序处理，同类按时间与稳定 ID。捕获立即停止该目标运动并移除其活动槽。全部捕获、碰撞和突破产生 terminated。达到时限产生 truncated。数值故障显式抛出，训练停在上一提交点，评估单列失败。
 
-在用户准备好的Ubuntu项目目录中：
+进度按步开始时有效目标的最近 Pursuer 距离均值差计算，捕获目标使用捕获时刻的两方位置。团队奖励复制到每个有效 Pursuer，统计按团队值计一次。时间代价按终止步实际时长折算。进度是启发式距离塑形。评估捕获时间仅统计成功回合，报告样本数。Control Effort 是有效 Pursuer 的 `∫||u||² dt` 均值，单位 m²/s，属于指令强度指标。
 
-```bash
-conda activate uav
-python -c 'import torch; assert torch.cuda.is_available(), "CUDA required"; print(torch.cuda.get_device_name())'
+## 训练与历史档案
 
-python -m algorithm.train_mappo --env-config configs/coop3d_3U3P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_3U3P_seed1000
-python -m algorithm.train_mappo --env-config configs/coop3d_5U5P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_5U5P_seed1000
-python -m algorithm.train_mappo --env-config configs/coop3d_3U5P.yaml --algorithm-config configs/mappo_coop3d.yaml --device cuda --seed 1000 --num-envs 10 --total-sampled-steps 1000000 --output-dir outputs/mappo_3U5P_seed1000
-```
+Actor 和 Critic 使用 128–128 Tanh，Actor 输出三组 Beta 参数。PPO 只用有效 Pursuer 的样本，真实终止不 bootstrap，超时使用自动重置前的真实末状态 bootstrap，两类边界都切断跨回合的 GAE。训练默认 4 个 spawn worker、每次采样 128 步、4 轮 PPO、minibatch 256、seed 17。Actor/Critic 学习率为 3e−4/5e−4，γ=0.99、λ=0.95、clip=0.2、entropy=0.01、梯度范数上限 0.5。训练与评估环境使用独立 SeedSequence 命名空间。
 
-以上只是用户自行执行的命令示例，不代表这个预算已经足以收敛。`sampled_steps`严格指全部环境的joint transitions之和。最后一次rollout和vector step可缩短，预算不会因batch对齐超出。
-
-恢复时默认使用断点原配置；总预算可以提高，不能悄悄改变任务规则或优化参数：
-
-```bash
-python -m algorithm.train_mappo --device cuda --total-sampled-steps 2000000 --output-dir outputs/mappo_3U3P_seed1000 --resume outputs/mappo_3U3P_seed1000/latest.pt
-```
-
-## 独立评估与指定模型录像
-
-```bash
-python -m algorithm.evaluate_mappo --checkpoint outputs/mappo_3U3P_seed1000/best.pt --device cuda --seed-base 20000000 --episodes 5 --output outputs/eval_3U3P_best
-python -m algorithm.evaluate_mappo --checkpoint outputs/mappo_3U3P_seed1000/latest.pt --device cuda --seed-base 20000000 --episodes 5 --output outputs/eval_3U3P_latest
-python -m tools.record_episode --checkpoint outputs/mappo_3U3P_seed1000/best.pt --device cuda --seed 20000010 --output outputs/replay_3U3P_best
-python -m tools.record_episode --policy navigation --env-config configs/coop3d_3U5P.yaml --seed 101 --output outputs/replay_navigation
-python -m tools.render_replay --trace outputs/replay_navigation/trajectory.json --output outputs/replay_navigation/replay.html
-```
-
-训练、模型评估与checkpoint审计强制CUDA，缺少CUDA明确失败。旧60D checkpoint不能恢复为v2。模型保存包括两个网络/Adam、完整配置与维度协议、sampled_steps、所有RNG、worker状态及episode统计。只加载可信本地checkpoint。best与latest的评估分别记录，录像元数据标明实际模型来源。
-
-## 环境接口
-
-```python
-import numpy as np
-from env.config import EnvConfig
-from env.factory import make_environment
-
-env = make_environment(EnvConfig(scale='3U5P'))
-observations, info = env.reset(seed=7)
-actions = np.tile([.5, 1/3, 1/8], (3, 1))
-observations, rewards, terminated, truncated, info = env.step(actions)
-assert observations.shape == (3, 12)
-assert info['centralized_state'].shape == (90,)
-```
-
-Actor只使用12D局部观测；Critic使用90D全局状态并输出5个UAV价值槽位，3UAV时只用前3项。后30维显式编码全部航路点，包含未分配的点。
-
-保留五项巡检奖励、Hungarian独占分配、0.25s/RK4、100–400m/s、250步、300m完成半径及100m安全参考。动力学无γ裁剪；分母奇点/阶段跨越失败明确记录并失效，末态速度裁剪是工程选择。巡检γ特征改为γ/π，并非作者归一化。无任务配平、故障当步掩码和终止语义见 [环境规范](docs/environment_spec.md)。
-
-默认Actor使用Beta `trim_centered` 初始化，动作均值接近 `[.5,1/3,1/8]`，浓度16，仍保留探索。优化参数与mask/GAE/预算/日志协议见 [MAPPO规范](docs/mappo_spec.md)。
-
-## 诊断结果与回放
-
-实际小样本审计：导航在3U3P、5U5P的固定场景和各5个随机种子上成功；3U5P随机成功1/5，固定场景完成3/5后超时。额外手工可达多任务场景79步完成5/5。它证明控制接口可用，不能据此声称所有随机场景都可完成。[完整导航审计](docs/navigation_audit.md)包含失败复核和两种Actor初始化的实际对照。
-
-回放由真实JSON记录生成，HTML内嵌Plotly，可离线查看。支持播放/暂停、滑块、三维旋转、轨迹、速度方向、点完成与分配、控制、失效、限幅事件、五项奖励和逐UAV查询。渲染不执行环境。当前仍未完成浏览器内视觉交互验收，不能将脚本语法检查视为浏览器验证。
-
-详细文件清单、测试和CUDA结果见 [重构报告](docs/refactor_report.md)。已有outputs、历史模型和原始PDF均保留。v1恢复副本在 `tmp/coop3d_v1_before_v2.zip`，迁移前参考轨迹在 `tests/fixtures/coop3d_v1_semantics.json.gz`。
-
-## 训练日志维护与离线报告
-
-训练终端默认输出紧凑的 `[TRAIN]`、独立 `[EVAL]` 和最终 best/latest 摘要，保留原有 JSONL/CSV。新记录同时提供 `policy_loss` 和实际用于 backward 的 `actor_total_loss`；兼容字段 `actor_loss` 现在是后者的别名。**修复前 v2 历史记录中的 actor_loss 实际是 policy_loss**，不能将新旧同名字段直接当作相同损失比较；历史实验文件不会被重写。
-
-Ubuntu 离线查看已有训练结果（将 run-dir 替换为真实实验目录）：
-
-```bash
-conda activate uav
-python -m tools.report_training --run-dir outputs/你的训练目录 --last-updates 10
-```
-
-也可用本仓库现有历史记录检查工具：
-
-```bash
-python -m tools.report_training --run-dir outputs/coop3d_v2/smoke --last-updates 10
-```
-
-该工具只读 `training_metrics.jsonl`、`evaluation_history.csv`、`run_summary.json`、`run_config.json`，不加载模型、不启动仿真，也不需要 CUDA 或 PyTorch。缺失字段显示 N/A，旧 actor_total_loss 不补造。诊断提示只供排查，不自动判定训练失败或收敛。
-
-恢复训练前会只读检查日志、断点和 best/latest 来源。日志重复、比断点更新或存在更晚模型时明确拒绝追加，保留原文件；日志缺失或落后时提示历史缺口，不伪造数据。默认不自动裁剪、删除或覆盖冲突实验。网络、优化、版本、Checkpoint 协议和 TrainConfig 持久化字段均保持不变。
-
-浮点轨迹回归采用 `rtol=1e-12, atol=1e-12`；离散状态与事件依旧精确比较，原始参考 fixture 不变。实际修复、测试与日志示例见 [日志维护报告](docs/training_log_maintenance.md)。
+新 Checkpoint 包含版本、维度、环境和训练配置、模型、优化器、RNG、采样 worker 及进度。加载前检查专用协议标头。请只加载可信本地存档。历史协议的模型、资料与实验输出见 `archive/README.md`。历史执行代码以 Git 提交定位。

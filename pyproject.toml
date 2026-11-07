@@ -3,11 +3,11 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "coop3d"
+name = "uav-interception"
 version = "1.0.0"
-description = "Xu APH-MAPPO 3D multi-UAV air combat and historical inspection benchmark"
+description = "Three-dimensional cooperative UAV interception and pursuit-evasion with MAPPO"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "PyYAML>=6.0", "torch>=2.0", "plotly>=5.18", "matplotlib>=3.7"]
+dependencies = ["numpy>=1.24", "torch>=2.0", "plotly>=5.18"]
 
 [tool.setuptools.packages.find]
 include = ["env*", "algorithm*", "tools*"]
