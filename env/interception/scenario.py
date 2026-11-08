@@ -91,7 +91,7 @@ def generate(config, rng, options):
             e[j, :3] = [goal_point[0]+horizontal*np.cos(heading),
                         goal_point[1]+horizontal*np.sin(heading), height]
             speed = 0. if fixed else draw(config.evader_initial_speed)
-            e[j, 3:] = project(speed*unit(goal_point-e[j, :3]), speed,
+            e[j, 3:] = project(unit(goal_point-e[j, :3]), speed,
                                config.evader_vertical_vmax)
         else:
             for i in range(n):
