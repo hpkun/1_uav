@@ -1,7 +1,7 @@
 from dataclasses import dataclass, fields
 import math
 
-VERSION = "uav-interception-v2.0.0"
+VERSION = "uav-interception-v3.0.0"
 SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2)}
 SCENARIO_SCALES = {**SCALES, "3v3": (3, 3)}
 TASKS = {"S0": ("1v1", "goal_seeking"), "S1": ("3v1", "goal_seeking"),
@@ -29,6 +29,12 @@ class InterceptionConfig:
     upper: tuple = (80., 80., 40.)
     center: tuple = (0., 0., 15.)
     radius: float = 5.
+    # The spherical legacy baseline remains available for historical comparisons.
+    protected_zone: str = "sphere"
+    protected_height: float = 0.
+    evader_goal_altitude: float | None = None
+    pursuer_vertical_vmax: float | None = None
+    evader_vertical_vmax: float | None = None
     spawn_distance: tuple = (35., 55.)
     defense_distance: tuple = (12., 20.)
     evader_azimuth: tuple = (-math.pi, math.pi)
@@ -104,6 +110,18 @@ class InterceptionConfig:
                 raise ValueError(f"{name} must be positive")
         if self.scale not in SCENARIO_SCALES or self.evader_mode not in MODES:
             raise ValueError("unknown scale or evader mode")
+        if self.protected_zone not in ("sphere", "ground_cylinder"):
+            raise ValueError("unknown protected zone geometry")
+        for name, maximum in (("pursuer_vertical_vmax", self.pursuer_vmax),
+                              ("evader_vertical_vmax", self.evader_vmax)):
+            cap = getattr(self, name)
+            if cap is not None and (not isinstance(cap, (int, float)) or
+                                    not math.isfinite(cap) or not 0 < cap <= maximum):
+                raise ValueError(f"{name} must lie in (0, v_max]")
+        if self.evader_goal_altitude is not None and (
+                not math.isfinite(self.evader_goal_altitude) or
+                not self.lower[2] < self.evader_goal_altitude < self.upper[2]):
+            raise ValueError("invalid evader goal altitude")
         if not 0 < self.evader_speed_fraction <= 1 or not any(self.constant_direction):
             raise ValueError("invalid evader speed or constant direction")
         if not self.radius < self.spawn_distance[0] <= self.spawn_distance[1]:
@@ -118,9 +136,19 @@ class InterceptionConfig:
             raise ValueError("initial speed ranges exceed limits")
         if not 1e-10 <= self.event_time_tolerance < self.dt / 10:
             raise ValueError("invalid event resolution")
-        if not all(lo + self.radius <= center <= hi - self.radius and lo < hi
-                   for lo, center, hi in zip(self.lower, self.center, self.upper)):
-            raise ValueError("protected sphere must fit inside initialization bounds")
+        if self.protected_zone == "sphere":
+            if not all(lo + self.radius <= center <= hi - self.radius and lo < hi
+                       for lo, center, hi in zip(self.lower, self.center, self.upper)):
+                raise ValueError("protected sphere must fit inside initialization bounds")
+        else:
+            if not (self.protected_height > 0 and
+                    self.lower[0] + self.radius <= self.center[0] <= self.upper[0] - self.radius and
+                    self.lower[1] + self.radius <= self.center[1] <= self.upper[1] - self.radius and
+                    self.center[2] <= self.lower[2] < self.center[2] + self.protected_height < self.upper[2]):
+                raise ValueError("ground cylinder must span the ground and fit inside the arena")
+            if (self.evader_goal_altitude is None or
+                    not self.center[2] < self.evader_goal_altitude < self.center[2] + self.protected_height):
+                raise ValueError("ground cylinder requires a goal flight altitude inside the zone")
 
     @property
     def num_uavs(self):

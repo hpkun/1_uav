@@ -15,6 +15,7 @@ import torch
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
 from env.interception.config import VERSION, MAX_PURSUERS, SCALES, SCENARIO_SCALES, TASKS
 from env.interception.scenario import unit
+from env.interception.protected_area import navigation_point
 from algorithm.common.interception_vector import EpisodeAccumulator, InterceptionVectorEnv
 from algorithm.common.interception_checkpoint import PROTOCOL, save, read, restore, load_weights
 from algorithm.common.research import (EvaluationProtocol, atomic_json, commit_header, digest,
@@ -141,7 +142,7 @@ def reference_action(info, config, assignments, *, support=False):
             continue
         # Relative stopping distance under the same first-order lag. Brake
         # early by two control periods, then hold a non-contact offset.
-        outward = unit(e[:3] - np.asarray(config.center))
+        outward = unit(e[:3] - navigation_point(config))
         delta = e[:3] - p[:3]
         axial = delta @ outward
         gap = axial - (config.capture_inner_radius+config.capture_outer_radius)/2

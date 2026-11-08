@@ -3,6 +3,7 @@ import numpy as np
 
 from .config import SCENARIO_SCALES
 from .motion import advance, project
+from .protected_area import contains_intruder, navigation_point
 
 
 def unit(vector):
@@ -35,8 +36,12 @@ def validate(pursuers, evaders, config, *, subset=False, spawn=False):
     if np.any((distances >= config.capture_inner_radius) & (distances <= config.capture_outer_radius)
               & (speed <= config.capture_relative_speed_max)):
         raise ValueError("initial pair inside capture radius")
-    if np.any(np.linalg.norm(evaders[:, :3] - config.center, axis=1) <= config.radius):
+    if any(contains_intruder(position, config) for position in evaders[:, :3]):
         raise ValueError("initial breach")
+    for states, cap in ((pursuers, config.pursuer_vertical_vmax),
+                        (evaders, config.evader_vertical_vmax)):
+        if cap is not None and np.any(np.abs(states[:, 5]) > cap + 1e-10):
+            raise ValueError("initial vertical speed exceeds limit")
     horizon = config.dt * config.max_steps
     # A necessary geometric reachability test, not a guarantee against evasion.
     # Each endpoint lies in a ball centered on its uncommanded lag displacement.
@@ -66,6 +71,7 @@ def generate(config, rng, options):
     for _ in range(1 if scenario == "fixed" else config.spawn_attempts):
         fixed = scenario == "fixed"
         p, e = np.zeros((n, 6)), np.zeros((m, 6))
+        goal_point = navigation_point(config)
 
         def draw(bounds, fraction=.5):
             return bounds[0]+fraction*(bounds[1]-bounds[0]) if fixed else rng.uniform(*bounds)
@@ -76,16 +82,17 @@ def generate(config, rng, options):
             distance = options.get("distance")
             if distance is None:
                 distance = draw(config.spawn_distance)
-            height = draw(config.evader_height, (.35, .65, .5)[j])
-            dz = height - config.center[2]
+            height = draw(config.evader_height, (.35, .65)[j])
+            dz = height - goal_point[2]
             if not np.isfinite(distance) or distance <= abs(dz):
                 failures["invalid target distance for sampled height"] += 1
                 break
             horizontal = np.sqrt(distance**2-dz**2)
-            e[j, :3] = [config.center[0]+horizontal*np.cos(heading),
-                        config.center[1]+horizontal*np.sin(heading), height]
+            e[j, :3] = [goal_point[0]+horizontal*np.cos(heading),
+                        goal_point[1]+horizontal*np.sin(heading), height]
             speed = 0. if fixed else draw(config.evader_initial_speed)
-            e[j, 3:] = speed*unit(np.asarray(config.center)-e[j, :3])
+            e[j, 3:] = project(unit(goal_point-e[j, :3]), speed,
+                               config.evader_vertical_vmax)
         else:
             for i in range(n):
                 lo, hi = config.pursuer_azimuth
@@ -113,9 +120,10 @@ def generate(config, rng, options):
 
 def evader_commands(evaders, evader_mask, pursuers, config, phases, time):
     commands = np.zeros((len(evaders), 3))
+    destination = navigation_point(config)
     for j in np.flatnonzero(evader_mask):
         point = evaders[j, :3]
-        goal = unit(np.asarray(config.center) - point)
+        goal = unit(destination - point)
         direction = goal
         if config.evader_mode == "constant_velocity":
             direction = unit(np.asarray(config.constant_direction))
@@ -125,7 +133,8 @@ def evader_commands(evaders, evader_mask, pursuers, config, phases, time):
                              np.array([np.cos(phase), np.sin(phase), np.sin(2 * phase)]))
         elif config.evader_mode == "reactive_evasion":
             direction = reactive_direction(evaders[j], pursuers, config, goal)
-        commands[j] = project(direction, config.evader_speed_fraction * config.evader_vmax)
+        commands[j] = project(direction, config.evader_speed_fraction * config.evader_vmax,
+                              config.evader_vertical_vmax)
     return commands
 
 
@@ -141,7 +150,8 @@ def reactive_direction(state, pursuers, config, goal):
     angle = np.radians(config.reactive_max_angle_deg)
     candidates = np.vstack([goal, *(np.cos(a)*goal+np.sin(a)*ring for a in (angle/2, angle))])
     speed = config.evader_speed_fraction*config.evader_vmax
-    command = speed*candidates
+    # Predict the very same vertically capped commands used for actual motion.
+    command = project(candidates, speed, config.evader_vertical_vmax)
     closest = np.full(len(candidates), np.inf)
     fits = np.ones(len(candidates), dtype=bool)
     margin = config.evader_collision_radius
