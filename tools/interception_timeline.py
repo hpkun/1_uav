@@ -41,7 +41,7 @@ class Timeline:
         opener = gzip.open if Path(source).suffix == ".gz" else open
         with opener(source, "rt", encoding="utf-8") as stream:
             data = json.load(stream)
-        if data.get("version") not in (VERSION, "uav-interception-v1.0.0") or data.get("trace_version", 1) not in (1, 2):
+        if data.get("version") not in (VERSION, "uav-interception-v2.0.0", "uav-interception-v1.0.0") or data.get("trace_version", 1) not in (1, 2):
             raise ValueError("unsupported interception trajectory")
         self.data = data
         self.frames = data["frames"]
@@ -124,4 +124,7 @@ class Timeline:
         points = np.array([entity["position"] for row in samples for entity in row["entities"]])
         low = np.minimum(points.min(0), center-radius)
         high = np.maximum(points.max(0), center+radius)
+        if config.get("protected_zone") == "ground_cylinder":
+            low[2] = min(low[2], center[2])
+            high[2] = max(high[2], center[2] + config["protected_height"])
         return np.column_stack((low-3, high+3)).tolist()
