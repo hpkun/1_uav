@@ -150,7 +150,8 @@ def reactive_direction(state, pursuers, config, goal):
     angle = np.radians(config.reactive_max_angle_deg)
     candidates = np.vstack([goal, *(np.cos(a)*goal+np.sin(a)*ring for a in (angle/2, angle))])
     speed = config.evader_speed_fraction*config.evader_vmax
-    command = speed*candidates
+    # Predict the very same vertically capped commands used for actual motion.
+    command = project(candidates, speed, config.evader_vertical_vmax)
     closest = np.full(len(candidates), np.inf)
     fits = np.ones(len(candidates), dtype=bool)
     margin = config.evader_collision_radius
