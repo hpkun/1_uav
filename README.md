@@ -1,6 +1,19 @@
 # 三维多无人机协同拦截与追逃
 
-环境协议为 `uav-interception-v2.0.0`。默认研究任务为 S2，3v1 三维区域防护。Pursuer 使用共享策略的 MAPPO，Evader 使用规则策略，双方采用三维多旋翼平动模型。只有安全捕获全部目标才记为捕获成功。
+环境协议为 `uav-interception-v3.0.0`。默认研究任务仍为 S2，3v1 三维区域防护。Pursuer 使用共享策略，Evader 使用规则策略，双方采用三维多旋翼平动模型。只有安全捕获全部目标才记为捕获成功。
+
+## 地面设施防护（新增、推荐的独立实验场景）
+
+旧球形空中保护区的代码默认值保持不变，供历史基线复核；新的**贴地柱状防护空域**通过独立配置启用，不覆盖任何历史训练结果。详细假设及来源见 [地面设施场景说明](docs/ground_facility_v3.md)。
+
+```bash
+python -m algorithm.interception validate --env configs/interception_ground_facility_v3.json --scenario random --seed 42
+python -m algorithm.interception run --env configs/interception_ground_facility_v3.json --scenario random --policy random --episodes 2 --out outputs/ground_facility_v3/random_check
+python -m pytest -q tests/test_ground_facility.py tests/test_interception.py tests/test_interception_replay.py
+```
+
+新的地面设施配置采用：半径 12 m、从地面向上 22 m 的防护柱体；初始入侵航迹距飞行导航点 85–115 m；防御平台水平部署半径 25–40 m；双方最大速度模长 12/9 m/s、垂直指令上限 4/3 m/s；机体简化包络半径 0.25 m/架，**接触判据为 0.50 m 中心距**。这些是可审计的仿真假设，不是现实拦截成功范围。**接触仍被视为安全失败，成功捕获仍是非接触式抽象事件，绝不等价于自损撞击。** 新协议不能直接恢复历史 v2 模型，必须单独重训。
+
 
 | 任务 | 规模 | 初始化与目标策略 |
 | --- | --- | --- |
@@ -62,7 +75,7 @@ python -m tools.interception_report outputs/interception/seed17 outputs/intercep
 - 定期评估默认关闭。间隔设为正数后启用，同一运行的协议在启动时固定，默认随机场景和 Beta 均值动作。可选 `--evaluation-scenario fixed` 或 `--no-evaluation-deterministic`。单独评估的随机动作选项为 `--stochastic`。评估使用独立环境和固定种子，并恢复 CPU/CUDA Torch RNG。
 - `evaluation_*.json` 保存每局及聚合结果，`evaluation_history.csv` 是派生摘要。结局率分母为全部评估回合。捕获成功只统计全部捕获；防护成功统计全部捕获和完整坚持到时限的回合，撤离、突破和安全失败单列。部分捕获表示至少捕获一个且少于全部目标。单目标捕获率分母为该 ID 初始有效的回合数。全捕获平均时长只在成功局计算。每个 Pursuer 的参与量为在安全距离带且满足相对速度阈值的机对秒数，同一时刻多个合格目标可分别贡献。该量衡量直接捕获参与，未衡量牵制、封堵或覆盖。
 - `best.pt` 是胜出评估提交对应的 Checkpoint 副本，`best.json` 记录来源、更新数、联合步数、协议、分数和 SHA256。排序依次最大化捕获成功率，最小化突破率、碰撞率、Pursuer 越界率、Evader 撤离率及成功局的平均捕获时长，最后保留更早更新。缺失捕获时长按最差排序。
-- 恢复核对运行身份、配置、连续更新记录及提交链。训练提交后可补写末条记录，评估未提交可补跑，已提交评估可补发 Best，JSONL 和 CSV 可重建。遇到超前日志、记录缺口或缺失且无法重建的历史 Best 会明确报错。v2 拒绝 v1 Checkpoint 的训练恢复和评估；v1 轨迹仍可按历史记录回放。
+- 恢复核对运行身份、配置、连续更新记录及提交链。训练提交后可补写末条记录，评估未提交可补跑，已提交评估可补发 Best，JSONL 和 CSV 可重建。遇到超前日志、记录缺口或缺失且无法重建的历史 Best 会明确报错。v3 拒绝 v1/v2 Checkpoint 的训练恢复和评估；v1/v2 轨迹仍可按历史记录回放。
 - 离线报告读取 JSON 记录与存档 ZIP 的轻量元数据，输出 `report.md`、`summary.json` 和 `training_curves.png`。多种子报告按 Update 对齐，输出均值、样本标准差和有效种子数，检查预算和配置一致性。无需 CUDA。
 
 `validate`、`run`、`train` 支持 `--task S0|S1|S2|S3`、`--env 参数.json` 和 `--scale`。仅指定规模时，1v1、3v1、5v2 分别映射为 S0、S2、S3。JSON 按字段覆盖 `InterceptionConfig`，敏感性实验使用独立输出目录。模型评估从存档读取环境配置，训练配置可通过 `--training 参数.json` 覆盖。
@@ -84,7 +97,7 @@ python -m tools.interception_report outputs/interception/seed17 outputs/intercep
 
 局部观测依次为自身位置与速度、保护球中心相对位置、剩余时间比例、2 个目标槽、4 个按稳定 ID 排序的其他 Pursuer 槽。每个实体槽为相对位置、相对速度与有效标志。全目标信息可观测。集中状态依次为 5 个 Pursuer 槽、2 个 Evader 槽及保护球中心、半径、剩余时间。实体槽含绝对位置、速度及有效标志。位置与半径除以 80 m，速度除以 8 m/s。补零和失效槽置零。事件 ID 0–4 对应 Pursuer，5–6 对应 Evader。
 
-## v2 工程参数
+## 历史球形基线参数（保留旧默认值）
 
 下表及配置类中的其他默认值均为自主仿真实验参数。
 
