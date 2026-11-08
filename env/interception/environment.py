@@ -4,7 +4,7 @@ from itertools import combinations
 from functools import lru_cache
 import numpy as np
 
-from .config import InterceptionConfig, VERSION, MAX_PURSUERS, MAX_EVADERS, OBS_DIM, STATE_DIM
+from .config import InterceptionConfig, VERSION, MAX_PURSUERS, MAX_EVADERS, OBS_DIM, STATE_DIM, SLOT
 from .events import windows, intersection, minimum_distance, boundary_contact
 from .motion import advance, command
 from .observation import observe
@@ -43,6 +43,9 @@ class InterceptionEnv:
 
     def __init__(self, config=None):
         self.config = config or InterceptionConfig()
+        extra = (self.config.evader_slots-MAX_EVADERS)*SLOT
+        self.observation_dim = OBS_DIM+extra
+        self.state_dim = STATE_DIM+extra
         self.rng = np.random.default_rng()
         self.state = None
 
@@ -52,7 +55,8 @@ class InterceptionEnv:
         options = options or {}
         p, e, failures = generate(self.config, self.rng, options)
         pursuers = np.zeros((MAX_PURSUERS, 6))
-        evaders = np.zeros((MAX_EVADERS, 6))
+        slots = self.config.evader_slots
+        evaders = np.zeros((slots, 6))
         pursuers[:len(p)], evaders[:len(e)] = p, e
         points = np.vstack((p, e))[:, :3]
         i, j = np.triu_indices(len(points), 1)
@@ -60,11 +64,11 @@ class InterceptionEnv:
         sizes = np.repeat([self.config.pursuer_collision_radius, self.config.evader_collision_radius],
                           [len(p), len(e)])
         clearance = float((np.linalg.norm(points[i]-points[j], axis=1)-sizes[i]-sizes[j]).min())
-        phases = (np.zeros(MAX_EVADERS) if options.get("scenario") == "fixed"
-                  else self.rng.uniform(0., 2 * np.pi, MAX_EVADERS))
+        phases = (np.zeros(slots) if options.get("scenario") == "fixed"
+                  else self.rng.uniform(0., 2 * np.pi, slots))
         self.state = InterceptionState(pursuers, evaders, np.arange(MAX_PURSUERS) < len(p),
-                                       np.arange(MAX_EVADERS) < len(e),
-                                       np.zeros((MAX_PURSUERS, MAX_EVADERS)),
+                                       np.arange(slots) < len(e),
+                                       np.zeros((MAX_PURSUERS, slots)),
                                        phases,
                                        0, 0., [], "ongoing", failures, minimum, clearance, {},
                                        np.zeros(MAX_PURSUERS), options.get("scenario", "random"))
@@ -110,11 +114,11 @@ class InterceptionEnv:
         targets[np.flatnonzero(s.pursuer_mask)] = command(active, c.pursuer_vmax)
         targets[MAX_PURSUERS:] = evader_commands(s.evaders, s.evader_mask,
                                                 s.pursuers[s.pursuer_mask], c, s.phases, s.time)
-        taus = np.r_[np.full(MAX_PURSUERS, c.pursuer_tau), np.full(MAX_EVADERS, c.evader_tau)]
+        taus = np.r_[np.full(MAX_PURSUERS, c.pursuer_tau), np.full(len(s.evaders), c.evader_tau)]
         acceleration = (targets - states[:, 3:]) / taus[:, None]
         acc = np.linalg.norm(acceleration, axis=1)
         radii = np.r_[np.full(MAX_PURSUERS, c.pursuer_collision_radius),
-                      np.full(MAX_EVADERS, c.evader_collision_radius)]
+                      np.full(len(s.evaders), c.evader_collision_radius)]
 
         @lru_cache(maxsize=None)
         def at(i, time):

@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
-from env.interception.config import VERSION, MAX_PURSUERS, MAX_EVADERS, SCALES, TASKS
+from env.interception.config import VERSION, MAX_PURSUERS, SCALES, SCENARIO_SCALES, TASKS
 from env.interception.scenario import unit
 from algorithm.common.interception_vector import EpisodeAccumulator, InterceptionVectorEnv
 from algorithm.common.interception_checkpoint import PROTOCOL, save, read, restore, load_weights
@@ -41,6 +41,8 @@ def run_lock(folder):
 
 def train(folder, env_config=None, train_config=None, updates=1, resume=False, *,
           evaluation=None, log_interval=1):
+    if env_config is not None and env_config.scale not in SCALES:
+        raise ValueError("3v3 is a reference simulation outside the MAPPO checkpoint protocol")
     require_cuda()
     if updates < 1 or log_interval < 1:
         raise ValueError("updates and log interval must be positive")
@@ -269,7 +271,7 @@ def evaluate(folder, config, options, policy, seeds, model=None, *, identity=Non
                     seed=seed, policy=policy, scenario=options, result=row, frames=frames,
                     deterministic=deterministic if model is not None else None, model=identity,
                     entity_ids=dict(pursuers=list(range(MAX_PURSUERS)),
-                                    evaders=list(range(MAX_PURSUERS, MAX_PURSUERS+MAX_EVADERS))))
+                                    evaders=list(range(MAX_PURSUERS, MAX_PURSUERS+config.evader_slots))))
         path = folder / f"trajectory_{index:03}.json"
         if compressed:
             with gzip.open(str(path) + ".gz", "xt", encoding="utf-8") as stream:
@@ -289,10 +291,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="operation", required=True)
 
-    def environment_flags(command):
+    def environment_flags(command, scales=SCENARIO_SCALES):
         command.add_argument("--env", type=Path, help="JSON overrides of InterceptionConfig")
-        command.add_argument("--scale", choices=SCALES)
-        command.add_argument("--task", choices=TASKS)
+        command.add_argument("--scale", choices=scales)
+        command.add_argument("--task", choices=[task for task, (scale, _) in TASKS.items() if scale in scales])
 
     init = sub.add_parser("validate")
     environment_flags(init)
@@ -311,7 +313,7 @@ def main(argv=None):
     assess.add_argument("checkpoint", type=Path)
     assess.add_argument("--stochastic", action="store_true")
     fit = sub.add_parser("train")
-    environment_flags(fit)
+    environment_flags(fit, SCALES)
     fit.add_argument("--training", type=Path, help="JSON overrides of TrainConfig")
     fit.add_argument("--updates", type=int, default=1)
     fit.add_argument("--out", type=Path, required=True)

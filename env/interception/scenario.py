@@ -1,7 +1,7 @@
 from collections import Counter
 import numpy as np
 
-from .config import SCALES
+from .config import SCENARIO_SCALES
 from .motion import advance, project
 
 
@@ -11,7 +11,7 @@ def unit(vector):
 
 
 def validate(pursuers, evaders, config, *, subset=False, spawn=False):
-    counts = SCALES[config.scale]
+    counts = SCENARIO_SCALES[config.scale]
     if subset and config.scale == "3v1" and 1 <= len(pursuers) <= 3:
         counts = (len(pursuers), counts[1])
     radii = (config.pursuer_collision_radius, config.evader_collision_radius)
@@ -57,7 +57,7 @@ def generate(config, rng, options):
     scenario = options.get("scenario", "random")
     if scenario not in ("fixed", "random", "custom"):
         raise ValueError("unknown scenario")
-    n, m = SCALES[config.scale]
+    n, m = SCENARIO_SCALES[config.scale]
     if scenario == "custom":
         p, e = (np.array(options[name], dtype=float, copy=True) for name in ("pursuers", "evaders"))
         validate(p, e, config, subset=options.get('paired', False))
@@ -76,7 +76,7 @@ def generate(config, rng, options):
             distance = options.get("distance")
             if distance is None:
                 distance = draw(config.spawn_distance)
-            height = draw(config.evader_height, (.35, .65)[j])
+            height = draw(config.evader_height, (.35, .65, .5)[j])
             dz = height - config.center[2]
             if not np.isfinite(distance) or distance <= abs(dz):
                 failures["invalid target distance for sampled height"] += 1

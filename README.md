@@ -19,6 +19,7 @@ python -m algorithm.interception validate
 python -m algorithm.interception run --task S0 --out outputs/interception/reference_1v1
 python -m algorithm.interception run --task S1 --out outputs/interception/reference_S1
 python -m algorithm.interception run --task S3 --out outputs/interception/reference_S3
+python -m algorithm.interception run --scale 3v3 --scenario fixed --gzip --out outputs/interception/reference_3v3
 python -m tools.interception_pair_audit --seed 1000 --episodes 20 --out outputs/interception/paired
 python -m algorithm.interception run --scenario random --policy random --episodes 3 --out outputs/interception/random_3v1
 python -m algorithm.interception train --training configs/interception_smoke.json --updates 1 --out outputs/interception/smoke
@@ -66,6 +67,8 @@ python -m tools.interception_report outputs/interception/seed17 outputs/intercep
 - 离线报告读取 JSON 记录与存档 ZIP 的轻量元数据，输出 `report.md`、`summary.json` 和 `training_curves.png`。多种子报告按 Update 对齐，输出均值、样本标准差和有效种子数，检查预算和配置一致性。无需 CUDA。
 
 `validate`、`run`、`train` 支持 `--task S0|S1|S2|S3`、`--env 参数.json` 和 `--scale`。仅指定规模时，1v1、3v1、5v2 分别映射为 S0、S2、S3。JSON 按字段覆盖 `InterceptionConfig`，敏感性实验使用独立输出目录。模型评估从存档读取环境配置，训练配置可通过 `--training 参数.json` 覆盖。
+
+`validate` 和 `run` 另支持 `--scale 3v3`（任务 `reference_3v3`）。该模式使用三个目标槽和现有拦截规则，用于参考控制或随机控制仿真及录像。正式 MAPPO 训练和 Checkpoint 保持两目标槽协议。
 
 `validate`、`run`、`evaluate` 支持 `--scenario fixed|random|custom` 与 `--initial 初态.json`。固定与随机场景可用 `{"distance": 45}` 覆盖目标初始距离。自定义初态使用 `pursuers` 和 `evaders` 两个数组，行数须对应规模，列为 `[x,y,z,vx,vy,vz]`。S0 参考控制按制动距离调节速度。S1–S3 参考控制跟踪目标后方的安全间隔，使用当前位置分配追踪者。配对审计按同一 3v1 初态取嵌套的 1、2、3 机子集，保存实际部署 ID、初态与结果。反应式目标的轨迹随所见 Pursuer 改变。
 

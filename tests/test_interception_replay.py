@@ -18,6 +18,31 @@ def save_trace(path, config, rows):
                           result={"outcome": rows[-1]["outcome"]}, frames=rows))
 
 
+def test_reference_3v3_replay_tracks_all_three_evaders(tmp_path):
+    config = InterceptionConfig(scale="3v3", evader_mode="constant_velocity",
+                                evader_speed_fraction=.1, constant_direction=(1, 0, 0))
+    env = InterceptionEnv(config)
+    options = dict(scenario="custom",
+                   pursuers=[[-30, y, 15, 1.2, 0, 0] for y in (-15, 0, 15)],
+                   evaders=[[-26.8, y, 15, .6, 0, 0] for y in (-15, 0, 15)])
+    obs, info = env.reset(1000, options)
+    assert obs.shape == (5, 59) and info["centralized_state"].shape == (61,)
+    assert info["active_mask"].sum() == info["evader_mask"].sum() == 3
+    rows = [trace_row(info)]
+    action = np.full((5, 3), .5)
+    action[:3, 0] += 1.2/16
+    for _ in range(9):
+        _, _, terminated, truncated, info = env.step(action)
+        rows.append(trace_row(info, action))
+    assert terminated and not truncated and info["outcome"] == "success"
+    path = tmp_path / "three_evaders.json"
+    save_trace(path, config, rows)
+    timeline = Timeline(path)
+    assert len(timeline.entities) == 6
+    assert [marker["entity_ids"] for marker in timeline.display_events] == [[0,5], [1,6], [2,7]]
+    assert all(e["captured"] for e in timeline.at(timeline.duration)["entities"][-3:])
+
+
 def fixture(path, kind, *, record=True):
     common = dict(evader_mode="constant_velocity", constant_direction=(1, 0, 0))
     p = [[-30, -12, 15, 1.2, 0, 0], [30, 12, 15, 1.2, 0, 0],

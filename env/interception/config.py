@@ -3,8 +3,10 @@ import math
 
 VERSION = "uav-interception-v2.0.0"
 SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2)}
+SCENARIO_SCALES = {**SCALES, "3v3": (3, 3)}
 TASKS = {"S0": ("1v1", "goal_seeking"), "S1": ("3v1", "goal_seeking"),
-         "S2": ("3v1", "reactive_evasion"), "S3": ("5v2", "reactive_evasion")}
+         "S2": ("3v1", "reactive_evasion"), "S3": ("5v2", "reactive_evasion"),
+         "reference_3v3": ("3v3", "reactive_evasion")}
 MAX_PURSUERS, MAX_EVADERS, AXES = 5, 2, 3
 ENTITY = 2 * AXES
 SLOT = ENTITY + 1
@@ -68,7 +70,7 @@ class InterceptionConfig:
     progress_reference: float = 40.
 
     def __post_init__(self):
-        task = ({"1v1": "S0", "3v1": "S2", "5v2": "S3"}.get(self.scale)
+        task = ({"1v1": "S0", "3v1": "S2", "5v2": "S3", "3v3": "reference_3v3"}.get(self.scale)
                 if self.task is None else self.task)
         if task not in TASKS or TASKS[task][0] != self.scale:
             raise ValueError("task and scale disagree")
@@ -100,7 +102,7 @@ class InterceptionConfig:
                      "velocity_scale", "progress_reference", "maneuver_period", "reactive_range"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.scale not in SCALES or self.evader_mode not in MODES:
+        if self.scale not in SCENARIO_SCALES or self.evader_mode not in MODES:
             raise ValueError("unknown scale or evader mode")
         if not 0 < self.evader_speed_fraction <= 1 or not any(self.constant_direction):
             raise ValueError("invalid evader speed or constant direction")
@@ -123,3 +125,7 @@ class InterceptionConfig:
     @property
     def num_uavs(self):
         return MAX_PURSUERS
+
+    @property
+    def evader_slots(self):
+        return max(MAX_EVADERS, SCENARIO_SCALES[self.scale][1])
