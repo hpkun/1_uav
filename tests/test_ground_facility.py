@@ -49,6 +49,7 @@ def test_ground_facility_random_initialization_and_vertical_limits():
     assert info["pursuers"].shape == (5, 6)
     assert info["evaders"].shape == (2, 6)
     assert not contains_intruder(info["evaders"][0, :3], config)
+    assert config.evader_initial_speed[0] - 1e-10 <= np.linalg.norm(info["evaders"][0, 3:]) <= config.evader_initial_speed[1] + 1e-10
     assert np.max(np.abs(info["pursuers"][:3, 5])) <= config.pursuer_vertical_vmax
     assert np.max(np.abs(info["evaders"][:1, 5])) <= config.evader_vertical_vmax
     _, _, _, _, next_info = env.step(idle())
@@ -98,3 +99,9 @@ def test_initial_intrusion_and_bad_profiles_fail_early():
         ground(center=(0, 0, 15))
     with pytest.raises(ValueError, match="vertical"):
         ground(pursuer_vertical_vmax=13.)
+
+
+def test_fractional_legacy_initial_speed_is_not_scaled_twice():
+    config = InterceptionConfig(scale="1v1", evader_initial_speed=(0.5, 0.5))
+    _, info = InterceptionEnv(config).reset(123, {"scenario": "random"})
+    assert np.linalg.norm(info["evaders"][0, 3:]) == pytest.approx(0.5, abs=1e-12)
