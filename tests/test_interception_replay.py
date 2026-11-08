@@ -95,7 +95,7 @@ def test_contact_shows_only_one_marker_for_both_retired_agents(tmp_path, scale):
     assert row["outcome"] == "success" and row["time"] == event["time"]
     assert marker["entity_ids"] == event["entities"] and marker["entity_ids"][1] == 5
     np.testing.assert_allclose(marker["position"], np.mean(event["positions"], axis=0))
-    assert (marker["plotly_marker"], marker["mpl_marker"], marker["color"]) == ("x", "x", "#dc1824")
+    assert (marker["plotly_marker"], marker["mpl_marker"], marker["color"]) == ("x", "x", "#1aa575")
     assert not timeline.at(row["time"])["entities"][-1]["active"]
 
 
@@ -202,11 +202,13 @@ def test_decoded_capture_markers_and_passive_export(tmp_path, monkeypatch):
     times = video_times(trace.duration, 15)
     assert len(times) == len(frames)
     first = np.searchsorted(times, trace.events[0]["time"])
-    red = (frames[..., 0] > 140) & (frames[..., 1] < 75) & (frames[..., 2] < 85)
-    assert not red[:first].any()
-    assert red[first:, :, :320].sum(axis=(1, 2)).min() > 20
-    assert not red[:-1, :, 320:].any()
-    assert red[-1, :, 320:].sum() > 20
+    marker = (frames[..., 0] < 80) & (frames[..., 1] > 125) & (frames[..., 2] > 70) & (frames[..., 2] < 145)
+    # The static legend includes a sample event marker in the upper left.
+    marker[:, :115, :320] = False
+    assert not marker[:first].any()
+    assert marker[first:, :, :320].sum(axis=(1, 2)).min() > 20
+    assert not marker[:-1, :, 320:].any()
+    assert marker[-1, :, 320:].sum() > 20
     original_video = video.read_bytes()
     with pytest.raises(FileExistsError):
         render_video(source, video, fps=15, width=640, height=360)

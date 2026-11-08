@@ -201,7 +201,8 @@ def render(source, output):
         figure.add_trace(go.Scatter3d(x=[center[0]], y=[center[1]], z=[center[2]], mode="markers",
                                      name="Ground facility", marker=dict(size=7, color="#246d48", symbol="square")))
     for entity in samples[0]["entities"]:
-        figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", name=entity["name"],
+        role = "Red defender" if entity["name"].startswith("P") else "Blue intruder"
+        figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", name=f"{role} {entity['name']}",
                                      line=dict(color=entity["color"], width=3)))
     figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="markers+text", textposition="top center",
                                  name="Current UAV", marker=dict(size=5)))
@@ -288,6 +289,14 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
     if config.get("protected_zone") == "ground_cylinder":
         axes.scatter(*center, color="#246d48", marker="s", label="Ground facility")
     paths, points, labels = [], [], []
+    from matplotlib.lines import Line2D
+    roles = {entity["name"][0]: entity["color"] for entity in samples[0]["entities"]}
+    axes.legend(handles=[
+        Line2D([], [], color=roles["P"], label="Red defenders (P)"),
+        Line2D([], [], color=roles["E"], label="Blue intruders (E)"),
+        Line2D([], [], color="#246d48", marker="s", linestyle="none", label="Facility / protected zone"),
+        Line2D([], [], color="#1aa575", marker="x", linestyle="none", label="Contact interception"),
+    ], loc="upper left", fontsize=8)
     for entity in samples[0]["entities"]:
         paths.append(axes.plot([], [], [], color=entity["color"], zorder=2)[0])
         points.append(axes.plot([], [], [], linestyle="none", marker="o",

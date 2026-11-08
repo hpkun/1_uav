@@ -143,6 +143,7 @@ def generate(folders, output):
     write_json(output / "summary.json", dict(runs=runs, aggregate=combined, window_episodes=100,
                                               axis="update", std="sample"))
     lines = ["# Interception training report", "",
+             "Red defenders are Pursuers controlled by MAPPO. Blue intruders are Evaders using the configured rule.", "",
              "The horizontal axis is PPO update. Training outcome and reward curves use the last "
              "100 completed episodes. Across seeds, each point includes the mean, sample standard "
              "deviation when n > 1, and the effective sample count in summary.json.", "",

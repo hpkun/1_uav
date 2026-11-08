@@ -118,18 +118,21 @@ def intersection(left, right):
             j += 1
 
 
-def minimum_distance(curve, bound, end, tolerance=1e-3):
+def minimum_distance(curve, bound, end, tolerance=1e-3, *, with_time=False):
     """Continuous minimum to a certified distance tolerance, in metres."""
-    best = float("inf")
+    best, best_time = float("inf"), 0.
 
     def visit(left, right, first, last):
-        nonlocal best
+        nonlocal best, best_time
         delta, square, lower = _chord(first, last)
         error = bound * (right - left)**2 / 8
         if lower - error >= best - tolerance:
             return
         fraction = float(np.clip(-(first @ delta) / square, 0, 1)) if square else 0.
-        best = min(best, float(np.linalg.norm(curve(left + fraction * (right - left)))))
+        t = left + fraction * (right - left)
+        distance = float(np.linalg.norm(curve(t)))
+        if distance < best:
+            best, best_time = distance, t
         if 2 * error > tolerance:
             mid = (left + right) / 2
             middle = curve(mid)
@@ -137,4 +140,4 @@ def minimum_distance(curve, bound, end, tolerance=1e-3):
             visit(mid, right, middle, last)
 
     visit(0., end, curve(0.), curve(end))
-    return best
+    return (best, best_time) if with_time else best

@@ -92,16 +92,27 @@ def generate(config, rng, options):
             e[j, 3:5] = np.sqrt(speed**2-vz**2)*unit(direction[:2])
             e[j, 5] = vz
         else:
+            patrol = config.pursuer_deployment == "patrol"
+            rotation = draw(config.pursuer_azimuth, .57) if patrol else 0.
             for i in range(n):
                 lo, hi = config.pursuer_azimuth
-                heading = draw((lo+(hi-lo)*i/n, lo+(hi-lo)*(i+1)/n), .63)
-                if config.task == "S0" and fixed:
+                if patrol:
+                    jitter = config.patrol_azimuth_jitter
+                    heading = rotation + 2*np.pi*i/n + draw((-jitter, jitter))
+                else:
+                    heading = draw((lo+(hi-lo)*i/n, lo+(hi-lo)*(i+1)/n), .63)
+                if not patrol and config.task == "S0" and fixed:
                     heading = np.arctan2(*(e[0, :2]-config.center[:2])[::-1])
                 radius = draw(config.defense_distance, .4+.2*(i % 2))
                 height = config.center[2] + draw(config.pursuer_height, (i+1)/(n+1))
                 p[i, :3] = [config.center[0]+radius*np.cos(heading),
                             config.center[1]+radius*np.sin(heading), height]
-                if not fixed:
+                if patrol:
+                    radial = np.array([np.cos(heading), np.sin(heading)])
+                    tangent = np.array([-radial[1], radial[0]])
+                    inward = config.patrol_inward_fraction
+                    p[i, 3:5] = draw(config.pursuer_initial_speed)*(np.sqrt(1-inward**2)*tangent-inward*radial)
+                elif not fixed:
                     direction = unit(rng.normal(size=3))
                     speed = draw(config.pursuer_initial_speed)
                     p[i, 5] = np.clip(speed*direction[2], -config.descent_vmax, config.climb_vmax)

@@ -11,7 +11,7 @@ import zipfile
 import numpy as np
 import torch
 
-from env.interception.config import VERSION, OBS_DIM, STATE_DIM, MAX_PURSUERS, MAX_EVADERS, AXES
+from env.interception.config import VERSION, OBS_DIM, STATE_DIM, MAX_PURSUERS, MAX_EVADERS, AXES, matches_saved_config
 from .runtime import require_cuda
 
 PROTOCOL = dict(version=VERSION, algorithm="uav-interception-mappo-v4",
@@ -20,7 +20,11 @@ PROTOCOL = dict(version=VERSION, algorithm="uav-interception-mappo-v4",
 
 
 def save(path, model, config, vector, last_log=None, *, run=None):
-    payload = dict(protocol=PROTOCOL, environment=asdict(config), training=asdict(model.config),
+    environment = asdict(config)
+    if run is not None:
+        # A resumed historical run keeps its originally committed schema.
+        environment = {key: environment[key] for key in run["environment"]}
+    payload = dict(protocol=PROTOCOL, environment=environment, training=asdict(model.config),
                    actor=model.actor.state_dict(), critic=model.critic.state_dict(),
                    actor_optimizer=model.actor_optimizer.state_dict(),
                    critic_optimizer=model.critic_optimizer.state_dict(),
@@ -75,7 +79,7 @@ def load_weights(payload, model):
 
 
 def restore(payload, model, config, vector):
-    if payload["environment"] != asdict(config) or payload["training"] != asdict(model.config):
+    if not matches_saved_config(payload["environment"], config) or payload["training"] != asdict(model.config):
         raise ValueError("checkpoint configuration mismatch")
     load_weights(payload, model)
     model.actor_optimizer.load_state_dict(deepcopy(payload["actor_optimizer"]))

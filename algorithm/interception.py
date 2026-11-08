@@ -15,7 +15,7 @@ import torch
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
 from env.interception.config import VERSION, MAX_PURSUERS, SCALES, SCENARIO_SCALES, TASKS
 from env.interception.scenario import unit
-from env.interception.motion import advance, execute_velocity
+from env.interception.motion import execute_velocity
 from env.interception.protected_area import navigation_point
 from env.interception.protected_area import navigation_point
 from algorithm.common.interception_vector import EpisodeAccumulator, InterceptionVectorEnv
@@ -138,18 +138,18 @@ def reference_action(info, config, assignments, *, predictive=False):
             # still executes the configured target policy independently.
             target = unit(navigation_point(config)-e[:3])*config.evader_vmax*config.evader_speed_fraction
             target = execute_velocity(target, e[3:], config.evader_vmax, config.evader_tau, config)
-            for t in np.arange(config.predictive_step, config.predictive_horizon+1e-9, config.predictive_step):
-                point = advance(e, target, config.evader_tau, t)[:3]
-                drift = advance(p, np.zeros(3), config.pursuer_tau, t)[:3]
-                gain = t+config.pursuer_tau*np.expm1(-t/config.pursuer_tau)
-                request = (point-drift)/gain
-                desired = request
-                allowed = execute_velocity(request, p[3:], config.pursuer_vmax, config.pursuer_tau, config)
-                miss = np.linalg.norm(advance(p, allowed, config.pursuer_tau, t)[:3]-point)
-                if miss <= config.pursuer_collision_radius+config.evader_collision_radius:
-                    break
-                if np.linalg.norm(point[:2]-config.center[:2]) <= config.radius:
-                    break
+            times = np.arange(config.predictive_step, config.predictive_horizon+1e-9, config.predictive_step)
+            p_lag = -config.pursuer_tau*np.expm1(-times/config.pursuer_tau)
+            e_lag = -config.evader_tau*np.expm1(-times/config.evader_tau)
+            point = e[:3]+e_lag[:, None]*e[3:]+(times-e_lag)[:, None]*target
+            drift = p[:3]+p_lag[:, None]*p[3:]
+            gain = (times-p_lag)[:, None]
+            request = (point-drift)/gain
+            allowed = execute_velocity(request, p[3:], config.pursuer_vmax, config.pursuer_tau, config)
+            miss = np.linalg.norm(drift+gain*allowed-point, axis=1)
+            ready = ((miss <= config.pursuer_collision_radius+config.evader_collision_radius) |
+                     (np.linalg.norm(point[:, :2]-config.center[:2], axis=1) <= config.radius))
+            desired = request[np.flatnonzero(ready)[0] if ready.any() else -1]
         commands[i] = desired
     return .5 + .5 * commands / np.maximum(config.pursuer_vmax,
                                            np.linalg.norm(commands, axis=-1, keepdims=True))
@@ -171,13 +171,14 @@ def trace_row(info, action=None):
         relative_speeds=np.where(valid, np.linalg.norm(p[:, None, 3:]-e[None, :, 3:], axis=-1), None))
 
 
-def episode(config, seed, options, policy, model=None, trace=False, deterministic=True):
-    env = InterceptionEnv(config)
+def episode(config, seed, options, policy, model=None, trace=False, deterministic=True, *, audit=False):
+    env = InterceptionEnv(config, diagnostics=audit)
     rng = np.random.default_rng([2, seed])
     obs, info = env.reset(np.random.SeedSequence([1, seed]), options)
     accumulator = EpisodeAccumulator()
     accumulator.reset(info)
     frames = [trace_row(info)] if trace else []
+    closest, friendly, end_event, first_contact, inside_10m, close_passes = {}, None, None, None, set(), {}
     while True:
         if policy == "random":
             action = rng.random((MAX_PURSUERS, 3))
@@ -199,11 +200,29 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
             result = accumulator.summary(info) | {"outcome": "simulation_failure", "error": str(exc)}
             break
         accumulator.add(info, rewards)
+        if audit:
+            for j, pair in info["closest_targets"].items():
+                if j not in closest or pair["center_distance"] < closest[j]["center_distance"]:
+                    closest[j] = pair
+                if pair["center_distance"] <= 10 and j not in inside_10m:
+                    close_passes[j] = close_passes.get(j, 0)+1
+            inside_10m = {j for j, pair in info["closest_targets"].items() if pair["center_distance"] <= 10}
+            step_friendly = info["closest_friendly"]
+            if step_friendly is not None:
+                friendly = step_friendly if friendly is None else min(friendly, step_friendly)
+            for event in info["events"]:
+                if event["kind"] == "interception_contact" and first_contact is None:
+                    first_contact = event["time"]
+                if event["kind"] == info["outcome"]:
+                    end_event = event
         if trace:
             frames.append(trace_row(info, action))
         if terminated or truncated:
             result = accumulator.summary(info)
             break
+    if audit:
+        result.update(closest_targets=list(closest.values()), minimum_friendly_distance=friendly,
+                      first_contact_time=first_contact, terminal_event=end_event, close_passes=close_passes)
     return result | {"seed": seed}, frames
 
 
@@ -263,6 +282,7 @@ def evaluate(folder, config, options, policy, seeds, model=None, *, identity=Non
     summary = summarize(rows)
     write_json(folder / "summary.json", summary | dict(
         version=VERSION, environment=asdict(config), runs=rows, seeds=list(seeds),
+        teams={"pursuers": "red defenders", "evaders": "blue intruders"},
         scenario=options, model=identity, policy=policy,
         deterministic=deterministic if model is not None else None))
     print(json.dumps(summary, indent=2))

@@ -9,12 +9,12 @@ import numpy as np
 from env.interception.config import VERSION, MAX_PURSUERS
 from env.interception.motion import advance
 
-GROUPS = (("pursuers", "active_mask", "P", "#2378bf", 0),
-          ("evaders", "evader_mask", "E", "#df6a36", MAX_PURSUERS))
+GROUPS = (("pursuers", "active_mask", "P", "#d64040", 0),
+          ("evaders", "evader_mask", "E", "#2378bf", MAX_PURSUERS))
 
 # Plotly Scatter3d and Matplotlib each use their native marker.
 EVENT_STYLES = {
-    "interception_contact": ("Interception", "#dc1824", "x", "x"),
+    "interception_contact": ("Interception", "#1aa575", "x", "x"),
     "friendly_collision": ("Friendly collision", "#ef7900", "diamond", "D"),
     "evader_collision": ("Evader collision", "#ef7900", "diamond", "D"),
     "capture": ("Capture", "#dc1824", "x", "x"),

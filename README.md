@@ -1,6 +1,6 @@
 # 三维多无人机协同拦截与追逃
 
-环境协议为 `uav-interception-v4.0.0`。默认任务为 S2，3v1 地面设施防护。蓝方 Pursuer 使用共享策略或参考控制器，红方 Evader 使用规则策略。全部红方通过异方几何接触退出才记为全拦截成功。
+环境协议为 `uav-interception-v4.0.0`。默认任务为 S2，3v1 地面设施防护。红方 Pursuer 使用 MAPPO 共享策略或参考控制器，蓝方 Evader 使用规则策略。全部蓝方通过异方几何接触退出才记为全拦截成功。
 
 历史球形基线及 v3 独立地面设施配置保留在 Git 历史和 [v3 场景说明](docs/ground_facility_v3.md) 中。旧模型和实验输出原样保留；旧轨迹可只读回放。
 
@@ -10,6 +10,22 @@
 | S1 | 3v1 | 保护区周围分散部署，目标点导航 |
 | S2 | 3v1 | 与 S1 共用初态分布，目标使用三维反应规避 |
 | S3 | 5v2 | 分散部署，两个目标从不同方位扇区进入并独立规避 |
+
+## 独立高速场景
+
+`configs/interception_high_speed.json` 保持 0.1 s 控制周期，使用 300 步上限、650 m 水平半宽、25 m 保护半径、35 m 柱高和 18 m 导航点高度。红方最大速度 25 m/s、初速 15–20 m/s，蓝方默认最大速度 28 m/s、初速 18–23 m/s。红方阵型整体随机旋转，每机扰动不超过 0.15 rad，采用切向巡航并保留 20% 向设施的径向速度分量。蓝方初速指向导航点。双方共享 2.5 s 响应时间、6 m/s² 水平加速度、5 m/s 上升和 4 m/s 下降上限。观测位置和速度尺度为 650 m 与 30 m/s。1 m 接触及奖励权重沿用 v4，35 m 友机预警仅供统计。
+
+```bash
+root=outputs/interception_high_speed_new
+python -m algorithm.interception run --env configs/interception_high_speed.json --task S2 \
+  --policy predictive --scenario fixed --seed 1200 --gzip --out "$root/reference"
+python -m tools.interception_high_speed_checks --out "$root/physics.json"
+python -m tools.interception_high_speed_audit --seed 1200 --episodes 50 --out "$root/audit"
+python -m tools.interception_replay "$root/reference/trajectory_000.json.gz" "$root/reference/replay.html"
+python -m tools.interception_replay "$root/reference/trajectory_000.json.gz" "$root/reference/replay.mp4"
+```
+
+高速审计分别改变蓝方速度、双方水平加速度、预测时域及红方参战数量。逐目标最近点沿连续轨迹求得，距离误差上限为 1 mm。进入 10 m、重复接近和接近时加速度饱和是观察指标。反应式蓝方会随红方轨迹改变，配对比较共享初态和蓝方规则。
 
 ## 运行
 
@@ -57,13 +73,13 @@ python -m tools.interception_report outputs/interception/seed17 outputs/intercep
 ```
 
 - HTML 内嵌 Plotly，支持离线播放、暂停、重播、前后步进、拖动时间轴及 0.5×/1×/2×/4×。滑块定位控制步或步内事件关键帧，播放在物理时钟上使用额外的 30 Hz 解析采样。支持鼠标轨道旋转和滚轮缩放。面板分列归一化策略动作、期望速度指令和真实物理速度，累计诊断注明最近一次记录时间。旧轨迹缺失速度指令时，中间画面保持最近记录位置，当前速度和相对量显示 N/A。
-- 两种格式均画出地面设施和保护柱。每次拦截在事件双端点中点显示一个红色 X，退出双方的历史轨迹停在各自真实端点。友机及目标方同侧接触使用橙色菱形，突破用黄色方形，Pursuer 越界用紫色十字，Evader 撤离用青色空心圆。友机预警只记录数据。旧版捕获仍按旧轨迹在 Evader 事件位置显示 X。
+- 两种格式均画出地面设施和保护柱。红色为 Pursuer，蓝色为 Evader。每次接触拦截在双方事件位置的中点显示一个绿色 X，双方历史轨迹停在各自真实端点。友机及目标方同侧接触使用橙色菱形，突破用黄色方形，Pursuer 越界用紫色十字，Evader 撤离用青色空心圆。友机预警只记录数据。旧版捕获仍按旧轨迹在 Evader 事件位置显示 X。
 - MP4 的 N 帧均匀覆盖物理区间 `[0,T]`，包含起止状态。非零 T 取 `N=max(2,ceil(T×fps))`，物理间隔为 `T/(N-1)`，固定帧率容器时长为 `N/fps`。零时长保留一个静帧。常规轨迹的容器时长误差小于一帧。极短轨迹优先保留两个不同时间的端点。需要 FFmpeg，可通过 `conda install -c conda-forge ffmpeg` 安装。导出器优先使用可用的 H.264 编码器，也支持 FFmpeg 的 MPEG-4 编码器。
 - 轨迹记录原始动作、速度请求、执行指令、实际状态、步初加速度、有效时长、掩码、相对几何、奖励和事件位置。速度与瞬时加速度由同一解析轨迹确定。读取器兼容 JSON 和 gzip。
 - `training_metrics.jsonl` 按 PPO 更新记录损失、熵、KL、clip fraction、有效样本、裁剪前梯度范数、学习率及采样和优化时间。速度为本次采样联合步数除以采样墙钟时间。更新耗时包含采样和优化。一个联合步指一个并行环境的一次联合转移。
 - `episode_metrics.jsonl` 每个完成回合一条，包含 worker 及其回合序号、结局、实际时长、捕获/突破/碰撞数、最小间距、指令强度和奖励分量。回报累计实际 float32 团队奖励，分量求和允许浮点舍入误差。终端展示最近最多 100 个已完成回合，窗口为空时显示 N/A。
 - 定期评估默认关闭。间隔设为正数后启用，同一运行的协议在启动时固定，默认随机场景和 Beta 均值动作。可选 `--evaluation-scenario fixed` 或 `--no-evaluation-deterministic`。单独评估的随机动作选项为 `--stochastic`。评估使用独立环境和固定种子，并恢复 CPU/CUDA Torch RNG。
-- `evaluation_*.json` 保存每局及聚合结果，`evaluation_history.csv` 是派生摘要。结局率分母为全部评估回合。捕获成功只统计全部捕获；防护成功统计全部捕获和完整坚持到时限的回合，撤离、突破和安全失败单列。部分捕获表示至少捕获一个且少于全部目标。单目标捕获率分母为该 ID 初始有效的回合数。全捕获平均时长只在成功局计算。同时记录异方接触导致的蓝方退出数量、同侧接触、3 m 友机预警和逐目标接触时刻。
+- `evaluation_*.json` 保存每局及聚合结果，`evaluation_history.csv` 是派生摘要。结局率分母为全部评估回合。捕获成功只统计全部捕获；防护成功统计全部捕获和完整坚持到时限的回合，撤离、突破和安全失败单列。部分捕获表示至少捕获一个且少于全部目标。单目标捕获率分母为该 ID 初始有效的回合数。全捕获平均时长只在成功局计算。同时记录异方接触导致的红方退出数量、同侧接触、友机预警和逐目标接触时刻。
 - `best.pt` 是胜出评估提交对应的 Checkpoint 副本，`best.json` 记录来源、更新数、联合步数、协议、分数和 SHA256。排序依次最大化捕获成功率，最小化突破率、友机碰撞率、Evader 同侧碰撞率、Pursuer 越界率、Evader 撤离率及成功局的平均捕获时长，最后保留更早更新。缺失捕获时长按最差排序。
 - 恢复核对运行身份、配置、连续更新记录及提交链。训练提交后可补写末条记录，评估未提交可补跑，已提交评估可补发 Best，JSONL 和 CSV 可重建。遇到超前日志、记录缺口或缺失且无法重建的历史 Best 会明确报错。v4 拒绝 v1–v3 Checkpoint 的训练恢复和评估。历史轨迹仍可按原协议回放。
 - 离线报告读取 JSON 记录与存档 ZIP 的轻量元数据，输出 `report.md`、`summary.json` 和 `training_curves.png`。多种子报告按 Update 对齐，输出均值、样本标准差和有效种子数，检查预算和配置一致性。无需 CUDA。

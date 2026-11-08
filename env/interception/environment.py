@@ -4,7 +4,7 @@ from itertools import combinations
 from functools import lru_cache
 import numpy as np
 
-from .config import InterceptionConfig, VERSION, MAX_PURSUERS, MAX_EVADERS, OBS_DIM, STATE_DIM, SLOT
+from .config import InterceptionConfig, VERSION, MAX_PURSUERS, MAX_EVADERS, OBS_DIM, STATE_DIM, SLOT, matches_saved_config
 from .events import windows, minimum_distance, boundary_contact
 from .motion import advance, command, execute_velocity
 from .observation import observe
@@ -42,8 +42,9 @@ class InterceptionEnv:
     observation_dim = OBS_DIM
     state_dim = STATE_DIM
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, diagnostics=False):
         self.config = config or InterceptionConfig()
+        self.diagnostics = diagnostics
         extra = (self.config.evader_slots-MAX_EVADERS)*SLOT
         self.observation_dim = OBS_DIM+extra
         self.state_dim = STATE_DIM+extra
@@ -215,10 +216,21 @@ class InterceptionEnv:
             raise FloatingPointError("nonfinite motion")
         minimum, clearance = s.minimum_separation, s.minimum_surface_clearance
         warning_pairs = set()
+        closest_targets = {}
+        closest_friendly = None
         for i, j, curve, bound, radius in pairs:
             end = min(stop_times[i], stop_times[j])
-            closest = minimum_distance(curve, bound, end)
+            closest, nearest_time = minimum_distance(curve, bound, end, with_time=True)
             minimum, clearance = min(minimum, closest), min(clearance, closest-radius)
+            if self.diagnostics:
+                if i < MAX_PURSUERS <= j and (j not in closest_targets or
+                        closest < closest_targets[j]["center_distance"]):
+                    row = event_row("closest_approach", i, j, nearest_time)
+                    row["pursuer_horizontal_acceleration"] = float(
+                        np.linalg.norm(acceleration[i, :2])*np.exp(-nearest_time/taus[i]))
+                    closest_targets[j] = row
+                if j < MAX_PURSUERS:
+                    closest_friendly = closest if closest_friendly is None else min(closest_friendly, closest)
             if j >= MAX_PURSUERS or closest > c.friendly_warning_distance+.001:
                 continue
             pair = (i, j)
@@ -263,6 +275,8 @@ class InterceptionEnv:
         info.update(commands=targets, requested_velocities=requests, initial_accelerations=acceleration,
                     command_duration=np.where(np.r_[s.pursuer_mask, s.evader_mask], stop_times, 0.),
                     team_reward=float(np.float32(sum(parts.values()))))
+        if self.diagnostics:
+            info.update(closest_targets=closest_targets, closest_friendly=closest_friendly)
         return obs, rewards, terminated, truncated, info
 
     def snapshot(self):
@@ -270,7 +284,7 @@ class InterceptionEnv:
                              state=self.state, rng=self.rng.bit_generator.state))
 
     def restore(self, snapshot):
-        if snapshot.get("version") != VERSION or snapshot.get("config") != asdict(self.config):
+        if snapshot.get("version") != VERSION or not matches_saved_config(snapshot.get("config"), self.config):
             raise ValueError("incompatible interception snapshot")
         snapshot = deepcopy(snapshot)
         self.rng.bit_generator.state = snapshot["rng"]

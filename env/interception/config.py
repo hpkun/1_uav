@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 import math
 
 VERSION = "uav-interception-v4.0.0"
@@ -13,6 +13,12 @@ SLOT = ENTITY + 1
 OBS_DIM = 3 * AXES + 1 + (MAX_PURSUERS - 1 + MAX_EVADERS) * SLOT
 STATE_DIM = (MAX_PURSUERS + MAX_EVADERS) * SLOT + AXES + 2
 MODES = ("constant_velocity", "goal_seeking", "bounded_maneuver", "reactive_evasion", "bezier")
+PATROL_DEFAULTS = dict(pursuer_deployment="sectors", patrol_azimuth_jitter=.15, patrol_inward_fraction=.2)
+
+
+def matches_saved_config(saved, config):
+    # v4 archives predating patrol deployment implicitly used these defaults.
+    return isinstance(saved, dict) and (PATROL_DEFAULTS | saved) == asdict(config)
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,9 @@ class InterceptionConfig:
     pursuer_height: tuple = (12., 28.)
     pursuer_initial_speed: tuple = (0., 1.)
     evader_initial_speed: tuple = (8., 10.)
+    pursuer_deployment: str = PATROL_DEFAULTS["pursuer_deployment"]
+    patrol_azimuth_jitter: float = PATROL_DEFAULTS["patrol_azimuth_jitter"]
+    patrol_inward_fraction: float = PATROL_DEFAULTS["patrol_inward_fraction"]
     minimum_spawn_clearance: float = 1.
     spawn_attempts: int = 128
     evader_mode: str | None = None
@@ -126,6 +135,10 @@ class InterceptionConfig:
             raise ValueError("invalid deployment or navigation cone")
         if self.predictive_step > self.predictive_horizon:
             raise ValueError("prediction step exceeds horizon")
+        if self.pursuer_deployment not in ("sectors", "patrol") or not (
+            self.patrol_azimuth_jitter < math.pi/MAX_PURSUERS and self.patrol_inward_fraction <= 1.
+        ):
+            raise ValueError("invalid patrol deployment")
         if any(lo < 0 or hi > vmax for (lo, hi), vmax in
                ((self.pursuer_initial_speed, self.pursuer_vmax),
                 (self.evader_initial_speed, self.evader_vmax))):
