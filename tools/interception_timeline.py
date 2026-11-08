@@ -125,6 +125,6 @@ class Timeline:
         low = np.minimum(points.min(0), center-radius)
         high = np.maximum(points.max(0), center+radius)
         if config.get("protected_zone") == "ground_cylinder":
-            low[2] = min(low[2], center[2])
-            high[2] = max(high[2], center[2] + config["protected_height"])
+            low[2] = min(points[:, 2].min(), center[2])
+            high[2] = max(points[:, 2].max(), center[2] + config["protected_height"])
         return np.column_stack((low-3, high+3)).tolist()
