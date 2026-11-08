@@ -1,0 +1,68 @@
+{
+  "scale": "3v1",
+  "task": "S2",
+  "dt": 0.1,
+  "max_steps": 1000,
+  "lower": [
+    -140,
+    -140,
+    1
+  ],
+  "upper": [
+    140,
+    140,
+    70
+  ],
+  "center": [
+    0,
+    0,
+    0
+  ],
+  "radius": 12,
+  "protected_zone": "ground_cylinder",
+  "protected_height": 22,
+  "evader_goal_altitude": 12,
+  "spawn_distance": [
+    85,
+    115
+  ],
+  "defense_distance": [
+    25,
+    40
+  ],
+  "evader_height": [
+    18,
+    40
+  ],
+  "pursuer_height": [
+    14,
+    30
+  ],
+  "pursuer_vmax": 12,
+  "evader_vmax": 9,
+  "pursuer_vertical_vmax": 4,
+  "evader_vertical_vmax": 3,
+  "pursuer_tau": 2.5,
+  "evader_tau": 2.5,
+  "pursuer_initial_speed": [
+    0,
+    0.5
+  ],
+  "evader_initial_speed": [
+    4,
+    6
+  ],
+  "minimum_spawn_clearance": 2,
+  "pursuer_collision_radius": 0.25,
+  "evader_collision_radius": 0.25,
+  "capture_inner_radius": 1.1,
+  "capture_outer_radius": 3,
+  "capture_relative_speed_max": 1.5,
+  "capture_dwell_seconds": 0.5,
+  "reactive_range": 25,
+  "reactive_horizon": 2,
+  "reactive_danger_distance": 5,
+  "position_scale": 140,
+  "velocity_scale": 12,
+  "progress_reference": 100
+}
