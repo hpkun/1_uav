@@ -20,20 +20,22 @@ def save_trace(path, config, rows):
 
 def test_reference_3v3_replay_tracks_all_three_evaders(tmp_path):
     config = InterceptionConfig(scale="3v3", evader_mode="constant_velocity",
-                                evader_speed_fraction=.1, constant_direction=(1, 0, 0))
+                                evader_speed_fraction=.6/13, constant_direction=(1, 0, 0))
     env = InterceptionEnv(config)
     options = dict(scenario="custom",
                    pursuers=[[-30, y, 15, 1.2, 0, 0] for y in (-15, 0, 15)],
-                   evaders=[[-26.8, y, 15, .6, 0, 0] for y in (-15, 0, 15)])
+                   evaders=[[-28.8, y, 15, .6, 0, 0] for y in (-15, 0, 15)])
     obs, info = env.reset(1000, options)
     assert obs.shape == (5, 59) and info["centralized_state"].shape == (61,)
     assert info["active_mask"].sum() == info["evader_mask"].sum() == 3
     rows = [trace_row(info)]
     action = np.full((5, 3), .5)
-    action[:3, 0] += 1.2/16
+    action[:3, 0] += 1.2/24
     for _ in range(9):
         _, _, terminated, truncated, info = env.step(action)
         rows.append(trace_row(info, action))
+        if terminated:
+            break
     assert terminated and not truncated and info["outcome"] == "success"
     path = tmp_path / "three_evaders.json"
     save_trace(path, config, rows)
@@ -47,25 +49,25 @@ def fixture(path, kind, *, record=True):
     common = dict(evader_mode="constant_velocity", constant_direction=(1, 0, 0))
     p = [[-30, -12, 15, 1.2, 0, 0], [30, 12, 15, 1.2, 0, 0],
          [-15, -20, 15, 0, 0, 0], [15, 20, 15, 0, 0, 0], [0, 25, 15, 0, 0, 0]]
-    e = [[-26.8, -12, 15, .6, 0, 0], [33.6, 12, 15, .6, 0, 0]]
+    e = [[-28.8, -12, 15, .6, 0, 0], [32.2, 12, 15, .6, 0, 0]]
     u = np.full((5, 3), .5)
     if kind == "success":
-        config = InterceptionConfig(scale="5v2", evader_speed_fraction=.1, **common)
-        u[:2, 0] += 1.2/16
-    elif kind == "collision":
+        config = InterceptionConfig(scale="5v2", evader_speed_fraction=.6/13, **common)
+        u[:2, 0] += 1.2/24
+    elif kind == "friendly_collision":
         config = InterceptionConfig(dt=1., **common)
         p = [[-2, 20, 15, 8, 0, 0], [2, 20, 15, -8, 0, 0], [0, 30, 15, 0, 0, 0]]
         e = [[50, 0, 15, 0, 0, 0]]
-        u[:2, 0] = (1., 0.)
+        u[:2, 0] = (.5+8/24, .5-8/24)
     elif kind in ("pursuer_boundary_violation", "evader_escape"):
-        config = InterceptionConfig(scale="1v1", dt=3., **common)
-        p = [[79, 20, 15, 4, 0, 0]] if kind == "pursuer_boundary_violation" else [[60, 20, 15, 0, 0, 0]]
-        e = [[40, -20, 15, 6, 0, 0]] if kind == "pursuer_boundary_violation" else [[79, -20, 15, 6, 0, 0]]
+        config = InterceptionConfig(scale="1v1", dt=3., evader_speed_fraction=6/13, **common)
+        p = [[159, 20, 15, 4, 0, 0]] if kind == "pursuer_boundary_violation" else [[60, 20, 15, 0, 0, 0]]
+        e = [[40, -20, 15, 6, 0, 0]] if kind == "pursuer_boundary_violation" else [[159, -20, 15, 6, 0, 0]]
         u[0, 0] = 0.
     else:
-        config = InterceptionConfig(scale="1v1", dt=3., max_steps=1, **common)
+        config = InterceptionConfig(scale="1v1", dt=3., max_steps=1, evader_speed_fraction=6/13, **common)
         p = [[15, 20, 15, 0, 0, 0]]
-        e = [[-8 if kind == "breach" else 40, 0, 15, 6, 0, 0]]
+        e = [[-15 if kind == "breach" else 40, 0, 15, 6, 0, 0]]
     env = InterceptionEnv(config)
     _, info = env.reset(12, dict(scenario="custom", pursuers=p, evaders=e))
     rows = [trace_row(info)] if record else []
@@ -83,16 +85,16 @@ def fixture(path, kind, *, record=True):
 
 
 @pytest.mark.parametrize("scale", ["1v1", "3v1"])
-def test_reference_capture_uses_only_target_point(tmp_path, scale):
+def test_contact_shows_only_one_marker_for_both_retired_agents(tmp_path, scale):
     config = InterceptionConfig(scale=scale)
-    row, frames = episode(config, 1000, {"scenario": "fixed"}, "reference", trace=True)
+    row, frames = episode(config, 1000, {"scenario": "fixed"}, "predictive", trace=True)
     path = tmp_path / "capture.json"
     save_trace(path, config, frames)
     timeline = Timeline(path)
-    event, marker = timeline.events[0], timeline.display_events[0]
+    event, marker = next(e for e in timeline.events if e["kind"] == "interception_contact"), timeline.display_events[0]
     assert row["outcome"] == "success" and row["time"] == event["time"]
     assert marker["entity_ids"] == event["entities"] and marker["entity_ids"][1] == 5
-    assert marker["position"] == event["positions"][1] != event["positions"][0]
+    np.testing.assert_allclose(marker["position"], np.mean(event["positions"], axis=0))
     assert (marker["plotly_marker"], marker["mpl_marker"], marker["color"]) == ("x", "x", "#dc1824")
     assert not timeline.at(row["time"])["entities"][-1]["active"]
 
@@ -100,7 +102,7 @@ def test_reference_capture_uses_only_target_point(tmp_path, scale):
 def test_immediate_boundary_exit_has_a_playable_zero_time(tmp_path):
     config = InterceptionConfig(scale="1v1", evader_mode="constant_velocity")
     env = InterceptionEnv(config)
-    _, first = env.reset(12, dict(scenario="custom", pursuers=[[79.7,20,15,4,0,0]],
+    _, first = env.reset(12, dict(scenario="custom", pursuers=[[159.5,20,15,4,0,0]],
                                   evaders=[[40,-20,15,6,0,0]]))
     action = np.full((5,3), .5)
     _, _, terminated, _, last = env.step(action)
@@ -112,7 +114,7 @@ def test_immediate_boundary_exit_has_a_playable_zero_time(tmp_path):
     assert timeline.display_events[0]["position"] == first["pursuers"][0, :3].tolist()
 
 
-@pytest.mark.parametrize("kind", ["success", "collision", "breach", "timeout",
+@pytest.mark.parametrize("kind", ["success", "friendly_collision", "breach", "timeout",
                                  "pursuer_boundary_violation", "evader_escape"])
 def test_real_events_and_boundary_states(tmp_path, kind):
     path = tmp_path / "trace.json"
@@ -122,7 +124,7 @@ def test_real_events_and_boundary_states(tmp_path, kind):
     if kind in ("pursuer_boundary_violation", "evader_escape"):
         marker, = timeline.display_events
         assert marker["time"] == timeline.duration
-        assert marker["position"][0] == pytest.approx(79.7, abs=1e-6)
+        assert marker["position"][0] == pytest.approx(159.5, abs=1e-6)
         assert marker["mpl_marker"] == ("+" if kind == "pursuer_boundary_violation" else "o")
     for row in timeline.frames:
         sample = timeline.at(row["time"])
@@ -135,30 +137,30 @@ def test_real_events_and_boundary_states(tmp_path, kind):
     if kind == "success":
         first, second = timeline.display_events
         assert first["entity_ids"] == [0, 5] and second["entity_ids"] == [1, 6]
-        assert first["time"] == pytest.approx(5/6) and second["time"] == pytest.approx(1.5)
+        assert first["time"] == pytest.approx(1/3) and second["time"] == pytest.approx(2.)
         sample = timeline.at((first["time"]+second["time"])/2)
-        assert sample["entities"][-2]["position"] == first["position"]
+        assert sample["entities"][-2]["position"] == first["positions"][1]
         assert sample["entities"][-1]["active"]
         assert sample["nearest_pair"]["evader"] == "E1"
         assert sample["nearest_pair"]["relative_speed"] == pytest.approx(.6)
-    elif kind == "collision":
+    elif kind == "friendly_collision":
         marker, = timeline.display_events
         assert marker["entity_ids"] == [0, 1] and marker["mpl_marker"] == "D"
-        assert marker["time"] == pytest.approx(.2125)
+        assert marker["time"] == pytest.approx(.1875)
         assert marker["position"] == np.mean(marker["positions"], axis=0).tolist()
     elif kind == "breach":
         marker, = timeline.display_events
         assert marker["entity_ids"] == [5, 5] and marker["mpl_marker"] == "s"
         assert marker["time"] == pytest.approx(.5)
-        assert marker["position"] == timeline.events[0]["positions"][0]
-        np.testing.assert_allclose(marker["position"], [-5., 0., 15.], atol=1e-8)
+        assert marker["position"] == timeline.events[-1]["positions"][0]
+        np.testing.assert_allclose(marker["position"], [-12., 0., 15.], atol=1e-8)
     elif kind == "timeout":
         assert timeline.duration == 3. and timeline.display_events == []
 
 
 def test_timeline_rejects_outside_and_nonfinite(tmp_path):
     path = tmp_path / "trace.json"
-    fixture(path, "collision")
+    fixture(path, "friendly_collision")
     timeline = Timeline(path)
     for value in (-1e-12, timeline.duration+1e-12, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="replay time"):

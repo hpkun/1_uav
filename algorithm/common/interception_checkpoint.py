@@ -14,7 +14,7 @@ import torch
 from env.interception.config import VERSION, OBS_DIM, STATE_DIM, MAX_PURSUERS, MAX_EVADERS, AXES
 from .runtime import require_cuda
 
-PROTOCOL = dict(version=VERSION, algorithm="uav-interception-mappo-v2",
+PROTOCOL = dict(version=VERSION, algorithm="uav-interception-mappo-v4",
                 observation=OBS_DIM, state=STATE_DIM, action=AXES,
                 pursuers=MAX_PURSUERS, evaders=MAX_EVADERS)
 

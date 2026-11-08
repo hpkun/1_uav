@@ -5,12 +5,12 @@ from functools import lru_cache
 import numpy as np
 
 from .config import InterceptionConfig, VERSION, MAX_PURSUERS, MAX_EVADERS, OBS_DIM, STATE_DIM, SLOT
-from .events import windows, intersection, minimum_distance, boundary_contact
-from .motion import advance, command
+from .events import windows, minimum_distance, boundary_contact
+from .motion import advance, command, execute_velocity
 from .observation import observe
 from .reward import reward_parts
 from .scenario import generate, evader_commands
-from .protected_area import intrusion_windows
+from .protected_area import intrusion_windows, navigation_point
 
 
 class SimulationFailure(FloatingPointError):
@@ -23,7 +23,7 @@ class InterceptionState:
     evaders: np.ndarray
     pursuer_mask: np.ndarray
     evader_mask: np.ndarray
-    dwell: np.ndarray
+    evader_origins: np.ndarray
     phases: np.ndarray
     step: int
     time: float
@@ -32,8 +32,8 @@ class InterceptionState:
     spawn_rejections: dict
     minimum_separation: float
     minimum_surface_clearance: float
-    near_pending: dict
-    participation: np.ndarray
+    warning_pairs: set
+    reset_seed: object
     initialization: str
 
 
@@ -69,24 +69,33 @@ class InterceptionEnv:
                   else self.rng.uniform(0., 2 * np.pi, slots))
         self.state = InterceptionState(pursuers, evaders, np.arange(MAX_PURSUERS) < len(p),
                                        np.arange(slots) < len(e),
-                                       np.zeros((MAX_PURSUERS, slots)),
+                                       evaders[:, :3].copy(),
                                        phases,
-                                       0, 0., [], "ongoing", failures, minimum, clearance, {},
-                                       np.zeros(MAX_PURSUERS), options.get("scenario", "random"))
-        return self._output([], {}, 0.)
+                                       0, 0., [], "ongoing", failures, minimum, clearance, set(),
+                                       (seed.state if isinstance(seed, np.random.SeedSequence) else seed),
+                                       options.get("scenario", "random"))
+        obs, info = self._output([], {}, 0.)
+        def geometry(states, origin):
+            offset = states[:, :3]-origin
+            return dict(distance=np.linalg.norm(offset, axis=1).tolist(),
+                        horizontal_distance=np.linalg.norm(offset[:, :2], axis=1).tolist(),
+                        azimuth=np.arctan2(offset[:, 1], offset[:, 0]).tolist(),
+                        altitude_above_facility=(states[:, 2]-self.config.center[2]).tolist())
+        info["initial_geometry"] = dict(pursuers=geometry(p, self.config.center),
+                                        evaders=geometry(e, navigation_point(self.config)))
+        return obs, info
 
     def _output(self, events, parts, effort):
         s = self.state
         obs, central = observe(s, self.config)
         return obs, dict(centralized_state=central, active_mask=s.pursuer_mask.copy(),
                          evader_mask=s.evader_mask.copy(), pursuers=s.pursuers.copy(),
-                         evaders=s.evaders.copy(), dwell_seconds=s.dwell.copy(),
-                         dwell_steps=s.dwell.copy() / self.config.dt, events=deepcopy(events),
+                         evaders=s.evaders.copy(), events=deepcopy(events),
                          outcome=s.outcome, step=s.step, time=s.time, reward_parts=parts,
                          control_effort=effort, minimum_separation=s.minimum_separation,
                          minimum_center_distance=s.minimum_separation,
                          minimum_surface_clearance=s.minimum_surface_clearance,
-                         participation_seconds=s.participation.copy(), task=self.config.task,
+                         task=self.config.task, reset_seed=deepcopy(s.reset_seed),
                          initialization=s.initialization,
                          spawn_rejections=s.spawn_rejections.copy())
 
@@ -111,13 +120,18 @@ class InterceptionEnv:
     def _step(self, s, c, active):
         states = np.vstack((s.pursuers, s.evaders))
         valid = np.flatnonzero(np.r_[s.pursuer_mask, s.evader_mask])
-        targets = np.zeros((len(states), 3))
-        targets[np.flatnonzero(s.pursuer_mask)] = command(
-            active, c.pursuer_vmax, c.pursuer_vertical_vmax)
-        targets[MAX_PURSUERS:] = evader_commands(s.evaders, s.evader_mask,
-                                                s.pursuers[s.pursuer_mask], c, s.phases, s.time)
+        requests = np.zeros((len(states), 3))
+        requests[s.pursuer_mask.nonzero()[0]] = command(active, c.pursuer_vmax)
+        requests[MAX_PURSUERS:] = evader_commands(s.evaders, s.evader_mask,
+                                                  s.pursuers[s.pursuer_mask], c, s.phases, s.time,
+                                                  s.evader_origins)
         taus = np.r_[np.full(MAX_PURSUERS, c.pursuer_tau), np.full(len(s.evaders), c.evader_tau)]
-        acceleration = (targets - states[:, 3:]) / taus[:, None]
+        targets = np.zeros_like(requests)
+        acceleration = np.zeros_like(requests)
+        for ids, vmax in ((valid[valid < MAX_PURSUERS], c.pursuer_vmax),
+                          (valid[valid >= MAX_PURSUERS], c.evader_vmax)):
+            targets[ids] = execute_velocity(requests[ids], states[ids, 3:], vmax, taus[ids], c)
+            acceleration[ids] = (targets[ids]-states[ids, 3:])/taus[ids, None]
         acc = np.linalg.norm(acceleration, axis=1)
         radii = np.r_[np.full(MAX_PURSUERS, c.pursuer_collision_radius),
                       np.full(len(s.evaders), c.evader_collision_radius)]
@@ -126,43 +140,24 @@ class InterceptionEnv:
         def at(i, time):
             return advance(states[i], targets[i], taus[i], time)
 
-        def threshold(curve, bound, radius, **kwargs):
-            return windows(curve, bound, radius, 0., c.dt, c.event_time_tolerance, **kwargs)
-
-        def relative(i, j, segment):
-            return lambda t: at(i, t)[segment] - at(j, t)[segment]
-
-        position, velocity = slice(0, 3), slice(3, 6)
         candidates, pairs = [], []
-        qualified = {}
-        dwell = np.zeros_like(s.dwell)
         for i, j in combinations(valid.tolist(), 2):
-            curve = relative(i, j, position)
-            shared_tau = taus[i] == taus[j]
-            bound = (np.linalg.norm(acceleration[i] - acceleration[j]) if shared_tau
-                     else acc[i] + acc[j])
+            def relative_position(t, i=i, j=j):
+                return at(i, t)[:3]-at(j, t)[:3]
+
+            bound = (np.linalg.norm(acceleration[i]-acceleration[j]) if taus[i] == taus[j]
+                     else acc[i]+acc[j])
             radius = radii[i]+radii[j]
-            pairs.append((i, j, curve, bound, radius))
-            collision = threshold(curve, bound, radius)
-            if collision:
-                candidates.append((collision[0][0], 0, i, j, "collision"))
-            if i < MAX_PURSUERS <= j:
-                target = j - MAX_PURSUERS
-                near = threshold(curve, bound, c.capture_outer_radius)
-                if near:
-                    near = list(intersection(near, threshold(curve, bound, c.capture_inner_radius,
-                                                             outside=True)))
-                jerk = bound / taus[i] if shared_tau else acc[i] / taus[i] + acc[j] / taus[j]
-                slow = threshold(relative(i, j, velocity), jerk,
-                                 c.capture_relative_speed_max) if near else []
-                qualified[i, j] = list(intersection(near, slow))
-                for start, end in qualified[i, j]:
-                    previous = s.dwell[i, target] if start <= 1e-13 else 0.
-                    reached = start + max(0., c.capture_dwell_seconds - previous)
-                    if reached <= end + 1e-13:
-                        candidates.append((min(reached, end), 3, i, j, "capture"))
-                    if end >= c.dt - 1e-13:
-                        dwell[i, target] = previous + end - start
+            pairs.append((i, j, relative_position, bound, radius))
+            contact = windows(relative_position, bound, radius, 0., c.dt, c.event_time_tolerance)
+            if contact:
+                if j < MAX_PURSUERS:
+                    priority, kind = 0, "friendly_collision"
+                elif i >= MAX_PURSUERS:
+                    priority, kind = 0, "evader_collision"
+                else:
+                    priority, kind = 3, "interception_contact"
+                candidates.append((contact[0][0], priority, i, j, kind))
         for j in valid[valid >= MAX_PURSUERS]:
             breach = intrusion_windows(lambda t: at(j, t)[:3], acc[j], c)
             if breach:
@@ -183,15 +178,16 @@ class InterceptionEnv:
                         entity_ids=ids, entity_types=types, positions=[first[:3].tolist(), second[:3].tolist()],
                         velocities=[first[3:].tolist(), second[3:].tolist()],
                         center_distance=float(np.linalg.norm(first[:3]-second[:3])) if i != j else None,
-                        collision_threshold=float(radii[i]+radii[j]) if i != j else None)
+                        collision_threshold=float(radii[i]+radii[j]) if i != j else None,
+                        relative_speed=float(np.linalg.norm(first[3:]-second[3:])) if i != j else None)
 
-        alive = s.evader_mask.copy()
+        alive = np.r_[s.pursuer_mask, s.evader_mask]
         stop_times = np.full(len(states), c.dt)
         elapsed, outcome, events = c.dt, "ongoing", []
         candidates.sort()
         while candidates:
             candidates = [event for event in candidates if all(
-                alive[k - MAX_PURSUERS] for k in event[2:4] if k >= MAX_PURSUERS
+                alive[k] for k in event[2:4]
             )]
             if not candidates:
                 break
@@ -201,11 +197,10 @@ class InterceptionEnv:
             candidates.remove(event)
             time, _, i, j, kind = event
             events.append(event_row(kind, i, j, time))
-            if kind == "capture":
-                alive[j - MAX_PURSUERS] = False
-                stop_times[j] = time
-                dwell[:, j - MAX_PURSUERS] = 0.
-                if alive.any():
+            if kind == "interception_contact":
+                alive[[i, j]] = False
+                stop_times[[i, j]] = time
+                if alive[MAX_PURSUERS:].any():
                     continue
                 outcome = "success"
             else:
@@ -213,48 +208,26 @@ class InterceptionEnv:
             elapsed = time
             break
         stop_times = np.minimum(stop_times, elapsed)
-        if outcome != "ongoing":
-            dwell.fill(0.)
-            for (i, j), intervals in qualified.items():
-                if alive[j-MAX_PURSUERS]:
-                    for start, stop in intervals:
-                        if start <= elapsed <= stop+1e-13:
-                            previous = s.dwell[i, j-MAX_PURSUERS] if start <= 1e-13 else 0.
-                            dwell[i, j-MAX_PURSUERS] = previous + max(0., elapsed-start)
         next_states = states.copy()
         for i in valid:
             next_states[i] = at(i, stop_times[i])
         if not np.isfinite(next_states).all():
             raise FloatingPointError("nonfinite motion")
         minimum, clearance = s.minimum_separation, s.minimum_surface_clearance
-        pending = {}
-        collision_pair = next((tuple(event["entities"]) for event in events
-                               if event["kind"] == "collision"), None)
-        closing_episode = outcome != "ongoing" or s.step+1 >= c.max_steps
+        warning_pairs = set()
         for i, j, curve, bound, radius in pairs:
             end = min(stop_times[i], stop_times[j])
             closest = minimum_distance(curve, bound, end)
             minimum, clearance = min(minimum, closest), min(clearance, closest-radius)
-            if c.near_miss_clearance == 0 or closest > radius+c.near_miss_clearance+.001:
+            if j >= MAX_PURSUERS or closest > c.friendly_warning_distance+.001:
                 continue
-            key = (i, j)
-            intervals = windows(curve, bound, radius+c.near_miss_clearance, 0., end,
-                                c.event_time_tolerance)
-            for start, stop in intervals:
-                entry = s.near_pending.get(key) if start <= 1e-13 else None
-                entry = entry or event_row("near_miss", i, j, start)
-                if key == collision_pair and stop >= end-1e-13:
-                    continue
-                if stop < end-1e-13 or closing_episode or not all(
-                    alive[k-MAX_PURSUERS] for k in key if k >= MAX_PURSUERS
-                ):
-                    events.append(entry)
-                else:
-                    pending[key] = entry
-        participation = s.participation.copy()
-        for (i, j), intervals in qualified.items():
-            end = min(stop_times[i], stop_times[j])
-            participation[i] += sum(max(0., min(stop, end)-start) for start, stop in intervals)
+            pair = (i, j)
+            for start, stop in windows(curve, bound, c.friendly_warning_distance, 0., end,
+                                       c.event_time_tolerance):
+                if start > 1e-13 or pair not in s.warning_pairs:
+                    events.append(event_row("friendly_warning", i, j, start))
+                if stop >= elapsed-1e-13 and alive[i] and alive[j]:
+                    warning_pairs.add(pair)
         events.sort(key=lambda event: event["time"])
         # Progress uses the same set of targets at both ends. A captured
         # target is compared at its capture endpoint with pursuers at that time.
@@ -263,22 +236,23 @@ class InterceptionEnv:
         for j in valid[valid >= MAX_PURSUERS]:
             initial_distances.append(np.linalg.norm(states[pursuers, :3] - states[j, :3], axis=1).min())
             end = stop_times[j]
-            final_distances.append(min(np.linalg.norm(at(i, end)[:3] - next_states[j, :3])
+            final_distances.append(min(np.linalg.norm(at(i, min(end, stop_times[i]))[:3] - next_states[j, :3])
                                        for i in pursuers))
-        parts = reward_parts(initial_distances, final_distances, int((s.evader_mask & ~alive).sum()),
-                             outcome, elapsed, c)
+        parts = reward_parts(initial_distances, final_distances, int((s.evader_mask & ~alive[MAX_PURSUERS:]).sum()),
+                             outcome, elapsed, c, episode_time=s.time+elapsed)
         terminated = outcome != "ongoing"
         truncated = not terminated and s.step + 1 >= c.max_steps
         if truncated:
             outcome = "timeout"
-        effort = float(elapsed * np.square(targets[:MAX_PURSUERS]).sum() / s.pursuer_mask.sum())
+        effort = float(np.sum(stop_times[:MAX_PURSUERS, None]*np.square(targets[:MAX_PURSUERS]))
+                       / s.pursuer_mask.sum())
         rewards = np.where(s.pursuer_mask, sum(parts.values()), 0.).astype(np.float32)
         if not np.isfinite(rewards).all():
             raise FloatingPointError("nonfinite reward")
         successor = InterceptionState(next_states[:MAX_PURSUERS], next_states[MAX_PURSUERS:],
-                                      s.pursuer_mask.copy(), alive, dwell, s.phases.copy(),
+                                      alive[:MAX_PURSUERS], alive[MAX_PURSUERS:], s.evader_origins, s.phases,
                                       s.step + 1, s.time + elapsed, s.events + events, outcome,
-                                      s.spawn_rejections.copy(), minimum, clearance, pending, participation,
+                                      s.spawn_rejections, minimum, clearance, warning_pairs, s.reset_seed,
                                       s.initialization)
         self.state = successor
         try:
@@ -286,7 +260,9 @@ class InterceptionEnv:
         except FloatingPointError:
             self.state = s
             raise
-        info["commands"] = targets
+        info.update(commands=targets, requested_velocities=requests, initial_accelerations=acceleration,
+                    command_duration=np.where(np.r_[s.pursuer_mask, s.evader_mask], stop_times, 0.),
+                    team_reward=float(np.float32(sum(parts.values()))))
         return obs, rewards, terminated, truncated, info
 
     def snapshot(self):

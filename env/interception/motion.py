@@ -16,6 +16,17 @@ def command(actions, limit, vertical_limit=None):
     return project(2. * np.asarray(actions, dtype=float) - 1., limit, vertical_limit)
 
 
+def execute_velocity(request, current, vmax, tau, config):
+    """Both endpoints are feasible; the segment and the lag response stay feasible."""
+    request = np.asarray(request, dtype=float)
+    feasible = project(request/vmax, vmax)
+    feasible[..., 2] = np.clip(feasible[..., 2], -config.descent_vmax, config.climb_vmax)
+    delta = feasible-current
+    horizontal = np.linalg.norm(delta[..., :2], axis=-1, keepdims=True)
+    budget = config.horizontal_acceleration_max*np.asarray(tau)[..., None]
+    return current + delta*(budget/np.maximum(budget, horizontal))
+
+
 def advance(state, target, tau, duration):
     state = np.asarray(state, dtype=float)
     target = np.asarray(target, dtype=float)

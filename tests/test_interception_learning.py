@@ -33,6 +33,16 @@ def test_central_padding_cleanup():
     assert (clean[:7] == 0).all() and (clean[7:13] == 2.).all()
 
 
+def test_retiring_slot_keeps_contact_reward_without_bootstrap():
+    advantage, returns = gae(
+        torch.tensor([[[5.,5.]], [[0.,2.]]]), torch.zeros((2,1,2)),
+        torch.tensor([[[float("nan"),4.]], [[0.,0.]]]),
+        torch.tensor([[[1,1]], [[0,1]]]), torch.tensor([[[0,1]], [[0,0]]]),
+        torch.tensor([[False],[True]]), torch.tensor([[False],[False]]), .5, 1.)
+    torch.testing.assert_close(advantage, torch.tensor([[[5.,8.]], [[0.,2.]]]))
+    torch.testing.assert_close(returns, advantage)
+
+
 def test_cuda_rollout_update_and_exact_resume(tmp_path):
     config = InterceptionConfig()
     tc = TrainConfig(workers=2, horizon=4, epochs=1)

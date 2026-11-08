@@ -14,6 +14,9 @@ GROUPS = (("pursuers", "active_mask", "P", "#2378bf", 0),
 
 # Plotly Scatter3d and Matplotlib each use their native marker.
 EVENT_STYLES = {
+    "interception_contact": ("Interception", "#dc1824", "x", "x"),
+    "friendly_collision": ("Friendly collision", "#ef7900", "diamond", "D"),
+    "evader_collision": ("Evader collision", "#ef7900", "diamond", "D"),
     "capture": ("Capture", "#dc1824", "x", "x"),
     "collision": ("Collision", "#ef7900", "diamond", "D"),
     "breach": ("Breach", "#f0c400", "square", "s"),
@@ -28,7 +31,7 @@ def display_event(event):
     names = list(dict.fromkeys(f"P{i}" if i < MAX_PURSUERS else f"E{i-MAX_PURSUERS}"
                                for i in event["entities"]))
     positions = event["positions"]
-    position = (np.mean(positions, axis=0).tolist() if kind == "collision"
+    position = (np.mean(positions, axis=0).tolist() if kind in ("collision", "friendly_collision", "evader_collision", "interception_contact")
                 else positions[1 if kind == "capture" else 0])
     return dict(kind=kind, time=event["time"], entity_ids=event["entities"],
                 positions=positions, position=position, color=color, plotly_marker=plotly_marker,
@@ -41,7 +44,8 @@ class Timeline:
         opener = gzip.open if Path(source).suffix == ".gz" else open
         with opener(source, "rt", encoding="utf-8") as stream:
             data = json.load(stream)
-        if data.get("version") not in (VERSION, "uav-interception-v2.0.0", "uav-interception-v1.0.0") or data.get("trace_version", 1) not in (1, 2):
+        if data.get("version") not in (VERSION, "uav-interception-v3.0.0", "uav-interception-v2.0.0",
+                                       "uav-interception-v1.0.0") or data.get("trace_version", 1) not in (1, 2):
             raise ValueError("unsupported interception trajectory")
         self.data = data
         self.frames = data["frames"]
@@ -57,11 +61,16 @@ class Timeline:
         self.duration = self.times[-1]
         self.events = sorted((event for row in self.frames for event in row["events"]),
                              key=lambda event: event["time"])
-        self.display_events = [display_event(event) for event in self.events if event["kind"] != "near_miss"]
+        self.display_events = [display_event(event) for event in self.events if event["kind"] not in ("near_miss", "friendly_warning")]
         self.events_at = {}
         for event in self.events:
             self.events_at.setdefault(event["time"], []).append(event)
-        self.captures = {event["entities"][1]: event for event in self.events if event["kind"] == "capture"}
+        self.captures = {}
+        for event in self.events:
+            if event["kind"] == "interception_contact":
+                self.captures.update((entity, (event, index)) for index, entity in enumerate(event["entities"]))
+            elif event["kind"] == "capture":
+                self.captures[event["entities"][1]] = (event, 1)
         self.key_times = sorted(set(self.times + [event["time"] for event in self.events]))
         if self.key_times[0] < 0 or self.key_times[-1] > self.duration:
             raise ValueError("event time outside trajectory")
@@ -79,14 +88,14 @@ class Timeline:
         commands = after.get("commands")
         entities = []
         for key, mask, name, color, i, global_id in self.entities:
-            capture = self.captures.get(global_id)
+            capture, endpoint = self.captures.get(global_id, (None, None))
             captured = capture is not None and capture["time"] <= timestamp
             state = before[key][i]
             reconstruct = not exact and commands is not None
             if reconstruct and before[mask][i] and not captured:
                 tau = self.data["config"]["pursuer_tau" if key == "pursuers" else "evader_tau"]
                 state = advance(state, commands[global_id], tau, timestamp-before["time"]).tolist()
-            position = capture["positions"][1] if captured else state[:3]
+            position = capture["positions"][endpoint] if captured else state[:3]
             # Event coordinates take precedence over reconstructed coordinates.
             for event in self.events_at.get(timestamp, ()):
                 if global_id in event["entities"]:
@@ -98,6 +107,10 @@ class Timeline:
                                  captured=captured,
                                  action=actions[i] if key == "pursuers" and actions is not None and active else None,
                                  command=commands[global_id] if commands is not None and active else None,
+                                 requested=(after["requested_velocities"][global_id]
+                                            if active and after.get("requested_velocities") is not None else None),
+                                 initial_acceleration=(after["initial_accelerations"][global_id]
+                                                       if active and after.get("initial_accelerations") is not None else None),
                                  speed=float(np.linalg.norm(velocity)) if velocity is not None else None))
         pursuers = [entity for entity in entities if entity["name"].startswith("P") and entity["active"]]
         evaders = [entity for entity in entities if entity["name"].startswith("E") and entity["active"]]

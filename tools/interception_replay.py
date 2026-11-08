@@ -21,7 +21,7 @@ const panel = document.querySelector('#details'), time = document.querySelector(
 const count = frames[0].entities.length;
 const trails = frames[0].entities.map((_, j) =>
   [0,1,2].map(axis => frames.map(row => row.entities[j].position[axis])));
-const indices = Array.from({length: count + 3}, (_, i) => i + 1);
+const indices = Array.from({length: count + 3}, (_, i) => i + plot.data.length - count - 3);
 const nf = (x, digits=3) => x == null ? 'N/A' : x.toFixed(digits);
 const vector = x => x == null ? 'N/A' : x.map(v => nf(v, 2)).join(', ');
 const duration = frames.at(-1).time;
@@ -71,12 +71,14 @@ function diagnostics(row, visible) {
     ...row.entities.map(e => e.name+' '+(e.captured ? 'captured / inactive' : e.active ? 'active' : 'inactive')+
       ' | position (m): '+vector(e.position)+' | physical velocity (m/s): '+vector(e.velocity)+
       ' | speed: '+nf(e.speed)+' m/s' +
-      ' | normalized policy action: '+vector(e.action)+' | commanded velocity (m/s): '+vector(e.command)),
+      ' | normalized policy action: '+vector(e.action)+' | executed velocity command (m/s): '+vector(e.command)+
+      (e.requested == null ? '' : ' | requested (m/s): '+vector(e.requested)+
+       ' | step-start acceleration (m/s²): '+vector(e.initial_acceleration))),
     'Nearest active pair: '+(pair ? pair.pursuer+'/'+pair.evader+' · '+nf(pair.distance)+
        ' m · relative speed '+nf(pair.relative_speed)+' m/s' : 'N/A'),
     'Active pairs: '+(pairs.join(' | ') || 'N/A'),
     'Last recorded diagnostics at '+nf(row.recorded_time)+' s',
-    'Minimum separation: '+nf(row.minimum)+' m | Capture dwell: '+dwellText,
+    'Minimum separation: '+nf(row.minimum)+' m'+(dwell == null ? '' : ' | Capture dwell: '+dwellText),
     'Minimum surface clearance: '+nf(row.minimum_surface_clearance)+' m',
     'Reward components: '+rewards,
     'Events: '+(visible.map(e => e.label).join(' | ') || 'none')
@@ -195,6 +197,9 @@ def render(source, output):
     figure = go.Figure(go.Surface(x=surface[0], y=surface[1], z=surface[2], opacity=.22,
                                   name="Protected zone", showscale=False, showlegend=True,
                                   colorscale=[[0, "#55a868"], [1, "#55a868"]]))
+    if config.get("protected_zone") == "ground_cylinder":
+        figure.add_trace(go.Scatter3d(x=[center[0]], y=[center[1]], z=[center[2]], mode="markers",
+                                     name="Ground facility", marker=dict(size=7, color="#246d48", symbol="square")))
     for entity in samples[0]["entities"]:
         figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", name=entity["name"],
                                      line=dict(color=entity["color"], width=3)))
@@ -280,6 +285,8 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
              xlabel="x (m)", ylabel="y (m)", zlabel="z (m)")
     axes.set_box_aspect(np.ptp(bounds, axis=1))
     axes.plot_surface(*surface, color="#55a868", alpha=.13, zorder=0)
+    if config.get("protected_zone") == "ground_cylinder":
+        axes.scatter(*center, color="#246d48", marker="s", label="Ground facility")
     paths, points, labels = [], [], []
     for entity in samples[0]["entities"]:
         paths.append(axes.plot([], [], [], color=entity["color"], zorder=2)[0])

@@ -47,7 +47,7 @@ def run(output, seeds):
                                    config=asdict(config), metrics=stats))
                 print(task, initialization, count, stats["outcomes"],
                       "mean capture", stats["mean_capture_time_s"], flush=True)
-    write_json(output/"paired_audit.json", dict(seeds=seeds, controller="nearest active lead + standoff support",
+    write_json(output/"paired_audit.json", dict(seeds=seeds, controller="predictive reference",
                                                groups=groups, episodes=rows))
 
 

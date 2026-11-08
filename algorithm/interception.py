@@ -15,6 +15,8 @@ import torch
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
 from env.interception.config import VERSION, MAX_PURSUERS, SCALES, SCENARIO_SCALES, TASKS
 from env.interception.scenario import unit
+from env.interception.motion import advance, execute_velocity
+from env.interception.protected_area import navigation_point
 from env.interception.protected_area import navigation_point
 from algorithm.common.interception_vector import EpisodeAccumulator, InterceptionVectorEnv
 from algorithm.common.interception_checkpoint import PROTOCOL, save, read, restore, load_weights
@@ -126,54 +128,29 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
     return latest
 
 
-def reference_action(info, config, assignments, *, support=False):
+def reference_action(info, config, assignments, *, predictive=False):
     commands = np.zeros((MAX_PURSUERS, 3))
     for i, j in assignments:
-        if not info["evader_mask"][j]:
-            continue
-        p = info["pursuers"][i]
-        e = info["evaders"][j]
-        if config.task != "S0" or config.evader_mode != "goal_seeking" or (
-                config.pursuer_tau != config.evader_tau or config.pursuer_vmax <= config.evader_vmax):
-            delta = e[:3]-p[:3]
-            desired = unit(delta)*(np.linalg.norm(delta) -
-                                    (config.capture_inner_radius+config.capture_outer_radius)/2)
-            commands[i] = e[3:] + .8*desired + 1.2*(e[3:]-p[3:])
-            continue
-        # Relative stopping distance under the same first-order lag. Brake
-        # early by two control periods, then hold a non-contact offset.
-        outward = unit(e[:3] - navigation_point(config))
-        delta = e[:3] - p[:3]
-        axial = delta @ outward
-        gap = axial - (config.capture_inner_radius+config.capture_outer_radius)/2
-        relative_velocity = e[3:] - p[3:]
-        closing = -relative_velocity @ outward
-        target_speed = config.evader_vmax * config.evader_speed_fraction
-        brake = config.pursuer_vmax - target_speed
-        speed = max(0., closing)
-        stopping = config.pursuer_tau * (speed - brake * np.log1p(speed / brake))
-        relative_command = (config.pursuer_vmax + target_speed
-                            if gap > stopping + 2 * config.dt * speed else -brake)
-        if abs(gap) < .55 and abs(closing) < 1.25:
-            relative_command = 1.5 * gap - 1.6 * closing
-        lateral = delta - axial * outward
-        commands[i] = ((relative_command - target_speed) * outward + .75 * lateral +
-                       relative_velocity + closing * outward)
-    if support:
-        owners = {i for i, _ in assignments}
-        # Support agents approach a wider standoff. Nearest assignments are
-        # recomputed from current state, so any agent can become the pursuer.
-        for i in np.flatnonzero(info["active_mask"]):
-            if i not in owners:
-                j = min((j for _, j in assignments),
-                        key=lambda j: np.linalg.norm(info["evaders"][j, :3]-info["pursuers"][i, :3]))
-                p, e = info["pursuers"][i], info["evaders"][j]
-                delta = e[:3]-p[:3]
-                commands[i] = e[3:] + .6*unit(delta)*(np.linalg.norm(delta)-7.) + .8*(e[3:]-p[3:])
-            others = np.flatnonzero(info["active_mask"] & (np.arange(MAX_PURSUERS) != i))
-            for j in others:
-                away = info["pursuers"][i, :3]-info["pursuers"][j, :3]
-                commands[i] += 2*max(0., 3.-np.linalg.norm(away))*unit(away)
+        p, e = info["pursuers"][i], info["evaders"][j]
+        desired = unit(e[:3]-p[:3])*config.pursuer_vmax
+        if predictive:
+            # Nominal target navigation from current state only. The simulator
+            # still executes the configured target policy independently.
+            target = unit(navigation_point(config)-e[:3])*config.evader_vmax*config.evader_speed_fraction
+            target = execute_velocity(target, e[3:], config.evader_vmax, config.evader_tau, config)
+            for t in np.arange(config.predictive_step, config.predictive_horizon+1e-9, config.predictive_step):
+                point = advance(e, target, config.evader_tau, t)[:3]
+                drift = advance(p, np.zeros(3), config.pursuer_tau, t)[:3]
+                gain = t+config.pursuer_tau*np.expm1(-t/config.pursuer_tau)
+                request = (point-drift)/gain
+                desired = request
+                allowed = execute_velocity(request, p[3:], config.pursuer_vmax, config.pursuer_tau, config)
+                miss = np.linalg.norm(advance(p, allowed, config.pursuer_tau, t)[:3]-point)
+                if miss <= config.pursuer_collision_radius+config.evader_collision_radius:
+                    break
+                if np.linalg.norm(point[:2]-config.center[:2]) <= config.radius:
+                    break
+        commands[i] = desired
     return .5 + .5 * commands / np.maximum(config.pursuer_vmax,
                                            np.linalg.norm(commands, axis=-1, keepdims=True))
 
@@ -184,8 +161,10 @@ def trace_row(info, action=None):
     return {key: info[key] for key in ("pursuers", "evaders", "active_mask", "evader_mask",
                                       "events", "step", "time", "outcome", "minimum_separation",
                                       "reward_parts", "task", "initialization", "minimum_center_distance",
-                                      "minimum_surface_clearance", "participation_seconds")} | dict(commands=info.get("commands"),
-        physical_time=info["time"], normalized_actions=action, dwell_seconds=info["dwell_seconds"],
+                                      "minimum_surface_clearance", "reset_seed")} | dict(commands=info.get("commands"),
+        physical_time=info["time"], normalized_actions=action,
+        requested_velocities=info.get("requested_velocities"), initial_accelerations=info.get("initial_accelerations"),
+        command_duration=info.get("command_duration"),
         pursuer_speed=np.where(info["active_mask"], np.linalg.norm(p[:, 3:], axis=1), None),
         evader_speed=np.where(info["evader_mask"], np.linalg.norm(e[:, 3:], axis=1), None),
         distances=np.where(valid, np.linalg.norm(p[:, None, :3]-e[None, :, :3], axis=-1), None),
@@ -202,14 +181,16 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
     while True:
         if policy == "random":
             action = rng.random((MAX_PURSUERS, 3))
-        elif policy in ("reference", "paired_reference"):
+        elif policy == "stationary":
+            action = np.full((MAX_PURSUERS, 3), .5)
+        elif policy in ("reference", "predictive", "paired_reference"):
             pursuers = list(np.flatnonzero(info["active_mask"]))
             assignments = []
             for j in np.flatnonzero(info["evader_mask"]):
                 i = min(pursuers, key=lambda i: np.linalg.norm(info["pursuers"][i, :3]-info["evaders"][j, :3]))
                 assignments.append((i, j))
                 pursuers.remove(i)
-            action = reference_action(info, config, assignments, support=policy == "paired_reference")
+            action = reference_action(info, config, assignments, predictive=policy in ("predictive", "paired_reference"))
         else:
             action = model.act(obs, info["active_mask"], deterministic=deterministic)[0].cpu().numpy()
         try:
@@ -310,7 +291,7 @@ def main(argv=None):
         command.add_argument("--episodes", type=int, default=1)
         command.add_argument("--out", type=Path, required=True)
         command.add_argument("--gzip", action="store_true", help="compress trajectory JSON")
-    run.add_argument("--policy", choices=("reference", "random"), default="reference")
+    run.add_argument("--policy", choices=("reference", "predictive", "stationary", "random"), default="reference")
     assess.add_argument("checkpoint", type=Path)
     assess.add_argument("--stochastic", action="store_true")
     fit = sub.add_parser("train")

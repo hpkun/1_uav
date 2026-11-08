@@ -11,7 +11,7 @@ import zipfile
 
 from .serialization import serializable
 
-OUTCOMES = ("success", "breach", "collision", "timeout", "pursuer_boundary_violation",
+OUTCOMES = ("success", "breach", "friendly_collision", "evader_collision", "timeout", "pursuer_boundary_violation",
             "evader_escape", "simulation_failure")
 
 
@@ -98,8 +98,8 @@ def summarize(rows):
         active = [row for row in rows if row.get("initial", {}).get("active_mask", [False]*5)[i]]
         if active:
             participation[str(i)] = dict(trials=len(active),
-                mean_qualified_pair_seconds=mean(row["participation_seconds"][i] for row in active),
                 captures=sum(list(row["capture_owners"].values()).count(i) for row in active))
+    contacts = [time for row in rows for time in row.get("capture_times", {}).values()]
     partial = [row for row in rows if row.get("captured_ids") and
                len(row["captured_ids"]) < len(row["target_ids"])]
     return dict(episodes=total, outcomes=outcomes, **{
@@ -110,7 +110,10 @@ def summarize(rows):
                 partial_capture_rate=len(partial)/total if total else None,
                 minimum_surface_clearance_m=min(clearances, default=None),
                 mean_minimum_surface_clearance_m=mean(clearances) if clearances else None,
-                near_miss_count=sum(row.get("near_miss_count", 0) for row in rows),
+                collision_rate=(outcomes["friendly_collision"]+outcomes["evader_collision"])/total if total else None,
+                mean_pursuer_losses=mean(row.get("pursuer_losses", 0) for row in rows) if total else None,
+                friendly_warning_count=sum(row.get("friendly_warning_count", 0) for row in rows),
+                mean_interception_contact_time_s=mean(contacts) if contacts else None,
                 collision_types={key: sum(row.get("collision_types", {}).get(key, 0) for row in rows)
                                  for key in ("PP", "PE", "EE")},
                 pursuer_participation=participation,
@@ -188,8 +191,8 @@ def evaluation_records(folder, run, count):
 def score(row):
     stats = row["summary"]
     capture = stats["mean_capture_time_s"]
-    return (-stats["success_rate"], stats["breach_rate"], stats["collision_rate"],
-            stats.get("pursuer_boundary_violation_rate", 0.), stats.get("evader_escape_rate", 0.),
+    return (-stats["success_rate"], stats["breach_rate"], stats.get("friendly_collision_rate", stats["collision_rate"]),
+            stats.get("evader_collision_rate", 0.), stats.get("pursuer_boundary_violation_rate", 0.), stats.get("evader_escape_rate", 0.),
             float("inf") if capture is None else capture, row["update"])
 
 
@@ -214,7 +217,7 @@ def publish_best(folder, evaluations, update):
     stats = winner["summary"]
     atomic_json(metadata, dict(best_update=winner["update"], best_joint_steps=winner["joint_steps"],
                               best_score={key: stats[key] for key in ("success_rate", "breach_rate",
-                                          "collision_rate", "pursuer_boundary_violation_rate",
+                                          "collision_rate", "friendly_collision_rate", "evader_collision_rate", "pursuer_boundary_violation_rate",
                                           "evader_escape_rate", "mean_capture_time_s")},
                               evaluation_protocol=winner["protocol"],
                               checkpoint_source=winner["checkpoint_source"], checkpoint_sha256=wanted))
@@ -249,7 +252,7 @@ def write_views(folder, records, *, append=False):
 
 def evaluation_csv(folder, rows):
     fields = ["update", "joint_steps", "scenario", "seeds", "success_rate", "breach_rate",
-              "collision_rate", "timeout_rate", "pursuer_boundary_violation_rate", "evader_escape_rate",
+              "collision_rate", "friendly_collision_rate", "evader_collision_rate", "mean_pursuer_losses", "timeout_rate", "pursuer_boundary_violation_rate", "evader_escape_rate",
               "protection_success_rate", "partial_capture_rate", "mean_capture_time_s", "mean_episode_return"]
     buffer = io.StringIO(newline="")
     writer = csv.DictWriter(buffer, fieldnames=fields)
@@ -271,7 +274,7 @@ def terminal_line(record, recent):
     return (f"[TRAIN] update {record['update']}/{record['planned_updates']} | "
             f"joint steps {record['joint_steps']} | episodes {record['completed_episodes_total']} | "
             f"window n={window['episodes']}/100 success {show(window['success_rate'], '.1%')} "
-            f"breach {show(window['breach_rate'], '.1%')} collision {show(window['collision_rate'], '.1%')} "
+            f"breach {show(window['breach_rate'], '.1%')} friendly collision {show(window['friendly_collision_rate'], '.1%')} evader collision {show(window['evader_collision_rate'], '.1%')} "
             f"boundary {show(window['pursuer_boundary_violation_rate'], '.1%')} "
             f"escape {show(window['evader_escape_rate'], '.1%')} "
             f"timeout {show(window['timeout_rate'], '.1%')} return {show(window['mean_episode_return'])} "

@@ -78,7 +78,7 @@ def plot(output, curves, evaluations):
     rewards.set(title="Reward components · last 100 episodes", xlabel="Update")
     evaluation = axes.flat[11]
     combined["evaluation"] = {}
-    for metric in ("success_rate", "breach_rate", "collision_rate", "pursuer_boundary_violation_rate",
+    for metric in ("success_rate", "breach_rate", "friendly_collision_rate", "evader_collision_rate", "pursuer_boundary_violation_rate",
                    "evader_escape_rate", "protection_success_rate", "partial_capture_rate"):
         values = []
         for update in sorted({r["update"] for rows in evaluations for r in rows}):
@@ -158,14 +158,14 @@ def generate(folders, output):
         lines.append(f'| {row["path"]} / {seed} | {row["completed_updates"]}/{row["planned_updates"]} | '
                      f'{row["joint_steps"]}/{row["planned_joint_steps"]} | {row["completed_episodes"]} | '
                      f'{selected} | {latest} |')
-    lines.extend(["", "| Seed | Model | All captured | Breach | Collision | Boundary | Escape | Timeout | "
+    lines.extend(["", "| Seed | Model | All captured | Breach | Friendly collision | Evader collision | Boundary | Escape | Timeout | "
                   "Protection | Partial capture | Mean successful capture (s) |",
-                  "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+                  "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
     for row in runs:
         for name, metrics in (("Best", row["best_evaluation"]),
                               ("Latest", row["latest_evaluation"])):
             rates = [f"{metrics[key]:.1%}" if metrics else "N/A"
-                     for key in ("success_rate", "breach_rate", "collision_rate",
+                     for key in ("success_rate", "breach_rate", "friendly_collision_rate", "evader_collision_rate",
                                  "pursuer_boundary_violation_rate", "evader_escape_rate", "timeout_rate",
                                  "protection_success_rate", "partial_capture_rate")]
             duration = metrics["mean_capture_time_s"] if metrics else None
