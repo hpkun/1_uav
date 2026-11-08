@@ -182,10 +182,17 @@ def render(source, output):
     time_indices = {timestamp: i for i, timestamp in enumerate(times)}
     config = timeline.data["config"]
     center, radius = np.array(config["center"]), config["radius"]
-    theta, phi = np.meshgrid(np.linspace(0, 2*np.pi, 32), np.linspace(0, np.pi, 16))
-    sphere = radius * np.array([np.cos(theta)*np.sin(phi), np.sin(theta)*np.sin(phi), np.cos(phi)])
-    sphere += center[:, None, None]
-    figure = go.Figure(go.Surface(x=sphere[0], y=sphere[1], z=sphere[2], opacity=.22,
+    if config.get("protected_zone") == "ground_cylinder":
+        theta, z = np.meshgrid(np.linspace(0, 2*np.pi, 32),
+                               np.linspace(center[2], center[2] + config["protected_height"], 16))
+        surface = np.array([center[0] + radius*np.cos(theta),
+                            center[1] + radius*np.sin(theta), z])
+    else:
+        theta, phi = np.meshgrid(np.linspace(0, 2*np.pi, 32), np.linspace(0, np.pi, 16))
+        surface = radius * np.array([np.cos(theta)*np.sin(phi),
+                                    np.sin(theta)*np.sin(phi), np.cos(phi)])
+        surface += center[:, None, None]
+    figure = go.Figure(go.Surface(x=surface[0], y=surface[1], z=surface[2], opacity=.22,
                                   name="Protected zone", showscale=False, showlegend=True,
                                   colorscale=[[0, "#55a868"], [1, "#55a868"]]))
     for entity in samples[0]["entities"]:
@@ -254,17 +261,25 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
     samples = [timeline.at(t) for t in video_times(timeline.duration, fps)]
     history = [timeline.at(t) for t in timeline.key_times]
     bounds = timeline.bounds(samples + history)
-    center, radius = timeline.data["config"]["center"], timeline.data["config"]["radius"]
-    theta, phi = np.meshgrid(np.linspace(0, 2*np.pi, 28), np.linspace(0, np.pi, 14))
+    config = timeline.data["config"]
+    center, radius = config["center"], config["radius"]
+    if config.get("protected_zone") == "ground_cylinder":
+        theta, vertical = np.meshgrid(np.linspace(0, 2*np.pi, 28),
+                                      np.linspace(center[2], center[2] + config["protected_height"], 14))
+        surface = (center[0] + radius*np.cos(theta),
+                   center[1] + radius*np.sin(theta), vertical)
+    else:
+        theta, phi = np.meshgrid(np.linspace(0, 2*np.pi, 28), np.linspace(0, np.pi, 14))
+        surface = (center[0] + radius*np.cos(theta)*np.sin(phi),
+                   center[1] + radius*np.sin(theta)*np.sin(phi),
+                   center[2] + radius*np.cos(phi))
     figure = plt.figure(figsize=(width/100, height/100), dpi=100)
     axes = figure.add_subplot(projection="3d", computed_zorder=False)
     axes.view_init(elev=elevation, azim=azimuth)
     axes.set(xlim=bounds[0], ylim=bounds[1], zlim=bounds[2],
              xlabel="x (m)", ylabel="y (m)", zlabel="z (m)")
     axes.set_box_aspect(np.ptp(bounds, axis=1))
-    axes.plot_surface(center[0]+radius*np.cos(theta)*np.sin(phi),
-                      center[1]+radius*np.sin(theta)*np.sin(phi),
-                      center[2]+radius*np.cos(phi), color="#55a868", alpha=.13, zorder=0)
+    axes.plot_surface(*surface, color="#55a868", alpha=.13, zorder=0)
     paths, points, labels = [], [], []
     for entity in samples[0]["entities"]:
         paths.append(axes.plot([], [], [], color=entity["color"], zorder=2)[0])

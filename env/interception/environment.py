@@ -10,6 +10,7 @@ from .motion import advance, command
 from .observation import observe
 from .reward import reward_parts
 from .scenario import generate, evader_commands
+from .protected_area import intrusion_windows
 
 
 class SimulationFailure(FloatingPointError):
@@ -107,7 +108,8 @@ class InterceptionEnv:
         states = np.vstack((s.pursuers, s.evaders))
         valid = np.flatnonzero(np.r_[s.pursuer_mask, s.evader_mask])
         targets = np.zeros((len(states), 3))
-        targets[np.flatnonzero(s.pursuer_mask)] = command(active, c.pursuer_vmax)
+        targets[np.flatnonzero(s.pursuer_mask)] = command(
+            active, c.pursuer_vmax, c.pursuer_vertical_vmax)
         targets[MAX_PURSUERS:] = evader_commands(s.evaders, s.evader_mask,
                                                 s.pursuers[s.pursuer_mask], c, s.phases, s.time)
         taus = np.r_[np.full(MAX_PURSUERS, c.pursuer_tau), np.full(MAX_EVADERS, c.evader_tau)]
@@ -157,9 +159,8 @@ class InterceptionEnv:
                         candidates.append((min(reached, end), 3, i, j, "capture"))
                     if end >= c.dt - 1e-13:
                         dwell[i, target] = previous + end - start
-        center = np.array(c.center)
         for j in valid[valid >= MAX_PURSUERS]:
-            breach = threshold(lambda t: at(j, t)[:3] - center, acc[j], c.radius)
+            breach = intrusion_windows(lambda t: at(j, t)[:3], acc[j], c)
             if breach:
                 candidates.append((breach[0][0], 1, int(j), int(j), "breach"))
         for i in valid:

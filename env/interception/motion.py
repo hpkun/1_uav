@@ -2,13 +2,18 @@
 import numpy as np
 
 
-def project(vector, limit):
+def project(vector, limit, vertical_limit=None):
+    """Project a velocity into the total-speed ball and optionally limit climb/descent."""
     vector = np.asarray(vector, dtype=float)
-    return limit * vector / np.maximum(1., np.linalg.norm(vector, axis=-1, keepdims=True))
+    projected = limit * vector / np.maximum(1., np.linalg.norm(vector, axis=-1, keepdims=True))
+    if vertical_limit is not None:
+        projected = np.array(projected, copy=True)
+        projected[..., 2] = np.clip(projected[..., 2], -vertical_limit, vertical_limit)
+    return projected
 
 
-def command(actions, limit):
-    return project(2. * np.asarray(actions, dtype=float) - 1., limit)
+def command(actions, limit, vertical_limit=None):
+    return project(2. * np.asarray(actions, dtype=float) - 1., limit, vertical_limit)
 
 
 def advance(state, target, tau, duration):
