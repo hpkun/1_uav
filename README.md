@@ -157,6 +157,26 @@ python -m tools.preset_trajectory_audit --out "$root" --episodes 50 --seed 1200 
 python -m tools.preset_trajectory_audit --out outputs/preset_bezier_new --mode bezier --limits 12 --episodes 1
 ```
 
+### 预设轨迹 MAPPO
+
+协议 `uav-preset-tracking-mappo-v1.0.0` 单独训练 `straight` 和 `bezier`。默认两架非接触式 UAV，最多五槽，无移动目标及接触事件。Actor 和 Critic 均为 91 维。每槽含位置、速度、相对参考位置、参考速度、参考加速度、参考剩余时间、成员截止倒计时和有效标志。Actor 自身槽在首位，Critic 按实体 ID 排列。末维为全局预算剩余比例。位置除以 50 m，速度除以物理速度上限，加速度除以水平加速度上限，两类时间均除以回合最大时长。失活或空槽为零。
+
+位置和速度误差按活跃时间及初始成员数聚合。每完整控制步的位置误差系数为 `1 / 10 m`，速度误差系数为 `0.25 / vmax`，时间代价为 0.002。到期达到位置和速度容差的成员贡献 `+5/N`，精度失败成员贡献 `−2/N`，越界整局扣 10。以上参数可用 `--env` 配置。成员在参考时长加保持期截止时退出，越界真终止，预算到达而仍活动则截断。数值异常显式停止训练并保留最新有效提交。此协议不启用方向势函数。
+
+```bash
+conda activate uav
+common=(--total-steps 1048576 --device cuda:0 --seed 17 --workers 4 --horizon 128
+        --epochs 4 --minibatch 256 --gamma 0.99 --gae-lambda 0.95
+        --actor-lr 0.0003 --critic-lr 0.0005 --eval-interval 16
+        --eval-seed 2200 --eval-episodes 10)
+python -m algorithm.trajectory_tracking train --mode straight "${common[@]}" --out outputs/tracking_straight
+python -m algorithm.trajectory_tracking train --mode bezier "${common[@]}" --out outputs/tracking_bezier
+python -m tools.trajectory_tracking_report --straight outputs/tracking_straight \
+  --bezier outputs/tracking_bezier --out outputs/tracking_comparison
+```
+
+`resume --out 运行目录 --mode 原模式` 恢复已保存预算。训练和恢复可加 `--until-steps` 在预算内暂停，步数必须对齐 `workers × horizon`。`evaluate latest.pt --out 新目录` 使用固定种子的确定性策略。评估逐局报告参考末点误差、保持末端误差、位置误差分位数、实际航程和限幅次数。时间归一化误差仅在参考运动阶段按实体秒数加权，路径归一化再对各成员的误差除以其参考弧长。
+
 ## 静态航路方向奖励消融
 
 独立协议 `uav-static-navigation-v1.0.0` 使用可见的静态航路点、原解析动力学和 52/54 维网络。独立导航基础奖励为距离进度、到达、越界与时间代价。无移动目标及接触判定。配置字段 `heading_enabled=false`、`heading_weight=0.3`、`heading_velocity_reference=1.0`、`heading_distance_reference=5.0`、`heading_discount=0.99`。启用时检查折扣与训练 gamma 严格相同。拦截任务保持原协议和奖励。

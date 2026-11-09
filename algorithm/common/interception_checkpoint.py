@@ -19,7 +19,7 @@ PROTOCOL = dict(version=VERSION, algorithm="uav-interception-mappo-v4",
                 pursuers=MAX_PURSUERS, evaders=MAX_EVADERS)
 
 
-def save(path, model, config, vector, last_log=None, *, run=None, protocol=PROTOCOL):
+def save(path, model, config, vector, last_log=None, *, run=None, protocol=PROTOCOL, evaluations=None):
     environment = asdict(config)
     if run is not None:
         # A resumed historical run keeps its originally committed schema.
@@ -34,6 +34,8 @@ def save(path, model, config, vector, last_log=None, *, run=None, protocol=PROTO
                    vector=vector.snapshot(), last_log=last_log)
     if run is not None:
         payload["research_run"] = run
+    if evaluations is not None:
+        payload["evaluations"] = evaluations
     path = Path(path)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)

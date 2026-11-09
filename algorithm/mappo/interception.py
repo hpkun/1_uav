@@ -65,12 +65,16 @@ def clean_central(states):
 
 
 class MAPPO:
-    def __init__(self, config):
+    observation_dim = OBS_DIM
+    state_dim = STATE_DIM
+    clean_states = staticmethod(clean_central)
+
+    def __init__(self, config, *, device="cuda"):
         self.config = config
-        self.device = require_cuda()
+        self.device = require_cuda(device)
         torch.set_num_threads(1)
-        self.actor = network(OBS_DIM, 2 * AXES, .01).to(self.device)
-        self.critic = network(STATE_DIM, MAX_PURSUERS, 1.).to(self.device)
+        self.actor = network(self.observation_dim, 2 * AXES, .01).to(self.device)
+        self.critic = network(self.state_dim, MAX_PURSUERS, 1.).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         self.updates = self.steps = self.episodes = 0
@@ -100,11 +104,11 @@ class MAPPO:
         rows, episodes = [], []
         for _ in range(self.config.horizon):
             obs = self.tensor(vector.observations).float()
-            states = clean_central(self.tensor(vector.states).float())
+            states = self.clean_states(self.tensor(vector.states).float())
             mask = self.tensor(vector.masks).bool()
             action, logp = self.act(obs, mask)
             result = vector.step(action.cpu().numpy())
-            final = clean_central(self.tensor(result.transition_states).float())
+            final = self.clean_states(self.tensor(result.transition_states).float())
             rows.append((obs, states, action, logp, self.critic(states), self.critic(final),
                          self.tensor(result.rewards), mask, self.tensor(result.next_masks),
                          self.tensor(result.terminated), self.tensor(result.truncated)))
@@ -121,8 +125,8 @@ class MAPPO:
         obs, actions = rollout.observations[valid], rollout.actions[valid]
         old_log, advantage, returns = rollout.log_probs[valid], advantage[valid], returns[valid]
         slots = torch.where(valid)[-1]
-        states = rollout.states.unsqueeze(-2).expand(*valid.shape, STATE_DIM)[valid]
-        states = clean_central(states)
+        states = rollout.states.unsqueeze(-2).expand(*valid.shape, self.state_dim)[valid]
+        states = self.clean_states(states)
         if not len(obs) or not all(torch.isfinite(t).all() for t in (obs, actions, old_log, states)):
             raise FloatingPointError("invalid PPO batch")
         if not ((actions > 0) & (actions < 1)).all():
