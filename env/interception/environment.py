@@ -2,15 +2,20 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from itertools import combinations
 from functools import lru_cache
+from typing import TYPE_CHECKING
 import numpy as np
 
-from .config import InterceptionConfig, VERSION, MAX_PURSUERS, MAX_EVADERS, OBS_DIM, STATE_DIM, SLOT, matches_saved_config
+from .config import (InterceptionConfig, VERSION, MAX_PURSUERS, MAX_EVADERS, OBS_DIM, STATE_DIM, SLOT,
+                     PRESET_EVADER_MODES, matches_saved_config)
 from .events import windows, minimum_distance, boundary_contact
 from .motion import advance, command, execute_velocity
 from .observation import observe
 from .reward import reward_parts
 from .scenario import generate, evader_commands
 from .protected_area import intrusion_windows, navigation_point
+
+if TYPE_CHECKING:
+    from .preset import EvaderReference
 
 
 class SimulationFailure(FloatingPointError):
@@ -35,6 +40,7 @@ class InterceptionState:
     warning_pairs: set
     reset_seed: object
     initialization: str
+    evader_reference: "EvaderReference | None" = None
 
 
 class InterceptionEnv:
@@ -68,14 +74,22 @@ class InterceptionEnv:
         clearance = float((np.linalg.norm(points[i]-points[j], axis=1)-sizes[i]-sizes[j]).min())
         phases = (np.zeros(slots) if options.get("scenario") == "fixed"
                   else self.rng.uniform(0., 2 * np.pi, slots))
+        reference = None
+        if self.config.evader_mode in PRESET_EVADER_MODES:
+            # The preset module also imports the interception flight model.
+            from .preset import build_evader_reference
+
+            reference = build_evader_reference(e, self.config, int(self.rng.integers(2**32)))
         self.state = InterceptionState(pursuers, evaders, np.arange(MAX_PURSUERS) < len(p),
                                        np.arange(slots) < len(e),
                                        evaders[:, :3].copy(),
                                        phases,
                                        0, 0., [], "ongoing", failures, minimum, clearance, set(),
                                        (seed.state if isinstance(seed, np.random.SeedSequence) else seed),
-                                       options.get("scenario", "random"))
+                                       options.get("scenario", "random"), reference)
         obs, info = self._output([], {}, 0.)
+        if reference is not None:
+            info["evader_reference"] = dict(seed=reference.seed, paths=[asdict(path) for path in reference.paths])
         def geometry(states, origin):
             offset = states[:, :3]-origin
             return dict(distance=np.linalg.norm(offset, axis=1).tolist(),
@@ -123,9 +137,12 @@ class InterceptionEnv:
         valid = np.flatnonzero(np.r_[s.pursuer_mask, s.evader_mask])
         requests = np.zeros((len(states), 3))
         requests[s.pursuer_mask.nonzero()[0]] = command(active, c.pursuer_vmax)
-        requests[MAX_PURSUERS:] = evader_commands(s.evaders, s.evader_mask,
-                                                  s.pursuers[s.pursuer_mask], c, s.phases, s.time,
-                                                  s.evader_origins)
+        if s.evader_reference is None:
+            requests[MAX_PURSUERS:] = evader_commands(s.evaders, s.evader_mask,
+                                                      s.pursuers[s.pursuer_mask], c, s.phases, s.time,
+                                                      s.evader_origins)
+        else:
+            requests[MAX_PURSUERS:] = s.evader_reference.commands(s.evaders, s.evader_mask, s.time)
         taus = np.r_[np.full(MAX_PURSUERS, c.pursuer_tau), np.full(len(s.evaders), c.evader_tau)]
         targets = np.zeros_like(requests)
         acceleration = np.zeros_like(requests)
@@ -267,7 +284,7 @@ class InterceptionEnv:
                                       alive[:MAX_PURSUERS], alive[MAX_PURSUERS:], s.evader_origins, s.phases,
                                       s.step + 1, s.time + elapsed, s.events + events, outcome,
                                       s.spawn_rejections, minimum, clearance, warning_pairs, s.reset_seed,
-                                      s.initialization)
+                                      s.initialization, s.evader_reference)
         self.state = successor
         try:
             obs, info = self._output(events, parts, effort)

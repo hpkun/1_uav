@@ -9,9 +9,12 @@ from statistics import mean
 
 import numpy as np
 
+from algorithm.common import terminal
 from algorithm.common.serialization import serializable, write_json
 from env.preset_tracking import run_tracking
 from env.preset_trajectory import MODES, VERSION, TrajectoryConfig, build_path
+
+EXPERIMENT = "Preset trajectory audit"
 
 
 def _write_episode(path,result):
@@ -74,6 +77,8 @@ def aggregate(runs):
 
 def audit(output,base,limits,seeds,kinds=MODES):
     output.mkdir(parents=True,exist_ok=False)
+    terminal.emit(EXPERIMENT, "START", f"Modes {', '.join(kinds)}", f"Seeds {terminal.seed_span(seeds)}",
+                  f"{len(seeds):,} episodes per mode and speed", f"Output {output}")
     summaries=[]
     for vmax in limits:
         config = base if vmax==base.vmax else replace(base,vmax=vmax,reference_speed=min(base.reference_speed,.8*vmax))
@@ -93,10 +98,14 @@ def audit(output,base,limits,seeds,kinds=MODES):
                 _write_episode(folder/f'{run["kind"]}_{seed}.json.gz',run)
         plot_pair([runs[k][0] for k in kinds],config,folder/"comparison.png")
         summaries.append(dict(config=asdict(config),results={k:aggregate(v) for k,v in runs.items()}))
-        print(vmax,[(k,s["outcomes"]) for k,s in summaries[-1]["results"].items()],flush=True)
+        for kind, stats in summaries[-1]["results"].items():
+            terminal.emit(EXPERIMENT, "RUN", f"Mode {kind}, speed limit {terminal.number(vmax, 'm/s')}",
+                          f"Settled members {stats['settled']}/{stats['members']}",
+                          f"Mean position error {terminal.number(stats['mean_position_error'], 'm')}")
     write_json(output/"summary.json",dict(version=VERSION,seeds=seeds,groups=summaries,
                actual_length_method="sum of 3D chords at control-frame times",
                representative_seed=seeds[0]))
+    terminal.emit(EXPERIMENT, "DONE", f"Summary {output/'summary.json'}")
 
 
 def main():
@@ -119,4 +128,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    terminal.run_cli(EXPERIMENT, main)

@@ -221,6 +221,7 @@ def publish_best(folder, evaluations, update):
                                           "evader_escape_rate", "mean_capture_time_s")},
                               evaluation_protocol=winner["protocol"],
                               checkpoint_source=winner["checkpoint_source"], checkpoint_sha256=wanted))
+    return winner["update"]
 
 
 def metric_rows(record):
@@ -263,23 +264,3 @@ def evaluation_csv(folder, rows):
         values["seeds"] = encoded(row["seeds"])
         writer.writerow({key: values[key] for key in fields})
     atomic_bytes(folder / "evaluation_history.csv", buffer.getvalue().encode("utf-8"))
-
-
-def terminal_line(record, recent):
-    window = summarize(recent[-100:])
-
-    def show(value, style=".3f"):
-        return "N/A" if value is None else format(value, style)
-
-    return (f"[TRAIN] update {record['update']}/{record['planned_updates']} | "
-            f"joint steps {record['joint_steps']} | episodes {record['completed_episodes_total']} | "
-            f"window n={window['episodes']}/100 success {show(window['success_rate'], '.1%')} "
-            f"breach {show(window['breach_rate'], '.1%')} friendly collision {show(window['friendly_collision_rate'], '.1%')} evader collision {show(window['evader_collision_rate'], '.1%')} "
-            f"boundary {show(window['pursuer_boundary_violation_rate'], '.1%')} "
-            f"escape {show(window['evader_escape_rate'], '.1%')} "
-            f"timeout {show(window['timeout_rate'], '.1%')} return {show(window['mean_episode_return'])} "
-            f"capture {show(window['mean_capture_time_s'])} s (n={window['capture_time_samples']}) | "
-            f"actor {show(record['actor_total_loss'])} critic {show(record['critic_loss'])} "
-            f"entropy {show(record['entropy'])} KL {show(record['approx_kl'], '.3g')} "
-            f"clip {show(record['clip_fraction'], '.1%')} valid {record['valid_samples']} | "
-            f"{record['sampling_speed']:.1f} joint steps/s")

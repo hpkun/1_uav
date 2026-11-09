@@ -77,7 +77,38 @@ def test_reset_slots_and_normalization(scale):
     assert not hasattr(env.state, "frame")
 
 
-@pytest.mark.parametrize("mode", ["constant_velocity", "goal_seeking", "bounded_maneuver", "reactive_evasion"])
+def test_preset_evader_modes_share_initial_state_and_follow_distinct_paths():
+    straight, bezier = (InterceptionEnv(InterceptionConfig(scale="5v2", evader_mode=mode))
+                        for mode in ("straight", "preset_bezier"))
+    _, a = straight.reset(42)
+    _, b = bezier.reset(42)
+    for key in ("pursuers", "evaders", "active_mask", "evader_mask"):
+        np.testing.assert_array_equal(a[key], b[key])
+    assert a["evader_reference"]["seed"] == b["evader_reference"]["seed"]
+    for line, curve in zip(a["evader_reference"]["paths"], b["evader_reference"]["paths"], strict=True):
+        assert len(line["points"]) == 2 and len(curve["points"]) == 4
+        assert line["points"][0] == curve["points"][0]
+        assert line["points"][-1] == curve["points"][-1]
+    a = straight.step(actions())[4]
+    b = bezier.step(actions())[4]
+    assert not np.allclose(a["evaders"], b["evaders"], rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize("mode", ["straight", "preset_bezier"])
+def test_preset_evader_contact_is_resolved_on_actual_motion(mode):
+    config = InterceptionConfig(scale="1v1", evader_mode=mode)
+    env = InterceptionEnv(config)
+    custom(env, [[30, 0, 20, 5, 0, 0]], [[31.2, 0, 20, 0, 0, 0]])
+    _, rewards, terminated, truncated, info = env.step(actions())
+    assert terminated and not truncated and info["outcome"] == "success"
+    assert not info["active_mask"].any() and not info["evader_mask"].any()
+    assert info["events"][0]["kind"] == "interception_contact"
+    assert 0 < info["time"] < config.dt
+    assert rewards[0] > 0 and not rewards[1:].any()
+
+
+@pytest.mark.parametrize("mode", ["constant_velocity", "goal_seeking", "bounded_maneuver", "reactive_evasion",
+                                  "straight", "preset_bezier"])
 def test_policy_speed_and_snapshot_reproducibility(mode):
     config = InterceptionConfig(evader_mode=mode, reactive_range=50.)
     env = InterceptionEnv(config)

@@ -43,8 +43,9 @@ def test_retiring_slot_keeps_contact_reward_without_bootstrap():
     torch.testing.assert_close(returns, advantage)
 
 
-def test_cuda_rollout_update_and_exact_resume(tmp_path):
-    config = InterceptionConfig()
+@pytest.mark.parametrize("mode", ["reactive_evasion", "straight", "preset_bezier"])
+def test_cuda_rollout_update_and_exact_resume(tmp_path, mode):
+    config = InterceptionConfig(evader_mode=mode)
     tc = TrainConfig(workers=2, horizon=4, epochs=1)
     model = MAPPO(tc)
     with InterceptionVectorEnv(config, tc.workers, tc.seed) as vector:

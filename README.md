@@ -102,18 +102,38 @@ ffprobe -v error -show_entries format_tags=comment -of json "$out/preset_bezier.
 - MP4 的 N 帧均匀覆盖物理区间 `[0,T]`，包含起止状态。非零 T 取 `N=max(2,ceil(T×fps))`，物理间隔为 `T/(N-1)`，固定帧率容器时长为 `N/fps`。零时长保留一个静帧。常规轨迹的容器时长误差小于一帧。极短轨迹优先保留两个不同时间的端点。需要 FFmpeg，可通过 `conda install -c conda-forge ffmpeg` 安装。导出器优先使用可用的 H.264 编码器，也支持 FFmpeg 的 MPEG-4 编码器。
 - 轨迹记录原始动作、速度请求、执行指令、实际状态、步初加速度、有效时长、掩码、相对几何、奖励和事件位置。速度与瞬时加速度由同一解析轨迹确定。读取器兼容 JSON 和 gzip。
 - `training_metrics.jsonl` 按 PPO 更新记录损失、熵、KL、clip fraction、有效样本、裁剪前梯度范数、学习率及采样和优化时间。速度为本次采样联合步数除以采样墙钟时间。更新耗时包含采样和优化。一个联合步指一个并行环境的一次联合转移。
-- `episode_metrics.jsonl` 每个完成回合一条，包含 worker 及其回合序号、结局、实际时长、捕获/突破/碰撞数、最小间距、指令强度和奖励分量。回报累计实际 float32 团队奖励，分量求和允许浮点舍入误差。终端展示最近最多 100 个已完成回合，窗口为空时显示 N/A。
+- `episode_metrics.jsonl` 每个完成回合一条，包含 worker 及其回合序号、结局、实际时长、捕获/突破/碰撞数、最小间距、指令强度和奖励分量。回报累计实际 float32 团队奖励，分量求和允许浮点舍入误差。终端训练进度汇总最近最多 100 个完整回合，分列全捕获率、防护成功率、突破率和平均回报。空窗口提示暂无完整回合。`--log-interval` 按累计 Update 控制进度行频率，每次训练或续训的最后一次更新也会打印。
 - 定期评估默认关闭。间隔设为正数后启用，同一运行的协议在启动时固定，默认随机场景和 Beta 均值动作。可选 `--evaluation-scenario fixed` 或 `--no-evaluation-deterministic`。单独评估的随机动作选项为 `--stochastic`。评估使用独立环境和固定种子，并恢复 CPU/CUDA Torch RNG。
 - `evaluation_*.json` 保存每局及聚合结果，`evaluation_history.csv` 是派生摘要。结局率分母为全部评估回合。捕获成功只统计全部捕获；防护成功统计全部捕获和完整坚持到时限的回合，撤离、突破和安全失败单列。部分捕获表示至少捕获一个且少于全部目标。单目标捕获率分母为该 ID 初始有效的回合数。全捕获平均时长只在成功局计算。同时记录异方接触导致的红方退出数量、同侧接触、友机预警和逐目标接触时刻。
 - `best.pt` 是胜出评估提交对应的 Checkpoint 副本，`best.json` 记录来源、更新数、联合步数、协议、分数和 SHA256。排序依次最大化捕获成功率，最小化突破率、友机碰撞率、Evader 同侧碰撞率、Pursuer 越界率、Evader 撤离率及成功局的平均捕获时长，最后保留更早更新。缺失捕获时长按最差排序。
 - 恢复核对运行身份、配置、连续更新记录及提交链。训练提交后可补写末条记录，评估未提交可补跑，已提交评估可补发 Best，JSONL 和 CSV 可重建。遇到超前日志、记录缺口或缺失且无法重建的历史 Best 会明确报错。v4 拒绝 v1–v3 Checkpoint 的训练恢复和评估。历史轨迹仍可按原协议回放。
 - 离线报告读取 JSON 记录与存档 ZIP 的轻量元数据，输出 `report.md`、`summary.json` 和 `training_curves.png`。多种子报告按 Update 对齐，输出均值、样本标准差和有效种子数，检查预算和配置一致性。无需 CUDA。
 
+终端默认输出简洁文本。`[Interception TRAIN]` 使用训练滚动窗口，`[Interception EVAL]` 使用独立评估样本。定期评估只在实际执行后输出，Best 完成校验和发布后显示对应 Update。拦截的 `validate`、`run` 和 `evaluate` 均可加 `--json`，在 stdout 获取原有 JSON 对象，供脚本继续解析。实验目录中的结构化文件仍使用原有协议。
+
 `validate`、`run`、`train` 支持 `--task S0|S1|S2|S3`、`--env 参数.json` 和 `--scale`。仅指定规模时，1v1、3v1、5v2 分别映射为 S0、S2、S3。JSON 按字段覆盖 `InterceptionConfig`，敏感性实验使用独立输出目录。模型评估从存档读取环境配置，训练配置可通过 `--training 参数.json` 覆盖。
 
 `validate` 和 `run` 另支持 `--scale 3v3`（任务 `reference_3v3`）。该模式使用三个目标槽和现有拦截规则，用于参考控制或随机控制仿真及录像。正式 MAPPO 训练和 Checkpoint 保持两目标槽协议。
 
 `validate`、`run`、`evaluate` 支持 `--scenario fixed|random|custom` 与 `--initial 初态.json`。固定与随机场景可用 `{"distance": 115}` 覆盖目标初始距离。自定义初态使用 `pursuers` 和 `evaders` 两个数组，行数须对应规模，列为 `[x,y,z,vx,vy,vz]`。控制器 `stationary` 发零速度指令，随机初速仍按原动力学衰减。`reference` 直追当前位置，`predictive` 使用当前状态和目标点导航假设搜索最早可达相遇点。配对难度审计对同一规模复用完整初态，只切换控制器、目标速度上限或 S1/S2 行为。
+
+### 蓝方 A/B 运动下的接触拦截训练
+
+`train`、`run` 和 `validate` 支持 `--evader-mode straight`（A，直线）和 `--evader-mode preset_bezier`（B，三次 Bézier），也可在环境 JSON 中设置 `evader_mode`。两种模式按同一场景种子采样双方初始位置、速度与有效掩码，从每架蓝机的初始位置到设施导航点生成固定参考航迹。蓝方以预设轨迹的前馈和误差反馈生成速度请求，由环境的飞行约束和解析积分执行。红方 MAPPO 观察实际运动状态，接触、突破和奖励均按实际连续轨迹结算。
+
+下面用 PowerShell 的 `uav` 环境分别执行两种模式的 CUDA 冒烟训练和定期评估。对比实验可为两组使用相同训练配置、预算和评估种子。续训和独立评估从 Checkpoint 恢复模式，独立评估轨迹的首帧保存 `evader_reference`，其中包含参考种子、控制点和参考时长。
+
+```powershell
+conda activate uav
+foreach ($mode in @('straight', 'preset_bezier')) {
+    python -m algorithm.interception train --task S2 --evader-mode $mode `
+        --training configs/interception_smoke.json --updates 1 `
+        --evaluation-interval-updates 1 --out "outputs/interception_ab/$mode"
+}
+python -m algorithm.interception resume --updates 1 --out outputs/interception_ab/straight
+python -m algorithm.interception evaluate outputs/interception_ab/straight/latest.pt `
+    --scenario random --seed 2200 --episodes 3 --out outputs/interception_ab/straight_eval
+```
 
 ## 环境协议
 
@@ -185,6 +205,8 @@ python -m tools.trajectory_tracking_report --straight outputs/tracking_straight 
 ```
 
 `resume --out 运行目录 --mode 原模式` 恢复已保存预算。训练和恢复可加 `--until-steps` 在预算内暂停，步数必须对齐 `workers × horizon`。`evaluate latest.pt --out 新目录` 使用固定种子的确定性策略。评估逐局报告参考末点误差、保持末端误差、位置误差分位数、实际航程和限幅次数。时间归一化误差仅在参考运动阶段按实体秒数加权，路径归一化再对各成员的误差除以其参考弧长。
+
+预设轨迹训练使用 `[Preset tracking TRAIN]` 展示完整预算进度，实际执行评估时另行输出跟踪成功率、平均位置误差和平均回报。到达 `--until-steps` 的中途停止点会显示 `[Preset tracking PAUSE]`。
 
 ## 静态航路方向奖励消融
 

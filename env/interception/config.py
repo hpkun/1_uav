@@ -12,7 +12,9 @@ ENTITY = 2 * AXES
 SLOT = ENTITY + 1
 OBS_DIM = 3 * AXES + 1 + (MAX_PURSUERS - 1 + MAX_EVADERS) * SLOT
 STATE_DIM = (MAX_PURSUERS + MAX_EVADERS) * SLOT + AXES + 2
-MODES = ("constant_velocity", "goal_seeking", "bounded_maneuver", "reactive_evasion", "bezier")
+PRESET_EVADER_MODES = {"straight": "straight", "preset_bezier": "bezier"}
+MODES = ("constant_velocity", "goal_seeking", "bounded_maneuver", "reactive_evasion", "bezier",
+         *PRESET_EVADER_MODES)
 PATROL_DEFAULTS = dict(pursuer_deployment="sectors", patrol_azimuth_jitter=.15, patrol_inward_fraction=.2)
 
 

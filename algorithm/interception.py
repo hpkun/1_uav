@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from env.interception import InterceptionConfig, InterceptionEnv, SimulationFailure
-from env.interception.config import VERSION, MAX_PURSUERS, SCALES, SCENARIO_SCALES, TASKS
+from env.interception.config import VERSION, MAX_PURSUERS, MODES, SCALES, SCENARIO_SCALES, TASKS
 from env.interception.scenario import unit
 from env.interception.motion import execute_velocity
 from env.interception.protected_area import navigation_point
@@ -22,10 +22,22 @@ from algorithm.common.interception_vector import EpisodeAccumulator, Interceptio
 from algorithm.common.interception_checkpoint import PROTOCOL, save, read, restore, load_weights
 from algorithm.common.research import (EvaluationProtocol, atomic_json, commit_header, digest,
     evaluation_csv, evaluation_records, file_digest, journal, publish_best, read_json,
-    summarize, terminal_line, write_views)
+    summarize, write_views)
 from algorithm.common.runtime import require_cuda
 from algorithm.common.serialization import serializable, write_json
+from algorithm.common import terminal
 from algorithm.mappo.interception import MAPPO, TrainConfig
+
+
+EXPERIMENT = "Interception"
+
+
+def action_mode(deterministic):
+    return "Beta mean" if deterministic else "Beta sample"
+
+
+def scenario_label(config, scenario):
+    return f"Task {config.task} ({config.scale}), scenario={scenario}, evader={config.evader_mode}"
 
 
 @contextmanager
@@ -89,12 +101,19 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
             else:
                 atomic_json(folder / "config.json", run)
                 save(latest, model, env_config, vector, run=run)
+            planned = model.updates + updates
+            total_steps = planned * train_config.workers * train_config.horizon
+            seed_base = evaluation.evaluation_seed_base
+            terminal.training_start(EXPERIMENT, scenario_label(env_config, run["training_scenario"]), train_config,
+                start_update=model.updates, planned_updates=planned, folder=folder, resume=resume,
+                evaluation=terminal.evaluation_setup(evaluation.evaluation_interval_updates,
+                    range(seed_base, seed_base + evaluation.evaluation_episodes),
+                    scenario=evaluation.evaluation_scenario, actions=action_mode(evaluation.evaluation_deterministic)))
             evaluations = evaluation_records(folder, run, model.updates)
             complete_evaluation(folder, run, model, env_config, evaluation, evaluations)
             write_views(folder, records)
             recent = [row for record in records for row in record["completed_episodes"]][-100:]
             previous = digest(records[-1]) if records else None
-            planned = model.updates + updates
             try:
                 for _ in range(updates):
                     start = time.perf_counter()
@@ -117,7 +136,8 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
                     previous = digest(record)
                     recent = (recent + episodes)[-100:]
                     if model.updates % log_interval == 0 or model.updates == planned:
-                        print(terminal_line(record, recent), flush=True)
+                        terminal.training_progress(EXPERIMENT, record, total_steps=total_steps,
+                            window=terminal.interception_results(summarize(recent), window=True))
                     if evaluation.evaluation_interval_updates and model.updates % evaluation.evaluation_interval_updates == 0:
                         complete_evaluation(folder, run, model, env_config, evaluation, evaluations)
             except (RuntimeError, FloatingPointError) as exc:
@@ -125,6 +145,7 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
                            dict(error=str(exc), last_committed=str(latest),
                                 simulation_failure="simulation_failure" in str(exc)))
                 raise
+        terminal.training_end(EXPERIMENT, model, latest)
     return latest
 
 
@@ -178,6 +199,8 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
     accumulator = EpisodeAccumulator()
     accumulator.reset(info)
     frames = [trace_row(info)] if trace else []
+    if trace and "evader_reference" in info:
+        frames[0]["evader_reference"] = info["evader_reference"]
     closest, friendly, end_event, first_contact, inside_10m, close_passes = {}, None, None, None, set(), {}
     if audit:
         started = time.perf_counter()
@@ -278,6 +301,7 @@ def complete_evaluation(folder, run, model, config, protocol, rows):
     update = model.updates
     interval = protocol.evaluation_interval_updates
     latest = folder / "latest.pt"
+    result = None
     if interval and update and update % interval == 0:
         source_hash = file_digest(latest)
         if rows and rows[-1]["update"] == update:
@@ -292,12 +316,17 @@ def complete_evaluation(folder, run, model, config, protocol, rows):
                           checkpoint_source=f"latest.pt at update {update}", checkpoint_sha256=source_hash)
             atomic_json(folder / f"evaluation_{update:06}.json", result)
             rows.append(result)
-    publish_best(folder, rows, update)
+    best_update = publish_best(folder, rows, update)
     evaluation_csv(folder, rows)
+    if result is not None:
+        terminal.emit(EXPERIMENT, "EVAL", f"Update {update:,}",
+                      f"Scenario {protocol.evaluation_scenario}, actions={action_mode(protocol.evaluation_deterministic)}",
+                      terminal.interception_results(result["summary"]),
+                      f"Best update {best_update:,}" if best_update is not None else None)
 
 
 def evaluate(folder, config, options, policy, seeds, model=None, *, identity=None,
-             compressed=False, deterministic=True):
+             compressed=False, deterministic=True, json_output=False):
     import gzip
     if not seeds:
         raise ValueError("at least one evaluation seed is required")
@@ -324,7 +353,15 @@ def evaluate(folder, config, options, policy, seeds, model=None, *, identity=Non
         teams={"pursuers": "red defenders", "evaders": "blue intruders"},
         scenario=options, model=identity, policy=policy,
         deterministic=deterministic if model is not None else None))
-    print(json.dumps(summary, indent=2))
+    if json_output:
+        print(json.dumps(summary, indent=2))
+    else:
+        update = identity.get("update") if identity is not None else None
+        terminal.emit(EXPERIMENT, "EVAL" if model is not None else "RUN",
+                      scenario_label(config, options.get("scenario", "random")),
+                      f"Checkpoint update {update:,}" if update is not None else None,
+                      f"Actions {action_mode(deterministic)}" if model is not None else f"Policy {policy}",
+                      f"Seeds {terminal.seed_span(seeds)}", terminal.interception_results(summary), f"Output {folder}")
     return summary
 
 
@@ -336,6 +373,7 @@ def main(argv=None):
         command.add_argument("--env", type=Path, help="JSON overrides of InterceptionConfig")
         command.add_argument("--scale", choices=scales)
         command.add_argument("--task", choices=[task for task, (scale, _) in TASKS.items() if scale in scales])
+        command.add_argument("--evader-mode", choices=MODES, help="override the task's Evader controller")
 
     init = sub.add_parser("validate")
     environment_flags(init)
@@ -346,6 +384,7 @@ def main(argv=None):
         command.add_argument("--scenario", choices=("fixed", "random", "custom"), default="fixed")
         command.add_argument("--initial", type=Path, help="JSON custom pursuers/evaders or spawn distance")
         command.add_argument("--seed", type=int, default=1000)
+        command.add_argument("--json", action="store_true", help="write the legacy JSON payload to stdout")
     for command in (run, assess):
         command.add_argument("--episodes", type=int, default=1)
         command.add_argument("--out", type=Path, required=True)
@@ -388,6 +427,8 @@ def main(argv=None):
             overrides["scale"] = args.scale
         if args.task:
             overrides["task"] = args.task
+        if args.evader_mode:
+            overrides["evader_mode"] = args.evader_mode
         if "task" in overrides and "scale" not in overrides:
             overrides["scale"] = TASKS[overrides["task"]][0]
         config = InterceptionConfig(**overrides)
@@ -402,19 +443,29 @@ def main(argv=None):
     options["scenario"] = args.scenario
     if args.operation == "validate":
         obs, info = InterceptionEnv(config).reset(args.seed, options)
-        print(json.dumps(serializable(dict(version=VERSION, observation_shape=obs.shape,
-                                           centralized_shape=info["centralized_state"].shape,
-                                           configuration=asdict(config), initial=info,
-                                           maximum_acceleration_m_s2=[2 * config.pursuer_vmax / config.pursuer_tau,
-                                                                      2 * config.evader_vmax / config.evader_tau])),
-                         indent=2, allow_nan=False))
+        if args.json:
+            print(json.dumps(serializable(dict(version=VERSION, observation_shape=obs.shape,
+                                               centralized_shape=info["centralized_state"].shape,
+                                               configuration=asdict(config), initial=info,
+                                               maximum_acceleration_m_s2=[2 * config.pursuer_vmax / config.pursuer_tau,
+                                                                          2 * config.evader_vmax / config.evader_tau])),
+                             indent=2, allow_nan=False))
+        else:
+            terminal.emit(EXPERIMENT, "VALIDATE", f"Configuration valid ({VERSION})",
+                          scenario_label(config, args.scenario), f"Seed {args.seed}",
+                          f"dt {terminal.number(config.dt, 's')}, limit {config.max_steps:,} steps",
+                          f"Speed limits red {terminal.number(config.pursuer_vmax, 'm/s')}, "
+                          f"blue {terminal.number(config.evader_vmax, 'm/s')}",
+                          f"Protection cylinder radius {terminal.number(config.radius, 'm')}, "
+                          f"height {terminal.number(config.protected_height, 'm')}",
+                          f"Actor observations {obs.shape}, critic state {info['centralized_state'].shape}")
     else:
         seeds = list(range(args.seed, args.seed + args.episodes))
         evaluate(args.out, config, options, args.policy if args.operation == "run" else "checkpoint",
                  seeds, None if args.operation == "run" else model,
                  identity=None if args.operation == "run" else identity,
-                 compressed=args.gzip, deterministic=not getattr(args, "stochastic", False))
+                 compressed=args.gzip, deterministic=not getattr(args, "stochastic", False), json_output=args.json)
 
 
 if __name__ == "__main__":
-    main()
+    terminal.run_cli(EXPERIMENT, main)

@@ -1,5 +1,5 @@
 """Static reference geometry and time scaling, independent of physical state."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 import numpy as np
@@ -204,3 +204,17 @@ def make_paths(kind, states, config, seed):
                 points = [p0]*4
         paths.append(build_path(kind,points,config))
     return paths
+
+
+def make_bounded_paths(kind, states, config, seed):
+    """Reduce the Bézier bend when the start and end leave little room in the arena."""
+    if kind == "bezier":
+        starts = states[:, None, :3]
+        delta = np.asarray(config.endpoints)[:, None, :] - starts
+        inner = starts + np.array([1/3, 2/3])[None, :, None]*delta
+        low, high = config.flight_bounds
+        lateral = max(0., min((inner[..., :2]-low[:2]).min(), (high[:2]-inner[..., :2]).min()))
+        height = max(0., (high[2]-inner[..., 2]).min())
+        config = replace(config, bezier_lateral_range=tuple(min(x, lateral) for x in config.bezier_lateral_range),
+                         bezier_height_range=tuple(min(x, height) for x in config.bezier_height_range))
+    return make_paths(kind, states, config, seed)

@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from algorithm.common.interception_checkpoint import load_weights, read, restore, save
+from algorithm.common import terminal
 from algorithm.common.research import atomic_json, commit_header, digest, journal, read_json
 from algorithm.common.runtime import require_cuda
 from algorithm.common.serialization import serializable
@@ -25,6 +26,7 @@ from env.trajectory_rl import OBS_DIM, STATE_DIM, SLOT, VERSION, TrackingConfig,
 
 PROTOCOL = dict(version=VERSION,algorithm="mappo-beta",observation=OBS_DIM,state=STATE_DIM,
                 action=3,slots=MAX_PURSUERS,slot_width=SLOT)
+EXPERIMENT = "Preset tracking"
 
 
 class TrackingMAPPO(MAPPO):
@@ -151,6 +153,10 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
                 save(path,model,config,vector,run=run,protocol=PROTOCOL,evaluations=evaluations)
             _metric_view(folder,records)
             cumulative = sum(r["valid_samples"] for r in records)
+            terminal.training_start(EXPERIMENT, f"Mode {config.trajectory_mode}, {len(config.starts)} UAVs", training,
+                start_update=model.updates, planned_updates=total_steps//wave, folder=folder, resume=resume,
+                stop_steps=target, evaluation=terminal.evaluation_setup(interval, evaluation_seeds,
+                    scenario="seeded references", actions="Beta mean", final=bool((total_steps//wave) % interval)))
             while model.steps<target:
                 try:
                     rollout, episodes = model.collect(vector)
@@ -176,12 +182,15 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
                 records.append(row)
                 with (folder/"training_metrics.jsonl").open("a",encoding="utf-8") as f:
                     f.write(json.dumps({k:v for k,v in row.items() if k not in ("completed_episodes","evaluation")})+"\n")
-                print(f"{config.trajectory_mode} update {model.updates} | joint {model.steps}/{total_steps} "
-                      f"| valid {cumulative} | eval {result['summary']['success_rate'] if result else 'N/A'}",flush=True)
+                terminal.training_progress(EXPERIMENT, row, total_steps=total_steps)
+                if result is not None:
+                    terminal.emit(EXPERIMENT, "EVAL", f"Update {model.updates:,}",
+                                  terminal.tracking_results(result["summary"]))
+        terminal.training_end(EXPERIMENT, model, path, paused=target < total_steps)
     return path
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="operation",required=True)
     train,resume,assess = [sub.add_parser(name) for name in ("train","resume","evaluate")]
@@ -200,7 +209,7 @@ def main():
     for cmd in (train,assess):
         cmd.add_argument("--eval-seed",type=int,default=2200)
         cmd.add_argument("--eval-episodes",type=int,default=10)
-    a = p.parse_args()
+    a = p.parse_args(argv)
     if a.operation=="resume":
         fit(a.out,until_steps=a.until_steps,device=a.device,resume=True,expected_mode=a.mode)
         return
@@ -221,10 +230,14 @@ def main():
         load_weights(payload,model)
         config = TrackingConfig(**payload["environment"])
         a.out.mkdir(parents=True,exist_ok=False)
-        atomic_json(a.out/"evaluation.json",evaluate(model,config,seeds) |
+        result = evaluate(model,config,seeds)
+        atomic_json(a.out/"evaluation.json",result |
                     dict(mode=config.trajectory_mode,checkpoint=str(a.checkpoint),joint_steps=payload["steps"]))
+        terminal.emit(EXPERIMENT, "EVAL", f"Mode {config.trajectory_mode}, actions=Beta mean",
+                      f"Checkpoint update {payload['updates']:,}", f"Seeds {terminal.seed_span(seeds)}",
+                      terminal.tracking_results(result["summary"]), f"Output {a.out}")
 
 
 if __name__=="__main__":
     from algorithm.trajectory_tracking import main as canonical_main
-    canonical_main()
+    terminal.run_cli(EXPERIMENT, canonical_main)

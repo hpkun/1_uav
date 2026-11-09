@@ -23,12 +23,17 @@ def _frame(paths,state,time):
                 velocity_errors=np.linalg.norm(v-state[:,3:],axis=1))
 
 
+def tracking_request(paths, state, time, dt, config, positions, velocities):
+    _, v, a, _ = _samples(paths, time+dt/2)
+    return (v+config.tau*a+config.position_gain*(positions-state[:, :3])+
+            config.velocity_gain*(velocities-state[:, 3:]))
+
+
 def _commands(paths,frame,dt,config):
     c = config
     state = frame["actual_states"]
-    _,v,a,_ = _samples(paths,frame["time"]+dt/2)
-    request = (v+c.tau*a+c.position_gain*(frame["reference_positions"]-state[:,:3])+
-               c.velocity_gain*(frame["reference_velocities"]-state[:,3:]))
+    request = tracking_request(paths, state, frame["time"], dt, c,
+                               frame["reference_positions"], frame["reference_velocities"])
     actual = execute_velocity(request,state[:,3:],c.vmax,c.tau,c)
     ball = project(request/c.vmax,c.vmax)
     vertical = (ball[:,2]>c.climb_vmax+1e-12)|(ball[:,2]<-c.descent_vmax-1e-12)

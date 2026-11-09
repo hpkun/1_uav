@@ -190,9 +190,19 @@ def test_cuda_training_evaluation_resume_and_reconciliation(tmp_path, monkeypatc
     training = TrainConfig(workers=1, horizon=5, epochs=1)
     protocol = EvaluationProtocol(1, 2, 310, "fixed", False)
     plain, continuous, segmented = [tmp_path/key for key in ("plain", "continuous", "segmented")]
-    cli.train(plain, config, training, updates=2)
+    cli.train(plain, config, training, updates=2, log_interval=3)
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("[Interception START]") and "Sampling 1 worker x 5 steps" in lines[0]
+    assert [line.split(" | ")[0] for line in lines if "[Interception TRAIN]" in line] == [
+        "[Interception TRAIN] Update 2/2 (100.0%)"]
+    assert "Train window n=1/100" in lines[1]
+    assert lines[-1].startswith("[Interception DONE]")
     cli.train(continuous, config, training, updates=2, evaluation=protocol)
-    assert "window n=0/100 success N/A" in capsys.readouterr().out
+    logs = capsys.readouterr().out
+    assert "Train window n=0/100, no completed episodes yet" in logs
+    assert logs.count("[Interception EVAL]") == 2
+    assert "Scenario fixed, actions=Beta sample" in logs
+    assert "Best update 1" in logs
     original = cli.atomic_json
 
     def interrupt_update(path, data):
@@ -212,7 +222,11 @@ def test_cuda_training_evaluation_resume_and_reconciliation(tmp_path, monkeypatc
         with pytest.raises(OSError, match="after evaluation"):
             cli.train(segmented, resume=True)
     evaluation_before = (segmented/"evaluation_000001.json").read_bytes()
+    assert "[Interception EVAL]" not in capsys.readouterr().out
     cli.train(segmented, resume=True)
+    logs = capsys.readouterr().out
+    assert "[Interception RESUME]" in logs and "From update 1 / 5 joint steps" in logs
+    assert logs.count("[Interception EVAL]") == 1 and "[Interception EVAL] Update 2" in logs
     assert (segmented/"evaluation_000001.json").read_bytes() == evaluation_before
     variants = [read(folder/"latest.pt") for folder in (plain, continuous, segmented)]
     for candidate in variants[1:]:
@@ -234,6 +248,15 @@ def test_cuda_training_evaluation_resume_and_reconciliation(tmp_path, monkeypatc
         assert row["episode_return"] == pytest.approx(sum(row["reward_components"].values()), abs=1e-5)
     generate([segmented], tmp_path/"report")
     assert json.loads((tmp_path/"report/summary.json").read_text())["runs"][0]["completed_updates"] == 2
+    checkpoint = str(segmented/"latest.pt")
+    human, machine = (tmp_path/name for name in ("human_eval", "json_eval"))
+    cli.main(["evaluate", checkpoint, "--out", str(human)])
+    assert "[Interception EVAL]" in capsys.readouterr().out
+    cli.main(["evaluate", checkpoint, "--out", str(machine), "--json"])
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {key: json.loads((machine/"summary.json").read_text())[key] for key in summary}
+    for name in ("summary.json", "trajectory_000.json"):
+        assert (human/name).read_bytes() == (machine/name).read_bytes()
     # Attempt an old-generation resume with later immutable records present.
     if best["updates"] == 1:
         shutil.copyfile(segmented/"best.pt", segmented/"latest.pt")

@@ -12,7 +12,7 @@ import tempfile
 
 import numpy as np
 
-from env.preset_trajectory import TrajectoryConfig, make_paths
+from env.preset_trajectory import TrajectoryConfig, make_bounded_paths
 from .interception_timeline import Timeline
 
 
@@ -43,17 +43,10 @@ def blue_references(timeline, mode, seed):
                                                            defaults.horizontal_acceleration_max),
                      climb_vmax=scene.get("climb_vmax", defaults.climb_vmax),
                      descent_vmax=scene.get("descent_vmax", defaults.descent_vmax))
-    if mode == "preset_bezier":
-        # Bound the existing generator's bend by the available room in the recorded envelope.
-        inner = states[:, None, :3] + np.array([1/3, 2/3])[None, :, None]*(goal-states[:, :3])[:, None, :]
-        low, high = config.flight_bounds
-        lateral = max(0., min((inner[..., :2]-low[:2]).min(), (high[:2]-inner[..., :2]).min()))
-        height = max(0., (high[2]-inner[..., 2]).min())
-        config = replace(config, bezier_lateral_range=tuple(min(x, lateral) for x in config.bezier_lateral_range),
-                         bezier_height_range=tuple(min(x, height) for x in config.bezier_height_range))
     metadata = dict(mode=mode, seed=seed, paths=[])
     overlays = []
-    for (name, color, _), path in zip(blue, make_paths(REFERENCE_MODES[mode], states, config, seed), strict=True):
+    paths = make_bounded_paths(REFERENCE_MODES[mode], states, config, seed)
+    for (name, color, _), path in zip(blue, paths, strict=True):
         times = np.linspace(0., path.duration, 161)
         points = np.array([path.sample(t)[0] for t in times])
         metadata["paths"].append(dict(entity=name, start=path.points[0], end=path.points[-1],
