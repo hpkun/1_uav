@@ -1,6 +1,8 @@
 from dataclasses import replace
 import hashlib
 import json
+import sys
+import zipfile
 
 import numpy as np
 import pytest
@@ -9,7 +11,7 @@ import torch
 from algorithm.common.interception_checkpoint import read, restore, save
 from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.mappo.interception import MAPPO, TrainConfig
-from algorithm.navigation import NavigationAccumulator, PROTOCOL, validate_discount
+from algorithm.navigation import NavigationAccumulator, PROTOCOL, read_checkpoint, validate_discount
 from env.heading_potential import HeadingConfig, direction_quality, heading_transition
 from env.interception import InterceptionEnv
 from env.navigation import NavigationConfig, NavigationEnv
@@ -185,3 +187,15 @@ def test_cuda_navigation_checkpoint_identity_and_exact_rollout(tmp_path):
         actual,_=model.collect(vector)
         for name,value in vars(expected).items():
             torch.testing.assert_close(value,getattr(actual,name),rtol=0,atol=0)
+
+
+def test_navigation_checkpoint_reads_original_cli_tracker(tmp_path, monkeypatch):
+    path = tmp_path/"legacy_cli.pt"
+    with monkeypatch.context() as patch:
+        patch.setattr(sys.modules["__main__"],"NavigationAccumulator",NavigationAccumulator,raising=False)
+        patch.setattr(NavigationAccumulator,"__module__","__main__")
+        torch.save(dict(protocol=PROTOCOL,tracker=NavigationAccumulator()),path)
+    with zipfile.ZipFile(path,"a") as archive:
+        root=archive.namelist()[0].split("/")[0]
+        archive.writestr(root+"/interception_protocol.json",json.dumps(PROTOCOL))
+    assert isinstance(read_checkpoint(path)["tracker"],NavigationAccumulator)

@@ -3,13 +3,15 @@ import argparse
 from dataclasses import asdict, replace
 import json
 from pathlib import Path
+import pickle
 import random
 from statistics import mean
+from types import SimpleNamespace
 
 import numpy as np
 import torch
 
-from algorithm.common.interception_checkpoint import PROTOCOL as INTERCEPTION, save
+from algorithm.common.interception_checkpoint import PROTOCOL as INTERCEPTION, read, save
 from algorithm.common.research import atomic_json
 from algorithm.common.runtime import require_cuda
 from algorithm.common.vector_env import ParallelVectorEnv
@@ -102,6 +104,19 @@ class NavigationAccumulator:
             mean_speed_mps=ratio(self.speed,self.agent_seconds),
             speed_change_mps2=ratio(self.speed_change,self.agent_seconds),
             turning_deg_per_s=ratio(self.turn,self.turn_seconds), safety_violations=self.constraints)
+
+
+class _NavigationUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if (module, name) == ("__main__", "NavigationAccumulator"):
+            return NavigationAccumulator
+        return super().find_class(module, name)
+
+
+def read_checkpoint(path):
+    """Read trusted navigation archives, including the original CLI's tracker name."""
+    compat = SimpleNamespace(__name__="pickle", Unpickler=_NavigationUnpickler, load=pickle.load)
+    return read(path, protocol=PROTOCOL, pickle_module=compat)
 
 
 def summarize(rows):
@@ -200,4 +215,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Pickled worker trackers must use the importable module name.
+    from algorithm.navigation import main as canonical_main
+    canonical_main()

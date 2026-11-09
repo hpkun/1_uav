@@ -141,6 +141,22 @@ python -m tools.interception_report outputs/interception/seed17 outputs/intercep
 
 团队奖励为每次异方拦截 +5、全拦截 +10、突破/撤离/同侧接触/Pursuer 越界 −10，另保留距离进度及每步 −0.01 时间成本。失败结算扣除剩余时间预算，提前失败不会节省时间成本。失活机保留失活当步的团队奖励，后续步的观测和奖励为零。GAE 使用真实接触后的掩码切断该机的 bootstrap。
 
+## 预设三维参考轨迹
+
+独立协议 `uav-preset-trajectory-v1.0.0` 提供 `straight` 与 `bezier` 两种参考轨迹。起点、实际初速度、有效掩码和静态终点按种子配对。Bézier 各机控制点使用独立的 `[seed,1,slot]` 随机流，初态使用 `[seed,0]`。控制点和飞行包络以 JSON 存档。旧拦截任务的 `goal_seeking` 按当前实际位置指向目标，旧 `bezier` 保留其固定时长，两者继续使用原协议。
+
+几何曲线使用直线插值或三次 Bézier，统一采用 `u = 10r³ − 15r⁴ + 6r⁵`、`r = t/T` 的时间律。端点位置、速度和加速度连续，终点之后保持静止参考。弧长采用解析直线长度或 Gauss–Legendre 积分。时长以弧长除参考速度为下限，再用导数控制多边形上界约束参考速度、水平加速度和理想指令 `v_ref + τ a_ref`。参考速度为上限，实际匀速巡航并非时间律的假设。整个参考曲线由合法控制点的凸包保证在空域内。
+
+实际跟踪使用参考前馈和位置、速度误差反馈，经现有速度与加速度限制后调用解析积分。飞行边界沿实际连续轨迹检测。参考完成、实际末端误差和稳定到点分别报告。实际航程用控制时刻间的三维折线估计，逐步加速度记录对应该步开始，末帧没有新指令。
+
+```bash
+conda activate uav
+root=outputs/preset_trajectory_new
+python -m tools.preset_trajectory_audit --out "$root" --episodes 50 --seed 1200 --limits 4 7 12
+# 单独生成 B 模式，也可通过 --config 加载独立 JSON 参数
+python -m tools.preset_trajectory_audit --out outputs/preset_bezier_new --mode bezier --limits 12 --episodes 1
+```
+
 ## 静态航路方向奖励消融
 
 独立协议 `uav-static-navigation-v1.0.0` 使用可见的静态航路点、原解析动力学和 52/54 维网络。独立导航基础奖励为距离进度、到达、越界与时间代价。无移动目标及接触判定。配置字段 `heading_enabled=false`、`heading_weight=0.3`、`heading_velocity_reference=1.0`、`heading_distance_reference=5.0`、`heading_discount=0.99`。启用时检查折扣与训练 gamma 严格相同。拦截任务保持原协议和奖励。
@@ -156,6 +172,7 @@ python -m tools.navigation_heading_audit --study "$root/ablation" --out "$root/r
 ```
 
 训练逐回合日志和独立评估逐局记录保存方向角、改善率、横向误差、速度、速度变化率、转向率和越界次数。最终评估每个模型的首局另存逐步势函数与原始方向诊断。默认短程对照包含关闭、0.1、0.3、1.0 四组。
+可信的历史导航 Checkpoint 可通过 `algorithm.navigation.read_checkpoint` 加载，该入口识别原 CLI 存档中的旧统计类路径。
 
 ## 训练与历史档案
 

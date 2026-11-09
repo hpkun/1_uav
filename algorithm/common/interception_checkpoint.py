@@ -57,7 +57,7 @@ def save(path, model, config, vector, last_log=None, *, run=None, protocol=PROTO
         temporary.unlink(missing_ok=True)
 
 
-def read(path, *, protocol=PROTOCOL):
+def read(path, *, protocol=PROTOCOL, pickle_module=None):
     require_cuda()
     try:
         with zipfile.ZipFile(path) as archive:
@@ -67,7 +67,7 @@ def read(path, *, protocol=PROTOCOL):
         raise ValueError("incompatible checkpoint: interception protocol header required") from exc
     if header != protocol:
         raise ValueError("incompatible checkpoint protocol")
-    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload = torch.load(path, map_location="cpu", weights_only=False, pickle_module=pickle_module)
     if payload.get("protocol") != protocol:
         raise ValueError("incompatible checkpoint payload")
     return payload
