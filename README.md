@@ -141,6 +141,22 @@ python -m tools.interception_report outputs/interception/seed17 outputs/intercep
 
 团队奖励为每次异方拦截 +5、全拦截 +10、突破/撤离/同侧接触/Pursuer 越界 −10，另保留距离进度及每步 −0.01 时间成本。失败结算扣除剩余时间预算，提前失败不会节省时间成本。失活机保留失活当步的团队奖励，后续步的观测和奖励为零。GAE 使用真实接触后的掩码切断该机的 bootstrap。
 
+## 静态航路方向奖励消融
+
+独立协议 `uav-static-navigation-v1.0.0` 使用可见的静态航路点、原解析动力学和 52/54 维网络。独立导航基础奖励为距离进度、到达、越界与时间代价。无移动目标及接触判定。配置字段 `heading_enabled=false`、`heading_weight=0.3`、`heading_velocity_reference=1.0`、`heading_distance_reference=5.0`、`heading_discount=0.99`。启用时检查折扣与训练 gamma 严格相同。拦截任务保持原协议和奖励。
+
+方向质量为实际速度与航路点方向的余弦，乘以速度和距离门控。团队势为有效槽质量之和乘以权重，再除以回合初始成员数。每步只加入一次 `gamma * next_potential - potential`。真正终止的后继势为零，超时保留真实后继势与 GAE bootstrap。方向未定义时质量为零，角度统计缺失。折扣小于 1 时，固定负势会有一个正的折扣差分，整段折扣回报仍由端点决定。多机提前退出会切断该机的 GAE，团队恒等式不能自动推广为每个提前退出个体的策略不变性保证。
+
+```bash
+conda activate uav
+root=outputs/navigation_heading_new
+python -m algorithm.navigation --out "$root/ablation" --updates 12 --eval-interval 4 \
+  --seeds 17 18 --evaluation-seed 2200 --evaluation-episodes 12
+python -m tools.navigation_heading_audit --study "$root/ablation" --out "$root/report"
+```
+
+训练逐回合日志和独立评估逐局记录保存方向角、改善率、横向误差、速度、速度变化率、转向率和越界次数。最终评估每个模型的首局另存逐步势函数与原始方向诊断。默认短程对照包含关闭、0.1、0.3、1.0 四组。
+
 ## 训练与历史档案
 
 Actor 和 Critic 使用 128–128 Tanh，Actor 输出三组 Beta 参数。PPO 只用有效 Pursuer 的样本，真实终止不 bootstrap，超时使用自动重置前的真实末状态 bootstrap，两类边界都切断跨回合的 GAE。训练默认 4 个 spawn worker、每次采样 128 步、4 轮 PPO、minibatch 256、seed 17。Actor/Critic 学习率为 3e−4/5e−4，γ=0.99、λ=0.95、clip=0.2、entropy=0.01、梯度范数上限 0.5。训练与评估环境使用独立 SeedSequence 命名空间。
