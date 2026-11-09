@@ -89,6 +89,15 @@ python -m tools.interception_report outputs/interception/seed17 outputs/intercep
 ```
 
 - HTML 内嵌 Plotly，支持离线播放、暂停、重播、前后步进、拖动时间轴及 0.5×/1×/2×/4×。滑块定位控制步或步内事件关键帧，播放在物理时钟上使用额外的 30 Hz 解析采样。支持鼠标轨道旋转和滚轮缩放。面板分列归一化策略动作、期望速度指令和真实物理速度，累计诊断注明最近一次记录时间。旧轨迹缺失速度指令时，中间画面保持最近记录位置，当前速度和相对量显示 N/A。
+
+可以给 HTML 或 MP4 叠加蓝方预设参考航迹。在同一份记录上使用同一参考种子，两种模式共享每架蓝机的记录起点与场景导航点。旧保护球记录没有导航偏移时，使用保护球中心。蓝色虚线为参考，实线为真实运动。曲线在导出时生成一次，回放时保持固定。HTML 的 **Blue reference paths** 面板和 MP4 的 `comment` 元数据记录种子、起终点、控制点、长度和参考时长。省略参数时按原样导出。
+
+```bash
+python -m tools.interception_replay "$source" "$out/straight.html" --blue-reference straight --reference-seed 17
+python -m tools.interception_replay "$source" "$out/preset_bezier.mp4" --blue-reference preset_bezier --reference-seed 17
+ffprobe -v error -show_entries format_tags=comment -of json "$out/preset_bezier.mp4"
+```
+
 - 两种格式均画出地面设施和保护柱。红色为 Pursuer，蓝色为 Evader。每次接触拦截在双方事件位置的中点显示一个绿色 X，双方历史轨迹停在各自真实端点。友机及目标方同侧接触使用橙色菱形，突破用黄色方形，Pursuer 越界用紫色十字，Evader 撤离用青色空心圆。友机预警只记录数据。旧版捕获仍按旧轨迹在 Evader 事件位置显示 X。
 - MP4 的 N 帧均匀覆盖物理区间 `[0,T]`，包含起止状态。非零 T 取 `N=max(2,ceil(T×fps))`，物理间隔为 `T/(N-1)`，固定帧率容器时长为 `N/fps`。零时长保留一个静帧。常规轨迹的容器时长误差小于一帧。极短轨迹优先保留两个不同时间的端点。需要 FFmpeg，可通过 `conda install -c conda-forge ffmpeg` 安装。导出器优先使用可用的 H.264 编码器，也支持 FFmpeg 的 MPEG-4 编码器。
 - 轨迹记录原始动作、速度请求、执行指令、实际状态、步初加速度、有效时长、掩码、相对几何、奖励和事件位置。速度与瞬时加速度由同一解析轨迹确定。读取器兼容 JSON 和 gzip。

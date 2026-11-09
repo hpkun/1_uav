@@ -1,4 +1,5 @@
 from dataclasses import asdict
+import json
 import shutil
 import subprocess
 
@@ -9,7 +10,7 @@ from algorithm.interception import episode, trace_row
 from algorithm.common.serialization import write_json
 from env.interception import InterceptionConfig, InterceptionEnv
 from env.interception.config import VERSION
-from tools.interception_replay import render, render_video, video_times
+from tools.interception_replay import blue_references, render, render_video, video_times
 from tools.interception_timeline import Timeline
 
 
@@ -165,6 +166,56 @@ def test_timeline_rejects_outside_and_nonfinite(tmp_path):
     for value in (-1e-12, timeline.duration+1e-12, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="replay time"):
             timeline.at(value)
+
+
+def test_blue_reference_is_paired_seeded_and_html_only_changes_display(tmp_path):
+    source = tmp_path/"trace.json"
+    fixture(source, "success")
+    original = source.read_bytes()
+    timeline = Timeline(source)
+    straight, straight_lines = blue_references(timeline, "straight", 17)
+    bezier, bezier_lines = blue_references(timeline, "preset_bezier", 17)
+    assert bezier == blue_references(timeline, "preset_bezier", 17)[0]
+    assert bezier != blue_references(timeline, "preset_bezier", 18)[0]
+    for i, (a, b) in enumerate(zip(straight["paths"], bezier["paths"], strict=True)):
+        assert a["entity"] == b["entity"] == f"E{i}"
+        np.testing.assert_array_equal(a["start"], timeline.frames[0]["evaders"][i][:3])
+        np.testing.assert_array_equal(a["start"], b["start"])
+        np.testing.assert_array_equal(a["end"], b["end"])
+        np.testing.assert_array_equal(a["end"], [0, 0, 12])
+        assert len(a["control_points"]) == 2 and len(b["control_points"]) == 4
+        _, _, _, line = straight_lines[i]
+        _, _, times, curve = bezier_lines[i]
+        assert times[0] == 0 and times[-1] == b["duration_s"]
+        np.testing.assert_allclose(np.cross(line-line[0], line[-1]-line[0]), 0, atol=1e-11)
+        assert np.linalg.norm(np.cross(curve-curve[0], curve[-1]-curve[0]), axis=1).max() > 1.
+
+    def playback_data(html):
+        return json.loads(html.split("const DATA = ", 1)[1].split(";\n", 1)[0])
+
+    render(source, tmp_path/"old.html")
+    old = (tmp_path/"old.html").read_text(encoding="utf-8")
+    assert "Blue reference paths" not in old
+    for mode in ("straight", "preset_bezier"):
+        output = tmp_path/f"{mode}.html"
+        render(source, output, blue_reference=mode, reference_seed=17)
+        html = output.read_text(encoding="utf-8")
+        assert f"Blue E0 reference ({mode})" in html and '"dash":"dash"' in html
+        assert "Blue reference paths" in html and playback_data(html) == playback_data(old)
+    assert source.read_bytes() == original
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools absent")
+@pytest.mark.parametrize("mode", ["straight", "preset_bezier"])
+def test_mp4_blue_reference_metadata(tmp_path, mode):
+    source, video = tmp_path/"trace.json", tmp_path/"reference.mp4"
+    fixture(source, "success")
+    render_video(source, video, fps=2, width=480, height=320, blue_reference=mode, reference_seed=17)
+    probe = subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format_tags=comment",
+                                     "-of", "json", str(video)], text=True)
+    metadata = json.loads(json.loads(probe)["format"]["tags"]["comment"])
+    expected, _ = blue_references(Timeline(source), mode, 17)
+    assert metadata == json.loads(json.dumps(expected))
 
 
 @pytest.mark.parametrize(("duration", "fps", "count"), [(5.444331752283873,15,82),

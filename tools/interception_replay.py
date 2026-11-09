@@ -1,5 +1,7 @@
 """Export an offline Plotly player or a fixed-camera MP4 from saved trajectories."""
 import argparse
+from dataclasses import replace
+from html import escape
 import json
 import math
 import os
@@ -10,7 +12,64 @@ import tempfile
 
 import numpy as np
 
+from env.preset_trajectory import TrajectoryConfig, make_paths
 from .interception_timeline import Timeline
+
+
+REFERENCE_MODES = {"straight": "straight", "preset_bezier": "bezier"}
+
+
+def blue_references(timeline, mode, seed):
+    """Sample a fixed overlay from the recorded initial state, outside the simulation."""
+    if mode is None:
+        return None
+    if mode not in REFERENCE_MODES or type(seed) is not int or seed < 0:
+        raise ValueError("expected straight or preset_bezier and a nonnegative reference seed")
+    scene = timeline.data["config"]
+    first = timeline.frames[0]
+    blue = [(name, color, first[key][i]) for key, _, name, color, i, _ in timeline.entities
+            if key == "evaders"]
+    defaults = TrajectoryConfig()
+    goal = np.asarray(scene["center"]) + scene.get("navigation_offset", (0., 0., 0.))
+    states = np.asarray([state for _, _, state in blue])
+    vmax = scene.get("evader_vmax", defaults.vmax)
+    config = replace(defaults, starts=states[:, :3], endpoints=[goal]*len(blue),
+                     initial_velocities=[(0., 0., 0.)]*len(blue), start_jitter=(0., 0., 0.),
+                     lower=scene.get("lower", defaults.lower), upper=scene.get("upper", defaults.upper),
+                     body_radius=scene.get("evader_collision_radius", defaults.body_radius),
+                     dt=scene.get("dt", defaults.dt), tau=scene.get("evader_tau", defaults.tau),
+                     vmax=vmax, reference_speed=min(defaults.reference_speed, vmax),
+                     horizontal_acceleration_max=scene.get("horizontal_acceleration_max",
+                                                           defaults.horizontal_acceleration_max),
+                     climb_vmax=scene.get("climb_vmax", defaults.climb_vmax),
+                     descent_vmax=scene.get("descent_vmax", defaults.descent_vmax))
+    if mode == "preset_bezier":
+        # Bound the existing generator's bend by the available room in the recorded envelope.
+        inner = states[:, None, :3] + np.array([1/3, 2/3])[None, :, None]*(goal-states[:, :3])[:, None, :]
+        low, high = config.flight_bounds
+        lateral = max(0., min((inner[..., :2]-low[:2]).min(), (high[:2]-inner[..., :2]).min()))
+        height = max(0., (high[2]-inner[..., 2]).min())
+        config = replace(config, bezier_lateral_range=tuple(min(x, lateral) for x in config.bezier_lateral_range),
+                         bezier_height_range=tuple(min(x, height) for x in config.bezier_height_range))
+    metadata = dict(mode=mode, seed=seed, paths=[])
+    overlays = []
+    for (name, color, _), path in zip(blue, make_paths(REFERENCE_MODES[mode], states, config, seed), strict=True):
+        times = np.linspace(0., path.duration, 161)
+        points = np.array([path.sample(t)[0] for t in times])
+        metadata["paths"].append(dict(entity=name, start=path.points[0], end=path.points[-1],
+                                      control_points=path.points, length_m=path.length, duration_s=path.duration))
+        overlays.append((name, color, times, points))
+    return metadata, overlays
+
+
+def replay_bounds(timeline, samples, reference):
+    bounds = timeline.bounds(samples)
+    if reference is not None:
+        points = np.vstack([points for _, _, _, points in reference[1]])
+        for i, interval in enumerate(bounds):
+            interval[0] = min(interval[0], float(points[:, i].min())-3.)
+            interval[1] = max(interval[1], float(points[:, i].max())+3.)
+    return bounds
 
 
 PLAYER = r"""
@@ -173,10 +232,11 @@ show(0);
 """
 
 
-def render(source, output):
+def render(source, output, *, blue_reference=None, reference_seed=0):
     import plotly.graph_objects as go
 
     timeline = Timeline(source)
+    reference = blue_references(timeline, blue_reference, reference_seed)
     times = sorted(set(timeline.key_times + [
         k / 30 for k in range(math.ceil(timeline.duration * 30)) if k / 30 < timeline.duration
     ]))
@@ -200,6 +260,12 @@ def render(source, output):
     if config.get("protected_zone") == "ground_cylinder":
         figure.add_trace(go.Scatter3d(x=[center[0]], y=[center[1]], z=[center[2]], mode="markers",
                                      name="Ground facility", marker=dict(size=7, color="#246d48", symbol="square")))
+    if reference is not None:
+        for name, color, times, points in reference[1]:
+            figure.add_trace(go.Scatter3d(x=points[:, 0], y=points[:, 1], z=points[:, 2], mode="lines",
+                                         name=f"Blue {name} reference ({blue_reference})",
+                                         line=dict(color=color, width=4, dash="dash"), opacity=.65,
+                                         customdata=times, hovertemplate="Reference time %{customdata:.2f} s"))
     for entity in samples[0]["entities"]:
         role = "Red defender" if entity["name"].startswith("P") else "Blue intruder"
         figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", name=f"{role} {entity['name']}",
@@ -210,7 +276,7 @@ def render(source, output):
                                  hoverinfo="skip", line=dict(color="#485864", width=3)))
     figure.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="markers", name="Events",
                                  hoverinfo="text", marker=dict(size=12, symbol="x")))
-    bounds = timeline.bounds(samples)
+    bounds = replay_bounds(timeline, samples, reference)
     figure.update_layout(uirevision="keep-camera", height=640, margin=dict(t=30, b=0),
                          scene=dict(aspectmode="data", dragmode="orbit",
                                     camera=dict(eye=dict(x=2.2, y=2.2, z=1.7)),
@@ -232,6 +298,9 @@ def render(source, output):
 <label>Timeline <input id="clock" type="range" min="0" step="1" value="0"></label>
 <span id="time"></span></div><pre id="details"></pre>
 """
+    if reference is not None:
+        controls += ("<details><summary>Blue reference paths</summary><pre>"
+                     + escape(json.dumps(reference[0], indent=2, allow_nan=False)) + "</pre></details>")
     with Path(output).open("x", encoding="utf-8") as stream:
         stream.write('<!doctype html><meta charset="utf-8"><title>Interception replay</title>'
                      '<style>body{font:15px system-ui;margin:16px;display:flex;flex-direction:column}'
@@ -246,7 +315,8 @@ def video_times(duration, fps):
     return np.linspace(0., duration, count).tolist()
 
 
-def render_video(source, output, fps=30, width=1280, height=720, elevation=25, azimuth=-55):
+def render_video(source, output, fps=30, width=1280, height=720, elevation=25, azimuth=-55, *,
+                 blue_reference=None, reference_seed=0):
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("FFmpeg required. Install with conda install -c conda-forge ffmpeg and retry.")
@@ -264,9 +334,10 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
 
     matplotlib.rcParams["animation.ffmpeg_path"] = ffmpeg
     timeline = Timeline(source)
+    reference = blue_references(timeline, blue_reference, reference_seed)
     samples = [timeline.at(t) for t in video_times(timeline.duration, fps)]
     history = [timeline.at(t) for t in timeline.key_times]
-    bounds = timeline.bounds(samples + history)
+    bounds = replay_bounds(timeline, samples + history, reference)
     config = timeline.data["config"]
     center, radius = config["center"], config["radius"]
     if config.get("protected_zone") == "ground_cylinder":
@@ -291,12 +362,18 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
     paths, points, labels = [], [], []
     from matplotlib.lines import Line2D
     roles = {entity["name"][0]: entity["color"] for entity in samples[0]["entities"]}
-    axes.legend(handles=[
+    handles = [
         Line2D([], [], color=roles["P"], label="Red defenders (P)"),
         Line2D([], [], color=roles["E"], label="Blue intruders (E)"),
         Line2D([], [], color="#246d48", marker="s", linestyle="none", label="Facility / protected zone"),
         Line2D([], [], color="#1aa575", marker="x", linestyle="none", label="Contact interception"),
-    ], loc="upper left", fontsize=8)
+    ]
+    if reference is not None:
+        for _, color, _, path in reference[1]:
+            axes.plot(*path.T, color=color, linestyle="--", alpha=.65, zorder=1)
+        handles.append(Line2D([], [], color=roles["E"], linestyle="--",
+                              label=f"Blue reference ({blue_reference})"))
+    axes.legend(handles=handles, loc="upper left", fontsize=8)
     for entity in samples[0]["entities"]:
         paths.append(axes.plot([], [], [], color=entity["color"], zorder=2)[0])
         points.append(axes.plot([], [], [], linestyle="none", marker="o",
@@ -322,7 +399,8 @@ def render_video(source, output, fps=30, width=1280, height=720, elevation=25, a
         reserved = True
         with tempfile.TemporaryDirectory(dir=output.parent) as folder:
             target = Path(folder) / "video.mp4"
-            writer = FFMpegWriter(fps=fps, codec=codec, extra_args=["-pix_fmt", "yuv420p"])
+            metadata = {} if reference is None else {"comment": json.dumps(reference[0], allow_nan=False)}
+            writer = FFMpegWriter(fps=fps, codec=codec, metadata=metadata, extra_args=["-pix_fmt", "yuv420p"])
             with writer.saving(figure, str(target), 100):
                 for row in samples:
                     timestamp = row["time"]
@@ -370,12 +448,17 @@ def main():
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--elevation", type=float, default=25)
     parser.add_argument("--azimuth", type=float, default=-55)
+    parser.add_argument("--blue-reference", choices=REFERENCE_MODES)
+    parser.add_argument("--reference-seed", type=int, default=0)
     args = parser.parse_args()
+    if args.reference_seed < 0:
+        parser.error("--reference-seed must be nonnegative")
+    reference = dict(blue_reference=args.blue_reference, reference_seed=args.reference_seed)
     if Path(args.output).suffix.lower() == ".mp4":
         render_video(args.trajectory, args.output, args.fps, args.width, args.height,
-                     args.elevation, args.azimuth)
+                     args.elevation, args.azimuth, **reference)
     else:
-        render(args.trajectory, args.output)
+        render(args.trajectory, args.output, **reference)
 
 
 if __name__ == "__main__":
