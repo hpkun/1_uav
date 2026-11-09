@@ -14,6 +14,7 @@ GROUPS = (("pursuers", "active_mask", "P", "#d64040", 0),
 
 # Plotly Scatter3d and Matplotlib each use their native marker.
 EVENT_STYLES = {
+    "closest_approach": ("Closest approach", "#9c56bd", "diamond-open", "d"),
     "interception_contact": ("Interception", "#1aa575", "x", "x"),
     "friendly_collision": ("Friendly collision", "#ef7900", "diamond", "D"),
     "evader_collision": ("Evader collision", "#ef7900", "diamond", "D"),
@@ -31,8 +32,10 @@ def display_event(event):
     names = list(dict.fromkeys(f"P{i}" if i < MAX_PURSUERS else f"E{i-MAX_PURSUERS}"
                                for i in event["entities"]))
     positions = event["positions"]
-    position = (np.mean(positions, axis=0).tolist() if kind in ("collision", "friendly_collision", "evader_collision", "interception_contact")
+    position = (np.mean(positions, axis=0).tolist() if kind in ("collision", "friendly_collision", "evader_collision", "interception_contact", "closest_approach")
                 else positions[1 if kind == "capture" else 0])
+    if kind == "closest_approach":
+        title += f" {event['center_distance']:.3f} m"
     return dict(kind=kind, time=event["time"], entity_ids=event["entities"],
                 positions=positions, position=position, color=color, plotly_marker=plotly_marker,
                 mpl_marker=mpl_marker,
@@ -59,7 +62,8 @@ class Timeline:
         if not immediate_exit and any(b <= a for a, b in zip(self.times, self.times[1:])):
             raise ValueError("trajectory time must be strictly increasing")
         self.duration = self.times[-1]
-        self.events = sorted((event for row in self.frames for event in row["events"]),
+        self.events = sorted([event for row in self.frames for event in row["events"]] +
+                             data.get("diagnostic_events", []),
                              key=lambda event: event["time"])
         self.display_events = [display_event(event) for event in self.events if event["kind"] not in ("near_miss", "friendly_warning")]
         self.events_at = {}

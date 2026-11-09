@@ -27,6 +27,22 @@ python -m tools.interception_replay "$root/reference/trajectory_000.json.gz" "$r
 
 高速审计分别改变蓝方速度、双方水平加速度、预测时域及红方参战数量。逐目标最近点沿连续轨迹求得，距离误差上限为 1 mm。进入 10 m、重复接近和接近时加速度饱和是观察指标。反应式蓝方会随红方轨迹改变，配对比较共享初态和蓝方规则。
 
+### 三档速度配对
+
+在相同高速场景几何中比较红/蓝上限 6/7、12/14、18/21 m/s，初速度使用统一速度比例，时限 90 s。命令逐种子核验初始位置、掩码和成比例速度。主实验采用 10 s 预测时域，S2 各档与低速其余场景另测 20/40 s，S2 另测同种子单机子集。距离阶梯是诊断，1 m 接触事件仍由环境独立判定。
+
+```bash
+conda activate uav
+root=outputs/interception_speed_comparison_new
+for tier in low medium upper; do
+  for task in S0 S1 S2 S3; do
+    python -m tools.interception_speed_tiers --tier "$tier" --task "$task" \
+      --seed 1200 --episodes 50 --out "$root/audit/$tier/$task"
+  done
+done
+python -m tools.interception_speed_report --audit "$root/audit" --out "$root/report"
+```
+
 ## 运行
 
 按仓库运行约定，在 WSL Ubuntu 激活 `uav` Conda 环境。训练、Checkpoint 加载和模型评估要求 CUDA。参考控制与随机基线只运行仿真。依赖见 `requirements.txt`。

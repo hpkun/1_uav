@@ -228,6 +228,8 @@ class InterceptionEnv:
                     row = event_row("closest_approach", i, j, nearest_time)
                     row["pursuer_horizontal_acceleration"] = float(
                         np.linalg.norm(acceleration[i, :2])*np.exp(-nearest_time/taus[i]))
+                    row["evader_executed_velocity"] = targets[j].tolist()
+                    row["evader_requested_velocity"] = requests[j].tolist()
                     closest_targets[j] = row
                 if j < MAX_PURSUERS:
                     closest_friendly = closest if closest_friendly is None else min(closest_friendly, closest)

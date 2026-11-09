@@ -179,7 +179,20 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
     accumulator.reset(info)
     frames = [trace_row(info)] if trace else []
     closest, friendly, end_event, first_contact, inside_10m, close_passes = {}, None, None, None, set(), {}
+    if audit:
+        started = time.perf_counter()
+        controller_s = 0.
+        acceleration_integral = np.zeros(2)
+        active_seconds = np.zeros(2)
+        acceleration_peak = np.zeros(2)
+        first_evasive_request = {}
+        goal = navigation_point(config)
+        taus = np.r_[np.full(MAX_PURSUERS, config.pursuer_tau),
+                     np.full(config.evader_slots, config.evader_tau)]
     while True:
+        if audit:
+            previous = info
+            policy_start = time.perf_counter()
         if policy == "random":
             action = rng.random((MAX_PURSUERS, 3))
         elif policy == "stationary":
@@ -194,6 +207,8 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
             action = reference_action(info, config, assignments, predictive=policy in ("predictive", "paired_reference"))
         else:
             action = model.act(obs, info["active_mask"], deterministic=deterministic)[0].cpu().numpy()
+        if audit:
+            controller_s += time.perf_counter()-policy_start
         try:
             obs, rewards, terminated, truncated, info = env.step(action)
         except SimulationFailure as exc:
@@ -201,6 +216,23 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
             break
         accumulator.add(info, rewards)
         if audit:
+            durations = info["command_duration"]
+            magnitude = np.linalg.norm(info["initial_accelerations"][:, :2], axis=1)
+            integral = -taus*np.expm1(-durations/taus)*magnitude
+            for side, slots in enumerate((slice(None, MAX_PURSUERS), slice(MAX_PURSUERS, None))):
+                acceleration_integral[side] += integral[slots].sum()
+                active_seconds[side] += durations[slots].sum()
+                acceleration_peak[side] = max(acceleration_peak[side], magnitude[slots].max())
+            if config.evader_mode == "reactive_evasion":
+                for j in np.flatnonzero(previous["evader_mask"]):
+                    if j not in first_evasive_request:
+                        request = info["requested_velocities"][MAX_PURSUERS+j]
+                        direction = unit(goal-previous["evaders"][j, :3])
+                        if np.linalg.norm(unit(request)-direction) > 1e-7:
+                            distance = np.linalg.norm(previous["pursuers"][previous["active_mask"], :3]
+                                                      -previous["evaders"][j, :3], axis=1).min()
+                            first_evasive_request[int(j)] = dict(time=previous["time"], distance=float(distance),
+                                                                 request=request.tolist())
             for j, pair in info["closest_targets"].items():
                 if j not in closest or pair["center_distance"] < closest[j]["center_distance"]:
                     closest[j] = pair
@@ -211,8 +243,9 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
             if step_friendly is not None:
                 friendly = step_friendly if friendly is None else min(friendly, step_friendly)
             for event in info["events"]:
-                if event["kind"] == "interception_contact" and first_contact is None:
-                    first_contact = event["time"]
+                if event["kind"] == "interception_contact":
+                    if first_contact is None:
+                        first_contact = event["time"]
                 if event["kind"] == info["outcome"]:
                     end_event = event
         if trace:
@@ -222,7 +255,13 @@ def episode(config, seed, options, policy, model=None, trace=False, deterministi
             break
     if audit:
         result.update(closest_targets=list(closest.values()), minimum_friendly_distance=friendly,
-                      first_contact_time=first_contact, terminal_event=end_event, close_passes=close_passes)
+                      first_contact_time=first_contact, terminal_event=end_event, close_passes=close_passes,
+                      contact_events=[event for event in env.state.events if event["kind"] == "interception_contact"],
+                      wall_time_s=time.perf_counter()-started, controller_s=controller_s,
+                      first_evasive_request=first_evasive_request,
+                      peak_horizontal_acceleration=acceleration_peak.tolist(),
+                      mean_horizontal_acceleration=np.divide(acceleration_integral, active_seconds,
+                          out=np.zeros(2), where=active_seconds > 0).tolist())
     return result | {"seed": seed}, frames
 
 
