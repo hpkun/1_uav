@@ -42,6 +42,11 @@ def scenario_label(config, scenario):
     return f"Task {config.task} ({config.scale}), scenario={scenario}, evader={config.evader_mode}"
 
 
+def scenario_fields(config, scenario):
+    return terminal.fields(task=config.task, scale=config.scale, mode=config.evader_mode,
+                           scenario=scenario)
+
+
 @contextmanager
 def run_lock(folder):
     # OS locks release when an interrupted process exits.
@@ -138,9 +143,9 @@ def train(folder, env_config=None, train_config=None, updates=None, resume=False
                 atomic_json(folder / "config.json", run)
                 save(latest, model, env_config, vector, run=run)
             seed_base = evaluation.evaluation_seed_base
-            label = scenario_label(env_config, run["training_scenario"])
+            label = scenario_fields(env_config, run["training_scenario"])
             if "experiment" in run:
-                label = f"{run['experiment']['name']} | {label}"
+                label = terminal.fields(name=run["experiment"]["name"]) + " | " + label
             terminal.training_start(EXPERIMENT, label, train_config,
                 start_update=model.updates, planned_updates=planned, folder=folder, resume=resume,
                 stop_steps=stop * wave, requested_steps=plan.get("total_joint_steps"),
@@ -364,10 +369,11 @@ def complete_evaluation(folder, run, model, config, protocol, rows):
                    else publish_best(folder, rows, update))
     evaluation_csv(folder, rows)
     if result is not None:
-        terminal.emit(EXPERIMENT, "EVAL", f"Update {update:,}",
-                      f"Scenario {protocol.evaluation_scenario}, actions={action_mode(protocol.evaluation_deterministic)}",
+        terminal.emit(EXPERIMENT, "EVAL", terminal.fields(upd=update),
                       terminal.interception_results(result["summary"]),
-                      f"Best update {best_update:,}" if best_update is not None else None)
+                      terminal.fields(scenario=protocol.evaluation_scenario,
+                                      actions=action_mode(protocol.evaluation_deterministic),
+                                      best=best_update))
 
 
 def evaluate(folder, config, options, policy, seeds, model=None, *, identity=None,
@@ -428,12 +434,14 @@ def evaluate(folder, config, options, policy, seeds, model=None, *, identity=Non
     else:
         update = identity.get("update") if identity is not None else None
         terminal.emit(EXPERIMENT, "EVAL" if model is not None else "RUN",
-                      "Final test" if test_metadata is not None else "Independent test" if output is not None else None,
-                      scenario_label(config, options.get("scenario", "random")),
-                      f"Checkpoint update {update:,}" if update is not None else None,
-                      f"Actions {action_mode(deterministic)}" if model is not None else f"Policy {policy}",
-                      f"Seeds {terminal.seed_span(seeds)}", terminal.interception_results(summary),
-                      f"Output {display_output or (summary_path if output is not None else folder)}")
+                      terminal.fields(kind="final" if test_metadata is not None else "independent",
+                                      upd=update),
+                      scenario_fields(config, options.get("scenario", "random")),
+                      terminal.fields(actions=action_mode(deterministic) if model is not None else None,
+                                      policy=policy if model is None else None,
+                                      seeds=terminal.seed_span(seeds)),
+                      terminal.interception_results(summary),
+                      terminal.fields(out=display_output or (summary_path if output is not None else folder)))
     return summary
 
 
@@ -530,7 +538,7 @@ def run_batch(folder, spec, seeds, *, resume=False):
                     verify_batch_member(path, manifest, seed)
                     if any(path.glob("budget_*.json")):
                         raise ValueError("batch resume requires the original budget for every seed")
-        terminal.emit(EXPERIMENT, "BATCH", spec.name, f"Training seeds {terminal.seed_span(seeds)}")
+        terminal.emit(EXPERIMENT, "BATCH", terminal.fields(name=spec.name, seeds=terminal.seed_span(seeds)))
         for path, member in zip(folders, specs, strict=True):
             if resume and path.exists():
                 train(path, resume=True, report_run=False)
@@ -542,8 +550,10 @@ def run_batch(folder, spec, seeds, *, resume=False):
 
 
 def show_storage(usage):
-    terminal.emit(EXPERIMENT, "STORAGE", f"{usage['files']:,} files", f"{usage['bytes']:,} logical bytes",
-                  f"{usage['unique_bytes']:,} unique bytes")
+    terminal.emit(EXPERIMENT, "STORAGE",
+                  terminal.fields(files=usage["files"],
+                                  size=terminal.number(usage["bytes"] / 1e6, "MB", style=".1f"),
+                                  unique=terminal.number(usage["unique_bytes"] / 1e6, "MB", style=".1f")))
 
 
 def read_batch(folder):
@@ -702,14 +712,16 @@ def main(argv=None):
                                                                           2 * config.evader_vmax / config.evader_tau])),
                              indent=2, allow_nan=False))
         else:
-            terminal.emit(EXPERIMENT, "VALIDATE", f"Configuration valid ({VERSION})",
-                          scenario_label(config, args.scenario), f"Seed {args.seed}",
-                          f"dt {terminal.number(config.dt, 's')}, limit {config.max_steps:,} steps",
-                          f"Speed limits red {terminal.number(config.pursuer_vmax, 'm/s')}, "
-                          f"blue {terminal.number(config.evader_vmax, 'm/s')}",
-                          f"Protection cylinder radius {terminal.number(config.radius, 'm')}, "
-                          f"height {terminal.number(config.protected_height, 'm')}",
-                          f"Actor observations {obs.shape}, critic state {info['centralized_state'].shape}")
+            terminal.emit(EXPERIMENT, "VALIDATE", terminal.fields(valid="yes", version=VERSION),
+                          scenario_fields(config, args.scenario),
+                          terminal.fields(seed=args.seed, dt=terminal.number(config.dt, "s"),
+                                          max_steps=config.max_steps,
+                                          red_vmax=terminal.number(config.pursuer_vmax, "m/s"),
+                                          blue_vmax=terminal.number(config.evader_vmax, "m/s"),
+                                          radius=terminal.number(config.radius, "m"),
+                                          height=terminal.number(config.protected_height, "m"),
+                                          actor_obs=tuple(obs.shape),
+                                          critic_state=tuple(info["centralized_state"].shape)))
     else:
         seeds = range(args.seed, args.seed + (args.episodes or default_episodes))
         storage, output, deterministic = None, None, default_deterministic

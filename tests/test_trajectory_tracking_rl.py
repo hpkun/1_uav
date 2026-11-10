@@ -151,23 +151,23 @@ def test_periodic_evaluation_and_recovered_commit(tmp_path, capsys):
     folder=tmp_path/"run"
     path=fit(folder,config,training,total_steps=6,until_steps=4,interval=2,evaluation_seeds=[2200])
     logs = capsys.readouterr().out
-    assert "[Preset tracking START]" in logs and "[Preset tracking PAUSE]" in logs
-    assert "[Preset tracking TRAIN] Update 1/3 (33.3%)" in logs
-    assert logs.count("[Preset tracking EVAL]") == 1 and "[Preset tracking EVAL] Update 2" in logs
-    assert "Tracking success" in logs and "Mean position error" in logs and "eval N/A" not in logs
+    assert "[start] experiment=tracking" in logs and "[pause]" in logs
+    assert "[train] upd=1/3 (33.3%)" in logs
+    assert logs.count("[eval]") == 1 and "[eval] upd=2" in logs
+    assert "success=" in logs and "pos_err=" in logs and "eval=N/A" not in logs
     (folder/"update_000002.json").unlink()
     (folder/"evaluation_000002.json").unlink()
     with pytest.raises(ValueError,match="mode"):
         fit(folder,resume=True,expected_mode="bezier")
     fit(folder,resume=True,expected_mode="straight")
     logs = capsys.readouterr().out
-    assert "[Preset tracking RESUME]" in logs and "[Preset tracking DONE]" in logs
-    assert logs.count("[Preset tracking EVAL]") == 1 and "[Preset tracking EVAL] Update 3" in logs
+    assert "[resume] experiment=tracking" in logs and "[done]" in logs
+    assert logs.count("[eval]") == 1 and "[eval] upd=3" in logs
     payload=read(path,protocol=PROTOCOL)
     assert payload["steps"]==6 and [e["update"] for e in payload["evaluations"]]==[2,3]
     assert (folder/"evaluation_000002.json").is_file() and (folder/"evaluation_000003.json").is_file()
     output = tmp_path/"standalone"
     main(["evaluate", str(path), "--out", str(output), "--eval-episodes", "1"])
     logs = capsys.readouterr().out
-    assert "[Preset tracking EVAL]" in logs and "Checkpoint update 3" in logs
+    assert "[eval] experiment=tracking" in logs and "upd=3" in logs
     assert (output/"evaluation.json").is_file()

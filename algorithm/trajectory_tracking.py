@@ -153,7 +153,8 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
                 save(path,model,config,vector,run=run,protocol=PROTOCOL,evaluations=evaluations)
             _metric_view(folder,records)
             cumulative = sum(r["valid_samples"] for r in records)
-            terminal.training_start(EXPERIMENT, f"Mode {config.trajectory_mode}, {len(config.starts)} UAVs", training,
+            terminal.training_start(EXPERIMENT, terminal.fields(experiment="tracking",
+                mode=config.trajectory_mode, uavs=len(config.starts)), training,
                 start_update=model.updates, planned_updates=total_steps//wave, folder=folder, resume=resume,
                 stop_steps=target, evaluation=terminal.evaluation_setup(interval, evaluation_seeds,
                     scenario="seeded references", actions="Beta mean", final=bool((total_steps//wave) % interval)))
@@ -184,7 +185,7 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
                     f.write(json.dumps({k:v for k,v in row.items() if k not in ("completed_episodes","evaluation")})+"\n")
                 terminal.training_progress(EXPERIMENT, row, total_steps=total_steps)
                 if result is not None:
-                    terminal.emit(EXPERIMENT, "EVAL", f"Update {model.updates:,}",
+                    terminal.emit(EXPERIMENT, "EVAL", terminal.fields(upd=model.updates),
                                   terminal.tracking_results(result["summary"]))
         terminal.training_end(EXPERIMENT, model, path, paused=target < total_steps)
     return path
@@ -233,9 +234,10 @@ def main(argv=None):
         result = evaluate(model,config,seeds)
         atomic_json(a.out/"evaluation.json",result |
                     dict(mode=config.trajectory_mode,checkpoint=str(a.checkpoint),joint_steps=payload["steps"]))
-        terminal.emit(EXPERIMENT, "EVAL", f"Mode {config.trajectory_mode}, actions=Beta mean",
-                      f"Checkpoint update {payload['updates']:,}", f"Seeds {terminal.seed_span(seeds)}",
-                      terminal.tracking_results(result["summary"]), f"Output {a.out}")
+        terminal.emit(EXPERIMENT, "EVAL", terminal.fields(experiment="tracking",
+                      mode=config.trajectory_mode, actions="Beta mean", upd=payload["updates"],
+                      seeds=terminal.seed_span(seeds)),
+                      terminal.tracking_results(result["summary"]), terminal.fields(out=a.out))
 
 
 if __name__=="__main__":
