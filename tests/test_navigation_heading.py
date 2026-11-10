@@ -1,5 +1,4 @@
 from dataclasses import replace
-import hashlib
 import json
 import sys
 import zipfile
@@ -13,7 +12,6 @@ from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.mappo.interception import MAPPO, TrainConfig
 from algorithm.navigation import NavigationAccumulator, PROTOCOL, read_checkpoint, validate_discount
 from env.heading_potential import HeadingConfig, direction_quality, heading_transition
-from env.interception import InterceptionEnv
 from env.navigation import NavigationConfig, NavigationEnv
 
 
@@ -150,19 +148,8 @@ def test_heading_off_preserves_base_rewards_and_states():
         validate_discount(on.config,TrainConfig(gamma=.98))
 
 
-def test_historical_fixed_interception_reward_fingerprint():
-    # Captured from the pre-navigation d9e4c3f checkout under WSL/uav.
-    env=InterceptionEnv()
-    env.reset(1200,{"scenario":"fixed"})
-    rows=[]
-    while True:
-        _,r,term,trunc,info=env.step(np.full((5,3),.5))
-        rows.append([r.tolist(),info["reward_parts"]])
-        if term or trunc:
-            break
-    encoded=json.dumps(rows,sort_keys=True,separators=(",",":")).encode()
-    assert len(rows)==87 and info["outcome"]=="breach"
-    assert hashlib.sha256(encoded).hexdigest()=="1b66ce8760c6f1d569117885ee155546e566a6bcd3a85a4183f18a9fde21c85e"
+def test_historical_fixed_interception_reward_fingerprint(check_interception_history):
+    check_interception_history("default", 87, "1b66ce8760c6f1d569117885ee155546e566a6bcd3a85a4183f18a9fde21c85e")
 
 
 def test_cuda_navigation_checkpoint_identity_and_exact_rollout(tmp_path):

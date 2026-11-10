@@ -1,11 +1,9 @@
 from dataclasses import replace
-import hashlib
-import json
 
 import numpy as np
 import pytest
 
-from env.interception import InterceptionConfig, InterceptionEnv
+from env.interception import InterceptionConfig
 from env.interception.motion import advance, execute_velocity
 from env.preset_tracking import run_tracking
 from env.preset_trajectory import TrajectoryConfig, build_path, initial_states, make_paths
@@ -152,15 +150,5 @@ def test_continuous_boundary_and_long_hold_repeatable():
     ("goal_seeking",87,"7eedf7be4aef7f13653a62694a7438c7e067954c515f04bc6e17ec6b0b163ef6"),
     ("bezier",110,"8f410713094a875cc2884294e6584664bd1d30d460c56283b5d45df5c79bd478"),
 ])
-def test_historical_mode_command_state_and_reward_unchanged(kind,steps,digest):
-    env=InterceptionEnv(InterceptionConfig(evader_mode=kind))
-    env.reset(1200,{"scenario":"fixed"})
-    rows=[]
-    while True:
-        _,r,term,trunc,info=env.step(np.full((5,3),.5))
-        rows.append([info["evaders"].tolist(),info["commands"].tolist(),r.tolist(),info["reward_parts"]])
-        if term or trunc:
-            break
-    assert len(rows)==steps and info["outcome"]=="breach"
-    payload=json.dumps(rows,sort_keys=True,separators=(",",":")).encode()
-    assert hashlib.sha256(payload).hexdigest()==digest
+def test_historical_mode_command_state_and_reward_unchanged(kind, steps, digest, check_interception_history):
+    check_interception_history(kind, steps, digest, InterceptionConfig(evader_mode=kind))
