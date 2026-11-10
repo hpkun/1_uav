@@ -53,7 +53,7 @@ def file_digest(path):
     return sha.hexdigest()
 
 
-def atomic_bytes(path, data):
+def atomic_bytes(path, data, *, exclusive=False):
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
         try:
@@ -61,14 +61,17 @@ def atomic_bytes(path, data):
             stream.flush()
             os.fsync(stream.fileno())
             stream.close()
-            os.replace(temporary, path)
+            if exclusive:
+                os.link(temporary, path)
+            else:
+                os.replace(temporary, path)
         finally:
             stream.close()
             temporary.unlink(missing_ok=True)
 
 
-def atomic_json(path, value):
-    atomic_bytes(path, (encoded(value) + "\n").encode("utf-8"))
+def atomic_json(path, value, *, exclusive=False):
+    atomic_bytes(path, (encoded(value) + "\n").encode("utf-8"), exclusive=exclusive)
 
 
 def read_json(path):
@@ -196,7 +199,7 @@ def score(row):
             float("inf") if capture is None else capture, row["update"])
 
 
-def publish_best(folder, evaluations, update):
+def publish_best(folder, evaluations, update, *, share_latest=False):
     best = folder / "best.pt"
     metadata = folder / "best.json"
     if not evaluations:
@@ -213,7 +216,18 @@ def publish_best(folder, evaluations, update):
         latest = folder / "latest.pt"
         if winner["update"] != update or file_digest(latest) != wanted:
             raise ValueError("cannot recover historical Best weights")
-        atomic_bytes(best, latest.read_bytes())
+        if share_latest:
+            # Both names refer to the immutable generation. The next save replaces latest.
+            with tempfile.TemporaryDirectory(dir=folder, prefix=".best-") as scratch:
+                link = Path(scratch) / "best.pt"
+                try:
+                    os.link(latest, link)
+                except OSError:
+                    atomic_bytes(best, latest.read_bytes())
+                else:
+                    os.replace(link, best)
+        else:
+            atomic_bytes(best, latest.read_bytes())
     stats = winner["summary"]
     atomic_json(metadata, dict(best_update=winner["update"], best_joint_steps=winner["joint_steps"],
                               best_score={key: stats[key] for key in ("success_rate", "breach_rate",

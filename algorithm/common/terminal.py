@@ -36,13 +36,15 @@ def emit(experiment, phase, *sections):
     print(f"[{experiment} {phase}] {message}", file=sys.stderr if phase == "ERROR" else sys.stdout, flush=True)
 
 
-def run_cli(experiment, command):
+def run_cli(experiment, command, *, debug=False):
     try:
         command()
     except KeyboardInterrupt:
         emit(experiment, "ERROR", "Interrupted")
         raise SystemExit(130) from None
-    except (OSError, ValueError, RuntimeError, FloatingPointError) as exc:
+    except Exception as exc:
+        if debug:
+            raise
         lines = str(exc).strip().splitlines()
         detail = lines[-1] if lines and lines[0].startswith("Traceback") else " ".join(lines)
         emit(experiment, "ERROR", detail or type(exc).__name__)
@@ -58,9 +60,11 @@ def evaluation_setup(interval, seeds=(), *, scenario, actions, final=False):
 
 
 def training_start(experiment, scenario, training, *, start_update, planned_updates,
-                   evaluation, folder, resume=False, stop_steps=None):
+                   evaluation, folder, resume=False, stop_steps=None, requested_steps=None):
     wave = training.workers * training.horizon
     budget = f"Budget {quantity(planned_updates, 'update')} / {quantity(planned_updates * wave, 'joint step')}"
+    if requested_steps is not None:
+        budget += f", requested {quantity(requested_steps, 'joint step')}"
     if stop_steps is not None and stop_steps < planned_updates * wave:
         budget += f", stop at {stop_steps:,} joint steps"
     emit(experiment, "RESUME" if resume else "START", scenario, f"Train seed {training.seed}",

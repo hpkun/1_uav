@@ -1,11 +1,13 @@
 """CLI and experiment lifecycle for three-dimensional interception."""
 import argparse
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
 import random
+import sys
+from tempfile import TemporaryDirectory
 import time
 from uuid import uuid4
 
@@ -17,7 +19,6 @@ from env.interception.config import VERSION, MAX_PURSUERS, MODES, SCALES, SCENAR
 from env.interception.scenario import unit
 from env.interception.motion import execute_velocity
 from env.interception.protected_area import navigation_point
-from env.interception.protected_area import navigation_point
 from algorithm.common.interception_vector import EpisodeAccumulator, InterceptionVectorEnv
 from algorithm.common.interception_checkpoint import PROTOCOL, save, read, restore, load_weights
 from algorithm.common.research import (EvaluationProtocol, atomic_json, commit_header, digest,
@@ -26,6 +27,7 @@ from algorithm.common.research import (EvaluationProtocol, atomic_json, commit_h
 from algorithm.common.runtime import require_cuda
 from algorithm.common.serialization import serializable, write_json
 from algorithm.common import terminal
+from algorithm.common import experiment
 from algorithm.mappo.interception import MAPPO, TrainConfig
 
 
@@ -54,15 +56,22 @@ def run_lock(folder):
         yield
 
 
-def train(folder, env_config=None, train_config=None, updates=1, resume=False, *,
-          evaluation=None, log_interval=1):
+def train(folder, env_config=None, train_config=None, updates=None, resume=False, *,
+          evaluation=None, log_interval=None, spec=None, extend=None, until=None, report_run=True):
+    if spec is not None:
+        env_config, train_config, evaluation = spec.environment, spec.training, spec.evaluation
     if env_config is not None and env_config.scale not in SCALES:
         raise ValueError("3v3 is a reference simulation outside the MAPPO checkpoint protocol")
     require_cuda()
-    if updates < 1 or log_interval < 1:
+    if any(value is not None and (type(value) is not int or value < 1) for value in (updates, log_interval)):
         raise ValueError("updates and log interval must be positive")
     folder = Path(folder)
     if not resume:
+        if until is not None:
+            wave = train_config.workers * train_config.horizon
+            planned = spec.manifest()["updates"] if spec is not None else updates or 1
+            if until <= 0 or until % wave or until > planned * wave:
+                raise ValueError("--until-steps must be an update boundary within the budget")
         folder.mkdir(parents=True, exist_ok=False)
     latest = folder / "latest.pt"
     with run_lock(folder):
@@ -82,15 +91,42 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
             records = journal(folder, head, repair=True)
             if payload["episodes"] != sum(len(row["completed_episodes"]) for row in records):
                 raise ValueError("episode count differs from checkpoint")
+            committed = records[-1]["planned_updates"] if records else run["initial_budget_updates"]
+            if "experiment" in run:
+                if updates is not None:
+                    raise ValueError("unified runs resume their saved budget; use --extend-total-steps to extend")
+                if extend is not None and until is not None:
+                    wave = train_config.workers * train_config.horizon
+                    target = experiment.budget(extend, train_config)["aligned_joint_steps"]
+                    if not payload["steps"] <= until <= target or until <= 0 or until % wave:
+                        raise ValueError("--until-steps must be an update boundary within the remaining budget")
+                plan = experiment.planned_budget(folder, run, train_config, committed, extend)
+                log_interval = log_interval or run["experiment"]["log_interval"]
+            else:
+                if extend is not None:
+                    raise ValueError("legacy runs extend with --updates")
+                plan = dict(updates=committed if updates is None else payload["updates"] + updates)
         else:
             evaluation = evaluation or EvaluationProtocol()
+            plan = spec.manifest() if spec is not None else dict(updates=updates or 1)
             run = serializable(dict(id=uuid4().hex, version=VERSION, protocol=PROTOCOL,
                 environment=asdict(env_config), training=asdict(train_config), evaluation=asdict(evaluation),
-                initial_budget_updates=updates, training_scenario="random",
+                initial_budget_updates=plan["updates"], training_scenario="random",
                 seeds=dict(training="[0, seed, worker_id, worker_episode_index]",
                            evaluation_environment="[1, evaluation_seed]",
                            evaluation_policy="[3, evaluation_seed]")))
+            if spec is not None:
+                run["experiment"] = plan
+                log_interval = log_interval or spec.log_interval
             records = []
+        log_interval = log_interval or 1
+        planned = plan["updates"]
+        wave = train_config.workers * train_config.horizon
+        total_steps = planned * wave
+        start_update = payload["updates"] if payload is not None else 0
+        stop = planned if until is None else until // wave
+        if (until is not None and (until <= 0 or until % wave) or not start_update <= stop <= planned):
+            raise ValueError("--until-steps must be an update boundary within the remaining budget")
         random.seed(train_config.seed)
         np.random.seed(train_config.seed)
         torch.manual_seed(train_config.seed)
@@ -101,11 +137,13 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
             else:
                 atomic_json(folder / "config.json", run)
                 save(latest, model, env_config, vector, run=run)
-            planned = model.updates + updates
-            total_steps = planned * train_config.workers * train_config.horizon
             seed_base = evaluation.evaluation_seed_base
-            terminal.training_start(EXPERIMENT, scenario_label(env_config, run["training_scenario"]), train_config,
+            label = scenario_label(env_config, run["training_scenario"])
+            if "experiment" in run:
+                label = f"{run['experiment']['name']} | {label}"
+            terminal.training_start(EXPERIMENT, label, train_config,
                 start_update=model.updates, planned_updates=planned, folder=folder, resume=resume,
+                stop_steps=stop * wave, requested_steps=plan.get("total_joint_steps"),
                 evaluation=terminal.evaluation_setup(evaluation.evaluation_interval_updates,
                     range(seed_base, seed_base + evaluation.evaluation_episodes),
                     scenario=evaluation.evaluation_scenario, actions=action_mode(evaluation.evaluation_deterministic)))
@@ -115,7 +153,7 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
             recent = [row for record in records for row in record["completed_episodes"]][-100:]
             previous = digest(records[-1]) if records else None
             try:
-                for _ in range(updates):
+                for _ in range(start_update, stop):
                     start = time.perf_counter()
                     old_steps = model.steps
                     rollout, episodes = model.collect(vector)
@@ -135,17 +173,23 @@ def train(folder, env_config=None, train_config=None, updates=1, resume=False, *
                     write_views(folder, [record], append=True)
                     previous = digest(record)
                     recent = (recent + episodes)[-100:]
-                    if model.updates % log_interval == 0 or model.updates == planned:
+                    if model.updates % log_interval == 0 or model.updates == stop:
                         terminal.training_progress(EXPERIMENT, record, total_steps=total_steps,
                             window=terminal.interception_results(summarize(recent), window=True))
                     if evaluation.evaluation_interval_updates and model.updates % evaluation.evaluation_interval_updates == 0:
                         complete_evaluation(folder, run, model, env_config, evaluation, evaluations)
             except (RuntimeError, FloatingPointError) as exc:
-                write_json(folder / f"failure_{time.time_ns()}.json",
+                failure_path = (folder / "failure.json" if "experiment" in run
+                                else folder / f"failure_{time.time_ns()}.json")
+                atomic_json(failure_path,
                            dict(error=str(exc), last_committed=str(latest),
                                 simulation_failure="simulation_failure" in str(exc)))
                 raise
-        terminal.training_end(EXPERIMENT, model, latest)
+        if "experiment" in run:
+            if stop == planned:
+                finish_experiment(folder, run, model, env_config, report_run)
+            show_storage(experiment.storage_usage(folder))
+        terminal.training_end(EXPERIMENT, model, latest, paused=stop < planned)
     return latest
 
 
@@ -316,7 +360,8 @@ def complete_evaluation(folder, run, model, config, protocol, rows):
                           checkpoint_source=f"latest.pt at update {update}", checkpoint_sha256=source_hash)
             atomic_json(folder / f"evaluation_{update:06}.json", result)
             rows.append(result)
-    best_update = publish_best(folder, rows, update)
+    best_update = (publish_best(folder, rows, update, share_latest=True) if "experiment" in run
+                   else publish_best(folder, rows, update))
     evaluation_csv(folder, rows)
     if result is not None:
         terminal.emit(EXPERIMENT, "EVAL", f"Update {update:,}",
@@ -326,47 +371,203 @@ def complete_evaluation(folder, run, model, config, protocol, rows):
 
 
 def evaluate(folder, config, options, policy, seeds, model=None, *, identity=None,
-             compressed=False, deterministic=True, json_output=False):
+             compressed=False, deterministic=True, json_output=False, output=None, storage=None,
+             test_metadata=None, display_output=None):
     import gzip
     if not seeds:
         raise ValueError("at least one evaluation seed is required")
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=False)
+    if (folder is None) == (output is None):
+        raise ValueError("choose exactly one of --out and --output")
+    storage = storage or experiment.Storage("all" if folder is not None else "none", gzip=compressed)
+    storage.validate_seeds(seeds)
+    if output is None:
+        trace_folder = Path(folder)
+        trace_folder.mkdir(parents=True, exist_ok=False)
+        summary_path = trace_folder / "summary.json"
+    else:
+        summary_path = Path(output)
+        if os.path.lexists(summary_path):
+            raise FileExistsError(f"output already exists: {summary_path}")
+        if not summary_path.parent.is_dir():
+            raise FileNotFoundError(f"output parent does not exist: {summary_path.parent}")
+        trace_folder = summary_path.with_name(f"{summary_path.stem}_trajectories")
+        if storage.trajectories != "none":
+            trace_folder.mkdir(parents=True, exist_ok=False)
     rows = []
     for index, seed in enumerate(seeds):
-        row, frames = evaluation_episode(config, seed, options, policy, model, True, deterministic)
+        trace = storage.traces(seed)
+        row, frames = evaluation_episode(config, seed, options, policy, model, trace, deterministic)
         rows.append(row)
+        if not trace:
+            continue
         data = dict(version=VERSION, trace_version=2, time_unit="s", config=asdict(config), task=config.task,
                     seed=seed, policy=policy, scenario=options, result=row, frames=frames,
                     deterministic=deterministic if model is not None else None, model=identity,
                     entity_ids=dict(pursuers=list(range(MAX_PURSUERS)),
                                     evaders=list(range(MAX_PURSUERS, MAX_PURSUERS+config.evader_slots))))
-        path = folder / f"trajectory_{index:03}.json"
-        if compressed:
+        path = trace_folder / f"trajectory_{index:03}.json"
+        if storage.gzip:
             with gzip.open(str(path) + ".gz", "xt", encoding="utf-8") as stream:
                 json.dump(serializable(data), stream, allow_nan=False, separators=(",", ":"))
         else:
             write_json(path, data)
     summary = summarize(rows)
-    write_json(folder / "summary.json", summary | dict(
+    data = summary | dict(
         version=VERSION, environment=asdict(config), runs=rows, seeds=list(seeds),
         teams={"pursuers": "red defenders", "evaders": "blue intruders"},
         scenario=options, model=identity, policy=policy,
-        deterministic=deterministic if model is not None else None))
+        deterministic=deterministic if model is not None else None)
+    if test_metadata is not None:
+        data["final_test"] = test_metadata
+    if output is None:
+        write_json(summary_path, data)
+    else:
+        atomic_json(summary_path, data, exclusive=True)
     if json_output:
         print(json.dumps(summary, indent=2))
     else:
         update = identity.get("update") if identity is not None else None
         terminal.emit(EXPERIMENT, "EVAL" if model is not None else "RUN",
+                      "Final test" if test_metadata is not None else "Independent test" if output is not None else None,
                       scenario_label(config, options.get("scenario", "random")),
                       f"Checkpoint update {update:,}" if update is not None else None,
                       f"Actions {action_mode(deterministic)}" if model is not None else f"Policy {policy}",
-                      f"Seeds {terminal.seed_span(seeds)}", terminal.interception_results(summary), f"Output {folder}")
+                      f"Seeds {terminal.seed_span(seeds)}", terminal.interception_results(summary),
+                      f"Output {display_output or (summary_path if output is not None else folder)}")
     return summary
+
+
+def checkpoint_payload(path):
+    sha256 = file_digest(path)
+    payload = read(path)
+    if file_digest(path) != sha256:
+        raise ValueError("checkpoint changed during load")
+    return payload, dict(path=str(path.resolve()), sha256=sha256,
+                         update=payload["updates"], joint_steps=payload["steps"])
+
+
+def checkpoint_model(payload):
+    model = MAPPO(TrainConfig(**payload["training"]))
+    load_weights(payload, model)
+    return model
+
+
+def publish_report(folders, output, plots):
+    from tools.interception_report import generate
+
+    if output.exists():
+        saved = read_json(output / "summary.json")
+        heads = [commit_header(path / "latest.pt") for path in folders]
+        if ([(row["config"]["id"], row["completed_updates"]) for row in saved["runs"]]
+                != [(head["run"]["id"], head["update"]) for head in heads]
+                or (output / "training_curves.png").is_file() != plots
+                or not (output / "report.md").is_file()):
+            raise ValueError("existing report differs from the saved experiment")
+        return
+    with TemporaryDirectory(dir=output.parent, prefix=".report-") as tmp:
+        staged = Path(tmp) / "report"
+        generate(folders, staged, plots=plots)
+        staged.rename(output)
+
+
+def finish_experiment(folder, run, model, config, report_run):
+    settings = run["experiment"]
+    test = experiment.TestProtocol(**settings["test"])
+    if test.enabled:
+        storage = experiment.Storage(**settings["storage"])
+        base = folder / f"test_{model.updates:06}"
+        traces = storage.trajectories != "none"
+        result = base / "summary.json" if traces else base.with_suffix(".json")
+        selected = folder / f"{test.checkpoint}.pt"
+        sha256 = file_digest(selected)
+        metadata = dict(run_id=run["id"], completed_update=model.updates, protocol=settings["test"])
+        if result.exists():
+            saved = read_json(result)
+            if saved.get("final_test") != metadata or saved.get("model", {}).get("sha256") != sha256:
+                raise ValueError("existing final test differs from the saved experiment protocol")
+        else:
+            if test.checkpoint == "latest":
+                identity = dict(path=str(selected.resolve()), sha256=sha256,
+                                update=model.updates, joint_steps=model.steps)
+                assessed = model
+            else:
+                payload, identity = checkpoint_payload(selected)
+                assessed = checkpoint_model(payload)
+            options = dict(scenario=test.scenario)
+            if traces:
+                with TemporaryDirectory(dir=folder, prefix=".test-") as tmp:
+                    staged = Path(tmp) / base.name
+                    evaluate(staged, config, options, "checkpoint", test.seeds, assessed, identity=identity,
+                             deterministic=test.deterministic, storage=storage, test_metadata=metadata,
+                             display_output=result)
+                    staged.rename(base)
+            else:
+                evaluate(None, config, options, "checkpoint", test.seeds, assessed, identity=identity,
+                         deterministic=test.deterministic, output=result, storage=storage, test_metadata=metadata)
+    if report_run and settings["report"]["on_complete"]:
+        publish_report([folder], folder / f"report_{model.updates:06}", settings["report"]["plots"])
+
+
+def run_batch(folder, spec, seeds, *, resume=False):
+    if not seeds or len(set(seeds)) != len(seeds):
+        raise ValueError("batch requires distinct training seeds")
+    specs = [replace(spec, training=replace(spec.training, seed=seed)) for seed in seeds]
+    require_cuda()
+    manifest = dict(version=experiment.VERSION, seeds=seeds, experiment=spec.manifest(),
+                    environment=asdict(spec.environment), evaluation=asdict(spec.evaluation),
+                    training={key: value for key, value in asdict(spec.training).items() if key != "seed"})
+    manifest = serializable(manifest)
+    if not resume:
+        folder.mkdir(parents=True, exist_ok=False)
+        atomic_json(folder / "batch.json", manifest)
+    elif read_json(folder / "batch.json") != manifest:
+        raise ValueError("batch resume requires the original effective configuration and seeds")
+    folders = [folder / f"seed_{seed}" for seed in seeds]
+    with run_lock(folder):
+        if resume:
+            for path, seed in zip(folders, seeds, strict=True):
+                if path.exists():
+                    verify_batch_member(path, manifest, seed)
+                    if any(path.glob("budget_*.json")):
+                        raise ValueError("batch resume requires the original budget for every seed")
+        terminal.emit(EXPERIMENT, "BATCH", spec.name, f"Training seeds {terminal.seed_span(seeds)}")
+        for path, member in zip(folders, specs, strict=True):
+            if resume and path.exists():
+                train(path, resume=True, report_run=False)
+            else:
+                train(path, spec=member, report_run=False)
+        if spec.report.on_complete:
+            publish_report(folders, folder / "report", spec.report.plots)
+    show_storage(experiment.storage_usage(folder))
+
+
+def show_storage(usage):
+    terminal.emit(EXPERIMENT, "STORAGE", f"{usage['files']:,} files", f"{usage['bytes']:,} logical bytes",
+                  f"{usage['unique_bytes']:,} unique bytes")
+
+
+def read_batch(folder):
+    manifest = experiment.load_object(folder / "batch.json")
+    seeds = manifest.get("seeds", [])
+    if (manifest.get("version") != experiment.VERSION or not isinstance(seeds, list) or not seeds
+            or any(type(seed) is not int or not 0 <= seed < 2**32 for seed in seeds)
+            or len(set(seeds)) != len(seeds)):
+        raise ValueError("invalid batch manifest")
+    for seed in seeds:
+        verify_batch_member(folder / f"seed_{seed}", manifest, seed)
+    return manifest
+
+
+def verify_batch_member(path, manifest, seed):
+    run = commit_header(path / "latest.pt")["run"]
+    if (run["training"] != manifest["training"] | {"seed": seed}
+            or any(run.get(key) != manifest[key] for key in ("environment", "evaluation", "experiment"))):
+        raise ValueError("run differs from the batch manifest")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--debug", action="store_true", help="show the full exception traceback")
     sub = parser.add_subparsers(dest="operation", required=True)
 
     def environment_flags(command, scales=SCENARIO_SCALES):
@@ -381,65 +582,115 @@ def main(argv=None):
     environment_flags(run)
     assess = sub.add_parser("evaluate")
     for command in (init, run, assess):
-        command.add_argument("--scenario", choices=("fixed", "random", "custom"), default="fixed")
+        command.add_argument("--scenario", choices=("fixed", "random", "custom"))
         command.add_argument("--initial", type=Path, help="JSON custom pursuers/evaders or spawn distance")
-        command.add_argument("--seed", type=int, default=1000)
+        command.add_argument("--seed", type=int)
         command.add_argument("--json", action="store_true", help="write the legacy JSON payload to stdout")
     for command in (run, assess):
-        command.add_argument("--episodes", type=int, default=1)
-        command.add_argument("--out", type=Path, required=True)
+        command.add_argument("--episodes", type=experiment.positive_int)
         command.add_argument("--gzip", action="store_true", help="compress trajectory JSON")
+    run.add_argument("--out", type=Path, required=True)
+    destination = assess.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--out", type=Path, help="legacy directory output")
+    destination.add_argument("--output", type=Path, help="summary JSON file, with no trajectories by default")
     run.add_argument("--policy", choices=("reference", "predictive", "stationary", "random"), default="reference")
     assess.add_argument("checkpoint", type=Path)
-    assess.add_argument("--stochastic", action="store_true")
+    actions = assess.add_mutually_exclusive_group()
+    actions.add_argument("--stochastic", dest="deterministic", action="store_false", default=None)
+    actions.add_argument("--deterministic", action="store_true")
+    assess.add_argument("--trajectories", choices=("none", "selected", "all"))
+    assess.add_argument("--trajectory-seed", action="append", type=int, default=[])
     fit = sub.add_parser("train")
-    environment_flags(fit, SCALES)
-    fit.add_argument("--training", type=Path, help="JSON overrides of TrainConfig")
-    fit.add_argument("--updates", type=int, default=1)
-    fit.add_argument("--out", type=Path, required=True)
-    fit.add_argument("--evaluation-interval-updates", type=int, default=0)
-    fit.add_argument("--evaluation-episodes", type=int, default=5)
-    fit.add_argument("--evaluation-seed-base", type=int, default=1000)
-    fit.add_argument("--evaluation-scenario", choices=("fixed", "random"), default="random")
-    fit.add_argument("--evaluation-deterministic", action=argparse.BooleanOptionalAction, default=True)
+    batch = sub.add_parser("batch", help="run matched training seeds sequentially")
+    batch.add_argument("--seeds", nargs="+", type=int, required=True)
+    batch.add_argument("--resume", action="store_true")
+    fit.add_argument("--until-steps", type=experiment.positive_int)
+    for command in (fit, batch):
+        environment_flags(command, SCALES)
+        command.add_argument("--config", type=Path, required=command is batch)
+        command.add_argument("--training", type=Path, help="JSON overrides of TrainConfig")
+        command.add_argument("--seed", type=int)
+        command.add_argument("--updates", type=experiment.positive_int)
+        command.add_argument("--total-steps", type=experiment.positive_int)
+        command.add_argument("--out", type=Path, required=True)
+        interval = command.add_mutually_exclusive_group()
+        interval.add_argument("--evaluation-interval-updates", type=int)
+        interval.add_argument("--evaluation-interval-joint-steps", type=experiment.positive_int)
+        command.add_argument("--evaluation-episodes", type=experiment.positive_int)
+        command.add_argument("--evaluation-seed-base", type=int)
+        command.add_argument("--evaluation-scenario", choices=("fixed", "random"))
+        command.add_argument("--evaluation-deterministic", action=argparse.BooleanOptionalAction)
     continuation = sub.add_parser("resume")
     continuation.add_argument("--out", type=Path, required=True)
-    continuation.add_argument("--updates", type=int, default=1)
-    for command in (fit, continuation):
-        command.add_argument("--log-interval", type=int, default=1)
+    extension = continuation.add_mutually_exclusive_group()
+    extension.add_argument("--updates", type=experiment.positive_int, help="append updates to a legacy run")
+    extension.add_argument("--extend-total-steps", type=experiment.positive_int, help="new absolute unified budget")
+    continuation.add_argument("--until-steps", type=experiment.positive_int)
+    for command in (fit, batch, continuation):
+        command.add_argument("--log-interval", type=experiment.positive_int)
+    report = sub.add_parser("report")
+    report.add_argument("runs", type=Path, nargs="*")
+    report.add_argument("--batch", type=Path)
+    report.add_argument("--out", type=Path, required=True)
+    report.add_argument("--plots", action=argparse.BooleanOptionalAction)
+    stats = sub.add_parser("stats")
+    stats.add_argument("--out", type=Path, required=True)
+    stats.add_argument("--json", action="store_true")
+    for command in (fit, batch, continuation, assess, init, run, report, stats):
+        command.add_argument("--debug", action="store_true", default=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.operation == "resume":
-        train(args.out, updates=args.updates, resume=True, log_interval=args.log_interval)
+        train(args.out, updates=args.updates, resume=True, log_interval=args.log_interval,
+              extend=args.extend_total_steps, until=args.until_steps)
+        return
+    if args.operation in ("train", "batch"):
+        config, training, evaluation, log_interval, spec = experiment.resolve(args)
+        if args.operation == "train":
+            train(args.out, config, training, args.updates, evaluation=evaluation, log_interval=log_interval,
+                  spec=spec, until=args.until_steps)
+        else:
+            if args.seed is not None:
+                raise ValueError("batch uses --seeds instead of --seed")
+            run_batch(args.out, spec, args.seeds, resume=args.resume)
+        return
+    if args.operation == "stats":
+        if not args.out.is_dir():
+            raise ValueError(f"experiment directory does not exist: {args.out}")
+        usage = experiment.storage_usage(args.out)
+        if args.json:
+            print(json.dumps(usage))
+        else:
+            show_storage(usage)
+        return
+    if args.operation == "report":
+        from tools.interception_report import generate
+
+        if bool(args.runs) == bool(args.batch):
+            raise ValueError("provide run directories or --batch")
+        manifest = read_batch(args.batch) if args.batch else None
+        folders = [args.batch / f"seed_{seed}" for seed in manifest["seeds"]] if manifest else args.runs
+        plots = args.plots if args.plots is not None else manifest["experiment"]["report"]["plots"] if manifest else True
+        generate(folders, args.out, plots=plots)
         return
     if args.operation == "evaluate":
-        source_hash = file_digest(args.checkpoint)
-        payload = read(args.checkpoint)
-        if file_digest(args.checkpoint) != source_hash:
-            raise ValueError("checkpoint changed during load")
+        payload, identity = checkpoint_payload(args.checkpoint)
         config = InterceptionConfig(**payload["environment"])
-        model = MAPPO(TrainConfig(**payload["training"]))
-        load_weights(payload, model)
-        identity = dict(path=str(args.checkpoint.resolve()), sha256=source_hash,
-                        update=payload["updates"], joint_steps=payload["steps"])
+        saved_run = payload.get("research_run", {})
+        saved = saved_run.get("experiment")
+        test = experiment.TestProtocol(**saved["test"]) if saved else experiment.TestProtocol(episodes=1)
+        default_scenario, default_seed, default_episodes, default_deterministic = (
+            (test.scenario, test.seed, test.episodes, test.deterministic) if args.output
+            else ("fixed", 1000, 1, True))
+        model = checkpoint_model(payload)
     else:
-        overrides = json.loads(args.env.read_text()) if args.env else {}
-        if args.scale:
-            overrides["scale"] = args.scale
-        if args.task:
-            overrides["task"] = args.task
-        if args.evader_mode:
-            overrides["evader_mode"] = args.evader_mode
-        if "task" in overrides and "scale" not in overrides:
-            overrides["scale"] = TASKS[overrides["task"]][0]
-        config = InterceptionConfig(**overrides)
-    if args.operation == "train":
-        settings = json.loads(args.training.read_text()) if args.training else {}
-        protocol = EvaluationProtocol(**{name: getattr(args, name) for name in
-                                        EvaluationProtocol.__dataclass_fields__})
-        train(args.out, config, TrainConfig(**settings), args.updates,
-              evaluation=protocol, log_interval=args.log_interval)
-        return
-    options = json.loads(args.initial.read_text()) if args.initial else {}
+        overrides = experiment.load_object(args.env) if args.env else {}
+        config = experiment.environment_config(overrides, vars(args))
+        default_scenario, default_seed, default_episodes, default_deterministic = "fixed", 1000, 1, True
+    args.scenario = args.scenario or default_scenario
+    args.seed = default_seed if args.seed is None else args.seed
+    if args.seed < 0:
+        raise ValueError("seed must be nonnegative")
+    options = experiment.load_object(args.initial) if args.initial else {}
     options["scenario"] = args.scenario
     if args.operation == "validate":
         obs, info = InterceptionEnv(config).reset(args.seed, options)
@@ -460,12 +711,27 @@ def main(argv=None):
                           f"height {terminal.number(config.protected_height, 'm')}",
                           f"Actor observations {obs.shape}, critic state {info['centralized_state'].shape}")
     else:
-        seeds = list(range(args.seed, args.seed + args.episodes))
+        seeds = range(args.seed, args.seed + (args.episodes or default_episodes))
+        storage, output, deterministic = None, None, default_deterministic
+        if args.operation == "evaluate":
+            output = args.output
+            deterministic = default_deterministic if args.deterministic is None else args.deterministic
+            mode = args.trajectories or ("none" if output else "all")
+            if args.gzip and mode == "none":
+                raise ValueError("--gzip requires trajectory export")
+            storage = experiment.Storage(mode, args.trajectory_seed, args.gzip)
+            if output and "evaluation" in saved_run:
+                validation = EvaluationProtocol(**saved_run["evaluation"])
+                start = validation.evaluation_seed_base
+                if validation.evaluation_interval_updates and max(start, seeds.start) < min(
+                        start + validation.evaluation_episodes, seeds.stop):
+                    raise ValueError("independent test seeds overlap the saved periodic validation seeds")
         evaluate(args.out, config, options, args.policy if args.operation == "run" else "checkpoint",
                  seeds, None if args.operation == "run" else model,
                  identity=None if args.operation == "run" else identity,
-                 compressed=args.gzip, deterministic=not getattr(args, "stochastic", False), json_output=args.json)
+                 compressed=args.gzip, deterministic=deterministic, json_output=args.json,
+                 output=output, storage=storage)
 
 
 if __name__ == "__main__":
-    terminal.run_cli(EXPERIMENT, main)
+    terminal.run_cli(EXPERIMENT, main, debug="--debug" in sys.argv[1:])

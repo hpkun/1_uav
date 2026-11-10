@@ -67,6 +67,8 @@ python -m pytest -q
 
 ## 科研记录、定期评估和动态回放
 
+新实验可使用 [统一实验配置和命令](docs/interception_experiments.md)，按整数联合环境步数设定预算，并使用配置中独立的验证和最终测试协议。本节的 `--updates` 命令仍可用于已有工作流。
+
 ```bash
 root=outputs/interception/research_new
 python -m algorithm.interception run --scenario fixed --policy predictive --out "$root/reference" --gzip

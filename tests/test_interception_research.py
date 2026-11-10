@@ -223,7 +223,7 @@ def test_cuda_training_evaluation_resume_and_reconciliation(tmp_path, monkeypatc
             cli.train(segmented, resume=True)
     evaluation_before = (segmented/"evaluation_000001.json").read_bytes()
     assert "[Interception EVAL]" not in capsys.readouterr().out
-    cli.train(segmented, resume=True)
+    cli.train(segmented, updates=1, resume=True)
     logs = capsys.readouterr().out
     assert "[Interception RESUME]" in logs and "From update 1 / 5 joint steps" in logs
     assert logs.count("[Interception EVAL]") == 1 and "[Interception EVAL] Update 2" in logs

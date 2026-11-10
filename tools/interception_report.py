@@ -4,7 +4,7 @@ from collections import deque
 from pathlib import Path
 from statistics import mean, stdev
 
-from algorithm.common.research import (commit_header, evaluation_records, journal,
+from algorithm.common.research import (commit_header, evaluation_records, file_digest, journal,
                                         read_json, score, summarize)
 from algorithm.common.serialization import write_json
 from env.interception.config import VERSION
@@ -21,28 +21,55 @@ def series(records):
     return output
 
 
-def experiment_signature(run, planned):
+def experiment_signature(run, planned, requested):
+    experiment = run.get("experiment")
     return (run["environment"], {k: v for k, v in run["training"].items() if k != "seed"},
             run["protocol"], run["evaluation"], run["training_scenario"],
-            run["initial_budget_updates"], planned)
+            run["initial_budget_updates"], planned, requested,
+            (experiment["total_joint_steps"], experiment["test"]) if experiment else None)
 
 
 def aggregate(curves, getter):
     result = []
     for update in sorted({row["update"] for curve in curves for row in curve}):
         values = [getter(curve[update-1]) for curve in curves if len(curve) >= update]
-        values = [value for value in values if value is not None]
-        result.append(dict(update=update, mean=mean(values) if values else None,
-                           std=stdev(values) if len(values) > 1 else None, n=len(values)))
+        result.append(dict(update=update, **describe(values)))
     return result
 
 
-def plot(output, curves, evaluations):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+def describe(values):
+    values = [value for value in values if value is not None]
+    return dict(mean=mean(values) if values else None,
+                std=stdev(values) if len(values) > 1 else None, n=len(values))
 
-    figure, axes = plt.subplots(3, 4, figsize=(16, 10), layout="constrained")
+
+def final_test_summary(folder, run, planned, completed, best):
+    spec = run.get("experiment")
+    if not spec or not spec["test"]["enabled"] or completed != planned:
+        return None
+    path = folder / f"test_{planned:06}"
+    path = path.with_suffix(".json") if spec["storage"]["trajectories"] == "none" else path/"summary.json"
+    if not path.exists():
+        return None
+    data = read_json(path)
+    test = spec["test"]
+    checkpoint = test["checkpoint"]
+    if (data.get("final_test") != dict(run_id=run["id"], completed_update=planned, protocol=test)
+            or data["model"]["sha256"] != (best["checkpoint_sha256"] if checkpoint == "best" and best
+                                          else file_digest(folder / f"{checkpoint}.pt"))):
+        raise ValueError("final test metadata differs from the run")
+    metrics = summarize(data["runs"])
+    if any(data[key] != value for key, value in metrics.items()):
+        raise ValueError("inconsistent final test metrics")
+    return metrics
+
+
+def plot(output, curves, evaluations):
+    if output is not None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        figure, axes = plt.subplots(3, 4, figsize=(16, 10), layout="constrained")
     panels = [
         ("Success rate", "success_rate"), ("Return", "mean_episode_return"),
         ("Capture time (s)", "mean_capture_time_s"), ("Breach rate", "breach_rate"),
@@ -52,10 +79,12 @@ def plot(output, curves, evaluations):
     ]
     combined = {}
     for index, (title, key) in enumerate(panels):
-        axis = axes.flat[index]
         getter = (lambda row: row["window"].get(key)) if index < 6 else (lambda row: row.get(key))
         values = aggregate(curves, getter)
         combined[key] = values
+        if output is None:
+            continue
+        axis = axes.flat[index]
         axis.plot([row["update"] for row in values], [row["mean"] for row in values], marker=".")
         band = [row for row in values if row["std"] is not None]
         if band:
@@ -64,19 +93,13 @@ def plot(output, curves, evaluations):
         if all(row["mean"] is None for row in values):
             axis.text(.5, .5, "N/A", ha="center", transform=axis.transAxes)
         axis.set(title=title + (" · last 100 episodes" if index < 6 else ""), xlabel="Update")
-    rewards = axes.flat[10]
     parts = sorted({key for curve in curves for row in curve
                     for key in row["window"]["mean_reward_components"]})
     for key in parts:
         values = aggregate(curves, lambda row: row["window"]["mean_reward_components"].get(key))
         combined["reward/" + key] = values
-        rewards.plot([row["update"] for row in values], [row["mean"] for row in values], label=key)
-    if parts:
-        rewards.legend(fontsize=7)
-    else:
-        rewards.text(.5, .5, "N/A", ha="center", transform=rewards.transAxes)
-    rewards.set(title="Reward components · last 100 episodes", xlabel="Update")
-    evaluation = axes.flat[11]
+        if output is not None:
+            axes.flat[10].plot([row["update"] for row in values], [row["mean"] for row in values], label=key)
     combined["evaluation"] = {}
     for metric in ("success_rate", "breach_rate", "friendly_collision_rate", "evader_collision_rate", "pursuer_boundary_violation_rate",
                    "evader_escape_rate", "protection_success_rate", "partial_capture_rate"):
@@ -86,23 +109,25 @@ def plot(output, curves, evaluations):
                       if r["update"] == update and metric in r["summary"]]
             if not points:
                 continue
-            values.append(dict(update=update, mean=mean(points), n=len(points),
-                               std=stdev(points) if len(points) > 1 else None))
+            values.append(dict(update=update, **describe(points)))
         combined["evaluation"][metric] = values
-        if values:
-            evaluation.plot([r["update"] for r in values], [r["mean"] for r in values], ".-", label=metric)
-    if any(evaluations):
-        evaluation.legend(fontsize=7)
-    else:
-        evaluation.text(.5, .5, "N/A", ha="center", transform=evaluation.transAxes)
-    evaluation.set(title="Independent evaluation", xlabel="Update")
-    figure.suptitle("Mean across seeds · shading: sample SD where available")
-    figure.savefig(output, dpi=140)
-    plt.close(figure)
+        if output is not None and values:
+            axes.flat[11].plot([r["update"] for r in values], [r["mean"] for r in values], ".-", label=metric)
+    if output is not None:
+        for axis, has_data, title in ((axes.flat[10], parts, "Reward components · last 100 episodes"),
+                                      (axes.flat[11], any(evaluations), "Periodic validation")):
+            if has_data:
+                axis.legend(fontsize=7)
+            else:
+                axis.text(.5, .5, "N/A", ha="center", transform=axis.transAxes)
+            axis.set(title=title, xlabel="Update")
+        figure.suptitle("Mean across seeds · shading: sample SD where available")
+        figure.savefig(output, dpi=140)
+        plt.close(figure)
     return combined
 
 
-def generate(folders, output):
+def generate(folders, output, *, plots=True):
     output = Path(output)
     curves, evaluations, runs, seeds = [], [], [], set()
     signature = None
@@ -118,7 +143,14 @@ def generate(folders, output):
         curves.append(series(records))
         latest = records[-1] if records else None
         planned = latest["planned_updates"] if latest else run["initial_budget_updates"]
-        settings = experiment_signature(run, planned)
+        requested = None
+        if "experiment" in run:
+            from types import SimpleNamespace
+            from algorithm.common.experiment import planned_budget
+
+            plan = planned_budget(folder, run, SimpleNamespace(**run["training"]), planned)
+            planned, requested = plan["updates"], plan["total_joint_steps"]
+        settings = experiment_signature(run, planned, requested)
         seed = run["training"]["seed"]
         if signature is not None and (settings != signature or seed in seeds):
             raise ValueError("multi-seed report requires distinct seeds and matching protocol, settings and budgets")
@@ -133,13 +165,20 @@ def generate(folders, output):
                 raise ValueError("Best metadata is pending reconciliation")
             best_evaluation = winner["summary"]
         runs.append(dict(path=str(folder), config=run, planned_updates=planned,
+                         requested_joint_steps=requested,
                          planned_joint_steps=planned * run["training"]["workers"] * run["training"]["horizon"],
                          completed_updates=head["update"], joint_steps=latest["joint_steps"] if latest else 0,
                          completed_episodes=latest["completed_episodes_total"] if latest else 0,
                          best=best, best_evaluation=best_evaluation, latest_evaluation=latest_evaluation,
+                         final_test=final_test_summary(folder, run, planned, head["update"], best),
                          update_series=curves[-1], evaluations=evaluations[-1]))
     output.mkdir(parents=True, exist_ok=False)
-    combined = plot(output / "training_curves.png", curves, evaluations)
+    combined = plot(output / "training_curves.png" if plots else None, curves, evaluations)
+    tests = [row["final_test"] for row in runs if row["final_test"] is not None]
+    if tests:
+        combined["final_test"] = {key: describe(row[key] for row in tests) for key in (
+            "all_captured_rate", "protection_success_rate", "breach_rate", "mean_episode_return",
+            "mean_capture_time_s")}
     write_json(output / "summary.json", dict(runs=runs, aggregate=combined, window_episodes=100,
                                               axis="update", std="sample"))
     lines = ["# Interception training report", "",
@@ -147,7 +186,7 @@ def generate(folders, output):
              "The horizontal axis is PPO update. Training outcome and reward curves use the last "
              "100 completed episodes. Across seeds, each point includes the mean, sample standard "
              "deviation when n > 1, and the effective sample count in summary.json.", "",
-             "![Training curves](training_curves.png)", "",
+             *(["![Training curves](training_curves.png)", ""] if plots else []),
              "| Run / seed | Updates | Joint steps | Episodes | Best update / success | Latest success |",
              "|---|---:|---:|---:|---:|---:|"]
     for row in runs:
@@ -164,7 +203,10 @@ def generate(folders, output):
                   "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
     for row in runs:
         for name, metrics in (("Best", row["best_evaluation"]),
-                              ("Latest", row["latest_evaluation"])):
+                              ("Latest", row["latest_evaluation"]),
+                              ("Final test", row["final_test"])):
+            if name == "Final test" and metrics is None:
+                continue
             rates = [f"{metrics[key]:.1%}" if metrics else "N/A"
                      for key in ("success_rate", "breach_rate", "friendly_collision_rate", "evader_collision_rate",
                                  "pursuer_boundary_violation_rate", "evader_escape_rate", "timeout_rate",
@@ -182,8 +224,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("runs", nargs="+")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--plots", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    generate(args.runs, args.out)
+    generate(args.runs, args.out, plots=args.plots)
 
 
 if __name__ == "__main__":
