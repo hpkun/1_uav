@@ -1,6 +1,7 @@
 """Independent CUDA MAPPO entry point for ideal point-mass tasks."""
 import argparse
 from dataclasses import asdict, fields
+import hashlib
 import json
 from pathlib import Path
 import random
@@ -12,7 +13,7 @@ import torch
 
 from algorithm.common import terminal
 from algorithm.common.interception_checkpoint import load_weights, read, restore, save
-from algorithm.common.research import atomic_json
+from algorithm.common.research import atomic_json, digest
 from algorithm.common.runtime import require_cuda
 from algorithm.common.serialization import serializable
 from algorithm.common.vector_env import ParallelVectorEnv
@@ -23,6 +24,16 @@ from env.ideal_kinematic.config import PROTOCOL as VERSION, OBS_DIM, STATE_DIM, 
 
 PROTOCOL = dict(version=VERSION, algorithm="mappo-beta", observation=OBS_DIM,
                 state=STATE_DIM, action=3, slots=SLOTS, action_semantics="desired_motion_direction")
+
+
+def model_digest(actor, critic):
+    sha = hashlib.sha256()
+    for name, state in (("actor", actor), ("critic", critic)):
+        for key, tensor in sorted(state.items()):
+            value = tensor.detach().cpu().contiguous().numpy()
+            sha.update((name+"/"+key+"/"+str(value.dtype)+"/"+str(value.shape)).encode())
+            sha.update(value.tobytes())
+    return sha.hexdigest()
 
 
 def config_from_saved(values):
@@ -81,7 +92,8 @@ class IdealAccumulator:
         reference_fractions = [float(value/info["time"]) for value in
                                reference_fractions[:len(set(info["assignment"].values()))]] if tracking and info["time"] else []
         return dict(task=info["task"], outcome=info["outcome"], time=info["time"],
-                    steps=info["step"], seed=self.seed, initial_states=self.initial_states,
+                    steps=info["step"], seed=self.seed, scenario_id=info["scenario_id"],
+                    initial_states=self.initial_states,
                     final_states=info["actual_states"].tolist(), status=info["status"],
                     assignment=info["assignment"], episode_return=self.total,
                     reward_parts=self.parts.copy(), events=self.events.copy(),
@@ -143,6 +155,17 @@ def summary_fields(summary):
                            warnings=terminal.number(summary["mean_warning_count"]))
 
 
+def scenario_protocol(config, rows):
+    unique = len({row["scenario_id"] for row in rows})
+    return dict(kind="fixed_case" if config.initialization == "fixed" else "random_initial_positions",
+        episodes=len(rows), unique_scenarios=unique, duplicate_scenarios=len(rows)-unique,
+        randomized=[] if config.initialization == "fixed" else ["uav_initial_positions"],
+        fixed=["reference_paths", "fixed_speeds", "task_assignment", "geometry_thresholds"],
+        interpretation=("repeated seeds do not create independent physical scenarios"
+                        if config.initialization == "fixed" else
+                        "only UAV initial positions vary; reference paths remain fixed"))
+
+
 def vector_env(config, training):
     return ParallelVectorEnv(config, training.workers, training.seed,
                              environment_factory=IdealEnv, accumulator_factory=IdealAccumulator)
@@ -166,6 +189,8 @@ def _recover(folder, payload):
         if row["update"] != update or (expected is not None and
                 row != json.loads(json.dumps(expected, allow_nan=False))):
             raise ValueError("update record differs from checkpoint")
+        if row.get("previous") != (digest(rows[-1]) if rows else None):
+            raise ValueError("update record differs from checkpoint chain")
         rows.append(row)
     if payload["steps"] != committed*payload["training"]["workers"]*payload["training"]["horizon"]:
         raise ValueError("checkpoint step counter mismatch")
@@ -174,10 +199,15 @@ def _recover(folder, payload):
     for entry in payload["evaluations"]:
         path = folder/f"evaluation_{entry['update']:06}.json"
         if path.exists():
-            if json.loads(path.read_text()) != json.loads(json.dumps(entry["result"], allow_nan=False)):
+            if digest(json.loads(path.read_text())) != entry["sha256"]:
                 raise ValueError("evaluation record differs from checkpoint")
-        else:
+        elif "result" in entry:
             atomic_json(path, entry["result"])
+        else:
+            raise ValueError("missing historical evaluation record")
+        if entry["update"] == committed and entry["result"]["model_sha256"] != model_digest(
+                payload["actor"], payload["critic"]):
+            raise ValueError("evaluation model identity differs from checkpoint")
     expected_evaluations = {entry["update"] for entry in payload["evaluations"]}
     if any(int(path.stem.split("_")[-1]) not in expected_evaluations
            for path in folder.glob("evaluation_*.json")):
@@ -217,6 +247,9 @@ def evaluate(model, config, seeds, *, deterministic=True, trace=True):
         if index == 0:
             first_trace = frames
     return serializable(dict(protocol=PROTOCOL, environment=asdict(config),
+                             model_sha256=model_digest(model.actor.state_dict(),
+                                                       model.critic.state_dict()),
+                             scenario_protocol=scenario_protocol(config, rows),
                              summary=summarize(rows), episodes=rows, first_trace=first_trace,
                              action_semantics="desired_motion_direction"))
 
@@ -288,8 +321,16 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
                 result = None
                 if model.updates % eval_interval == 0 or model.steps == total_steps:
                     result = evaluate(model, config, evaluation_seeds)
-                    evaluations.append(dict(update=model.updates, result=result))
+                    for entry in evaluations:
+                        if "result" in entry:
+                            path = folder/f"evaluation_{entry['update']:06}.json"
+                            if not path.exists() or digest(json.loads(path.read_text())) != entry["sha256"]:
+                                raise ValueError("previous evaluation record is not committed")
+                            entry.pop("result")
+                    evaluations.append(dict(update=model.updates, summary=result["summary"],
+                                            sha256=digest(result), result=result))
                 record = serializable(dict(update=model.updates, planned_updates=total_steps//wave,
+                    previous=digest(records[-1]) if records else None,
                     joint_steps=model.steps, completed_episodes_total=model.episodes,
                     completed_episodes=episodes, sampling_speed=wave/(sampled-sampled_at), **metrics))
                 save(latest, model, config, vector, record, run=run, protocol=PROTOCOL,
@@ -304,7 +345,10 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
                 if result is not None:
                     atomic_json(folder/f"evaluation_{model.updates:06}.json", result)
                     terminal.emit("Ideal", "EVAL", terminal.fields(upd=model.updates),
-                                  summary_fields(result["summary"]))
+                                  summary_fields(result["summary"]),
+                                  terminal.fields(scenario=result["scenario_protocol"]["kind"],
+                                    unique=result["scenario_protocol"]["unique_scenarios"]))
+                records.append(record)
         terminal.training_end("Ideal", model, latest, paused=target < total_steps)
     return latest
 
@@ -355,7 +399,10 @@ def main(argv=None):
         atomic_json(args.out/"evaluation.json", result | dict(protocol=PROTOCOL,
                     checkpoint=str(args.checkpoint), update=payload["updates"], seeds=seeds))
         terminal.emit("Ideal", "EVAL", terminal.fields(experiment="ideal", task=config.task,
-            upd=payload["updates"]), summary_fields(result["summary"]), terminal.fields(out=args.out))
+            upd=payload["updates"]), summary_fields(result["summary"]),
+            terminal.fields(scenario=result["scenario_protocol"]["kind"],
+                            unique=result["scenario_protocol"]["unique_scenarios"],
+                            out=args.out))
 
 
 if __name__ == "__main__":

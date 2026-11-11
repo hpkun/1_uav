@@ -1,6 +1,8 @@
 """Independent ideal three-dimensional point-mass multi-agent environment."""
 from copy import deepcopy
 from dataclasses import asdict
+import hashlib
+import json
 import numpy as np
 
 from .config import IdealConfig, PROTOCOL, OBS_DIM, STATE_DIM, SLOTS, TARGET_SLOTS
@@ -47,6 +49,13 @@ class IdealEnv:
             raise ValueError(f"initialization failed after {c.init_max_attempts} attempts: {failure}")
         self.assignment = fixed_assignment(self.states[:c.active_count],
                             list(range(c.target_count if c.target_count else c.active_count)), self.status[:c.active_count])
+        identity_config = asdict(c)
+        for key in ("seed", "initialization", "random_range", "init_max_attempts"):
+            identity_config.pop(key)
+        identity = dict(configuration=identity_config, initial_states=self.states.tolist(),
+                        assignment=self.assignment)
+        self.scenario_id = hashlib.sha256(json.dumps(identity, sort_keys=True,
+            separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         self.time, self.steps, self.outcome = 0., 0, "ongoing"
         self.minimum_separation = None
         self.warning_pairs = set()
@@ -126,7 +135,8 @@ class IdealEnv:
                     distance_traveled=self.distance_traveled.copy(),
                     tracking=self.tracking_metrics(),
                     reference_motion_time=self.reference_motion_time,
-                    seed=self.seed, task=c.task, action_semantics="desired_motion_direction")
+                    seed=self.seed, scenario_id=self.scenario_id, task=c.task,
+                    action_semantics="desired_motion_direction")
         return obs, info
 
     def tracking_metrics(self):

@@ -72,9 +72,13 @@ def step(env, actions):
                 if hit is not None:
                     terminals.append((offset+hit, "target_contact", (int(i), SLOTS+j)))
                     break
-    if not c.target_count and all(i in departures and departures[i][1] == "arrival"
-                                  for i in range(c.active_count)):
-        terminals.append((max(departures[i][0] for i in range(c.active_count)), "success", ()))
+    if not c.target_count and all(
+            env.status[i] == "completed" or
+            (i in departures and departures[i][1] == "arrival")
+            for i in range(c.active_count)):
+        newest = [departures[i][0] for i in range(c.active_count)
+                  if env.status[i] != "completed"]
+        terminals.append((max(newest, default=0.), "success", ()))
     if env.steps+1 >= c.max_steps:
         terminals.append((c.dt, "deadline", ()))
     terminal = min(terminals, key=lambda row: (row[0], PRIORITY[row[1]], row[2])) if terminals else None
@@ -179,6 +183,7 @@ def step(env, actions):
         completion=c.completion_weight if env.outcome == "success" else 0.,
         danger=-c.danger_weight*sum(item["kind"] == "warning" for item in events),
         boundary=-c.boundary_weight if env.outcome == "boundary" else 0.,
+        contact_failure=-c.boundary_weight if env.outcome in ("contact", "target_contact") else 0.,
         time=-c.time_weight*duration)
     reward = float(sum(parts.values()))
     obs, info = env.output(events, parts, reward)

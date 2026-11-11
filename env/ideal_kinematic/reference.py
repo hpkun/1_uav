@@ -54,14 +54,24 @@ class Reference:
         knots = {float(start), float(end)}
         if self.end_behavior == "stop" and start < self.duration < end:
             knots.add(self.duration)
-        count = int(end/self.duration)+1 if self.end_behavior == "ping_pong" else 1
-        for leg in range(count+1):
+        first_leg = max(0, int(start/self.duration)-1) if self.end_behavior == "ping_pong" else 0
+        last_leg = int(end/self.duration)+1 if self.end_behavior == "ping_pong" else 0
+        for leg in range(first_leg, last_leg+1):
             base = leg*self.duration
             if base > end:
                 break
-            if self.end_behavior == "stop" and leg:
-                break
-            for distance in self.distance:
+            local_left = max(0.,start-base)
+            local_right = min(self.duration,end-base)
+            if local_right < local_left:
+                continue
+            if leg % 2:
+                lower = self.distance[-1]-local_right*self.speed
+                upper = self.distance[-1]-local_left*self.speed
+            else:
+                lower, upper = local_left*self.speed, local_right*self.speed
+            begin = np.searchsorted(self.distance,lower,side="left")
+            finish = np.searchsorted(self.distance,upper,side="right")
+            for distance in self.distance[begin:finish]:
                 knot = base + (self.distance[-1]-distance if leg % 2 else distance)/self.speed
                 if start < knot < end:
                     knots.add(float(knot))

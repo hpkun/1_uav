@@ -34,6 +34,74 @@ def test_reference_ping_pong_knots_and_cycles(mode):
         Reference((0.,0.,10.), (4.,0.,10.), 0., mode, "ping_pong")
 
 
+@pytest.mark.parametrize("mode", ["straight", "bezier"])
+@pytest.mark.parametrize("behavior", ["stop", "ping_pong"])
+def test_reference_segment_window_matches_full_knot_enumeration(mode, behavior):
+    path = Reference((0.,0.,10.),(12.,4.,12.),1.,mode,behavior)
+    intervals = [(0.,.5),(.2,2.),(path.duration-.2,path.duration+.2),
+                 (2*path.duration-.2,2*path.duration+.2),
+                 (2.4*path.duration,2.45*path.duration)]
+    def full_knots(start,end):
+        knots = {float(start),float(end)}
+        if behavior == "stop" and start < path.duration < end:
+            knots.add(path.duration)
+        count = int(end/path.duration)+1 if behavior == "ping_pong" else 1
+        for leg in range(count+1):
+            base = leg*path.duration
+            if base > end or (behavior == "stop" and leg):
+                break
+            for distance in path.distance:
+                knot = base+(path.distance[-1]-distance if leg % 2 else distance)/path.speed
+                if start < knot < end:
+                    knots.add(float(knot))
+        cuts = sorted(knots)
+        return [(left,right,*path.sample(left)) for left,right in zip(cuts[:-1],cuts[1:])
+                if right-left > 1e-12]
+    for start,end in intervals:
+        expected, actual = full_knots(start,end), list(path.segments(start,end))
+        assert len(actual) == len(expected)
+        for (a,b,p,v),(x,y,q,w) in zip(expected,actual):
+            assert (x,y) == pytest.approx((a,b),abs=1e-12)
+            np.testing.assert_allclose(q,p,rtol=0,atol=1e-10)
+            np.testing.assert_allclose(w,v,rtol=0,atol=1e-10)
+
+
+def test_reference_window_optimization_preserves_bezier_episode(monkeypatch):
+    from env.ideal_kinematic.reference import Reference
+    original = Reference.segments
+    def full_segments(self,start,end):
+        knots = {float(start),float(end)}
+        count = int(end/self.duration)+1 if self.end_behavior == "ping_pong" else 1
+        for leg in range(count+1):
+            base = leg*self.duration
+            if base > end or (self.end_behavior == "stop" and leg):
+                break
+            for distance in self.distance:
+                knot = base+(self.distance[-1]-distance if leg % 2 else distance)/self.speed
+                if start < knot < end:
+                    knots.add(float(knot))
+        for left,right in zip(sorted(knots)[:-1],sorted(knots)[1:]):
+            if right-left > 1e-12:
+                yield left,right,*self.sample(left)
+    config = replace(IdealConfig(task="IK2"), target_mode="bezier", dt=1., max_steps=15)
+    def episode():
+        env = IdealEnv(config)
+        env.reset(17)
+        rows = []
+        for _ in range(config.max_steps):
+            _,reward,terminated,truncated,info = env.step(np.full((5,3),.5))
+            rows.append((reward.tolist(),info["time"],info["events"],
+                         info["actual_states"].tolist(),info["tracking"]))
+            if terminated or truncated:
+                break
+        return rows
+    baseline = episode()
+    with monkeypatch.context() as patch:
+        patch.setattr(Reference,"segments",full_segments)
+        reference = episode()
+    assert baseline == reference
+
+
 @pytest.mark.parametrize("task", ["IK2", "IK3"])
 def test_default_dynamic_reference_moves_through_entire_horizon(task):
     env = IdealEnv(IdealConfig(task=task))
@@ -214,6 +282,29 @@ def test_earlier_contact_cancels_later_waypoint_arrival():
     assert info["time"] == pytest.approx(.875)
     assert info["status"][0] == "active"
     assert not any(e["kind"] == "arrival" for e in info["events"])
+
+
+def test_ik1_three_members_finish_in_separate_steps():
+    base = IdealConfig()
+    waypoints = ((-13.,-12.,10.),(-11.,0.,15.),(-9.,12.,20.)) + base.waypoints[3:]
+    env = IdealEnv(replace(base, task="IK1", dt=1., max_steps=5,
+                           waypoints=waypoints))
+    env.reset()
+    completion_rewards = []
+    for index in range(3):
+        obs, reward, terminated, truncated, info = env.step(np.full((5,3),.5))
+        completion_rewards.append(info["reward_parts"]["completion"])
+        assert info["status"][:index+1] == ["completed"]*(index+1)
+        assert not info["active_mask"][:index+1].any()
+        np.testing.assert_array_equal(info["actual_states"][:index+1,3:], 0.)
+        assert not obs[:index+1].any()
+        if index < 2:
+            assert info["outcome"] == "ongoing" and not terminated and not truncated
+    assert info["outcome"] == "success" and terminated and not truncated
+    assert info["time"] == pytest.approx(2.25)
+    assert completion_rewards == [0.,0.,env.config.completion_weight]
+    with pytest.raises(RuntimeError, match="reset required"):
+        env.step(np.full((5,3),.5))
 
 
 def test_unassigned_moving_target_contact_is_safety_failure():

@@ -4,7 +4,7 @@ import pytest
 import algorithm.ideal_kinematic as ideal
 
 from algorithm.common.interception_checkpoint import read
-from algorithm.ideal_kinematic import PROTOCOL, IdealMAPPO, evaluate, fit, main
+from algorithm.ideal_kinematic import PROTOCOL, IdealMAPPO, evaluate, fit, main, model_digest
 from algorithm.mappo.interception import TrainConfig
 from env.ideal_kinematic import IdealConfig
 from env.ideal_kinematic.config import OBS_DIM, STATE_DIM
@@ -19,19 +19,31 @@ def test_ideal_mappo_checkpoint_resume_and_protocol_isolation(tmp_path, capsys):
     assert model.critic[0].in_features == STATE_DIM
     assert model.actor[-1].out_features == 6
     assert model.critic[-1].out_features == 5
+    action, logp = model.act(
+        torch.zeros((5,OBS_DIM)).numpy(), [True,False,False,False,False], deterministic=True)
+    assert torch.all(action[1:] == .5) and torch.all(logp[1:] == 0)
     folder = tmp_path/"ideal"
     checkpoint = fit(folder, config, training, total_steps=4, until_steps=2,
                      eval_interval=1, evaluation_seeds=[2300])
     first = read(checkpoint, protocol=PROTOCOL)
     assert first["steps"] == 2 and first["protocol"] == PROTOCOL
+    assert json.loads((folder/"update_000001.json").read_text())["valid_samples"] == 2
     with pytest.raises(ValueError, match="incompatible checkpoint protocol"):
         read(checkpoint)
     with pytest.raises(ValueError, match="incompatible checkpoint protocol"):
         read(checkpoint, protocol=PROTOCOL | {"version": "uav-ideal-kinematic-v1.0.0"})
+    with pytest.raises(ValueError, match="incompatible checkpoint protocol"):
+        read(checkpoint, protocol=PROTOCOL | {"version": "uav-ideal-kinematic-v1.1.0"})
     assert "[pause]" in capsys.readouterr().out
+    size_before = checkpoint.stat().st_size
     fit(folder, resume=True)
     final = read(checkpoint, protocol=PROTOCOL)
     assert final["steps"] == 4 and final["updates"] == 2
+    evaluation = json.loads((folder/"evaluation_000002.json").read_text())
+    assert evaluation["model_sha256"] == model_digest(final["actor"],final["critic"])
+    assert len(final["evaluations"]) == 2
+    assert sum("result" in entry for entry in final["evaluations"]) == 1
+    assert checkpoint.stat().st_size < size_before*1.5
     assert "[resume]" in capsys.readouterr().out
     output = tmp_path/"evaluation"
     main(["evaluate", str(checkpoint), "--out", str(output),
@@ -46,6 +58,12 @@ def test_ideal_mappo_checkpoint_resume_and_protocol_isolation(tmp_path, capsys):
     restored.critic.load_state_dict(final["critic"])
     assert evaluate(restored, config, [2300], deterministic=False) == evaluate(
         restored, config, [2300], deterministic=False)
+    record = folder/"update_000001.json"
+    changed = json.loads(record.read_text())
+    changed["critic_loss"] += 1.
+    record.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="update record differs"):
+        fit(folder, resume=True)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required by repository policy")

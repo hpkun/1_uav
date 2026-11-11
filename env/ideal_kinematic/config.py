@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-kinematic-v1.1.0"
+PROTOCOL = "uav-ideal-kinematic-v1.2.0"
 TASK_COUNTS = {"IK0": (1, 0), "IK1": (3, 0), "IK2": (3, 1), "IK3": (5, 2)}
 SLOTS = 5
 TARGET_SLOTS = 2
@@ -77,6 +77,8 @@ class IdealConfig:
             shape = (count,) if key == "speeds" else (3,) if key in ("lower", "upper") else (count, 3)
             if array.shape != shape or not np.isfinite(array).all():
                 raise ValueError(f"invalid {key}")
+            object.__setattr__(self, key, tuple(tuple(row) if isinstance(row, (tuple, list)) else row
+                                                  for row in getattr(self, key)))
         if np.any(np.asarray(self.upper) <= np.asarray(self.lower)) or np.any(np.asarray(self.speeds) <= 0):
             raise ValueError("invalid region or fixed speeds")
         if np.any(np.linalg.norm(np.asarray(self.directions), axis=1) <= 0):
