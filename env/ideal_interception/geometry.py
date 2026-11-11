@@ -44,7 +44,7 @@ def inside_intervals(p, v, q, w, radius, duration):
     root = np.sqrt(max(0., discriminant))
     left, right = (-b-root)/(2*a), (-b+root)/(2*a)
     lo, hi = max(0., left), min(duration, right)
-    return [(float(lo), float(hi))] if hi > lo else []
+    return [(float(lo), float(hi))] if hi >= lo else []
 
 
 def merge_intervals(intervals, tolerance=1e-10):
@@ -84,3 +84,22 @@ def boundary(p, v, lower, upper, duration):
         if 0 <= time <= duration:
             candidates.append(float(time))
     return min(candidates) if candidates else None
+
+
+def region_entry(p, v, center, radius, height, duration):
+    relative = np.asarray(p)-np.asarray(center)
+    xy = inside_intervals(relative[:2],np.asarray(v)[:2],np.zeros(2),np.zeros(2),
+                          radius,duration)
+    if not xy:
+        return None
+    z, vz = relative[2], v[2]
+    if vz == 0:
+        vertical = [(0.,duration)] if 0 <= z <= height else []
+    else:
+        a,b = sorted((-z/vz,(height-z)/vz))
+        vertical = [(max(0.,a),min(duration,b))] if min(duration,b) >= max(0.,a) else []
+    for left,right in xy:
+        for a,b in vertical:
+            if max(left,a) <= min(right,b):
+                return float(max(left,a))
+    return None
