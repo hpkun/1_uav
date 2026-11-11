@@ -63,22 +63,77 @@ class IdealAccumulator:
             self.parts[key] = self.parts.get(key, 0.) + value
 
     def summary(self, info):
+        tracking = info["tracking"]
+        errors = sorted((value, duration) for member in tracking
+                        for value, duration in member["error_samples"])
+        total_error_time = sum(duration for _, duration in errors)
+        def weighted_quantile(fraction):
+            threshold = fraction*total_error_time
+            elapsed = 0.
+            for value, duration in errors:
+                elapsed += duration
+                if elapsed >= threshold:
+                    return value
+            return errors[-1][0]
+        distances = info["distance_traveled"][:sum(s != "unused" for s in info["status"])]
+        reference_fractions = (info["reference_motion_time"][:len(info["reference"])]
+                               if tracking else [])
+        reference_fractions = [float(value/info["time"]) for value in
+                               reference_fractions[:len(set(info["assignment"].values()))]] if tracking and info["time"] else []
         return dict(task=info["task"], outcome=info["outcome"], time=info["time"],
                     steps=info["step"], seed=self.seed, initial_states=self.initial_states,
                     final_states=info["actual_states"].tolist(), status=info["status"],
                     assignment=info["assignment"], episode_return=self.total,
                     reward_parts=self.parts.copy(), events=self.events.copy(),
                     minimum_separation=info["minimum_separation"],
-                    warning_count=sum(e["kind"] == "warning" for e in self.events),
-                    contact_count=sum(e["kind"] in ("contact", "target_contact") for e in self.events))
+                    warning_count=info["warning_count"], safety_violation_count=info["safety_count"],
+                    safety_violation_time=info["safety_duration"],
+                    contact_count=info["contact_count"],
+                    mean_distance_traveled=float(np.mean(distances)),
+                    completion_time=info["time"] if info["outcome"] == "success" else None,
+                    reference_motion_fraction=(float(np.mean(reference_fractions))
+                                               if reference_fractions else None),
+                    reference_motion_fractions=reference_fractions,
+                    tracking=tracking,
+                    mean_tracking_error=(float(np.mean([member["mean_error"] for member in tracking]))
+                                         if tracking else None),
+                    tracking_error_percentiles=({key: weighted_quantile(fraction)
+                        for key, fraction in (("p50", .5), ("p90", .9), ("p99", .99))}
+                        if errors else None),
+                    mean_valid_tracking_fraction=(float(np.mean(
+                        [member["valid_fraction"] for member in tracking])) if tracking else None),
+                    longest_valid_tracking_time=(float(min(
+                        member["longest_valid_time"] for member in tracking)) if tracking else None),
+                    tracking_departure_count=sum(member["departure_count"] for member in tracking),
+                    tracking_outside_time=sum(member["outside_time"] for member in tracking))
 
 
 def summarize(rows):
     n = len(rows)
+    def mean(key):
+        values = [row[key] for row in rows if row[key] is not None]
+        return sum(values)/len(values) if values else None
     return dict(episodes=n, success_rate=sum(r["outcome"] == "success" for r in rows)/n if n else None,
                 boundary_rate=sum(r["outcome"] == "boundary" for r in rows)/n if n else None,
-                mean_return=sum(r["episode_return"] for r in rows)/n if n else None,
-                mean_warning_count=sum(r["warning_count"] for r in rows)/n if n else None)
+                safety_violation_rate=sum(r["safety_violation_count"] > 0 for r in rows)/n if n else None,
+                contact_rate=sum(r["contact_count"] > 0 for r in rows)/n if n else None,
+                mean_return=mean("episode_return"), mean_warning_count=mean("warning_count"),
+                mean_safety_violation_count=mean("safety_violation_count"),
+                mean_safety_violation_time=mean("safety_violation_time"),
+                mean_minimum_separation=mean("minimum_separation"),
+                mean_completion_time=mean("completion_time"),
+                mean_distance_traveled=mean("mean_distance_traveled"),
+                mean_reference_motion_fraction=mean("reference_motion_fraction"),
+                mean_tracking_error=mean("mean_tracking_error"),
+                mean_valid_tracking_fraction=mean("mean_valid_tracking_fraction"),
+                mean_longest_valid_tracking_time=mean("longest_valid_tracking_time"),
+                mean_tracking_departure_count=mean("tracking_departure_count"),
+                mean_tracking_outside_time=mean("tracking_outside_time"),
+                tracking_error_percentiles={key: np.mean([
+                    row["tracking_error_percentiles"][key] for row in rows
+                    if row["tracking_error_percentiles"] is not None]).item()
+                    if any(row["tracking_error_percentiles"] is not None for row in rows) else None
+                    for key in ("p50", "p90", "p99")})
 
 
 def summary_fields(summary):
@@ -91,6 +146,48 @@ def summary_fields(summary):
 def vector_env(config, training):
     return ParallelVectorEnv(config, training.workers, training.seed,
                              environment_factory=IdealEnv, accumulator_factory=IdealAccumulator)
+
+
+def _recover(folder, payload):
+    """Checkpoint is authoritative; immutable records must agree with its update."""
+    committed = payload["updates"]
+    for path in folder.glob("update_*.json"):
+        if int(path.stem.split("_")[-1]) > committed:
+            raise ValueError("uncommitted update record ahead of checkpoint")
+    rows = []
+    for update in range(1, committed+1):
+        path = folder/f"update_{update:06}.json"
+        expected = payload["last_log"] if update == committed else None
+        if not path.exists():
+            if expected is None:
+                raise ValueError("missing historical update record")
+            atomic_json(path, expected)
+        row = json.loads(path.read_text())
+        if row["update"] != update or (expected is not None and
+                row != json.loads(json.dumps(expected, allow_nan=False))):
+            raise ValueError("update record differs from checkpoint")
+        rows.append(row)
+    if payload["steps"] != committed*payload["training"]["workers"]*payload["training"]["horizon"]:
+        raise ValueError("checkpoint step counter mismatch")
+    if payload["episodes"] != sum(len(row["completed_episodes"]) for row in rows):
+        raise ValueError("checkpoint episode counter mismatch")
+    for entry in payload["evaluations"]:
+        path = folder/f"evaluation_{entry['update']:06}.json"
+        if path.exists():
+            if json.loads(path.read_text()) != json.loads(json.dumps(entry["result"], allow_nan=False)):
+                raise ValueError("evaluation record differs from checkpoint")
+        else:
+            atomic_json(path, entry["result"])
+    expected_evaluations = {entry["update"] for entry in payload["evaluations"]}
+    if any(int(path.stem.split("_")[-1]) not in expected_evaluations
+           for path in folder.glob("evaluation_*.json")):
+        raise ValueError("evaluation record ahead of checkpoint")
+    # The JSONL file is a derived view of the committed update records.
+    lines = [json.dumps({k:v for k,v in row.items() if k != "completed_episodes"})
+             for row in rows]
+    (folder/"training_metrics.jsonl").write_text(
+        "".join(line+"\n" for line in lines), encoding="utf-8")
+    return rows
 
 
 def evaluate(model, config, seeds, *, deterministic=True, trace=True):
@@ -119,7 +216,8 @@ def evaluate(model, config, seeds, *, deterministic=True, trace=True):
                 break
         if index == 0:
             first_trace = frames
-    return serializable(dict(summary=summarize(rows), episodes=rows, first_trace=first_trace,
+    return serializable(dict(protocol=PROTOCOL, environment=asdict(config),
+                             summary=summarize(rows), episodes=rows, first_trace=first_trace,
                              action_semantics="desired_motion_direction"))
 
 
@@ -162,17 +260,13 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
         with vector_env(config, training) as vector:
             if payload:
                 restore(payload, model, config, vector, protocol=PROTOCOL)
+                records = _recover(folder, payload)
             else:
                 atomic_json(folder/"config.json", run)
                 save(latest, model, config, vector, run=run, protocol=PROTOCOL, evaluations=[])
+                records = []
             evaluations = payload["evaluations"].copy() if payload else []
-            recent = []
-            if payload and payload["last_log"]:
-                for path in sorted(folder.glob("update_*.json")):
-                    row = json.loads(path.read_text())
-                    if row["update"] <= model.updates:
-                        recent.extend(row["completed_episodes"])
-                recent = recent[-100:]
+            recent = [episode for row in records for episode in row["completed_episodes"]][-100:]
             terminal.training_start("Ideal", terminal.fields(experiment="ideal", task=config.task,
                 initialization=config.initialization, target_mode=config.target_mode),
                 training, start_update=model.updates, planned_updates=total_steps//wave,
@@ -194,7 +288,7 @@ def fit(folder, config=None, training=None, *, total_steps=None, until_steps=Non
                 result = None
                 if model.updates % eval_interval == 0 or model.steps == total_steps:
                     result = evaluate(model, config, evaluation_seeds)
-                    evaluations.append(dict(update=model.updates, summary=result["summary"]))
+                    evaluations.append(dict(update=model.updates, result=result))
                 record = serializable(dict(update=model.updates, planned_updates=total_steps//wave,
                     joint_steps=model.steps, completed_episodes_total=model.episodes,
                     completed_episodes=episodes, sampling_speed=wave/(sampled-sampled_at), **metrics))

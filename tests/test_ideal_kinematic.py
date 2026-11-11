@@ -90,6 +90,8 @@ def test_early_exit_and_continuous_boundary_event():
     assert not term and not trunc and not info["active_mask"][0]
     assert info["status"][0] == "completed"
     assert np.linalg.norm(info["actual_states"][0, 3:]) == 0
+    assert not np.any(env.output()[0][0])
+    assert not np.any(env.output()[0][1,12:19])
     assert any(event["kind"] == "arrival" and event["time"] == pytest.approx(.5)
                for event in info["events"])
     config = replace(IdealConfig(), dt=2., starts=((27., -12., 10.),) + IdealConfig().starts[1:])
@@ -110,10 +112,12 @@ def test_pair_contact_occurs_inside_step_with_clear_endpoints():
     actions[1] = [.5, 0., .5]
     _, _, _, _, info = env.step(actions)
     assert np.linalg.norm(info["actual_states"][0, :3] -
-                          info["actual_states"][1, :3]) == pytest.approx(4.)
+                          info["actual_states"][1, :3]) == pytest.approx(.5)
+    assert info["time"] == pytest.approx(.875)
+    assert info["outcome"] == "contact"
     assert any(e["kind"] == "contact" and e["time"] == pytest.approx(.875)
                for e in info["events"])
-    assert info["minimum_separation"] == pytest.approx(0.)
+    assert info["minimum_separation"] == pytest.approx(.5)
 
 
 def test_moving_target_contact_detected_across_reference_breakpoint():
@@ -126,6 +130,7 @@ def test_moving_target_contact_detected_across_reference_breakpoint():
     actions = np.full((5, 3), .5)
     actions[0] = [1., .5, .5]
     _, _, terminated, _, info = env.step(actions)
-    assert terminated and info["outcome"] == "contact"
-    assert any(e["kind"] == "target_contact" and e["time"] == pytest.approx(1.75)
+    assert terminated and info["outcome"] == "target_contact"
+    assert info["time"] == pytest.approx(1.5)
+    assert any(e["kind"] == "target_contact" and e["time"] == pytest.approx(1.5)
                for e in info["events"])

@@ -32,6 +32,46 @@ def closest(p, v, q, w, duration):
     return float(np.linalg.norm(relative + time * velocity))
 
 
+def inside_intervals(p, v, q, w, radius, duration):
+    """Closed intervals whose relative linear motion lies within a sphere."""
+    r, u = np.asarray(p)-np.asarray(q), np.asarray(v)-np.asarray(w)
+    a, b, c = float(u@u), float(2*r@u), float(r@r-radius*radius)
+    if a <= 1e-24:
+        return [(0., duration)] if c <= 0 else []
+    discriminant = b*b-4*a*c
+    if discriminant < 0:
+        return []
+    root = np.sqrt(max(0., discriminant))
+    left, right = (-b-root)/(2*a), (-b+root)/(2*a)
+    lo, hi = max(0., left), min(duration, right)
+    return [(float(lo), float(hi))] if hi > lo else []
+
+
+def merge_intervals(intervals, tolerance=1e-10):
+    merged = []
+    for left, right in sorted(intervals):
+        if merged and left <= merged[-1][1]+tolerance:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+        else:
+            merged.append((left, right))
+    return merged
+
+
+def subtract_intervals(outer, inner):
+    result = []
+    for left, right in outer:
+        cursor = left
+        for a, b in inner:
+            if b <= cursor or a >= right:
+                continue
+            if a > cursor:
+                result.append((cursor, min(a, right)))
+            cursor = max(cursor, b)
+        if cursor < right:
+            result.append((cursor, right))
+    return result
+
+
 def boundary(p, v, lower, upper, duration):
     candidates = []
     for axis in range(3):

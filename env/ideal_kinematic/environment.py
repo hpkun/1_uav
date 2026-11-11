@@ -1,9 +1,10 @@
 """Independent ideal three-dimensional point-mass multi-agent environment."""
 from copy import deepcopy
+from dataclasses import asdict
 import numpy as np
 
-from .config import IdealConfig, OBS_DIM, STATE_DIM, SLOTS, TARGET_SLOTS
-from .geometry import boundary, closest, direction, proximity
+from .config import IdealConfig, PROTOCOL, OBS_DIM, STATE_DIM, SLOTS, TARGET_SLOTS
+from .geometry import boundary, closest, direction, proximity, inside_intervals, merge_intervals, subtract_intervals
 from .reference import Reference
 
 
@@ -27,19 +28,57 @@ class IdealEnv:
         self.active = np.arange(SLOTS) < c.active_count
         self.status = ["active" if flag else "unused" for flag in self.active]
         self.states[:c.active_count, :3] = np.asarray(c.starts[:c.active_count])
-        if c.initialization == "random":
-            self.states[:c.active_count, :3] += rng.uniform(-c.random_range, c.random_range, (c.active_count, 3))
         directions = np.asarray(c.directions[:c.active_count], float)
         directions /= np.linalg.norm(directions, axis=1)[:, None]
         self.states[:c.active_count, 3:] = directions * np.asarray(c.speeds[:c.active_count])[:, None]
-        self.references = [Reference(c.target_starts[i], c.target_ends[i], c.target_speed, c.target_mode)
+        self.references = [Reference(c.target_starts[i], c.target_ends[i], c.target_speed,
+                                     c.target_mode, c.reference_end)
                            for i in range(c.target_count)]
+        failure = None
+        for attempt in range(c.init_max_attempts):
+            positions = np.asarray(c.starts[:c.active_count], float).copy()
+            if c.initialization == "random":
+                positions += rng.uniform(-c.random_range, c.random_range, positions.shape)
+            failure = self._initial_failure(positions)
+            if failure is None:
+                self.states[:c.active_count, :3] = positions
+                break
+        else:
+            raise ValueError(f"initialization failed after {c.init_max_attempts} attempts: {failure}")
         self.assignment = fixed_assignment(self.states[:c.active_count],
                             list(range(c.target_count if c.target_count else c.active_count)), self.status[:c.active_count])
         self.time, self.steps, self.outcome = 0., 0, "ongoing"
         self.minimum_separation = None
         self.warning_pairs = set()
+        self.safety_pairs = set()
+        self.warning_count = self.safety_count = self.contact_count = 0
+        self.safety_duration = 0.
+        self.distance_traveled = np.zeros(SLOTS)
+        self.tracking_intervals = [[] for _ in range(SLOTS)]
+        self.tracking_error_integral = np.zeros(SLOTS)
+        self.tracking_samples = [[] for _ in range(SLOTS)]
+        self.reference_motion_time = np.zeros(TARGET_SLOTS)
         return self.output()
+
+    def _initial_failure(self, positions):
+        c = self.config
+        if not np.isfinite(positions).all() or not np.isfinite(self.states).all():
+            return "nonfinite state"
+        if np.any(positions <= np.asarray(c.lower)) or np.any(positions >= np.asarray(c.upper)):
+            return "UAV outside region"
+        if not np.allclose(np.linalg.norm(self.states[:c.active_count, 3:], axis=1),
+                           c.speeds[:c.active_count], rtol=0, atol=1e-10):
+            return "initial speed mismatch"
+        if any(np.linalg.norm(positions[i]-positions[j]) <= c.safety_distance
+               for i in range(c.active_count) for j in range(i+1, c.active_count)):
+            return "UAV safety overlap"
+        targets = np.asarray(c.target_starts[:c.target_count])
+        if any(np.linalg.norm(p-q) <= c.contact_distance for p in positions for q in targets):
+            return "UAV reference overlap"
+        if any(np.linalg.norm(targets[i]-targets[j]) <= c.contact_distance
+               for i in range(c.target_count) for j in range(i+1, c.target_count)):
+            return "reference overlap"
+        return None
 
     def target(self, i, time):
         if self.config.target_count:
@@ -58,7 +97,8 @@ class IdealEnv:
             own = self.states[i]
             target_pos, target_vel = self.target(i, self.time)
             peers = [np.r_[(self.states[j, :3]-own[:3])/c.position_scale,
-                            (self.states[j, 3:]-own[3:])/c.speed_scale, float(self.active[j])]
+                            (self.states[j, 3:]-own[3:])/c.speed_scale, 1.]
+                     if self.active[j] else np.zeros(7)
                      for j in range(SLOTS) if j != i]
             targets = [np.r_[(reference[j, :3]-own[:3])/c.position_scale,
                               (reference[j, 3:]-own[3:])/c.speed_scale, 1.]
@@ -81,120 +121,40 @@ class IdealEnv:
                     time=self.time, step=self.steps, outcome=self.outcome,
                     events=list(events), reward_parts=dict(parts or {}),
                     team_reward=team_reward, minimum_separation=self.minimum_separation,
+                    warning_count=self.warning_count, safety_count=self.safety_count,
+                    safety_duration=self.safety_duration, contact_count=self.contact_count,
+                    distance_traveled=self.distance_traveled.copy(),
+                    tracking=self.tracking_metrics(),
+                    reference_motion_time=self.reference_motion_time,
                     seed=self.seed, task=c.task, action_semantics="desired_motion_direction")
         return obs, info
 
-    def step(self, actions):
-        if self.outcome != "ongoing":
-            raise RuntimeError("reset required")
-        c = self.config
-        actions = np.asarray(actions, float)
-        if actions.shape != (SLOTS, 3):
-            raise ValueError("invalid action shape")
-        if not np.isfinite(actions[self.active]).all() or np.any((actions[self.active] < 0) | (actions[self.active] > 1)):
-            raise ValueError("active Beta actions must be finite and within [0,1]")
-        start = self.states.copy()
-        velocities = np.zeros((SLOTS, 3), float)
-        for i in np.flatnonzero(self.active):
-            previous = start[i, 3:] / c.speeds[i]
-            velocities[i] = direction(actions[i], previous) * c.speeds[i]
-        departures = {}
-        events = []
-        priority = {"boundary": 0, "contact": 1, "warning": 2, "arrival": 3}
-        def event(kind, tau, members, positions):
-            events.append(dict(kind=kind, time=self.time + tau, members=list(members),
-                               positions=[np.asarray(p).tolist() for p in positions]))
-        for i in np.flatnonzero(self.active):
-            tau = boundary(start[i, :3], velocities[i], np.asarray(c.lower), np.asarray(c.upper), c.dt)
-            if tau is not None:
-                departures[i] = (tau, "boundary")
-            if not c.target_count:
-                target, _ = self.target(i, self.time)
-                arrival = proximity(start[i, :3], velocities[i], target, np.zeros(3),
-                                    c.arrival_distance, c.dt)
-                if arrival is not None and (i not in departures or arrival < departures[i][0]):
-                    departures[i] = (arrival, "arrival")
-        for i, (tau, kind) in departures.items():
-            event(kind, tau, [i], [start[i, :3] + tau*velocities[i]])
-        active_ids = np.flatnonzero(self.active)
-        minimum = self.minimum_separation
-        for k, i in enumerate(active_ids):
-            for j in active_ids[k+1:]:
-                duration = min(c.dt, departures.get(i, (c.dt,))[0], departures.get(j, (c.dt,))[0])
-                distance = closest(start[i, :3], velocities[i], start[j, :3], velocities[j], duration)
-                minimum = distance if minimum is None else min(minimum, distance)
-                for kind, radius in (("contact", c.contact_distance), ("warning", c.warning_distance)):
-                    tau = proximity(start[i, :3], velocities[i], start[j, :3], velocities[j], radius, duration)
-                    if tau is not None and (kind != "warning" or (int(i), int(j)) not in self.warning_pairs):
-                        event(kind, tau, [int(i), int(j)],
-                              [start[i, :3]+tau*velocities[i], start[j, :3]+tau*velocities[j]])
-                        if kind == "warning":
-                            self.warning_pairs.add((int(i), int(j)))
-        for i in active_ids:
-            if not c.target_count:
-                continue
-            j = self.assignment[int(i)]
-            path = self.references[j]
-            duration = min(c.dt, departures.get(i, (c.dt,))[0])
-            begin, end = self.time, self.time + duration
-            knots = path.distance / path.speed
-            cuts = [begin] + [float(t) for t in knots if begin < t < end] + [end]
-            for left, right in zip(cuts[:-1], cuts[1:]):
-                reference_position, reference_velocity = path.sample(left)
-                tau = proximity(start[i, :3] + (left-begin)*velocities[i], velocities[i],
-                                reference_position, reference_velocity, c.contact_distance,
-                                right-left)
-                if tau is not None:
-                    absolute = left-begin+tau
-                    event("target_contact", absolute, [int(i), SLOTS+j],
-                          [start[i, :3]+absolute*velocities[i],
-                           reference_position+tau*reference_velocity])
-                    break
-        self.minimum_separation = minimum
-        priority["target_contact"] = 1
-        events.sort(key=lambda item: (item["time"], priority[item["kind"]], item["members"]))
-        before = {i: np.linalg.norm(self.target(i, self.time)[0]-start[i, :3]) for i in active_ids}
-        for i in active_ids:
-            tau = departures.get(i, (c.dt,))[0]
-            self.states[i, :3] = start[i, :3] + tau*velocities[i]
-            if i in departures:
-                self.active[i] = False
-                self.status[i] = "completed" if departures[i][1] == "arrival" else "boundary"
-                self.states[i, 3:] = 0.
-            else:
-                self.states[i, 3:] = velocities[i]
-        self.time += c.dt
-        self.steps += 1
-        # Moving-reference tasks require all members to track inside a non-contact band at the horizon.
-        tracking_errors = [np.linalg.norm(self.target(i, self.time)[0]-self.states[i, :3])
-                           for i in range(c.active_count)] if c.target_count else []
-        if any(s == "boundary" for s in self.status):
-            self.outcome = "boundary"
-        elif any(event["kind"] == "target_contact" for event in events):
-            self.outcome = "contact"
-        elif not c.target_count and all(s == "completed" for s in self.status[:c.active_count]):
-            self.outcome = "success"
-        elif self.steps >= c.max_steps:
-            self.outcome = ("success" if c.target_count and all(
-                c.contact_distance < error <= c.tracking_distance for error in tracking_errors)
-                else "time_limit")
-        parts = dict(progress=c.progress_weight * sum(
-            before[i] - np.linalg.norm(self.target(i, self.time)[0]-self.states[i, :3]) for i in active_ids)
-            if not c.target_count else 0.,
-            tracking=-c.tracking_weight * sum(tracking_errors)/len(tracking_errors) * c.dt
-            if c.target_count else 0.,
-            completion=c.completion_weight if self.outcome == "success" else 0.,
-            danger=-c.danger_weight * sum(e["kind"] == "warning" for e in events),
-            boundary=-c.boundary_weight if self.outcome == "boundary" else 0.,
-            time=-c.time_weight*c.dt)
-        reward = float(sum(parts.values()))
-        obs, info = self.output(events, parts, reward)
-        return obs, np.where(np.asarray([i in active_ids for i in range(SLOTS)]),
-                             reward/max(len(active_ids), 1), 0.).astype(np.float32), (
-                             self.outcome not in ("ongoing", "time_limit")), self.outcome == "time_limit", info
+    def tracking_metrics(self):
+        if not self.config.target_count:
+            return []
+        elapsed = self.time
+        result = []
+        for i in range(self.config.active_count):
+            intervals = merge_intervals(self.tracking_intervals[i])
+            valid = sum(b-a for a,b in intervals)
+            longest = max((b-a for a,b in intervals), default=0.)
+            result.append(dict(instantaneous_error=float(np.linalg.norm(
+                self.target(i, self.time)[0]-self.states[i, :3])),
+                mean_error=float(self.tracking_error_integral[i]/elapsed) if elapsed else None,
+                valid_fraction=float(valid/elapsed) if elapsed else None,
+                longest_valid_time=longest,
+                departure_count=sum(right < elapsed-1e-10 for _, right in intervals),
+                outside_time=max(0., elapsed-valid),
+                error_samples=self.tracking_samples[i].copy()))
+        return result
+
+    from .step import step
 
     def snapshot(self):
-        return deepcopy(self.__dict__)
+        state = {key: deepcopy(value) for key, value in self.__dict__.items() if key != "config"}
+        return dict(protocol=PROTOCOL, configuration=asdict(self.config), state=state)
 
     def restore(self, state):
-        self.__dict__.update(deepcopy(state))
+        if state.get("protocol") != PROTOCOL or state.get("configuration") != asdict(self.config):
+            raise ValueError("incompatible ideal environment snapshot")
+        self.__dict__.update(deepcopy(state["state"]))

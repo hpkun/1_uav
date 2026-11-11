@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-kinematic-v1.0.0"
+PROTOCOL = "uav-ideal-kinematic-v1.1.0"
 TASK_COUNTS = {"IK0": (1, 0), "IK1": (3, 0), "IK2": (3, 1), "IK3": (5, 2)}
 SLOTS = 5
 TARGET_SLOTS = 2
@@ -28,6 +28,7 @@ class IdealConfig:
     target_ends: tuple = ((12., -5., 15.), (12., 7., 25.))
     target_speed: float = 1.
     target_mode: str = "straight"
+    reference_end: str = "ping_pong"
     initialization: str = "fixed"
     random_range: float = 1.
     safety_distance: float = 2.
@@ -35,6 +36,8 @@ class IdealConfig:
     contact_distance: float = 0.5
     arrival_distance: float = 1.5
     tracking_distance: float = 3.
+    tracking_success_fraction: float = 0.7
+    init_max_attempts: int = 128
     position_scale: float = 30.
     speed_scale: float = 3.
     progress_weight: float = 1.
@@ -46,10 +49,16 @@ class IdealConfig:
     seed: int = 17
 
     def __post_init__(self):
-        if self.task not in TASK_COUNTS or self.target_mode not in ("straight", "bezier") or self.initialization not in ("fixed", "random"):
+        if (self.task not in TASK_COUNTS or self.target_mode not in ("straight", "bezier")
+                or self.reference_end not in ("stop", "ping_pong")
+                or self.initialization not in ("fixed", "random")):
             raise ValueError("invalid task, target mode or initialization")
-        if type(self.max_steps) is not int or self.max_steps < 1 or type(self.seed) is not int or self.seed < 0:
+        if (type(self.max_steps) is not int or self.max_steps < 1
+                or type(self.init_max_attempts) is not int or self.init_max_attempts < 1
+                or type(self.seed) is not int or self.seed < 0):
             raise ValueError("invalid step budget or seed")
+        if not math.isfinite(self.tracking_success_fraction) or not 0 < self.tracking_success_fraction <= 1:
+            raise ValueError("invalid tracking_success_fraction")
         positive = ("dt", "target_speed", "safety_distance", "warning_distance",
                     "contact_distance", "arrival_distance", "tracking_distance",
                     "position_scale", "speed_scale")
@@ -76,7 +85,7 @@ class IdealConfig:
         points = np.asarray(self.starts[:n])
         if np.any(points - self.random_range <= np.asarray(self.lower)) or np.any(points + self.random_range >= np.asarray(self.upper)):
             raise ValueError("initial UAV positions must stay inside the region")
-        if any(np.linalg.norm(points[i] - points[j]) - 2 * self.random_range <= self.safety_distance
+        if any(np.linalg.norm(points[i] - points[j]) <= self.safety_distance
                for i in range(n) for j in range(i + 1, n)):
             raise ValueError("initial UAV safety envelopes overlap")
         for key in ("waypoints", "target_starts", "target_ends"):
@@ -84,7 +93,7 @@ class IdealConfig:
             if len(values) and (np.any(values <= np.asarray(self.lower)) or np.any(values >= np.asarray(self.upper))):
                 raise ValueError(f"{key} outside region")
         references = np.asarray(self.target_starts[:targets])
-        if any(np.linalg.norm(point - target) - self.random_range <= self.contact_distance
+        if any(np.linalg.norm(point - target) <= self.contact_distance
                for point in points for target in references):
             raise ValueError("initial UAV and reference target overlap")
         if any(np.linalg.norm(references[i] - references[j]) <= self.contact_distance
