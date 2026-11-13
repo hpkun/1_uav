@@ -151,6 +151,9 @@ stores the complete effective configuration and the declared scenario type.
 `python -m tools.ideal_interception_benchmark` measures reset and diagnosis
 cost without training.
 
+An independent offline three-position intruder predictor and recorded-trace
+accuracy evaluator are documented in `docs/ideal_prediction.md`.
+
 Defaults are engineering fixtures for interface verification, not calibrated
 physical or approved research benchmark parameters. Short CUDA smoke tests
 verify compatibility and recovery; no long training or convergence claim is
