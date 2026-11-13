@@ -16,21 +16,50 @@ def inside_region(position, config):
 
 def diagnostics(config,paths):
     length=float(max(np.asarray(config.upper)[:2]-np.asarray(config.lower)[:2]))
+    budget=config.dt*config.max_steps
+    defender_ratio=max(config.defender_speeds[:config.defender_count])*config.dt/length
+    intruder_ratio=max(config.intruder_speeds[:config.intruder_count])*config.dt/length
     rows=[]
     for path in paths:
         entry=None
-        for left,right,position,velocity in path.segments(0.,path.duration):
-            hit=region_entry(position,velocity,np.asarray(config.protected_center),
-                             config.protected_radius,config.protected_height,right-left)
+        points=path.points
+        center=np.asarray(config.protected_center)
+        low=np.minimum(points[:-1],points[1:])
+        high=np.maximum(points[:-1],points[1:])
+        possible=(np.all(high[:,:2]>=center[:2]-config.protected_radius,axis=1)
+                  & np.all(low[:,:2]<=center[:2]+config.protected_radius,axis=1)
+                  & (high[:,2]>=center[2]) & (low[:,2]<=center[2]+config.protected_height))
+        for index in np.flatnonzero(possible):
+            left=path.distance[index]/path.speed
+            velocity=(points[index+1]-points[index])/path.lengths[index]*path.speed
+            hit=region_entry(points[index],velocity,center,config.protected_radius,
+                             config.protected_height,path.lengths[index]/path.speed)
             if hit is not None:
                 entry=left+hit
                 break
-        rows.append(dict(duration=path.duration,duration_fraction=path.duration/(config.dt*config.max_steps),
+        margin=float(min(np.min(path.points-np.asarray(config.lower)),
+                         np.min(np.asarray(config.upper)-path.points)))
+        rows.append(dict(duration=path.duration,duration_fraction=path.duration/budget,
             protected_region_entry_time=entry,
             path_class="region_crossing" if entry is not None else "bypass",
-            within_bounds=bool(np.all(path.points>=config.lower) and np.all(path.points<=config.upper))))
-    return dict(reference_length=length,step_ratio=max(config.intruder_speeds[:config.intruder_count])*config.dt/length,
-                protected_radius_ratio=config.protected_radius/length,paths=rows)
+            entry_within_episode=bool(entry is not None and entry<=budget),
+            path_complete_within_episode=bool(path.duration<=budget),
+            minimum_boundary_margin=margin,
+            altitude_range=[float(path.points[:,2].min()),float(path.points[:,2].max())],
+            within_bounds=bool(margin>=0)))
+    return dict(reference_length=length,step_ratio=intruder_ratio,
+                defender_step_ratio=defender_ratio,intruder_step_ratio=intruder_ratio,
+                maximum_step_ratio=max(defender_ratio,intruder_ratio),
+                protected_radius_ratio=config.protected_radius/length,paths=rows,
+                scenario_validity=dict(geometry=True,
+                    region_crossing=all(row["within_bounds"] and row["entry_within_episode"] for row in rows)))
+
+
+def validate_scenario(report,kind="geometry"):
+    if kind not in ("geometry","region_crossing"):
+        raise ValueError("unknown scenario type")
+    if not report["scenario_validity"][kind]:
+        raise ValueError(f"scenario does not satisfy declared {kind} geometry")
 
 
 def initialize(config, seed):

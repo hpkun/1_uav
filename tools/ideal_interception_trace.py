@@ -4,13 +4,13 @@ from dataclasses import asdict
 import gzip
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
 
 from algorithm.common.serialization import serializable
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
 from env.ideal_interception.config import PROTOCOL
-from env.ideal_interception.geometry import direction
 from env.ideal_interception.trajectory import Reference
 
 TRACE_VERSION = "uav-ideal-trace-v1"
@@ -53,10 +53,12 @@ def from_evaluation(result):
              episode_return=episode["episode_return"],reward_parts=episode["reward_parts"]))
 
 
-def record(config,seed=17,actions=None):
+def record(config,seed=17,actions=None,scenario_type="geometry"):
     """Capture a deterministic geometric fixture without MAPPO or CUDA."""
     env = InterceptionEnv(config)
     _,info = env.reset(seed)
+    from env.ideal_interception.scenario import validate_scenario
+    validate_scenario(info["scene_diagnostics"],scenario_type)
     path_specs = info["intruder_paths"]
     frames = [serializable(dict(time=0.,step=0,outcome="ongoing",
         defenders=info["defenders"],intruders=info["intruders"],
@@ -66,9 +68,6 @@ def record(config,seed=17,actions=None):
     episode_return = 0.
     while True:
         action = np.full((5,3),.5) if actions is None else np.asarray(actions(info),float)
-        executed = np.zeros((5,3))
-        for i in np.flatnonzero(info["defender_mask"]):
-            executed[i] = direction(action[i],info["defenders"][i,3:]/config.defender_speeds[i])*config.defender_speeds[i]
         _,_,terminated,truncated,info = env.step(action)
         all_events.extend(info["events"])
         episode_return += info["team_reward"]
@@ -77,12 +76,14 @@ def record(config,seed=17,actions=None):
         frames.append(serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],
             defenders=info["defenders"],intruders=info["intruders"],
             defender_mask=info["defender_mask"],intruder_mask=info["intruder_mask"],
-            executed_velocities=executed,events=info["events"])))
+            executed_velocities=info["executed_velocities"],events=info["events"])))
         if terminated or truncated:
             break
-    return build_trace(config,info["seed"],info["scenario_id"],path_specs,frames,
+    trace=build_trace(config,info["seed"],info["scenario_id"],path_specs,frames,
         dict(outcome=info["outcome"],time=info["time"],events=all_events,
              episode_return=episode_return,reward_parts=reward_parts))
+    trace["scenario_type"]=scenario_type
+    return trace
 
 
 def write_trace(path,data):
@@ -99,9 +100,18 @@ def main(argv=None):
     parser.add_argument("--mode",choices=("straight","bezier"),default="straight")
     parser.add_argument("--initialization",choices=("fixed","random"),default="fixed")
     parser.add_argument("--seed",type=int,default=17)
+    parser.add_argument("--scenario-type",choices=("geometry","region_crossing"),default="geometry")
+    parser.add_argument("--config",type=Path)
     args=parser.parse_args(argv)
-    write_trace(args.output,record(InterceptionConfig(scale=args.scale,
-        intruder_mode=args.mode,initialization=args.initialization),args.seed))
+    if args.config:
+        if any(flag in (sys.argv[1:] if argv is None else argv)
+               for flag in ("--scale","--mode","--initialization")):
+            parser.error("--config cannot be combined with scene flags")
+        config=InterceptionConfig(**json.loads(args.config.read_text(encoding="utf-8")))
+    else:
+        config=InterceptionConfig(scale=args.scale,intruder_mode=args.mode,
+                                  initialization=args.initialization)
+    write_trace(args.output,record(config,args.seed,scenario_type=args.scenario_type))
 
 
 if __name__=="__main__":

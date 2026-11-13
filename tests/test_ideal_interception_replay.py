@@ -1,6 +1,7 @@
 from dataclasses import replace
 import json
 import shutil
+import subprocess
 
 import numpy as np
 import pytest
@@ -90,6 +91,11 @@ def test_ideal_timeline_rejects_v4_trace(tmp_path):
     path.write_text(json.dumps(dict(version="uav-interception-v4.0.0",frames=[])))
     with pytest.raises(ValueError,match="protocol"):
         Timeline(path)
+    ideal=tmp_path/"ideal.json"
+    write_trace(ideal,record(InterceptionConfig(max_steps=2),7))
+    from tools.interception_timeline import Timeline as V4Timeline
+    with pytest.raises(ValueError,match="unsupported interception trajectory"):
+        V4Timeline(ideal)
 
 
 def test_html_uses_recorded_trace_without_simulation(tmp_path):
@@ -108,10 +114,50 @@ def test_html_uses_recorded_trace_without_simulation(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None,reason="FFmpeg unavailable")
-def test_short_mp4_uses_the_same_trace(tmp_path):
+@pytest.mark.parametrize("view",["3d","top","altitude"])
+def test_short_mp4_uses_the_same_trace(tmp_path,view):
     from tools.ideal_interception_replay import render_mp4
     source=tmp_path/"trace.json"
     write_trace(source,record(InterceptionConfig(max_steps=2),7))
-    target=tmp_path/"view.mp4"
-    render_mp4(source,target,"altitude",fps=3)
+    target=tmp_path/f"{view}.mp4"
+    render_mp4(source,target,view,fps=30)
     assert target.stat().st_size>1000
+    if shutil.which("ffprobe"):
+        output=subprocess.check_output(["ffprobe","-v","error","-show_entries",
+            "format=duration:stream=width,height,nb_frames","-of","json",str(target)],text=True)
+        metadata=json.loads(output)
+        assert abs(float(metadata["format"]["duration"])-.2)<1/30+1e-3
+        assert metadata["streams"][0]["width"]==1280
+        assert metadata["streams"][0]["height"]==720
+
+
+def test_html_clock_and_existing_outputs(tmp_path,monkeypatch):
+    pytest.importorskip("plotly")
+    from tools import ideal_interception_replay as replay
+    source=tmp_path/"trace.json"
+    write_trace(source,record(InterceptionConfig(max_steps=2),7))
+    target=tmp_path/"view.html"
+    replay.render_html(source,target,"altitude")
+    html=target.read_text()
+    assert "performance.now()" in html and "(now-started)*rate/1000" in html
+    assert "XZ Side View" in html
+    with pytest.raises(FileExistsError):
+        replay.render_html(source,target,"altitude")
+    original=target.read_bytes()
+    with monkeypatch.context() as patch:
+        patch.setattr(replay,"_publish",lambda *args: (_ for _ in ()).throw(OSError("injected")))
+        with pytest.raises(OSError,match="injected"):
+            replay.render_html(source,target,"altitude",overwrite=True)
+    assert target.read_bytes()==original
+
+
+def test_mp4_encoder_failure_preserves_existing_file(tmp_path,monkeypatch):
+    from tools import ideal_interception_replay as replay
+    target=tmp_path/"existing.mp4"
+    target.write_bytes(b"historical")
+    with pytest.raises(FileExistsError):
+        replay.render_mp4("unused",target)
+    monkeypatch.setattr(replay,"_render_mp4_to_path",lambda *args: (_ for _ in ()).throw(RuntimeError("encoder failed")))
+    with pytest.raises(RuntimeError,match="encoder failed"):
+        replay.render_mp4("unused",target,overwrite=True)
+    assert target.read_bytes()==b"historical"

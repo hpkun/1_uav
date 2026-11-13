@@ -20,7 +20,6 @@ from algorithm.interception import run_lock
 from algorithm.mappo.interception import MAPPO, TrainConfig
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
 from env.ideal_interception.config import PROTOCOL as VERSION, OBS_DIM, STATE_DIM
-from env.ideal_interception.geometry import direction
 
 PROTOCOL = dict(version=VERSION,algorithm="mappo-beta",observation=OBS_DIM,
                 state=STATE_DIM,action=3,defenders=5,intruders=2,
@@ -145,17 +144,13 @@ def evaluate(model,config,seeds,*,deterministic=True):
             intruder_mask=info["intruder_mask"],events=[]))] if index==0 else []
         while True:
             action = model.act(obs,info["active_mask"],deterministic=deterministic)[0].cpu().numpy()
-            executed = np.zeros((5,3))
-            if index==0:
-                for i in np.flatnonzero(info["defender_mask"]):
-                    executed[i] = direction(action[i],info["defenders"][i,3:]/config.defender_speeds[i])*config.defender_speeds[i]
             obs,reward,terminated,truncated,info = env.step(action)
             tracker.add(info,reward)
             if index==0:
                 frames.append(serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],defenders=info["defenders"],
                     intruders=info["intruders"],defender_mask=info["defender_mask"],
                     intruder_mask=info["intruder_mask"],events=info["events"],
-                    executed_velocities=executed)))
+                    executed_velocities=info["executed_velocities"])))
             if terminated or truncated:
                 rows.append(tracker.summary(info))
                 break

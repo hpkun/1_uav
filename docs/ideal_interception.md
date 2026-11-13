@@ -112,6 +112,10 @@ motion between control boundaries from the recorded velocity and polyline.
 Event times are keyframes, including times between control steps. A physical
 event is marked at its recorded position; `member_inactive` and `episode_end`
 only change state. The visuals show abstract geometric contact, not damage.
+The time-axis reader checks reference speed, duration and geometry against
+the environment configuration and validates every recorded step against the
+executed velocity, inactive transitions and final state. The executed velocity
+comes directly from the environment's step result.
 
 Generate a deterministic trace without a model or CUDA, then render the same
 file as an interactive HTML player or an MP4 (FFmpeg required):
@@ -127,6 +131,25 @@ python -m tools.ideal_interception_replay ideal_episode.json.gz ideal_episode.mp
 `episode_000.json` alongside `evaluation.json` without another evaluation
 run. The trace contains the first evaluated episode. The HTML and MP4
 exporters consume that same trace; neither runs the policy or environment.
+
+The `altitude` view is an XZ spatial projection, not an altitude-over-time
+chart. HTML playback uses elapsed physical time and supports 0.5×, 1×, 2×,
+4×, arbitrary time seeking, and precise event keyframes. MP4 samples physical
+time at a fixed FPS. Both exporters refuse an existing output by default;
+pass `--overwrite` to replace it after a successful temporary export.
+Video encoding writes into a temporary directory before publishing, so a
+failed encoder leaves an existing output intact. MP4 uses the available H.264
+or MPEG-4 FFmpeg encoder. Plotly and Matplotlib use the same protected-cylinder
+geometry; the MP4 exporter retains static artists across frames.
+
+The model-free trace command also accepts `--config scene.json` with the same
+`InterceptionConfig` fields as training; scene flags cannot be mixed with it.
+`--scenario-type region_crossing` requires every reference to remain in the
+airspace and enter the protected region within the episode budget. The default
+`geometry` type permits deliberate bypass and boundary test cases. The trace
+stores the complete effective configuration and the declared scenario type.
+`python -m tools.ideal_interception_benchmark` measures reset and diagnosis
+cost without training.
 
 Defaults are engineering fixtures for interface verification, not calibrated
 physical or approved research benchmark parameters. Short CUDA smoke tests

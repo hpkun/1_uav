@@ -195,6 +195,7 @@ def advance(env, actions):
     reward = float(sum(parts.values()))
     env.events.extend(events)
     obs,info = env.output(events,parts,reward)
+    info["executed_velocities"] = velocities.copy()
     rewards = np.zeros(5,np.float32)
     rewards[start_mask] = reward/max(int(start_mask.sum()),1)
     return obs,rewards,env.outcome!="ongoing",False,info
