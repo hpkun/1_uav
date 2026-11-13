@@ -6,7 +6,7 @@ import numpy as np
 from .config import InterceptionConfig, PROTOCOL
 from .events import advance
 from .observation import observe
-from .scenario import initialize
+from .scenario import initialize, diagnostics
 
 
 class InterceptionEnv:
@@ -18,6 +18,7 @@ class InterceptionEnv:
         c = self.config
         (self.defenders,self.intruders,self.paths,self.assignment,
          self.seed,self.scenario_id) = initialize(c,seed)
+        self.scene_diagnostics = diagnostics(c,self.paths)
         self.defender_mask = np.arange(5)<c.defender_count
         self.intruder_mask = np.arange(2)<c.intruder_count
         self.defender_status = ["active" if flag else "unused" for flag in self.defender_mask]
@@ -45,6 +46,7 @@ class InterceptionEnv:
             action_semantics="defender_desired_motion_direction")
         if include_paths:
             info["intruder_paths"] = [path.specification() for path in self.paths]
+            info["scene_diagnostics"] = self.scene_diagnostics
         return obs,info
 
     step = advance

@@ -36,7 +36,7 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
     assert len(last["evaluations"])==2 and sum(
         "result" in entry for entry in last["evaluations"])==1
     output = tmp_path/"eval"
-    cli.main(["evaluate",str(checkpoint),"--out",str(output),"--eval-episodes","2"])
+    cli.main(["evaluate",str(checkpoint),"--out",str(output),"--eval-episodes","2","--trace"])
     result = json.loads((output/"evaluation.json").read_text())
     assert result["protocol"]==cli.PROTOCOL
     assert result["evaluation_protocol"]["kind"]=="fixed_case"
@@ -44,6 +44,10 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
     assert result["summary"]["episodes"]==2 and result["first_trace"][0]["time"]==0.
     assert result["episodes"][0]["intruder_paths"][0]["polyline_sha256"]
     assert result["model_sha256"]==cli.model_digest(last["actor"],last["critic"])
+    from tools.ideal_interception_timeline import Timeline
+    trace=Timeline(output/"episode_000.json")
+    assert trace.duration==result["episodes"][0]["time"]
+    assert trace.at(trace.duration)["outcome"]==result["episodes"][0]["outcome"]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")

@@ -5,12 +5,32 @@ import json
 import numpy as np
 
 from .trajectory import Reference
+from .geometry import region_entry
 
 
 def inside_region(position, config):
     relative = np.asarray(position)-np.asarray(config.protected_center)
     return (relative[0]**2+relative[1]**2 <= config.protected_radius**2
             and 0 <= relative[2] <= config.protected_height)
+
+
+def diagnostics(config,paths):
+    length=float(max(np.asarray(config.upper)[:2]-np.asarray(config.lower)[:2]))
+    rows=[]
+    for path in paths:
+        entry=None
+        for left,right,position,velocity in path.segments(0.,path.duration):
+            hit=region_entry(position,velocity,np.asarray(config.protected_center),
+                             config.protected_radius,config.protected_height,right-left)
+            if hit is not None:
+                entry=left+hit
+                break
+        rows.append(dict(duration=path.duration,duration_fraction=path.duration/(config.dt*config.max_steps),
+            protected_region_entry_time=entry,
+            path_class="region_crossing" if entry is not None else "bypass",
+            within_bounds=bool(np.all(path.points>=config.lower) and np.all(path.points<=config.upper))))
+    return dict(reference_length=length,step_ratio=max(config.intruder_speeds[:config.intruder_count])*config.dt/length,
+                protected_radius_ratio=config.protected_radius/length,paths=rows)
 
 
 def initialize(config, seed):

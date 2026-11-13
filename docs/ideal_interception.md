@@ -67,6 +67,13 @@ intruder start, end, speed, Bézier control points, polyline point count,
 polyline hash and path duration. A fixed scenario
 with multiple seeds is identified as one physical scenario.
 
+Each initialized scene also records `reference_length`, dimensionless
+`step_ratio` (reference speed × control period / horizontal scene span),
+`protected_radius_ratio`, each path's duration fraction of the episode budget,
+whether the path stays within bounds, and whether it enters the protected
+region. The last distinction separates bypass paths from region-crossing paths
+without using a learned policy's contact result to label the geometry.
+
 V2 defaults use `dt=0.1 s`, a 30 s episode budget and 20 m/s fixed speed for
 both sides. The space spans 600 m horizontally and 120 m vertically; the
 protected cylinder has radius 20 m. `position_scale=300 m` and
@@ -93,6 +100,33 @@ python -m algorithm.ideal_interception evaluate outputs/ideal_interception_1v1/l
 Evaluation stores per-episode records, a summary and the first episode's
 timestamped bilateral trajectory. The newest full evaluation is recoverable
 from the committed Checkpoint; older evaluations have indexed checksums.
+
+## Ideal trajectory and replay
+
+The ideal trace protocol is `uav-ideal-trace-v1`, separate from v4 replay.
+Each trace records the environment protocol, scene geometry and diagnostics,
+seed and scenario ID, exact reference polyline and hash, entity states and
+masks, executed defender velocity per control period, step-internal events,
+and final result. The player verifies the reference hash and reconstructs
+motion between control boundaries from the recorded velocity and polyline.
+Event times are keyframes, including times between control steps. A physical
+event is marked at its recorded position; `member_inactive` and `episode_end`
+only change state. The visuals show abstract geometric contact, not damage.
+
+Generate a deterministic trace without a model or CUDA, then render the same
+file as an interactive HTML player or an MP4 (FFmpeg required):
+
+```bash
+python -m tools.ideal_interception_trace ideal_episode.json.gz --scale 5v2 --mode bezier --initialization random --seed 17
+python -m tools.ideal_interception_replay ideal_episode.json.gz ideal_episode.html --view 3d
+python -m tools.ideal_interception_replay ideal_episode.json.gz ideal_episode.mp4 --view top --fps 30
+```
+
+`--view` accepts `3d`, `top`, or `altitude`. For a trained model, pass
+`--trace` to `algorithm.ideal_interception evaluate`; it writes
+`episode_000.json` alongside `evaluation.json` without another evaluation
+run. The trace contains the first evaluated episode. The HTML and MP4
+exporters consume that same trace; neither runs the policy or environment.
 
 Defaults are engineering fixtures for interface verification, not calibrated
 physical or approved research benchmark parameters. Short CUDA smoke tests

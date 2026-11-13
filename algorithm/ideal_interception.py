@@ -20,6 +20,7 @@ from algorithm.interception import run_lock
 from algorithm.mappo.interception import MAPPO, TrainConfig
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
 from env.ideal_interception.config import PROTOCOL as VERSION, OBS_DIM, STATE_DIM
+from env.ideal_interception.geometry import direction
 
 PROTOCOL = dict(version=VERSION,algorithm="mappo-beta",observation=OBS_DIM,
                 state=STATE_DIM,action=3,defenders=5,intruders=2,
@@ -48,6 +49,7 @@ class EpisodeAccumulator:
         self.initial_defenders = info["defenders"].tolist()
         self.initial_intruders = info["intruders"].tolist()
         self.intruder_paths = info["intruder_paths"]
+        self.scene_diagnostics = info["scene_diagnostics"]
         self.scenario_id,self.seed = info["scenario_id"],info["seed"]
         self.total = 0.
         self.parts = {}
@@ -64,6 +66,7 @@ class EpisodeAccumulator:
             steps=info["step"],seed=self.seed,scenario_id=self.scenario_id,
             initial_defenders=self.initial_defenders,initial_intruders=self.initial_intruders,
             intruder_paths=self.intruder_paths,
+            scene_diagnostics=self.scene_diagnostics,
             final_defenders=info["defenders"].tolist(),final_intruders=info["intruders"].tolist(),
             defender_status=info["defender_status"],intruder_status=info["intruder_status"],
             assignment=info["assignment"],episode_return=self.total,
@@ -137,17 +140,22 @@ def evaluate(model,config,seeds,*,deterministic=True):
         obs,info = env.reset(np.random.SeedSequence([1,seed]))
         tracker = EpisodeAccumulator()
         tracker.reset(info)
-        frames = [serializable(dict(time=info["time"],defenders=info["defenders"],
+        frames = [serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],defenders=info["defenders"],
             intruders=info["intruders"],defender_mask=info["defender_mask"],
             intruder_mask=info["intruder_mask"],events=[]))] if index==0 else []
         while True:
             action = model.act(obs,info["active_mask"],deterministic=deterministic)[0].cpu().numpy()
+            executed = np.zeros((5,3))
+            if index==0:
+                for i in np.flatnonzero(info["defender_mask"]):
+                    executed[i] = direction(action[i],info["defenders"][i,3:]/config.defender_speeds[i])*config.defender_speeds[i]
             obs,reward,terminated,truncated,info = env.step(action)
             tracker.add(info,reward)
             if index==0:
-                frames.append(serializable(dict(time=info["time"],defenders=info["defenders"],
+                frames.append(serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],defenders=info["defenders"],
                     intruders=info["intruders"],defender_mask=info["defender_mask"],
-                    intruder_mask=info["intruder_mask"],events=info["events"])))
+                    intruder_mask=info["intruder_mask"],events=info["events"],
+                    executed_velocities=executed)))
             if terminated or truncated:
                 rows.append(tracker.summary(info))
                 break
@@ -327,6 +335,7 @@ def main(argv=None):
     assess.add_argument("--eval-seed",type=int,default=2200)
     assess.add_argument("--eval-episodes",type=int,default=10)
     assess.add_argument("--sample-actions",action="store_true")
+    assess.add_argument("--trace",action="store_true",help="export first evaluated episode as an ideal trace")
     args = parser.parse_args(argv)
     if args.operation=="train":
         options = json.loads(args.config.read_text()) if args.config else {}
@@ -350,6 +359,9 @@ def main(argv=None):
         result = evaluate(model,config,seeds,deterministic=not args.sample_actions)
         atomic_json(args.out/"evaluation.json",result|dict(checkpoint=str(args.checkpoint),
                                                            update=payload["updates"],seeds=seeds))
+        if args.trace:
+            from tools.ideal_interception_trace import from_evaluation
+            atomic_json(args.out/"episode_000.json",from_evaluation(result))
         terminal.emit("Ideal interception","EVAL",terminal.fields(
             experiment="ideal_interception",scale=config.scale,upd=payload["updates"]),
             results(result["summary"]),terminal.fields(
