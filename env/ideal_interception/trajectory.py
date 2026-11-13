@@ -1,5 +1,6 @@
 """Piecewise linear arc-length reference; velocity is right-continuous at knots."""
 import math
+import hashlib
 import numpy as np
 
 
@@ -12,6 +13,7 @@ class Reference:
             raise ValueError("invalid reference geometry, speed or mode")
         if mode == "straight":
             points = np.stack((start, end))
+            controls = []
         else:
             span = end - start
             offset = np.array((-span[1], span[0], 0.))
@@ -19,12 +21,14 @@ class Reference:
                 offset = np.array((0., 1., 0.))
             offset = .25 * np.linalg.norm(span) * offset / np.linalg.norm(offset)
             a, b = start + span/3 + offset, start + 2*span/3 - offset
+            controls = [a.tolist(),b.tolist()]
             t = np.linspace(0., 1., 1025)[:, None]
             points = (1-t)**3*start + 3*(1-t)**2*t*a + 3*(1-t)*t*t*b + t**3*end
         lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
         if not np.isfinite(points).all() or np.any(lengths <= 0):
             raise ValueError("reference path must have finite, nonzero segments")
         self.points, self.lengths = points, lengths
+        self.mode, self.controls = mode, controls
         self.distance = np.r_[0., np.cumsum(lengths)]
         self.speed, self.end_behavior = speed, end_behavior
         self.duration = self.distance[-1] / speed
@@ -33,7 +37,8 @@ class Reference:
         if not math.isfinite(time) or time < 0:
             raise ValueError("invalid reference time")
         if self.end_behavior == "stop" and time >= self.duration:
-            return self.points[-1].copy(), np.zeros(3)
+            velocity = (self.points[-1]-self.points[-2])/self.lengths[-1]*self.speed
+            return self.points[-1].copy(), velocity if time == self.duration else np.zeros(3)
         leg = math.floor(time / self.duration)
         local = time - leg*self.duration
         if self.end_behavior == "stop":
@@ -46,6 +51,12 @@ class Reference:
         position = self.points[index]+fraction*(self.points[index+1]-self.points[index])
         velocity = (self.points[index+1]-self.points[index])/self.lengths[index]*self.speed
         return position, -velocity if reverse else velocity
+
+    def specification(self):
+        return dict(mode=self.mode,start=self.points[0].tolist(),end=self.points[-1].tolist(),
+                    controls=self.controls,speed=self.speed,duration=self.duration,
+                    polyline_points=len(self.points),
+                    polyline_sha256=hashlib.sha256(self.points.tobytes()).hexdigest())
 
     def segments(self, start, end):
         """Yield exact linear pieces over [start,end]; no segment crosses a knot."""

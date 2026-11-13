@@ -47,6 +47,7 @@ class EpisodeAccumulator:
     def reset(self,info):
         self.initial_defenders = info["defenders"].tolist()
         self.initial_intruders = info["intruders"].tolist()
+        self.intruder_paths = info["intruder_paths"]
         self.scenario_id,self.seed = info["scenario_id"],info["seed"]
         self.total = 0.
         self.parts = {}
@@ -62,6 +63,7 @@ class EpisodeAccumulator:
         return dict(scale=info["scale"],outcome=info["outcome"],time=info["time"],
             steps=info["step"],seed=self.seed,scenario_id=self.scenario_id,
             initial_defenders=self.initial_defenders,initial_intruders=self.initial_intruders,
+            intruder_paths=self.intruder_paths,
             final_defenders=info["defenders"].tolist(),final_intruders=info["intruders"].tolist(),
             defender_status=info["defender_status"],intruder_status=info["intruder_status"],
             assignment=info["assignment"],episode_return=self.total,
@@ -69,7 +71,6 @@ class EpisodeAccumulator:
             interception_count=info["interception_count"],breach_count=info["breach_count"],
             friendly_collision_count=info["friendly_collision_count"],
             intruder_collision_count=info["intruder_collision_count"],
-            warning_count=info["warning_count"],safety_count=info["safety_count"],
             minimum_separation=info["minimum_separation"],
             defender_exits=sum(s not in ("active","unused") for s in info["defender_status"]),
             intruder_exits=sum(s not in ("active","unused") for s in info["intruder_status"]))
@@ -85,8 +86,7 @@ def summarize(rows):
         breach_rate=sum(r["outcome"]=="breach" for r in rows)/n if n else None,
         friendly_collision_rate=sum(r["outcome"]=="friendly_collision" for r in rows)/n if n else None,
         mean_return=average("episode_return"),mean_interceptions=average("interception_count"),
-        mean_time=average("time"),mean_warning_count=average("warning_count"),
-        mean_safety_count=average("safety_count"),
+        mean_time=average("time"),
         mean_minimum_separation=average("minimum_separation"),
         mean_defender_exits=average("defender_exits"),mean_intruder_exits=average("intruder_exits"))
 

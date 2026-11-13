@@ -4,8 +4,7 @@ import numpy as np
 from .geometry import boundary, closest, direction, inside_intervals, proximity, region_entry
 
 PRIORITY = {"region_breach":0, "friendly_collision":1, "interception_contact":2,
-            "intruder_collision":3, "boundary_exit":4, "friendly_warning":5,
-            "safety_violation":6}
+            "intruder_collision":3, "boundary_exit":4, "path_complete":5}
 
 
 def _path_pieces(path, start, end):
@@ -44,14 +43,13 @@ def candidates(env, velocities, duration):
         for j in defenders[a+1:]:
             p,q = env.defenders[i,:3],env.defenders[j,:3]
             v,w = velocities[i],velocities[j]
-            for kind,radius in (("friendly_collision",c.contact_distance),
-                                ("friendly_warning",c.warning_distance),
-                                ("safety_violation",c.safety_distance)):
-                intervals = inside_intervals(p,v,q,w,radius,duration)
-                if intervals:
-                    add(kind,intervals[0][0],(int(i),int(j)))
+            intervals = inside_intervals(p,v,q,w,c.contact_distance,duration)
+            if intervals:
+                add("friendly_collision",intervals[0][0],(int(i),int(j)))
     for j in intruders:
         path = env.paths[j]
+        if start <= path.duration <= start+duration:
+            add("path_complete",path.duration-start,(5+int(j),))
         for left,right,p,v in _path_pieces(path,start,start+duration):
             tau = region_entry(p,v,np.asarray(c.protected_center),
                                c.protected_radius,c.protected_height,right-left)
@@ -139,20 +137,9 @@ def advance(env, actions):
         if any(not (env.defender_mask[m] if m < 5 else env.intruder_mask[m-5])
                for m in members):
             continue
-        pair = members if len(members)==2 else None
-        if kind == "friendly_warning" and pair in env.warning_pairs:
-            continue
-        if kind == "safety_violation" and pair in env.safety_pairs:
-            continue
         move_to(tau)
         emit(kind,members)
-        if kind == "friendly_warning":
-            env.warning_pairs.add(pair)
-            env.warning_count += 1
-        elif kind == "safety_violation":
-            env.safety_pairs.add(pair)
-            env.safety_count += 1
-        elif kind == "interception_contact":
+        if kind == "interception_contact":
             env.interception_count += 1
             inactive(members[0],"contact_exit")
             inactive(members[1],"intercepted")
@@ -177,6 +164,9 @@ def advance(env, actions):
         elif kind == "boundary_exit":
             inactive(members[0],"boundary_exit")
             env.outcome = "defender_boundary" if members[0] < 5 else "intruder_escape"
+        elif kind == "path_complete":
+            inactive(members[0],"path_complete")
+            env.outcome = "intruder_path_complete"
         if env.outcome != "ongoing":
             emit("episode_end")
             break
@@ -186,24 +176,20 @@ def advance(env, actions):
             env.outcome = "deadline_failure"
             emit("episode_end")
     env.step_count += 1
-    for pair in list(env.warning_pairs):
-        i,j = pair
-        if not env.defender_mask[i] or not env.defender_mask[j] or np.linalg.norm(
-                env.defenders[i,:3]-env.defenders[j,:3]) > c.warning_distance+1e-10:
-            env.warning_pairs.discard(pair)
-    for pair in list(env.safety_pairs):
-        i,j = pair
-        if not env.defender_mask[i] or not env.defender_mask[j] or np.linalg.norm(
-                env.defenders[i,:3]-env.defenders[j,:3]) > c.safety_distance+1e-10:
-            env.safety_pairs.discard(pair)
+    for j in np.flatnonzero(env.intruder_mask):
+        if not np.isclose(np.linalg.norm(env.intruders[j,3:]),c.intruder_speeds[j],rtol=1e-9,atol=1e-9):
+            raise FloatingPointError("active intruder speed differs from configured speed")
+    for i in np.flatnonzero(env.defender_mask):
+        if not np.isclose(np.linalg.norm(env.defenders[i,3:]),c.defender_speeds[i],rtol=1e-9,atol=1e-9):
+            raise FloatingPointError("active defender speed differs from configured speed")
     duration = env.time-origin
     parts = dict(interception=c.interception_reward*sum(e["kind"]=="interception_contact" for e in events),
                  protection=c.protection_reward if env.outcome=="all_intercepted" else 0.,
                  breach=-c.failure_penalty if env.outcome=="breach" else 0.,
-                 safety=-c.failure_penalty if env.outcome in ("friendly_collision","intruder_collision") else
-                     -c.warning_penalty*sum(e["kind"]=="friendly_warning" for e in events),
+                 same_side_contact=-c.failure_penalty if env.outcome in ("friendly_collision","intruder_collision") else 0.,
                  boundary=-c.failure_penalty if env.outcome in ("defender_boundary","intruder_escape") else 0.,
                  exhausted=-c.failure_penalty if env.outcome=="defenders_exhausted" else 0.,
+                 path_complete=-c.failure_penalty if env.outcome=="intruder_path_complete" else 0.,
                  deadline=-c.failure_penalty if env.outcome=="deadline_failure" else 0.,
                  time=-c.time_penalty*duration)
     reward = float(sum(parts.values()))

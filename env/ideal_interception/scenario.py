@@ -30,9 +30,9 @@ def initialize(config, seed):
         if np.any(positions <= config.lower) or np.any(positions >= config.upper):
             failure = "member outside region"
             continue
-        if any(np.linalg.norm(positions[a]-positions[b]) <= config.safety_distance
+        if any(np.linalg.norm(positions[a]-positions[b]) <= config.contact_distance+1e-9
                for a in range(len(positions)) for b in range(a+1,len(positions))):
-            failure = "initial safety overlap"
+            failure = "initial contact overlap"
             continue
         if any(inside_region(position,config) for position in intruder_positions):
             failure = "intruder starts inside protected region"
@@ -57,7 +57,7 @@ def initialize(config, seed):
     for key in ("seed","initialization","random_range","init_max_attempts"):
         identity.pop(key)
     identity = dict(config=identity,defenders=defenders.tolist(),intruders=intruders.tolist(),
-                    assignment=assignment)
+                    assignment=assignment,paths=[path.specification() for path in paths])
     scenario_id = hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(",",":"),
                                              allow_nan=False).encode()).hexdigest()
     return defenders,intruders,paths,assignment,seed_id,scenario_id
