@@ -33,3 +33,6 @@ velocity straight segments. Errors on Bézier paths reflect local curvature
 and changes of direction at piecewise-linear knots. The defaults are
 simulation fixtures, not validated physical flight parameters. These offline
 results make no claim about control performance.
+
+A separate full-reference-path observation and paired Zuo/Tan comparison
+experiment is described in `docs/ideal_blue_prediction.md`.
