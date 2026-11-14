@@ -38,3 +38,23 @@ def predict_at(history_positions, dt, query_times):
     if not np.isfinite(result).all():
         raise FloatingPointError("nonfinite quadratic prediction")
     return result
+
+
+def recommended_horizon(history_positions, dt, *, eta, minimum, maximum,
+                        epsilon_acceleration):
+    """Exploratory quadratic extrapolation cap, in seconds; does not alter prediction.
+
+    epsilon_acceleration has units m/s². All tuning values are caller supplied.
+    """
+    import numpy as np
+    values = np.asarray(history_positions, dtype=np.float64)
+    parameters = (dt, eta, minimum, maximum, epsilon_acceleration)
+    if (values.shape != (3, 3) or not np.isfinite(values).all() or
+            not all(np.isfinite(x) for x in parameters) or dt <= 0 or eta <= 0 or
+            minimum <= 0 or maximum < minimum or epsilon_acceleration <= 0):
+        raise ValueError("invalid history or horizon cap parameters")
+    old, middle, current = values
+    velocity = (3*current-4*middle+old)/(2*dt)
+    acceleration = (current-2*middle+old)/(dt*dt)
+    raw = eta*np.linalg.norm(velocity)/(np.linalg.norm(acceleration)+epsilon_acceleration)
+    return float(np.clip(raw, minimum, maximum))

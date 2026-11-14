@@ -9,7 +9,7 @@ from .evaluation import _metrics
 from .three_point import predict_two_steps
 from .zuo_linear import predict_zuo_two_steps
 from .zuo_linear import predict_zuo_at
-from .three_point import predict_at
+from .three_point import predict_at, recommended_horizon
 
 PROTOCOL = "uav-ideal-blue-observations-v1"
 METHODS = ("zuo_linear","tan_quadratic")
@@ -128,3 +128,58 @@ def compare_horizons(data, horizon_steps=(1, 2, 5, 10)):
     return dict(protocol="uav-ideal-prediction-horizons-v1",source_protocol=data["protocol"],
                 scenario_id=data["scenario_id"],seed=data["seed"],dt=dt,
                 horizon_steps=horizons,targets=result)
+
+
+def compare_positions(data, horizon_steps=(1, 5, 10, 20), tan_limit=None):
+    """One row per shared truth time with both raw predictions and errors."""
+    if data.get("protocol") != PROTOCOL:
+        raise ValueError("unsupported blue observation protocol")
+    horizons = tuple(horizon_steps)
+    if not horizons or any(type(h) is not int or h < 1 for h in horizons) or tuple(sorted(set(horizons))) != horizons:
+        raise ValueError("horizon_steps must be unique increasing positive integers")
+    dt = float(data["dt"])
+    rows, summary = [], {}
+    for target in data["targets"]:
+        j = target["target_index"]
+        observations = target["observations"]
+        positions = np.asarray([row["position"] for row in observations], dtype=np.float64)
+        by_horizon = {}
+        for h in horizons:
+            selection = []
+            for k in range(2, len(positions)-h):
+                history = positions[k-2:k+1]
+                offset = h*dt
+                zuo = predict_zuo_at(history[-2:], dt, [offset])[0]
+                tan = predict_at(history, dt, [offset])[0]
+                truth = positions[k+h]
+                cap = recommended_horizon(history,dt,**tan_limit) if tan_limit is not None else None
+                row = dict(scenario_id=data["scenario_id"],seed=data["seed"],target_index=j,
+                    observation_time=observations[k]["time"],prediction_time=observations[k+h]["time"],
+                    horizon_steps=h,horizon_s=offset,
+                    **{f"zuo_{axis}":float(value) for axis,value in zip("xyz",zuo)},
+                    **{f"three_point_{axis}":float(value) for axis,value in zip("xyz",tan)},
+                    **{f"true_{axis}":float(value) for axis,value in zip("xyz",truth)},
+                    position_gap_m=float(np.linalg.norm(tan-zuo)),
+                    zuo_error_m=float(np.linalg.norm(zuo-truth)),
+                    three_point_error_m=float(np.linalg.norm(tan-truth)),
+                    tan_horizon_cap_s=cap,
+                    tan_horizon_status=("HORIZON_LIMITED" if cap is not None and offset>cap else "READY"))
+                row["error_improvement_m"] = row["zuo_error_m"]-row["three_point_error_m"]
+                rows.append(row)
+                selection.append(row)
+            def metrics(key):
+                values = np.asarray([row[key] for row in selection])
+                return dict(MAE=float(np.mean(values)) if len(values) else None,
+                    RMSE=float(np.sqrt(np.mean(values**2))) if len(values) else None,
+                    P95Error=float(np.percentile(values,95)) if len(values) else None,
+                    MaxError=float(np.max(values)) if len(values) else None)
+            by_horizon[str(h)] = dict(valid_samples=len(selection),
+                unavailable_future_samples=min(h,len(positions)-2),
+                tan_horizon_limited=sum(row["tan_horizon_status"]=="HORIZON_LIMITED" for row in selection),
+                zuo=metrics("zuo_error_m"),three_point=metrics("three_point_error_m"),
+                position_gap=metrics("position_gap_m"),
+                mean_error_improvement_m=float(np.mean([row["error_improvement_m"] for row in selection])) if selection else None)
+        summary[f"I{j}"] = by_horizon
+    return dict(protocol="uav-ideal-position-comparison-v1",source_protocol=data["protocol"],
+        scenario_id=data["scenario_id"],seed=data["seed"],dt=dt,
+        horizon_steps=list(horizons),tan_limit=tan_limit,targets=summary,rows=rows)

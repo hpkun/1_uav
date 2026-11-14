@@ -57,6 +57,15 @@ class IntruderHistory:
             return "INACTIVE"
         return "READY" if len(self.positions[target_index]) == 3 else "NOT_READY"
 
+    def method_status(self, target_index, method):
+        if method not in ("zuo_linear", "tan_quadratic"):
+            raise ValueError("unknown prediction method")
+        self.status(target_index)
+        if not self.active[target_index]:
+            return "INACTIVE"
+        required = 2 if method == "zuo_linear" else 3
+        return "READY" if len(self.positions[target_index]) >= required else "INSUFFICIENT_HISTORY"
+
     def predict(self, target_index):
         if self.status(target_index) != "READY":
             return None
