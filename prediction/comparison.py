@@ -8,6 +8,8 @@ import numpy as np
 from .evaluation import _metrics
 from .three_point import predict_two_steps
 from .zuo_linear import predict_zuo_two_steps
+from .zuo_linear import predict_zuo_at
+from .three_point import predict_at
 
 PROTOCOL = "uav-ideal-blue-observations-v1"
 METHODS = ("zuo_linear","tan_quadratic")
@@ -90,3 +92,39 @@ def compare(data):
         scenario_id=data["scenario_id"],seed=data["seed"],scale=data["scale"],
         intruder_mode=data["intruder_mode"],initialization=data["initialization"],
         dt=dt,targets=target_summaries,predictions=rows)
+
+
+def compare_horizons(data, horizon_steps=(1, 2, 5, 10)):
+    """Paired errors at arbitrary positive grid horizons; legacy compare stays intact."""
+    if data.get("protocol") != PROTOCOL:
+        raise ValueError("unsupported blue observation protocol")
+    horizons = tuple(horizon_steps)
+    if not horizons or any(type(h) is not int or h < 1 for h in horizons) or tuple(sorted(set(horizons))) != horizons:
+        raise ValueError("horizon_steps must be unique increasing positive integers")
+    dt = float(data["dt"])
+    result = {}
+    for target in data["targets"]:
+        positions = np.asarray([row["position"] for row in target["observations"]], dtype=np.float64)
+        per_method = {method: {} for method in METHODS}
+        for horizon in horizons:
+            errors = {method: [] for method in METHODS}
+            for k in range(2, len(positions)-horizon):
+                offset = horizon*dt
+                predictions = {
+                    "zuo_linear": predict_zuo_at(positions[k-1:k+1], dt, [offset])[0],
+                    "tan_quadratic": predict_at(positions[k-2:k+1], dt, [offset])[0],
+                }
+                for method in METHODS:
+                    errors[method].append(float(np.linalg.norm(predictions[method]-positions[k+horizon])))
+            for method in METHODS:
+                values = np.asarray(errors[method], dtype=float)
+                per_method[method][str(horizon)] = dict(
+                    ValidSamples=int(len(values)),
+                    MAE=float(np.mean(values)) if len(values) else None,
+                    RMSE=float(np.sqrt(np.mean(values**2))) if len(values) else None,
+                    P95Error=float(np.percentile(values, 95)) if len(values) else None,
+                    MaxError=float(np.max(values)) if len(values) else None)
+        result[f"I{target['target_index']}"] = per_method
+    return dict(protocol="uav-ideal-prediction-horizons-v1",source_protocol=data["protocol"],
+                scenario_id=data["scenario_id"],seed=data["seed"],dt=dt,
+                horizon_steps=horizons,targets=result)

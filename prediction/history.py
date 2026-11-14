@@ -61,3 +61,9 @@ class IntruderHistory:
         if self.status(target_index) != "READY":
             return None
         return predict_two_steps(np.stack(self.positions[target_index]), self.dt)
+
+    def observed(self, target_index):
+        """Return independent copies of this target's real, timestamped observations."""
+        self.status(target_index)
+        return (np.asarray(self.times[target_index], dtype=np.float64).copy(),
+                np.asarray(self.positions[target_index], dtype=np.float64).reshape(-1, 3).copy())

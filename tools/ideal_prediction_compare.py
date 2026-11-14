@@ -4,7 +4,7 @@ import csv
 import json
 from pathlib import Path
 
-from prediction.comparison import METHODS,compare,read_observations
+from prediction.comparison import METHODS,compare,compare_horizons,read_observations
 
 PREDICTION_FIELDS=("scenario_id","seed","target_index","observation_time","method",
                    "horizon_steps","predicted_time","predicted_x","predicted_y","predicted_z",
@@ -14,8 +14,9 @@ TABLE_FIELDS=("scenario_id","target_index","method","ValidSamples_1","ValidSampl
               "MAE_1","MAE_2","RMSE_1","RMSE_2","MaxError_1","MaxError_2")
 
 
-def run(observations,out,plot=False):
-    result=compare(read_observations(observations))
+def run(observations,out,plot=False,horizons=None):
+    data=read_observations(observations)
+    result=compare(data)
     out=Path(out)
     out.mkdir(parents=True,exist_ok=True)
     with (out/"predictions.csv").open("x",newline="",encoding="utf-8") as stream:
@@ -25,6 +26,9 @@ def run(observations,out,plot=False):
     metrics={key:value for key,value in result.items() if key!="predictions"}
     with (out/"metrics.json").open("x",encoding="utf-8") as stream:
         json.dump(metrics,stream,indent=2,allow_nan=False)
+    if horizons is not None:
+        with (out/"horizons.json").open("x",encoding="utf-8") as stream:
+            json.dump(compare_horizons(data,horizons),stream,indent=2,allow_nan=False)
     table=[]
     for target,summary in result["targets"].items():
         for method in METHODS:
@@ -75,8 +79,9 @@ def main(argv=None):
     parser.add_argument("--observations",required=True,type=Path)
     parser.add_argument("--out",required=True,type=Path)
     parser.add_argument("--plot",action="store_true")
+    parser.add_argument("--horizons",type=int,nargs="+",help="optional grid horizons, e.g. 1 2 5 10")
     args=parser.parse_args(argv)
-    result=run(args.observations,args.out,args.plot)
+    result=run(args.observations,args.out,args.plot,args.horizons)
     for target,summary in result["targets"].items():
         for method in METHODS:
             values=summary["methods"][method]

@@ -19,3 +19,22 @@ def predict_two_steps(history_positions, dt):
     if not np.isfinite(result).all():
         raise FloatingPointError("nonfinite quadratic prediction")
     return result
+
+
+def predict_at(history_positions, dt, query_times):
+    """Quadratic extrapolation at positive offsets from the latest observation."""
+    positions = np.asarray(history_positions, dtype=np.float64)
+    if positions.shape != (3, 3) or not np.isfinite(positions).all():
+        raise ValueError("history_positions must be a finite (3, 3) array")
+    if not math.isfinite(dt) or dt <= 0:
+        raise ValueError("dt must be finite and positive")
+    times = np.asarray(query_times, dtype=np.float64)
+    if times.ndim != 1 or not np.isfinite(times).all() or np.any(times <= 0) or np.any(np.diff(times) <= 0):
+        raise ValueError("query_times must be strictly increasing positive offsets")
+    old, middle, current = positions
+    a = (current - 2 * middle + old) / (2 * dt * dt)
+    b = (3 * current - 4 * middle + old) / (2 * dt)
+    result = current[None, :] + times[:, None] * b[None, :] + times[:, None]**2 * a[None, :]
+    if not np.isfinite(result).all():
+        raise FloatingPointError("nonfinite quadratic prediction")
+    return result
