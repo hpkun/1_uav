@@ -19,7 +19,8 @@ def test_trace_round_trip_and_continuous_contact(tmp_path):
         intruder_ends=((-50.,0.,60.),)+base.intruder_ends[1:],
         protected_center=(-220.,0.,0.))
     data=record(config,7)
-    assert data["trace_version"]=="uav-ideal-trace-v1"
+    assert data["trace_version"]=="uav-ideal-trace-v2"
+    assert all("assignment" in frame for frame in data["frames"])
     assert [entity["role"] for entity in data["entities"]]==["defender","intruder"]
     assert data["result"]["outcome"]=="all_intercepted"
     contact=next(e for e in data["result"]["events"] if e["kind"]=="interception_contact")
@@ -39,7 +40,7 @@ def test_trace_round_trip_and_continuous_contact(tmp_path):
         at=timeline.at(contact["time"])
         assert not any(e["active"] for e in at["entities"])
         assert at["time"]==pytest.approx(data["frames"][-1]["time"])
-    assert json.loads(paths[0].read_text())["frames"]==data["frames"]
+    assert json.loads(paths[0].read_text())["frames"]==json.loads(json.dumps(data["frames"]))
 
 
 def test_record_is_deterministic_and_reference_tamper_is_rejected(tmp_path):

@@ -115,11 +115,13 @@ from the committed Checkpoint; older evaluations have indexed checksums.
 
 ## Ideal trajectory and replay
 
-The ideal trace protocol is `uav-ideal-trace-v1`, separate from v4 replay.
+The ideal trace protocol is `uav-ideal-trace-v2`, separate from v4 replay.
 Each trace records the environment protocol, scene geometry and diagnostics,
 seed and scenario ID, exact reference polyline and hash, entity states and
 masks, executed defender velocity per control period, step-internal events,
-and final result. The player verifies the reference hash and reconstructs
+runtime assignment in every frame, and final result. Deterministic guidance
+traces also record each step-start decision in a `control` field on the
+corresponding step-end frame. Historical v1 traces remain playable. The player verifies the reference hash and reconstructs
 motion between control boundaries from the recorded velocity and polyline.
 Event times are keyframes, including times between control steps. A physical
 event is marked at its recorded position; `member_inactive` and `episode_end`

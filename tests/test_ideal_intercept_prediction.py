@@ -3,68 +3,103 @@ import math
 import numpy as np
 import pytest
 
+from env.ideal_interception import InterceptionConfig,InterceptionEnv
 from prediction.history import IntruderHistory
 from prediction.intercept_prediction import (estimate_zuo_prediction_from_history,
-    estimate_three_point_contact_from_history)
-from prediction.intercept_time import estimate_constant_velocity_contact
+    estimate_three_point_adaptive_from_history)
 
 
-def history_of(values, dt=1.):
+def history_for(position,velocity=(0,0,0),acceleration=(0,0,0),dt=.05):
+    p,v,a=map(lambda x:np.asarray(x,float),(position,velocity,acceleration))
     history=IntruderHistory(dt)
-    for k,x in enumerate(values):
-        history.observe(k*dt,[[x,0.,0.],[0.,0.,0.]],[True,False],"fixture")
+    for k,offset in enumerate((-2*dt,-dt,0.)):
+        observed=p+v*offset+.5*a*offset*offset
+        history.observe(k*dt,[observed,[0.,0.,0.]],[True,False],"fixture")
     return history
 
 
-def test_zuo_paper_lookahead_and_cold_start():
-    history=history_of((32.,))
-    early=estimate_zuo_prediction_from_history(history,0,(0,0,0),20.)
-    assert early.status=="INSUFFICIENT_HISTORY" and early.horizon_s is None
-    history=history_of((32.,30.),.1)
+def adaptive(history,defender=(0,0,0),**options):
+    return estimate_three_point_adaptive_from_history(history,0,defender,20.,.1,**options)
+
+
+def test_zuo_paper_formula_cold_start_and_inactive():
+    history=IntruderHistory(.1)
+    history.observe(0.,[[32,0,0],[0,0,0]],[True,False],"fixture")
+    assert estimate_zuo_prediction_from_history(history,0,(0,0,0),20.).status=="INSUFFICIENT_HISTORY"
+    history.observe(.1,[[30,0,0],[0,0,0]],[True,False],"fixture")
     result=estimate_zuo_prediction_from_history(history,0,(0,0,0),20.)
     assert result.status=="READY" and result.horizon_kind=="paper_lookahead"
-    assert result.horizon_s==pytest.approx(30/16)
+    assert result.horizon_s==pytest.approx(1.875)
     assert result.predicted_target_position_m==pytest.approx((-7.5,0,0))
     assert result.paper_direction_unit==pytest.approx((-1,0,0))
-    assert result.equation_residual_m is None and result.history_count==2
-
-
-def test_three_point_constant_velocity_degeneracy_and_current_contact():
-    history=history_of((50.,40.,30.))
-    result=estimate_three_point_contact_from_history(history,0,(0,0,0),20.,.5)
-    baseline=estimate_constant_velocity_contact((0,0,0),20.,(30,0,0),(-10,0,0),.5,2.)
-    assert result.status=="CONTACT_POSSIBLE"
-    assert result.estimated_target_acceleration_mps2==pytest.approx((0,0,0))
-    assert result.horizon_s==pytest.approx(baseline.time_to_contact_s)
-    assert result.predicted_target_position_m==pytest.approx(baseline.predicted_target_position_m)
-    already=estimate_three_point_contact_from_history(history,0,(30.3,0,0),20.,.5)
-    assert already.horizon_s==0 and already.equation_residual_m==0
-
-
-def test_quadratic_analytic_root_residual_and_earliest_selection():
-    history=history_of((46.,39.,30.))
-    result=estimate_three_point_contact_from_history(history,0,(0,0,0),20.,.5)
-    expected=(-30+math.sqrt(1018))/2
-    assert result.status=="CONTACT_POSSIBLE"
-    assert result.estimated_target_velocity_mps==pytest.approx((-10,0,0))
-    assert result.estimated_target_acceleration_mps2==pytest.approx((-2,0,0))
-    assert result.horizon_s==pytest.approx(expected,abs=1e-10)
-    assert result.predicted_target_position_m==pytest.approx((30-10*expected-expected**2,0,0))
-    assert result.equation_residual_m<1e-9
-    # The squared polynomial also has a later positive crossing; choose the first.
-    roots=np.roots([1.,20.,100.-60.-400.,-600.-20.,900.-.25])
-    assert sum(abs(z.imag)<1e-8 and z.real>0 for z in roots)>=2
-    limited=estimate_three_point_contact_from_history(history,0,(0,0,0),20.,.5,.5)
-    assert limited.status=="NO_CONTACT_IN_HORIZON" and limited.horizon_s is None
-
-
-def test_no_solution_history_exit_and_no_future_reference():
-    history=history_of((-166.,-69.,30.))
-    result=estimate_three_point_contact_from_history(history,0,(0,0,0),20.,.5)
-    assert result.status=="NO_QUADRATIC_CONTACT_SOLUTION"
-    assert result.predicted_target_position_m is None
-    straight_away=history_of((-10.,10.,30.))
-    assert estimate_three_point_contact_from_history(straight_away,0,(0,0,0),20.,.5,.5).status=="NO_QUADRATIC_CONTACT_SOLUTION"
-    history.observe(3.,[[30,0,0],[0,0,0]],[False,False],"fixture")
+    history.observe(.2,[[30,0,0],[0,0,0]],[False,False],"fixture")
     assert estimate_zuo_prediction_from_history(history,0,(0,0,0),20.).status=="INACTIVE"
-    assert estimate_three_point_contact_from_history(history,0,(0,0,0),20.,.5).status=="INACTIVE"
+
+
+def test_adaptive_stationary_uniform_and_contact():
+    stationary=adaptive(history_for((30,0,0)))
+    assert stationary.status=="READY" and stationary.maneuver_horizon_s==math.inf
+    assert stationary.range_horizon_s==pytest.approx(29.9/20)
+    assert stationary.horizon_s==1. and stationary.horizon_limited_by=="maximum"
+    uniform=adaptive(history_for((3,0,0),(0,10,0)))
+    assert uniform.status=="READY" and uniform.maneuver_horizon_s==math.inf
+    assert uniform.horizon_s==pytest.approx(2.9/20)
+    contact=adaptive(history_for((.05,0,0)))
+    assert contact.horizon_s==0 and contact.horizon_limited_by=="contact"
+    assert contact.predicted_target_position_m==pytest.approx((.05,0,0))
+    assert contact.equation_residual_m is None
+
+
+def test_maneuver_radial_and_clamp_semantics():
+    mild=adaptive(history_for((3,0,0),(0,10,0),(0,10,0)))
+    strong=adaptive(history_for((3,0,0),(0,10,0),(0,20,0)))
+    assert strong.maneuver_horizon_s<mild.maneuver_horizon_s
+    assert strong.horizon_s<mild.horizon_s
+    assert mild.horizon_limited_by=="maneuver"
+    away=adaptive(history_for((3,0,0),(10,0,0)))
+    toward=adaptive(history_for((3,0,0),(-10,0,0)))
+    lateral=adaptive(history_for((3,0,0),(0,10,0)))
+    assert away.radial_target_speed_mps==pytest.approx(10.)
+    assert toward.radial_target_speed_mps==pytest.approx(-10.)
+    assert lateral.radial_target_speed_mps==pytest.approx(0.)
+    assert away.range_horizon_s>lateral.range_horizon_s>toward.range_horizon_s
+    floor=adaptive(history_for((3,0,0),(30,0,0)))
+    assert floor.effective_closing_speed_mps<0 and math.isfinite(floor.horizon_s)
+    assert floor.horizon_s==1. and floor.horizon_limited_by=="maximum"
+    minimum=adaptive(history_for((.2,0,0)))
+    assert minimum.horizon_s==pytest.approx(.05)
+    assert minimum.horizon_limited_by=="minimum"
+
+
+def test_noncollinear_3d_determinism_and_history_status():
+    history=history_for((4,3,2),(1,2,3),(.2,.4,.6))
+    first=adaptive(history,defender=(-1,-2,-3))
+    assert first==adaptive(history,defender=(-1,-2,-3))
+    assert first.status=="READY" and first.horizon_kind=="adaptive_lookahead"
+    assert .05<=first.horizon_s<=1.
+    assert np.isfinite(first.predicted_target_position_m).all()
+    assert np.isfinite(first.estimated_target_velocity_mps).all()
+    assert np.isfinite(first.estimated_target_acceleration_mps2).all()
+    history.observe(.15,[[4,3,2],[0,0,0]],[False,False],"fixture")
+    assert adaptive(history).status=="INACTIVE"
+    short=IntruderHistory(.05)
+    short.observe(0.,[[4,3,2],[0,0,0]],[True,False],"fixture")
+    assert adaptive(short).status=="INSUFFICIENT_HISTORY"
+
+
+def test_real_environment_history_prediction_chain():
+    config=InterceptionConfig(scale="1v1",intruder_mode="straight")
+    env=InterceptionEnv(config)
+    _,info=env.reset(17)
+    history=IntruderHistory(config.dt)
+    for step in range(3):
+        history.observe(info["time"],info["intruders"][:,:3],info["intruder_mask"],info["scenario_id"])
+        if step==1:
+            zuo=estimate_zuo_prediction_from_history(history,0,info["defenders"][0,:3],20.)
+            assert zuo.status=="READY" and np.isfinite(zuo.predicted_target_position_m).all()
+        if step==2:
+            three=adaptive(history,info["defenders"][0,:3])
+            assert three.status=="READY" and np.isfinite(three.predicted_target_position_m).all()
+            np.testing.assert_allclose(np.diff(history.observed(0)[0]),[.05,.05])
+        if step<2:
+            _,_,_,_,info=env.step(np.full((5,3),.5))

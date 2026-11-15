@@ -40,24 +40,27 @@ reuses the paper look-ahead time and the existing two-point linear position
 predictor. Its `horizon_kind` is `paper_lookahead`; it is never presented as
 a physical contact time. It also records the paper's unit direction toward
 that point as a diagnostic (`paper_direction_unit`), without generating an
-environment action. `estimate_three_point_contact_from_history` computes
-the local quadratic velocity and acceleration from three observations and
-solves the earliest nonnegative root of
-`||target_now - defender_now + velocity*T + acceleration*T²/2|| =
-defender_speed*T + contact_distance`. It rescales polynomial coefficients,
-filters complex and negative roots, and verifies candidates against this
-unsquared distance equation. Near-zero acceleration reuses the existing
-constant-velocity solver. An optional explicit maximum horizon only filters
-solutions; `recommended_horizon()` does not participate. Both estimates
-return predicted target positions and absolute simulation times, and neither
-changes control or real events. Their assumptions need re-evaluation after
-each new observation.
+environment action. `estimate_three_point_adaptive_from_history` uses the
+existing three-point quadratic position predictor with a project-designed
+rolling look-ahead. With target range R, contact distance Rc, line-of-sight
+unit vector u, estimated velocity v and acceleration a, it computes
+`T_range=(R-Rc)/max(defender_speed-u·v, V_min)` and
+`T_maneuver=eta*||v||/||a||` (`inf` when `||a|| <= epsilon_acceleration`).
+The final horizon is `clip(min(T_range,T_maneuver), history.dt, T_max)`;
+already-contacting members use zero instead. Defaults are `V_min=1 m/s`,
+`eta=0.1`, `epsilon_acceleration=1e-6 m/s²`, `T_max=1 s`, and
+`T_min=history.dt`. These are initial engineering choices, not Tan or Zuo
+paper parameters or a calibrated optimum. The horizon is not a strict
+impact time; it is recomputed each control period. The old four-root
+three-point contact-time interface has been removed. The independent
+two-point constant-velocity contact diagnostic remains available.
 
-The offline tool reads a validated `uav-ideal-trace-v1` replay. The trace
-does not serialize assignment. For historical V2 traces it reconstructs the
-fixed rule `D_i -> I_(i % intruder_count)`; for V3 traces it reconstructs
-nearest-distance association on reset and on recorded member-mask changes.
-It labels the source in output. Recorded
+The offline tool reads validated `uav-ideal-trace-v1` and v2 replays. New v2
+frames store the environment's actual runtime assignment, which the evaluator
+uses directly. Historical V2-environment/v1-trace files retain the fixed
+`D_i -> I_(i % intruder_count)` rule. V3-environment/v1-trace files can be
+replayed geometrically but are rejected by assignment-dependent evaluation
+because the exact event-time association is unavailable. Recorded
 defender motion is a hindsight **virtual trajectory assumption**, not a
 forecast of future defender actions. A completed window is scored only while
 both members are active; a recorded assigned contact can close the window at
@@ -74,3 +77,27 @@ The second command also writes `horizons.json`. Its truth comes from regular
 observation grid points only; it does not interpolate future Reference truth.
 Each horizon reports its own valid count, MAE, RMSE, P95 and maximum error.
 Prediction horizons longer than available future observations have no score.
+
+## Independent 1v1 deterministic guidance
+
+The CPU-only runner samples the current environment state each 0.05 s,
+updates `IntruderHistory`, reads the current assignment and chooses a unit
+direction toward the newly predicted target position. It maps that direction
+through the existing Beta-compatible `[0,1]` action interface. Zuo needs one
+warmup pure-pursuit step; ThreePoint-Adaptive needs two. On a genuinely
+invalid prediction or direction, the current observed target position is
+used for that step. No previous prediction is reused. The runner is separate
+from MAPPO, training, reward and event detection.
+
+```bash
+python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-mode straight --seed 17 --out outputs/ideal_guidance/zuo_straight_seed17
+python -m algorithm.ideal_predictive_guidance --method three_point_adaptive --intruder-mode straight --seed 17 --out outputs/ideal_guidance/three_point_straight_seed17
+```
+
+Each output directory has `summary.json` and a replay-compatible
+`episode.json` (v2 trace). The latter puts a step-start `control` decision
+on the resulting step-end frame and records the actual environment
+assignment on every frame. The reported minimum separation is the continuous
+defender-target center distance along the executed motion, including
+sub-step positions. Success or failure is reported as observed; the default
+adaptive parameters are not tuned to improve contact outcomes.

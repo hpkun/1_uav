@@ -13,7 +13,6 @@ import numpy as np
 from prediction.contact_forecast import estimate_contact
 from prediction.forecast import METHODS, forecast_assigned
 from prediction.history import IntruderHistory
-from env.ideal_interception.assignment import nearest_distance_assignment
 from tools.ideal_interception_timeline import Timeline
 
 
@@ -24,6 +23,9 @@ def evaluate(source, horizon_steps=2):
     data, dt = timeline.data, timeline.config.dt
     count = timeline.config.intruder_count
     legacy = data["environment_protocol"] == "uav-ideal-interception-v2.0.0"
+    recorded = data["trace_version"] == "uav-ideal-trace-v2"
+    if not legacy and not recorded:
+        raise ValueError("V3 v1 trace lacks exact runtime assignment")
     assignment = None
     initial_assignment = None
     previous_masks = None
@@ -37,15 +39,13 @@ def evaluate(source, horizon_steps=2):
             continue
         masks=(tuple(frame["defender_mask"]),tuple(frame["intruder_mask"]))
         if assignment is None:
-            assignment=({i:i % count for i in range(timeline.config.defender_count)} if legacy else
-                nearest_distance_assignment(np.asarray(frame["defenders"])[:,:3],
-                    np.asarray(frame["intruders"])[:,:3],*masks))
+            assignment=({int(i):int(j) for i,j in frame["assignment"].items()} if recorded else
+                        {i:i % count for i in range(timeline.config.defender_count)})
             initial_assignment=assignment.copy()
+        elif recorded:
+            assignment={int(i):int(j) for i,j in frame["assignment"].items()}
         elif masks != previous_masks:
-            assignment=({i:j for i,j in assignment.items() if masks[0][i] and masks[1][j]}
-                if legacy or frame["outcome"]!="ongoing" else
-                nearest_distance_assignment(np.asarray(frame["defenders"])[:,:3],
-                    np.asarray(frame["intruders"])[:,:3],*masks))
+            assignment={i:j for i,j in assignment.items() if masks[0][i] and masks[1][j]}
         previous_masks=masks
         positions = np.asarray(frame["intruders"], float)[:, :3]
         history.observe(time, positions, frame["intruder_mask"], data["scenario_id"])
@@ -116,7 +116,7 @@ def evaluate(source, horizon_steps=2):
             mean_position_error_m=float(np.mean([row["position_error_m"] for row in matched])) if matched else None)
     return dict(protocol="uav-ideal-contact-forecast-eval-v1",scenario_id=data["scenario_id"],
         trace_version=data["trace_version"],assignment=initial_assignment,
-        assignment_source="fixed_scenario_rule" if legacy else "nearest_distance_event_driven",
+        assignment_source="recorded_frame" if recorded else "fixed_scenario_rule",
         defender_trajectory_source="recorded_virtual",horizon_steps=horizon_steps,dt=dt,
         methods=metrics,records=rows)
 

@@ -142,7 +142,7 @@ def evaluate(model,config,seeds,*,deterministic=True):
         tracker.reset(info)
         frames = [serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],defenders=info["defenders"],
             intruders=info["intruders"],defender_mask=info["defender_mask"],
-            intruder_mask=info["intruder_mask"],events=[]))] if index==0 else []
+            intruder_mask=info["intruder_mask"],assignment=info["assignment"],events=[]))] if index==0 else []
         while True:
             action = model.act(obs,info["active_mask"],deterministic=deterministic)[0].cpu().numpy()
             obs,reward,terminated,truncated,info = env.step(action)
@@ -150,7 +150,7 @@ def evaluate(model,config,seeds,*,deterministic=True):
             if index==0:
                 frames.append(serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],defenders=info["defenders"],
                     intruders=info["intruders"],defender_mask=info["defender_mask"],
-                    intruder_mask=info["intruder_mask"],events=info["events"],
+                    intruder_mask=info["intruder_mask"],assignment=info["assignment"],events=info["events"],
                     executed_velocities=info["executed_velocities"])))
             if terminated or truncated:
                 rows.append(tracker.summary(info))

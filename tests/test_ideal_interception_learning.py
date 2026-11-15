@@ -44,6 +44,7 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
     assert result["evaluation_protocol"]["kind"]=="fixed_case"
     assert result["evaluation_protocol"]["unique_scenarios"]==1
     assert result["summary"]["episodes"]==2 and result["first_trace"][0]["time"]==0.
+    assert all("assignment" in frame for frame in result["first_trace"])
     assert result["episodes"][0]["intruder_paths"][0]["polyline_sha256"]
     assert result["model_sha256"]==cli.model_digest(last["actor"],last["critic"])
     from tools.ideal_interception_timeline import Timeline

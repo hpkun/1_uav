@@ -2,7 +2,7 @@
 
 This module is independent of MAPPO, defender control, assignment, rewards and
 the ideal trajectory protocol. It consumes the positions of each active
-intruder from a validated `uav-ideal-trace-v1` episode. It never reads reference
+intruder from a validated `uav-ideal-trace-v1` or v2 episode. It never reads reference
 control points or future positions while predicting. Future recorded states
 are used only by the offline error evaluator.
 

@@ -10,6 +10,7 @@ import numpy as np
 from env.ideal_interception.config import PROTOCOL
 from env.ideal_interception.trajectory import Reference
 from env.ideal_interception import InterceptionConfig
+from env.ideal_interception.assignment import nearest_distance_assignment
 from .ideal_interception_trace import TRACE_VERSION
 
 PHYSICAL_EVENTS = {"interception_contact","friendly_collision","intruder_collision",
@@ -21,7 +22,7 @@ class Timeline:
         opener=gzip.open if Path(source).suffix==".gz" else open
         with opener(source,"rt",encoding="utf-8") as stream:
             data=json.load(stream)
-        if (data.get("trace_version")!=TRACE_VERSION or
+        if (data.get("trace_version") not in (TRACE_VERSION,"uav-ideal-trace-v1") or
                 data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v2.0.0")):
             raise ValueError("unsupported ideal trajectory protocol")
         self.data=data
@@ -78,6 +79,32 @@ class Timeline:
                     raise ValueError(f"frame {k} invalid {field}")
             if type(frame.get("events")) is not list:
                 raise ValueError(f"frame {k} invalid events")
+            if self.data["trace_version"] == TRACE_VERSION:
+                assignment=frame.get("assignment")
+                if not isinstance(assignment,dict):
+                    raise ValueError(f"frame {k} missing recorded assignment")
+                try:
+                    pairs={int(i):int(j) for i,j in assignment.items()}
+                except (TypeError,ValueError) as exc:
+                    raise ValueError(f"frame {k} invalid assignment") from exc
+                if (len(pairs)!=len(assignment) or any(str(i) != str(key) for key,i in
+                        ((key,int(key)) for key in assignment)) or
+                        any(not frame["defender_mask"][i] or not frame["intruder_mask"][j]
+                            for i,j in pairs.items() if 0<=i<5 and 0<=j<2) or
+                        any(i not in range(5) or j not in range(2) for i,j in pairs.items())):
+                    raise ValueError(f"frame {k} invalid assignment")
+                if (frame["outcome"]=="ongoing" and any(frame["intruder_mask"]) and
+                        set(pairs)!={i for i,active in enumerate(frame["defender_mask"]) if active}):
+                    raise ValueError(f"frame {k} missing active defender assignment")
+                if self.data["environment_protocol"]==PROTOCOL and frame["outcome"]=="ongoing":
+                    expected=nearest_distance_assignment(np.asarray(frame["defenders"])[:,:3],
+                        np.asarray(frame["intruders"])[:,:3],frame["defender_mask"],frame["intruder_mask"])
+                    if k==0 or (self.frames[k-1]["defender_mask"]!=frame["defender_mask"] or
+                                 self.frames[k-1]["intruder_mask"]!=frame["intruder_mask"]):
+                        if pairs!=expected:
+                            raise ValueError(f"frame {k} recorded assignment mismatch")
+                    elif pairs!={int(i):int(j) for i,j in self.frames[k-1]["assignment"].items()}:
+                        raise ValueError(f"frame {k} assignment changed without member event")
         if initial["events"] or initial["step"]!=0:
             raise ValueError("frame 0 invalid initial state")
         combined=lambda frame: np.r_[np.asarray(frame["defenders"],float),np.asarray(frame["intruders"],float)]
@@ -86,6 +113,17 @@ class Timeline:
         for k in range(1,len(self.frames)):
             before,after=self.frames[k-1],self.frames[k]
             t0,t1=self.times[k-1],self.times[k]
+            control=after.get("control")
+            if control is not None:
+                action=np.asarray(control.get("action"),float)
+                direction=np.asarray(control.get("guidance_direction_unit"),float)
+                if (not np.isclose(control.get("decision_time_s",np.nan),t0,atol=1e-9) or
+                        action.shape!=(5,3) or not np.isfinite(action).all() or
+                        np.any((action<0)|(action>1)) or direction.shape!=(3,) or
+                        not np.isfinite(direction).all() or not np.isclose(np.linalg.norm(direction),1.,atol=1e-9) or
+                        str(control.get("assigned_target"))!=str(before.get("assignment",{}).get("0",
+                            before.get("assignment",{}).get(0)))):
+                    raise ValueError(f"frame {k} invalid step-start control")
             state=combined(before)
             active=masks(before)
             executed=np.asarray(after.get("executed_velocities"),float)

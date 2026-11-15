@@ -13,7 +13,7 @@ from env.ideal_interception import InterceptionConfig, InterceptionEnv
 from env.ideal_interception.config import PROTOCOL
 from env.ideal_interception.trajectory import Reference
 
-TRACE_VERSION = "uav-ideal-trace-v1"
+TRACE_VERSION = "uav-ideal-trace-v2"
 
 
 def references_from_specs(specs):
@@ -27,6 +27,8 @@ def references_from_specs(specs):
 
 
 def build_trace(config,seed,scenario_id,path_specs,frames,result):
+    if any("assignment" not in frame for frame in frames):
+        raise ValueError("v2 trace requires recorded assignment in every frame")
     from env.ideal_interception.scenario import diagnostics
     paths=[Reference(spec["start"],spec["end"],spec["speed"],spec["mode"]) for spec in path_specs]
     first=frames[0]
@@ -62,21 +64,28 @@ def record(config,seed=17,actions=None,scenario_type="geometry"):
     path_specs = info["intruder_paths"]
     frames = [serializable(dict(time=0.,step=0,outcome="ongoing",
         defenders=info["defenders"],intruders=info["intruders"],
-        defender_mask=info["defender_mask"],intruder_mask=info["intruder_mask"],events=[]))]
+        defender_mask=info["defender_mask"],intruder_mask=info["intruder_mask"],
+        assignment=info["assignment"],events=[]))]
     all_events = []
     reward_parts = {}
     episode_return = 0.
     while True:
-        action = np.full((5,3),.5) if actions is None else np.asarray(actions(info),float)
+        decision = np.full((5,3),.5) if actions is None else actions(info)
+        action,control = decision if isinstance(decision,tuple) else (decision,None)
+        action = np.asarray(action,float)
         _,_,terminated,truncated,info = env.step(action)
         all_events.extend(info["events"])
         episode_return += info["team_reward"]
         for key,value in info["reward_parts"].items():
             reward_parts[key] = reward_parts.get(key,0.)+value
-        frames.append(serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],
+        frame=dict(time=info["time"],step=info["step"],outcome=info["outcome"],
             defenders=info["defenders"],intruders=info["intruders"],
             defender_mask=info["defender_mask"],intruder_mask=info["intruder_mask"],
-            executed_velocities=info["executed_velocities"],events=info["events"])))
+            assignment=info["assignment"],
+            executed_velocities=info["executed_velocities"],events=info["events"])
+        if control is not None:
+            frame["control"]=control
+        frames.append(serializable(frame))
         if terminated or truncated:
             break
     trace=build_trace(config,info["seed"],info["scenario_id"],path_specs,frames,
