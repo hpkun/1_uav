@@ -34,6 +34,25 @@ different defender action invalidates the assumption, so neither field is
 treated as a real event. `ContactForecast.predicted_contact_time` instead
 describes the first contact of two explicitly supplied virtual trajectories.
 
+`prediction.intercept_prediction` now exposes two additional 1v1 estimates
+using only `IntruderHistory` positions. `estimate_zuo_prediction_from_history`
+reuses the paper look-ahead time and the existing two-point linear position
+predictor. Its `horizon_kind` is `paper_lookahead`; it is never presented as
+a physical contact time. It also records the paper's unit direction toward
+that point as a diagnostic (`paper_direction_unit`), without generating an
+environment action. `estimate_three_point_contact_from_history` computes
+the local quadratic velocity and acceleration from three observations and
+solves the earliest nonnegative root of
+`||target_now - defender_now + velocity*T + acceleration*T²/2|| =
+defender_speed*T + contact_distance`. It rescales polynomial coefficients,
+filters complex and negative roots, and verifies candidates against this
+unsquared distance equation. Near-zero acceleration reuses the existing
+constant-velocity solver. An optional explicit maximum horizon only filters
+solutions; `recommended_horizon()` does not participate. Both estimates
+return predicted target positions and absolute simulation times, and neither
+changes control or real events. Their assumptions need re-evaluation after
+each new observation.
+
 The offline tool reads a validated `uav-ideal-trace-v1` replay. The old trace
 does not serialize assignment, so it reconstructs the current fixed scenario
 rule `D_i -> I_(i % intruder_count)` and labels that source in output. Recorded
