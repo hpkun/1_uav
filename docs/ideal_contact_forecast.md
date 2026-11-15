@@ -17,6 +17,23 @@ contact, matching the first position in a real `interception_contact` event.
 Insufficient history or missing defender coverage yields `NOT_EVALUABLE`.
 This module never changes an environment event, action, member mask or reward.
 
+## Distinct time quantities for 1v1
+
+`prediction.intercept_time.zuo_lookahead_time` returns Zuo's distance-based
+**prediction horizon** (seconds). It is not a contact-time solution.
+`estimate_constant_velocity_contact` returns the earliest geometric contact
+time under an explicit ideal assumption: a target maintains its currently
+estimated velocity and a defender picks one straight direction immediately
+and travels at its configured fixed speed. `estimate_from_history` obtains
+that target velocity causally from the latest two real observations. It
+returns `INSUFFICIENT_HISTORY`, `INACTIVE`, `NO_CONTACT_IN_HORIZON`, or
+`NO_CONSTANT_VELOCITY_SOLUTION` where appropriate. The resulting
+`time_to_contact_s` is relative to the latest observation; the separate
+`predicted_contact_time_s` is absolute simulation time. A future turn or a
+different defender action invalidates the assumption, so neither field is
+treated as a real event. `ContactForecast.predicted_contact_time` instead
+describes the first contact of two explicitly supplied virtual trajectories.
+
 The offline tool reads a validated `uav-ideal-trace-v1` replay. The old trace
 does not serialize assignment, so it reconstructs the current fixed scenario
 rule `D_i -> I_(i % intruder_count)` and labels that source in output. Recorded
