@@ -6,6 +6,7 @@ import numpy as np
 
 from .trajectory import Reference
 from .geometry import region_entry
+from .assignment import nearest_distance_assignment
 
 
 def inside_region(position, config):
@@ -101,7 +102,8 @@ def initialize(config, seed):
     intruders[:intr,:3] = intruder_positions
     for j,path in enumerate(paths):
         intruders[j,3:] = path.sample(0.)[1]
-    assignment = {i:i % intr for i in range(d)}
+    assignment = nearest_distance_assignment(
+        defenders[:,:3],intruders[:,:3],np.arange(5)<d,np.arange(2)<intr)
     identity = asdict(config)
     for key in ("seed","initialization","random_range","init_max_attempts"):
         identity.pop(key)

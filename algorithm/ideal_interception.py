@@ -124,7 +124,8 @@ def evaluation_protocol(config,rows):
         episodes=len(rows),unique_scenarios=unique,duplicate_scenarios=len(rows)-unique,
         randomized=[] if config.initialization=="fixed" else
             ["defender_initial_positions","intruder_initial_positions"],
-        fixed=["intruder_endpoints","fixed_speeds","protected_region","task_assignment"],
+        fixed=["intruder_endpoints","fixed_speeds","protected_region"],
+        assignment="nearest_distance_event_driven",
         interpretation="geometric contact is an abstract event, not physical damage")
 
 

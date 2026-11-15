@@ -30,6 +30,8 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
         read(checkpoint)
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v1.0.0"})
+    with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
+        read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v2.0.0"})
     cli.fit(folder,resume=True)
     last = read(checkpoint,protocol=cli.PROTOCOL)
     assert last["steps"]==4 and last["updates"]==2

@@ -13,7 +13,7 @@ def actions(direction=(.5,.5,.5)):
 
 
 def legacy_geometry(scale="1v1"):
-    """Small exact geometry fixtures, independent of the V2 default scale."""
+    """Small exact geometry fixtures with the historical 0.5 m threshold."""
     return InterceptionConfig(scale=scale,dt=.5,max_steps=80,
         lower=(-30.,-30.,0.),upper=(30.,30.,40.),
         defender_speeds=(2.,)*5,intruder_speeds=(1.,)*2,
@@ -22,7 +22,7 @@ def legacy_geometry(scale="1v1"):
         intruder_starts=((18.,0.,15.),(18.,8.,25.)),
         intruder_ends=((-25.,0.,15.),(-25.,8.,25.)),
         protected_center=(-20.,0.,0.),protected_radius=4.,protected_height=35.,
-        position_scale=30.,speed_scale=3.,random_range=1.)
+        position_scale=30.,speed_scale=3.,random_range=1.,contact_distance=.5)
 
 
 def test_bilateral_shapes_constant_speeds_and_zero_direction():
@@ -183,7 +183,7 @@ def test_tangent_protected_region_entry_is_a_continuous_event():
 
 
 @pytest.mark.parametrize("scale",["1v1","3v1","5v2"])
-def test_v2_defaults_are_valid_fixed_speed_scenarios(scale):
+def test_v3_defaults_are_valid_fixed_speed_scenarios(scale):
     config = InterceptionConfig(scale=scale)
     env = InterceptionEnv(config)
     obs,info = env.reset(17)

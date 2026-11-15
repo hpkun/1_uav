@@ -21,7 +21,8 @@ class Timeline:
         opener=gzip.open if Path(source).suffix==".gz" else open
         with opener(source,"rt",encoding="utf-8") as stream:
             data=json.load(stream)
-        if data.get("trace_version")!=TRACE_VERSION or data.get("environment_protocol")!=PROTOCOL:
+        if (data.get("trace_version")!=TRACE_VERSION or
+                data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v2.0.0")):
             raise ValueError("unsupported ideal trajectory protocol")
         self.data=data
         try:

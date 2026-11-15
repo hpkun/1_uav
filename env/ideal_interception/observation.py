@@ -18,7 +18,8 @@ def observe(env):
                               (env.intruders[j,3:]-own[3:])/c.speed_scale,1.]
                         if env.intruder_mask[j] else np.zeros(7) for j in range(2)]
         assigned = np.zeros(2)
-        assigned[env.assignment[i]] = 1.
+        if i in env.assignment:
+            assigned[env.assignment[i]] = 1.
         observation[i] = np.concatenate((own[:3]/c.position_scale,
              own[3:]/c.speed_scale,*peer_slots,*target_slots,assigned,
              (center-own[:3])/c.position_scale,[remaining],
@@ -29,7 +30,7 @@ def observe(env):
     intruders = [np.r_[env.intruders[j,:3]/c.position_scale,
                        env.intruders[j,3:]/c.speed_scale,float(env.intruder_mask[j])]
                  if env.intruder_mask[j] else np.zeros(7) for j in range(2)]
-    assignments = [np.eye(2)[env.assignment[i]] if env.defender_mask[i]
+    assignments = [np.eye(2)[env.assignment[i]] if env.defender_mask[i] and i in env.assignment
                    else np.zeros(2) for i in range(5)]
     task = np.eye(3)[("1v1","3v1","5v2").index(c.scale)]
     central = np.concatenate((*defenders,*intruders,*assignments,

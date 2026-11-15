@@ -58,7 +58,7 @@ def test_continuous_contact_and_no_contact_are_conditional():
 
 
 def test_offline_contact_forecast_does_not_change_trace(tmp_path):
-    base=InterceptionConfig(max_steps=10)
+    base=InterceptionConfig(dt=.1,max_steps=10,contact_distance=.5)
     config=replace(base,defender_starts=((-5.,0.,60.),)+base.defender_starts[1:],
         intruder_starts=((5.,0.,60.),)+base.intruder_starts[1:],
         intruder_ends=((-50.,0.,60.),)+base.intruder_ends[1:])

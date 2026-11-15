@@ -53,9 +53,11 @@ return predicted target positions and absolute simulation times, and neither
 changes control or real events. Their assumptions need re-evaluation after
 each new observation.
 
-The offline tool reads a validated `uav-ideal-trace-v1` replay. The old trace
-does not serialize assignment, so it reconstructs the current fixed scenario
-rule `D_i -> I_(i % intruder_count)` and labels that source in output. Recorded
+The offline tool reads a validated `uav-ideal-trace-v1` replay. The trace
+does not serialize assignment. For historical V2 traces it reconstructs the
+fixed rule `D_i -> I_(i % intruder_count)`; for V3 traces it reconstructs
+nearest-distance association on reset and on recorded member-mask changes.
+It labels the source in output. Recorded
 defender motion is a hindsight **virtual trajectory assumption**, not a
 forecast of future defender actions. A completed window is scored only while
 both members are active; a recorded assigned contact can close the window at

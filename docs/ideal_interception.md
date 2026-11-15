@@ -1,6 +1,6 @@
 # Ideal three-dimensional interception simulation
 
-Protocol: `uav-ideal-interception-v2.0.0`. This is an abstract geometric
+Protocol: `uav-ideal-interception-v3.0.0`. This is an abstract geometric
 contact simulation for multi-agent decision research. A contact is a
 continuous-time distance event; the model does not simulate airframe shape,
 impulse, structural damage or real UAV collision control.
@@ -45,8 +45,13 @@ contact, intruder contact, member boundary exit, path completion and task deadli
 terminal outcomes. `info.time` is the actual final event time; all task
 deadlines are true terminations rather than external truncations.
 
-The fixed association `defender i -> intruder i % active_intruders` is task
-context only. It does not choose a defender action. The Actor receives a
+Association uses nearest 3D Euclidean distance among active intruders for
+each active defender. It allows many defenders to select one target; exact
+ties choose the lower target index. It is neither Hungarian matching nor
+load balancing and does not use threat scores. Association is computed on
+reset and recomputed when the active member set changes while an episode is
+ongoing; normal control steps do not trigger reassignment. It is task
+context only and does not choose a defender action. The Actor receives a
 68-dimensional local observation with own state, masked friendly and intruder
 relative states, association, region and time context. The Critic receives a
 66-dimensional bilateral centralized state; inactive entity slots and their
@@ -74,14 +79,21 @@ whether the path stays within bounds, and whether it enters the protected
 region. The last distinction separates bypass paths from region-crossing paths
 without using a learned policy's contact result to label the geometry.
 
-V2 defaults use `dt=0.1 s`, a 30 s episode budget and 20 m/s fixed speed for
+V3 defaults use `dt=0.05 s`, `max_steps=600`, a 30 s episode budget,
+`contact_distance=0.1 m`, and 20 m/s fixed speed for
 both sides. The space spans 600 m horizontally and 120 m vertically; the
 protected cylinder has radius 20 m. `position_scale=300 m` and
 `speed_scale=20 m/s` match these scales. These values are engineering test
 settings, not calibrated physical parameters or reproduced results from Zuo
 et al. Random initialization perturbs starting positions while keeping the
-configured paths and fixed task association. A terminal event can end an
+configured paths and deterministic nearest-distance task association. A terminal event can end an
 episode before the nominal 30 s budget.
+
+V3 changes the default sampling and contact geometry and replaces the former
+fixed modulo association. New snapshots and Checkpoints use V3 and reject V2
+as a training protocol. Historical V2 trajectory files remain readable for
+offline playback; they are not rewritten or silently treated as V3 training
+data. Observation and centralized state dimensions remain 68 and 66.
 
 ## Commands
 

@@ -2,6 +2,7 @@
 import numpy as np
 
 from .geometry import boundary, closest, direction, inside_intervals, proximity, region_entry
+from .assignment import nearest_distance_assignment
 
 PRIORITY = {"region_breach":0, "friendly_collision":1, "interception_contact":2,
             "intruder_collision":3, "boundary_exit":4, "path_complete":5}
@@ -137,6 +138,8 @@ def advance(env, actions):
         if any(not (env.defender_mask[m] if m < 5 else env.intruder_mask[m-5])
                for m in members):
             continue
+        before_defenders = env.defender_mask.copy()
+        before_intruders = env.intruder_mask.copy()
         move_to(tau)
         emit(kind,members)
         if kind == "interception_contact":
@@ -167,6 +170,16 @@ def advance(env, actions):
         elif kind == "path_complete":
             inactive(members[0],"path_complete")
             env.outcome = "intruder_path_complete"
+        if (not np.array_equal(before_defenders,env.defender_mask) or
+                not np.array_equal(before_intruders,env.intruder_mask)):
+            if env.outcome == "ongoing":
+                env.assignment = nearest_distance_assignment(
+                    env.defenders[:,:3],env.intruders[:,:3],
+                    env.defender_mask,env.intruder_mask)
+            else:
+                # Terminal observations cannot point at an inactive member.
+                env.assignment = {i:j for i,j in env.assignment.items()
+                                  if env.defender_mask[i] and env.intruder_mask[j]}
         if env.outcome != "ongoing":
             emit("episode_end")
             break

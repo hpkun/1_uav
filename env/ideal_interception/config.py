@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-interception-v2.0.0"
+PROTOCOL = "uav-ideal-interception-v3.0.0"
 SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2)}
 DEFENDER_SLOTS = 5
 INTRUDER_SLOTS = 2
@@ -14,8 +14,8 @@ STATE_DIM = 66
 @dataclass(frozen=True)
 class InterceptionConfig:
     scale: str = "1v1"
-    dt: float = .1
-    max_steps: int = 300
+    dt: float = .05
+    max_steps: int = 600
     lower: tuple = (-300., -300., 0.)
     upper: tuple = (300., 300., 120.)
     defender_speeds: tuple = (20., 20., 20., 20., 20.)
@@ -32,7 +32,7 @@ class InterceptionConfig:
     protected_center: tuple = (-220., 0., 0.)
     protected_radius: float = 20.
     protected_height: float = 100.
-    contact_distance: float = .5
+    contact_distance: float = .1
     position_scale: float = 300.
     speed_scale: float = 20.
     interception_reward: float = 5.

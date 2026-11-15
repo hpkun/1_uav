@@ -126,7 +126,7 @@ def test_short_mp4_uses_the_same_trace(tmp_path,view):
         output=subprocess.check_output(["ffprobe","-v","error","-show_entries",
             "format=duration:stream=width,height,nb_frames","-of","json",str(target)],text=True)
         metadata=json.loads(output)
-        assert abs(float(metadata["format"]["duration"])-.2)<1/30+1e-3
+        assert abs(float(metadata["format"]["duration"])-2*InterceptionConfig().dt)<1/30+1e-3
         assert metadata["streams"][0]["width"]==1280
         assert metadata["streams"][0]["height"]==720
 
