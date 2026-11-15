@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from algorithm.ideal_predictive_guidance import run_episode
+from algorithm.ideal_predictive_guidance import run_episode,canonical_1v1_config
 from env.ideal_interception import InterceptionConfig
 from tools.ideal_contact_forecast_eval import evaluate
 from tools.ideal_interception_timeline import Timeline
@@ -12,13 +12,15 @@ from tools.ideal_interception_trace import record,write_trace
 
 
 @pytest.mark.parametrize("method,active_mode,warmup",[
-    ("zuo_tp","ZUO_TP",1),("three_point_adaptive","THREE_POINT_ADAPTIVE",2)])
+    ("zuo_tp","ZUO_TP",1),("three_point_pip","THREE_POINT_PIP",2)])
 def test_straight_1v1_guidance_trace_and_actions(tmp_path,method,active_mode,warmup):
-    summary,trace=run_episode(InterceptionConfig(),method,17)
+    summary,trace=run_episode(canonical_1v1_config(),method,17)
     assert summary["steps"]<=600 and summary["steps"]==len(trace["frames"])-1
     assert summary["warmup_steps"]==warmup and summary["predictive_steps"]>0
     assert summary["fallback_steps"]>=0 and summary["minimum_separation_m"]>=0
     assert summary["min_prediction_horizon_s"]<=summary["max_prediction_horizon_s"]
+    assert summary["initial_range_m"]>summary["minimum_range_m"]
+    assert all("offline_evaluation" in frame for frame in trace["frames"][1:])
     assert trace["trace_version"]=="uav-ideal-trace-v2"
     times=[frame["time"] for frame in trace["frames"]]
     assert all(b>a for a,b in zip(times,times[1:]))
@@ -46,6 +48,66 @@ def test_straight_1v1_guidance_trace_and_actions(tmp_path,method,active_mode,war
         Timeline(bad)
     with pytest.raises(ValueError,match="1v1"):
         run_episode(InterceptionConfig(scale="3v1"),method,17)
+
+
+def test_canonical_geometry_and_oracle_is_evaluation_only(monkeypatch):
+    from env.ideal_interception.scenario import initialize,diagnostics
+    from prediction.intercept_prediction import solve_constant_velocity_pip
+    import algorithm.ideal_predictive_guidance as guidance
+    config=canonical_1v1_config()
+    defenders,intruders,paths,_,_,_=initialize(config,17)
+    assert tuple(defenders[0,:3])==(-100.,-30.,50.)
+    assert tuple(intruders[0,:3])==(100.,0.,70.)
+    assert paths[0].specification()["end"]==[-220.,0.,70.]
+    report=diagnostics(config,paths)
+    assert report["scenario_validity"]["region_crossing"]
+    initial=solve_constant_velocity_pip(defenders[0,:3],20.,intruders[0,:3],
+                                        paths[0].sample(0.)[1])
+    assert initial.time_to_pip_s==pytest.approx(5.1625)
+    assert initial.predicted_interception_position_m==pytest.approx((-3.25,0,70))
+    assert report["paths"][0]["protected_region_entry_time"]>initial.time_to_pip_s
+    bezier=canonical_1v1_config("bezier")
+    assert diagnostics(bezier,initialize(bezier,17)[2])["scenario_validity"]["region_crossing"]
+    original=guidance.analyze_trace
+    def post_run_only(trace, config):
+        assert trace["result"]["outcome"]!="ongoing"
+        return original(trace,config)
+    monkeypatch.setattr(guidance,"analyze_trace",post_run_only)
+    summary,trace=run_episode(config,"three_point_pip",17)
+    assert summary["oracle_scored_steps"]>0
+    assert trace["frames"][3]["control"]["guidance_mode"]=="THREE_POINT_PIP"
+    assert "oracle_horizon_s" not in trace["frames"][3]["control"]
+    assert "oracle_horizon_s" in trace["frames"][3]["offline_evaluation"]
+
+
+def test_bezier_future_truth_is_post_episode_only(monkeypatch):
+    import algorithm.ideal_predictive_guidance as guidance
+    original=guidance.analyze_trace
+    def post_run_only(trace, config):
+        assert trace["result"]["outcome"]!="ongoing"
+        return original(trace,config)
+    monkeypatch.setattr(guidance,"analyze_trace",post_run_only)
+    summary,trace=run_episode(canonical_1v1_config("bezier"),"three_point_pip",17)
+    assert summary["future_truth_scored_steps"]>0
+    assert summary["oracle_scored_steps"]==0
+    assert any("future_position_error_m" in frame["offline_evaluation"]
+               for frame in trace["frames"][1:])
+    assert all("future_position_error_m" not in frame["control"]
+               for frame in trace["frames"][1:])
+
+
+def test_no_positive_pip_root_falls_back_to_current_target():
+    base=canonical_1v1_config()
+    config=replace(base,defender_starts=((0.,-30.,50.),)+base.defender_starts[1:],
+        intruder_starts=((-179.7,0.,70.),)+base.intruder_starts[1:])
+    summary,trace=run_episode(config,"three_point_pip",17)
+    assert summary["no_positive_pip_solution_steps"]>0
+    fallback=[frame["control"] for frame in trace["frames"][1:]
+              if frame["control"]["prediction_status"]=="NO_POSITIVE_PIP_SOLUTION"]
+    assert fallback
+    assert all(row["guidance_mode"]=="FALLBACK_PP" and
+               row["fallback_reason"]=="NO_POSITIVE_PIP_SOLUTION" and
+               row["predicted_target_position_m"] is None for row in fallback)
 
 
 def test_v2_records_runtime_assignment_and_v1_read_policy(tmp_path):

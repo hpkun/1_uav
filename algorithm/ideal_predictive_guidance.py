@@ -1,5 +1,6 @@
 """Deterministic 1v1 ideal predictive guidance, separate from MAPPO."""
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -10,11 +11,20 @@ from env.ideal_interception.geometry import closest
 from env.ideal_interception.trajectory import Reference
 from prediction.history import IntruderHistory
 from prediction.intercept_prediction import (estimate_zuo_prediction_from_history,
-    estimate_three_point_adaptive_from_history)
+    estimate_three_point_pip_from_history)
 from tools.ideal_interception_trace import record, write_trace
+from .ideal_guidance_analysis import analyze_trace
 
 
-METHODS=("zuo_tp","three_point_adaptive")
+METHODS=("zuo_tp","three_point_pip")
+
+
+def canonical_1v1_config(intruder_mode="straight"):
+    """Dedicated deterministic guidance geometry; training defaults stay untouched."""
+    base=InterceptionConfig(intruder_mode=intruder_mode)
+    return replace(base,defender_starts=((-100.,-30.,50.),)+base.defender_starts[1:],
+        intruder_starts=((100.,0.,70.),)+base.intruder_starts[1:],
+        intruder_ends=((-220.,0.,70.),)+base.intruder_ends[1:])
 
 
 def _minimum_pair_distance(trace):
@@ -33,10 +43,8 @@ def _minimum_pair_distance(trace):
     return minimum if np.isfinite(minimum) else None
 
 
-def run_episode(config=None,method="zuo_tp",seed=17,*,eta=.1,
-                minimum_closing_speed=1.,maximum_horizon_s=1.,
-                epsilon_acceleration=1e-6):
-    config=InterceptionConfig() if config is None else config
+def run_episode(config=None,method="zuo_tp",seed=17):
+    config=canonical_1v1_config() if config is None else config
     if config.scale!="1v1" or method not in METHODS:
         raise ValueError("deterministic guidance supports 1v1 and two named methods only")
     history=IntruderHistory(config.dt,slots=2)
@@ -54,12 +62,9 @@ def run_episode(config=None,method="zuo_tp",seed=17,*,eta=.1,
                 config.defender_speeds[0])
             active_mode="ZUO_TP"
         else:
-            prediction=estimate_three_point_adaptive_from_history(history,target_index,own,
-                config.defender_speeds[0],config.contact_distance,eta=eta,
-                minimum_closing_speed=minimum_closing_speed,
-                maximum_horizon_s=maximum_horizon_s,
-                epsilon_acceleration=epsilon_acceleration)
-            active_mode="THREE_POINT_ADAPTIVE"
+            prediction=estimate_three_point_pip_from_history(history,target_index,own,
+                config.defender_speeds[0])
+            active_mode="THREE_POINT_PIP"
         if prediction.status=="READY":
             point=np.asarray(prediction.predicted_target_position_m,float)
             mode=active_mode
@@ -89,31 +94,31 @@ def run_episode(config=None,method="zuo_tp",seed=17,*,eta=.1,
             assigned_target=target_index,prediction_status=prediction.status,
             prediction_horizon_s=prediction.horizon_s,
             predicted_target_position_m=prediction.predicted_target_position_m,
+            estimated_target_velocity_mps=prediction.estimated_target_velocity_mps,
             guidance_direction_unit=direction.tolist(),action=action.tolist(),
-            fallback_reason=reason,range_horizon_s=prediction.range_horizon_s,
-            maneuver_horizon_s=(prediction.maneuver_horizon_s if prediction.maneuver_horizon_s is None or
-                                np.isfinite(prediction.maneuver_horizon_s) else "inf"),
-            effective_closing_speed_mps=prediction.effective_closing_speed_mps,
-            horizon_limited_by=prediction.horizon_limited_by)
+            fallback_reason=reason,pip_equation_degree=prediction.pip_equation_degree,
+            pip_discriminant=prediction.pip_discriminant)
         controls.append(control)
         return action,control
     trace=record(config,seed,actions=decide)
+    minimum_separation=_minimum_pair_distance(trace)
     horizons=[row["prediction_horizon_s"] for row in controls
-              if row["guidance_mode"] in ("ZUO_TP","THREE_POINT_ADAPTIVE")]
-    counts={name:sum(row["horizon_limited_by"]==name for row in controls)
-            for name in ("range","maneuver","minimum","maximum")}
+              if row["guidance_mode"] in ("ZUO_TP","THREE_POINT_PIP")]
     summary=dict(method=method,seed=seed,intruder_mode=config.intruder_mode,
         outcome=trace["result"]["outcome"],time_s=trace["result"]["time"],
         steps=len(controls),interception_count=sum(event["kind"]=="interception_contact"
             for event in trace["result"]["events"]),
-        minimum_separation_m=_minimum_pair_distance(trace),
-        predictive_steps=sum(row["guidance_mode"] in ("ZUO_TP","THREE_POINT_ADAPTIVE") for row in controls),
+        minimum_separation_m=minimum_separation,
+        minimum_center_separation_m=minimum_separation,
+        predictive_steps=sum(row["guidance_mode"] in ("ZUO_TP","THREE_POINT_PIP") for row in controls),
         warmup_steps=sum(row["guidance_mode"]=="WARMUP_PP" for row in controls),
         fallback_steps=sum(row["guidance_mode"]=="FALLBACK_PP" for row in controls),
         mean_prediction_horizon_s=float(np.mean(horizons)) if horizons else None,
         min_prediction_horizon_s=min(horizons) if horizons else None,
         max_prediction_horizon_s=max(horizons) if horizons else None,
-        **{f"{name}_limited_steps":value for name,value in counts.items()})
+        no_positive_pip_solution_steps=sum(row["prediction_status"]=="NO_POSITIVE_PIP_SOLUTION"
+                                           for row in controls))
+    summary.update(analyze_trace(trace,config))
     return summary,trace
 
 
@@ -124,7 +129,7 @@ def main(argv=None):
     parser.add_argument("--seed",type=int,default=17)
     parser.add_argument("--out",type=Path,required=True)
     args=parser.parse_args(argv)
-    summary,trace=run_episode(InterceptionConfig(scale="1v1",intruder_mode=args.intruder_mode),
+    summary,trace=run_episode(canonical_1v1_config(args.intruder_mode),
                               args.method,args.seed)
     args.out.mkdir(parents=True,exist_ok=True)
     with (args.out/"summary.json").open("x",encoding="utf-8") as stream:

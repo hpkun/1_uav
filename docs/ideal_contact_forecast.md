@@ -34,26 +34,23 @@ different defender action invalidates the assumption, so neither field is
 treated as a real event. `ContactForecast.predicted_contact_time` instead
 describes the first contact of two explicitly supplied virtual trajectories.
 
-`prediction.intercept_prediction` now exposes two additional 1v1 estimates
+`prediction.intercept_prediction` exposes two additional 1v1 estimates
 using only `IntruderHistory` positions. `estimate_zuo_prediction_from_history`
 reuses the paper look-ahead time and the existing two-point linear position
 predictor. Its `horizon_kind` is `paper_lookahead`; it is never presented as
 a physical contact time. It also records the paper's unit direction toward
 that point as a diagnostic (`paper_direction_unit`), without generating an
-environment action. `estimate_three_point_adaptive_from_history` uses the
-existing three-point quadratic position predictor with a project-designed
-rolling look-ahead. With target range R, contact distance Rc, line-of-sight
-unit vector u, estimated velocity v and acceleration a, it computes
-`T_range=(R-Rc)/max(defender_speed-u·v, V_min)` and
-`T_maneuver=eta*||v||/||a||` (`inf` when `||a|| <= epsilon_acceleration`).
-The final horizon is `clip(min(T_range,T_maneuver), history.dt, T_max)`;
-already-contacting members use zero instead. Defaults are `V_min=1 m/s`,
-`eta=0.1`, `epsilon_acceleration=1e-6 m/s²`, `T_max=1 s`, and
-`T_min=history.dt`. These are initial engineering choices, not Tan or Zuo
-paper parameters or a calibrated optimum. The horizon is not a strict
-impact time; it is recomputed each control period. The old four-root
-three-point contact-time interface has been removed. The independent
-two-point constant-velocity contact diagnostic remains available.
+environment action. `estimate_three_point_pip_from_history` uses three
+positions to estimate current target velocity by the second-order backward
+difference. It assumes that velocity remains constant and solves the earliest
+positive root of `A*T²+B*T+C=0`, where `A=v·v-Vd²`, `B=2*(pt-pd)·v`, and
+`C=||pt-pd||²`. Near equal speeds it solves the linear equation `B*T+C=0`.
+The predicted point is `pt+v*T`. With no positive solution, the online
+controller uses the observed target position for that step. Acceleration is
+recorded for diagnosis but never extrapolated in online PIP. This is
+center-coincidence geometry; actual 0.1 m contact is decided by the unchanged
+continuous event detector. The independent two-point constant-velocity contact
+diagnostic and offline fixed-horizon quadratic prediction remain available.
 
 The offline tool reads validated `uav-ideal-trace-v1` and v2 replays. New v2
 frames store the environment's actual runtime assignment, which the evaluator
@@ -84,14 +81,16 @@ The CPU-only runner samples the current environment state each 0.05 s,
 updates `IntruderHistory`, reads the current assignment and chooses a unit
 direction toward the newly predicted target position. It maps that direction
 through the existing Beta-compatible `[0,1]` action interface. Zuo needs one
-warmup pure-pursuit step; ThreePoint-Adaptive needs two. On a genuinely
+warmup pure-pursuit step; ThreePoint-PIP needs two. On a genuinely
 invalid prediction or direction, the current observed target position is
 used for that step. No previous prediction is reused. The runner is separate
 from MAPPO, training, reward and event detection.
 
 ```bash
-python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-mode straight --seed 17 --out outputs/ideal_guidance/zuo_straight_seed17
-python -m algorithm.ideal_predictive_guidance --method three_point_adaptive --intruder-mode straight --seed 17 --out outputs/ideal_guidance/three_point_straight_seed17
+python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-mode straight --seed 17 --out outputs/ideal_guidance/zuo_pip_canonical_straight_seed17
+python -m algorithm.ideal_predictive_guidance --method three_point_pip --intruder-mode straight --seed 17 --out outputs/ideal_guidance/three_point_pip_canonical_straight_seed17
+python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-mode bezier --seed 17 --out outputs/ideal_guidance/zuo_pip_canonical_bezier_seed17
+python -m algorithm.ideal_predictive_guidance --method three_point_pip --intruder-mode bezier --seed 17 --out outputs/ideal_guidance/three_point_pip_canonical_bezier_seed17
 ```
 
 Each output directory has `summary.json` and a replay-compatible
@@ -99,5 +98,12 @@ Each output directory has `summary.json` and a replay-compatible
 on the resulting step-end frame and records the actual environment
 assignment on every frame. The reported minimum separation is the continuous
 defender-target center distance along the executed motion, including
-sub-step positions. Success or failure is reported as observed; the default
-adaptive parameters are not tuned to improve contact outcomes.
+sub-step positions. The dedicated canonical 1v1 configuration places the
+defender at `(-100,-30,50)` m and the target at `(100,0,70)` m, with endpoint
+`(-220,0,70)` m and 20 m/s speeds. Training defaults remain unchanged. Its
+initial straight center PIP is `T=5.1625 s` at `(-3.25,0,70)` m. After the
+episode, each step-end frame receives `offline_evaluation`: range dynamics and,
+for straight, an oracle PIP using real reference velocity. For bezier, future
+reference truth is sampled only if the predicted time is within path duration.
+Neither truth source is available to the online decision callback. Summary
+metrics include per-step horizon, point, angle, and range diagnostics.

@@ -1,4 +1,5 @@
 import math
+import inspect
 
 import numpy as np
 import pytest
@@ -6,7 +7,7 @@ import pytest
 from env.ideal_interception import InterceptionConfig,InterceptionEnv
 from prediction.history import IntruderHistory
 from prediction.intercept_prediction import (estimate_zuo_prediction_from_history,
-    estimate_three_point_adaptive_from_history)
+    estimate_three_point_pip_from_history,solve_constant_velocity_pip)
 
 
 def history_for(position,velocity=(0,0,0),acceleration=(0,0,0),dt=.05):
@@ -16,10 +17,6 @@ def history_for(position,velocity=(0,0,0),acceleration=(0,0,0),dt=.05):
         observed=p+v*offset+.5*a*offset*offset
         history.observe(k*dt,[observed,[0.,0.,0.]],[True,False],"fixture")
     return history
-
-
-def adaptive(history,defender=(0,0,0),**options):
-    return estimate_three_point_adaptive_from_history(history,0,defender,20.,.1,**options)
 
 
 def test_zuo_paper_formula_cold_start_and_inactive():
@@ -36,70 +33,60 @@ def test_zuo_paper_formula_cold_start_and_inactive():
     assert estimate_zuo_prediction_from_history(history,0,(0,0,0),20.).status=="INACTIVE"
 
 
-def test_adaptive_stationary_uniform_and_contact():
-    stationary=adaptive(history_for((30,0,0)))
-    assert stationary.status=="READY" and stationary.maneuver_horizon_s==math.inf
-    assert stationary.range_horizon_s==pytest.approx(29.9/20)
-    assert stationary.horizon_s==1. and stationary.horizon_limited_by=="maximum"
-    uniform=adaptive(history_for((3,0,0),(0,10,0)))
-    assert uniform.status=="READY" and uniform.maneuver_horizon_s==math.inf
-    assert uniform.horizon_s==pytest.approx(2.9/20)
-    contact=adaptive(history_for((.05,0,0)))
-    assert contact.horizon_s==0 and contact.horizon_limited_by=="contact"
-    assert contact.predicted_target_position_m==pytest.approx((.05,0,0))
-    assert contact.equation_residual_m is None
+def test_pip_quadratic_3d_geometry_and_earliest_positive_root():
+    result=solve_constant_velocity_pip((0,0,0),20.,(30,40,10),(-2,3,1))
+    assert result.status=="READY" and result.equation_degree==2
+    t=result.time_to_pip_s
+    point=np.asarray(result.predicted_interception_position_m)
+    np.testing.assert_allclose(point,[30-2*t,40+3*t,10+t])
+    assert np.linalg.norm(point)==pytest.approx(20*t)
+    two=solve_constant_velocity_pip((0,0,0),20.,(100,0,0),(-30,0,0))
+    assert two.status=="READY" and two.time_to_pip_s==pytest.approx(2.)
+    assert two.predicted_interception_position_m==pytest.approx((40,0,0))
 
 
-def test_maneuver_radial_and_clamp_semantics():
-    mild=adaptive(history_for((3,0,0),(0,10,0),(0,10,0)))
-    strong=adaptive(history_for((3,0,0),(0,10,0),(0,20,0)))
-    assert strong.maneuver_horizon_s<mild.maneuver_horizon_s
-    assert strong.horizon_s<mild.horizon_s
-    assert mild.horizon_limited_by=="maneuver"
-    away=adaptive(history_for((3,0,0),(10,0,0)))
-    toward=adaptive(history_for((3,0,0),(-10,0,0)))
-    lateral=adaptive(history_for((3,0,0),(0,10,0)))
-    assert away.radial_target_speed_mps==pytest.approx(10.)
-    assert toward.radial_target_speed_mps==pytest.approx(-10.)
-    assert lateral.radial_target_speed_mps==pytest.approx(0.)
-    assert away.range_horizon_s>lateral.range_horizon_s>toward.range_horizon_s
-    floor=adaptive(history_for((3,0,0),(30,0,0)))
-    assert floor.effective_closing_speed_mps<0 and math.isfinite(floor.horizon_s)
-    assert floor.horizon_s==1. and floor.horizon_limited_by=="maximum"
-    minimum=adaptive(history_for((.2,0,0)))
-    assert minimum.horizon_s==pytest.approx(.05)
-    assert minimum.horizon_limited_by=="minimum"
+def test_pip_equal_speed_linear_and_no_positive_root():
+    linear=solve_constant_velocity_pip((-100,-30,50),20.,(100,0,70),(-20,0,0))
+    assert linear.status=="READY" and linear.equation_degree==1
+    assert linear.time_to_pip_s==pytest.approx(5.1625)
+    assert linear.predicted_interception_position_m==pytest.approx((-3.25,0,70))
+    away=solve_constant_velocity_pip((0,0,0),20.,(10,0,0),(20,0,0))
+    assert away.status=="NO_POSITIVE_PIP_SOLUTION" and away.equation_degree==1
+    assert away.time_to_pip_s is None
+    assert solve_constant_velocity_pip((0,0,0),20.,(10,0,0),(30,0,0)).status=="NO_POSITIVE_PIP_SOLUTION"
+    assert solve_constant_velocity_pip((0,0,0),20.,(0,10,0),(30,0,0)).status=="NO_POSITIVE_PIP_SOLUTION"
+    signature=inspect.signature(estimate_three_point_pip_from_history)
+    assert set(signature.parameters)=={"history","target_index","defender_position","defender_speed"}
 
 
-def test_noncollinear_3d_determinism_and_history_status():
-    history=history_for((4,3,2),(1,2,3),(.2,.4,.6))
-    first=adaptive(history,defender=(-1,-2,-3))
-    assert first==adaptive(history,defender=(-1,-2,-3))
-    assert first.status=="READY" and first.horizon_kind=="adaptive_lookahead"
-    assert .05<=first.horizon_s<=1.
-    assert np.isfinite(first.predicted_target_position_m).all()
-    assert np.isfinite(first.estimated_target_velocity_mps).all()
-    assert np.isfinite(first.estimated_target_acceleration_mps2).all()
-    history.observe(.15,[[4,3,2],[0,0,0]],[False,False],"fixture")
-    assert adaptive(history).status=="INACTIVE"
-    short=IntruderHistory(.05)
-    short.observe(0.,[[4,3,2],[0,0,0]],[True,False],"fixture")
-    assert adaptive(short).status=="INSUFFICIENT_HISTORY"
+def test_three_point_velocity_and_acceleration_diagnostic_only():
+    history=history_for((30,4,2),(-20,1,0),(0,4,2))
+    result=estimate_three_point_pip_from_history(history,0,(-100,-30,50),20.)
+    assert result.status=="READY" and result.horizon_kind=="constant_velocity_pip"
+    assert result.estimated_target_velocity_mps==pytest.approx((-20,1,0))
+    assert result.estimated_target_acceleration_mps2==pytest.approx((0,4,2))
+    direct=solve_constant_velocity_pip((-100,-30,50),20.,(30,4,2),(-20,1,0))
+    assert result.horizon_s==pytest.approx(direct.time_to_pip_s)
+    assert result.predicted_target_position_m==pytest.approx(direct.predicted_interception_position_m)
+    assert result.pip_equation_degree==direct.equation_degree
+    assert result==estimate_three_point_pip_from_history(history,0,(-100,-30,50),20.)
 
 
-def test_real_environment_history_prediction_chain():
+def test_pip_history_status_and_environment_chain():
+    history=IntruderHistory(.05)
+    history.observe(0.,[[4,3,2],[0,0,0]],[True,False],"fixture")
+    assert estimate_three_point_pip_from_history(history,0,(0,0,0),20.).status=="INSUFFICIENT_HISTORY"
+    history.observe(.05,[[4,3,2],[0,0,0]],[False,False],"fixture")
+    assert estimate_three_point_pip_from_history(history,0,(0,0,0),20.).status=="INACTIVE"
     config=InterceptionConfig(scale="1v1",intruder_mode="straight")
     env=InterceptionEnv(config)
     _,info=env.reset(17)
     history=IntruderHistory(config.dt)
     for step in range(3):
         history.observe(info["time"],info["intruders"][:,:3],info["intruder_mask"],info["scenario_id"])
-        if step==1:
-            zuo=estimate_zuo_prediction_from_history(history,0,info["defenders"][0,:3],20.)
-            assert zuo.status=="READY" and np.isfinite(zuo.predicted_target_position_m).all()
         if step==2:
-            three=adaptive(history,info["defenders"][0,:3])
-            assert three.status=="READY" and np.isfinite(three.predicted_target_position_m).all()
+            result=estimate_three_point_pip_from_history(history,0,info["defenders"][0,:3],20.)
+            assert result.status=="READY" and math.isfinite(result.horizon_s)
             np.testing.assert_allclose(np.diff(history.observed(0)[0]),[.05,.05])
         if step<2:
             _,_,_,_,info=env.step(np.full((5,3),.5))
