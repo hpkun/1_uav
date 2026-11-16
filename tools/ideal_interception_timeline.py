@@ -23,7 +23,8 @@ class Timeline:
         with opener(source,"rt",encoding="utf-8") as stream:
             data=json.load(stream)
         if (data.get("trace_version") not in (TRACE_VERSION,"uav-ideal-trace-v1") or
-                data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v3.0.0",
+                data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v3.1.0",
+                                                         "uav-ideal-interception-v3.0.0",
                                                          "uav-ideal-interception-v2.0.0")):
             raise ValueError("unsupported ideal trajectory protocol")
         self.data=data
@@ -98,7 +99,8 @@ class Timeline:
                 if (frame["outcome"]=="ongoing" and any(frame["intruder_mask"]) and
                         set(pairs)!={i for i,active in enumerate(frame["defender_mask"]) if active}):
                     raise ValueError(f"frame {k} missing active defender assignment")
-                if self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.0.0") and frame["outcome"]=="ongoing":
+                if self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.1.0",
+                    "uav-ideal-interception-v3.0.0") and frame["outcome"]=="ongoing":
                     expected=nearest_distance_assignment(np.asarray(frame["defenders"])[:,:3],
                         np.asarray(frame["intruders"])[:,:3],frame["defender_mask"],frame["intruder_mask"])
                     if k==0 or (self.frames[k-1]["defender_mask"]!=frame["defender_mask"] or

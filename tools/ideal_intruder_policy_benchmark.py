@@ -44,6 +44,7 @@ def compare(config, seeds):
             contact_count=sum(v["interception_count"]>0 for v in values),
             breach_count=sum(v["outcome"]=="breach" for v in values),
             defender_boundary_count=sum(v["outcome"]=="defender_boundary" for v in values),
+            deadline_count=sum(v["outcome"]=="deadline_failure" for v in values),
             other_outcomes={outcome:sum(v["outcome"]==outcome for v in values)
                             for outcome in sorted({v["outcome"] for v in values})
                             if outcome not in ("all_intercepted","breach","defender_boundary")},
@@ -64,6 +65,16 @@ def compare(config, seeds):
             future_position_error_mean_m=mean(errors) if errors else None,
             future_position_error_p95_m=float(np.percentile(errors,95)) if errors else None,
             future_position_error_max_m=max(errors) if errors else None)
+        if method=="zuo_tp":
+            aggregates[method].update(
+                prediction_forward_fraction=sum(v["prediction_forward_fraction"]*
+                    v["predictive_steps_total"] for v in values)/predictive_total,
+                prediction_backward_fraction=sum(v["prediction_backward_fraction"]*
+                    v["predictive_steps_total"] for v in values)/predictive_total,
+                predicted_point_in_bounds_fraction=sum(v["predicted_point_in_bounds_fraction"]*
+                    v["predictive_steps_total"] for v in values)/predictive_total,
+                prediction_below_floor_fraction=sum(v["predicted_point_below_floor_count"]
+                    for v in values)/predictive_total)
     return dict(policy=config.intruder_policy,seed_count=len(rows),seeds=list(seeds),
                 shared_intruder_paths=True,unique_path_hashes=len({row["path_sha256"] for row in rows}),
                 aggregates=aggregates,trials=rows)

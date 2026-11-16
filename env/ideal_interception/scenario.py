@@ -126,7 +126,8 @@ def initialize(config, seed):
         fields=("scale","dt","max_steps","lower","upper","defender_speeds",
                 "intruder_speeds","defender_starts","defender_directions",
                 "intruder_starts","intruder_policy","intruder_start_jitter_m",
-                "intruder_bezier_jitter_ratio","protected_center","protected_radius",
+                "intruder_bezier_jitter_ratio","intruder_goal_altitude_mode",
+                "protected_center","protected_radius",
                 "protected_height","contact_distance")
         identity={key:getattr(config,key) for key in fields}
     else:

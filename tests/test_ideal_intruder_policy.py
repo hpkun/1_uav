@@ -23,8 +23,11 @@ def test_formal_goal_region_crossing_and_speed(scale):
                for row in info["scene_diagnostics"]["paths"])
     for j,(plan,path) in enumerate(zip(info["intruder_plans"],env.paths)):
         assert plan["policy"]=="zuo_bezier"
-        assert plan["goal"]==config.protected_center
-        assert path.specification()["end"]==list(config.protected_center)
+        assert plan["goal"][:2]==config.protected_center[:2]
+        assert plan["goal"][2]==pytest.approx(plan["start"][2])
+        assert path.specification()["end"]==list(plan["goal"])
+        assert plan["altitude_change_m"]==pytest.approx(0.)
+        assert config.protected_center[2]<=plan["goal"][2]<=config.protected_center[2]+config.protected_height
         assert path.specification()["controls"]==[list(p) for p in plan["control_points"]]
         assert path.specification()["polyline_sha256"]==plan["polyline_sha256"]
         for time in (.123,.789,path.duration/2):
@@ -45,7 +48,7 @@ def test_seeded_start_controls_hash_and_scenario_id():
     assert a["intruder_plans"][0]["polyline_sha256"]!=a["intruder_plans"][1]["polyline_sha256"]
     starts=np.asarray([plan["start"] for plan in a["intruder_plans"]])
     assert starts[0,1]<0<starts[1,1]  # Two-anchor, small-scale wedge approximation.
-    assert a["intruder_plans"][0]["goal"]==a["intruder_plans"][1]["goal"]
+    assert a["intruder_plans"][0]["goal"][:2]==a["intruder_plans"][1]["goal"][:2]
 
 
 def test_100_seed_bounds_and_rejection_limit():
@@ -67,6 +70,23 @@ def test_100_seed_bounds_and_rejection_limit():
     impossible=replace(config,max_steps=1,init_max_attempts=2)
     with pytest.raises(ValueError,match="initialization failed after 2 attempts"):
         InterceptionEnv(impossible).reset(17)
+
+
+def test_preserved_altitude_and_asset_z_diagnostic_have_distinct_paths():
+    config=InterceptionConfig()
+    old=replace(config,intruder_goal_altitude_mode="asset_z")
+    now=InterceptionEnv(config).reset(17)[1]
+    previous=InterceptionEnv(old).reset(17)[1]
+    new_plan=now["intruder_plans"][0]
+    old_plan=previous["intruder_plans"][0]
+    assert new_plan["start"]==old_plan["start"]
+    assert new_plan["goal"][:2]==old_plan["goal"][:2]==config.protected_center[:2]
+    assert new_plan["goal"][2]==pytest.approx(new_plan["start"][2])
+    assert old_plan["goal"][2]==config.protected_center[2]
+    assert new_plan["polyline_sha256"]!=old_plan["polyline_sha256"]
+    assert now["scenario_id"]!=previous["scenario_id"]
+    assert now["scene_diagnostics"]["scenario_validity"]["region_crossing"]
+    assert previous["scene_diagnostics"]["scenario_validity"]["region_crossing"]
 
 
 def test_reference_is_defender_independent_and_never_replanned():
@@ -105,7 +125,7 @@ def test_paper_profile_and_historical_v3_trace(tmp_path):
     assert (default.dt,default.defender_speeds[0],default.intruder_speeds[0])==(.05,20.,20.)
     assert (paper.dt,paper.defender_speeds[0],paper.intruder_speeds[0],
             paper.contact_distance)==(.1,25.,30.,.1)
-    assert PROTOCOL=="uav-ideal-interception-v3.1.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.2.0"
     protocol=evaluation_protocol(default,[{"scenario_id":"a"},{"scenario_id":"b"}])
     assert protocol["kind"]=="randomized_intruder_plans"
     assert protocol["unique_scenarios"]==2
@@ -122,6 +142,8 @@ def test_paper_profile_and_historical_v3_trace(tmp_path):
     env.reset(17)
     with pytest.raises(ValueError,match="incompatible"):
         env.restore(env.snapshot()|{"protocol":"uav-ideal-interception-v3.0.0"})
+    with pytest.raises(ValueError,match="incompatible"):
+        env.restore(env.snapshot()|{"protocol":"uav-ideal-interception-v3.1.0"})
     with pytest.raises(SystemExit):
         guidance_main(["--method","zuo_tp","--intruder-policy","zuo_bezier",
                        "--intruder-mode","straight","--out",str(tmp_path/"invalid")])

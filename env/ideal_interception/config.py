@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-interception-v3.1.0"
+PROTOCOL = "uav-ideal-interception-v3.2.0"
 SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2)}
 DEFENDER_SLOTS = 5
 INTRUDER_SLOTS = 2
@@ -29,6 +29,7 @@ class InterceptionConfig:
     intruder_mode: str | None = None  # Explicit legacy/test reference fixture.
     intruder_start_jitter_m: float = 5.
     intruder_bezier_jitter_ratio: float = .04
+    intruder_goal_altitude_mode: str = "preserve_start_altitude"
     initialization: str = "fixed"
     random_range: float = 5.
     init_max_attempts: int = 128
@@ -49,6 +50,8 @@ class InterceptionConfig:
             raise ValueError("invalid scale or initialization")
         if self.intruder_policy not in ("zuo_bezier", "legacy_reference") or self.intruder_mode not in (None,"straight","bezier"):
             raise ValueError("invalid intruder policy or fixture mode")
+        if self.intruder_goal_altitude_mode not in ("preserve_start_altitude","asset_z"):
+            raise ValueError("invalid intruder goal altitude mode")
         if self.intruder_mode is not None and self.intruder_policy=="zuo_bezier":
             # Old explicit intruder_mode configurations remain geometric fixtures.
             object.__setattr__(self,"intruder_policy","legacy_reference")

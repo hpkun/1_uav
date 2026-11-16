@@ -51,7 +51,7 @@ def test_defaults_budget_reset_observations_and_snapshot():
     assert env.assignment==expected
     with pytest.raises(ValueError,match="incompatible"):
         env.restore(snapshot|{"protocol":"uav-ideal-interception-v2.0.0"})
-    assert PROTOCOL=="uav-ideal-interception-v3.1.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.2.0"
 
 
 def test_substep_contact_reassigns_surviving_members():

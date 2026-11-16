@@ -1,6 +1,6 @@
 # Ideal three-dimensional interception simulation
 
-Protocol: `uav-ideal-interception-v3.1.0`. This is an abstract geometric
+Protocol: `uav-ideal-interception-v3.2.0`. This is an abstract geometric
 contact simulation for multi-agent decision research. A contact is a
 continuous-time distance event; the model does not simulate airframe shape,
 impulse, structural damage or real UAV collision control.
@@ -31,8 +31,15 @@ Its speed is fixed by configuration; an all-0.5 action retains the previous
 valid heading. There is no acceleration, inertia, attitude or PID model.
 Intruders are independent entities with status and activity masks. By default,
 each reset samples a complete `zuo_bezier` plan with a random start near the
-configured +x anchor and two random cubic control points. Its goal `P3` is the
-protected asset point (`protected_center`); both intruders in 5v2 use that goal.
+configured +x anchor and two random cubic control points. Its goal `P3` lies
+on the protected cylinder axis: `x,y = protected_center.x,y` and, by default,
+`z = clip(start.z, protected_center.z, protected_center.z + protected_height)`.
+At the default start altitudes no clipping occurs. The cylinder geometry and
+`region_breach` rule are unchanged; `P3` is a reference waypoint inside the
+region, while its boundary is the success condition. The explicit diagnostic
+`intruder_goal_altitude_mode="asset_z"` retains the previous `P3.z =
+protected_center.z` geometry. This altitude rule is a project-specific
+adaptation of a point asset to a 3D protected cylinder, not a Zuo paper parameter.
 The reference is fixed before any defender action and followed at configured
 constant speed using polyline arc length. An explicit `intruder_mode=straight`
 or `bezier` selects a legacy/test reference fixture; its `intruder_ends` do not
@@ -92,7 +99,7 @@ whether the path stays within bounds, and whether it enters the protected
 region. The last distinction separates bypass paths from region-crossing paths
 without using a learned policy's contact result to label the geometry.
 
-V3.1 defaults use `dt=0.05 s`, `max_steps=600`, a 30 s episode budget,
+V3.2 defaults use `dt=0.05 s`, `max_steps=600`, a 30 s episode budget,
 `contact_distance=0.1 m`, and 20 m/s fixed speed for
 both sides. The space spans 600 m horizontally and 120 m vertically; the
 protected cylinder has radius 20 m. `position_scale=300 m` and
@@ -102,10 +109,10 @@ et al. Formal intruder starts always vary by seed; `initialization="random"`
 also perturbs defender starts. A terminal event can end an
 episode before the nominal 30 s budget.
 
-V3.1 changes the default intruder policy, so new snapshots and Checkpoints
-use V3.1 and reject V3.0 training state. Historical V3.0 and V2 trajectory
-files remain readable for offline playback; they are not rewritten or
-silently treated as V3.1 training data. Observation and centralized state
+V3.2 changes the default formal path geometry, so new snapshots and Checkpoints
+use V3.2 and reject V3.1/V3.0 training state. Historical V3.1, V3.0 and V2
+trajectory files remain readable for offline playback; they are not rewritten
+or silently treated as V3.2 training data. Observation and centralized state
 dimensions remain 68 and 66.
 
 ### Intruder policy provenance and sampling
@@ -115,7 +122,7 @@ random start and new random control points per independent trial, the
 protected asset as destination, constant speed, and no defender awareness,
 evasion, reactive steering or intruder cooperation. Our arena coordinates,
 uniform start zone, control-point distribution, `1–2` intruder two-anchor
-wedge approximation, and V3.1 default `0.05 s / 20 m/s` profile are
+wedge approximation, preserved-altitude goal, and V3.2 default `0.05 s / 20 m/s` profile are
 project-specific adaptations. The paper does not specify a control-point
 sampling distribution.
 
@@ -129,7 +136,7 @@ the protected cylinder within the episode budget; it raises after
 `init_max_attempts` failures. These numerical values are engineering choices,
 not parameters reported by Zuo et al. `zuo_paper_profile()` is an optional
 paper-like numerical profile (`dt=0.1 s`, defender `25 m/s`, intruder `30 m/s`,
-contact distance `0.1 m`) and does not replace the V3.1 defaults.
+contact distance `0.1 m`) and does not replace the V3.2 defaults.
 
 ## Commands
 

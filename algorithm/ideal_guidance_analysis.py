@@ -33,6 +33,10 @@ def analyze_trace(trace, config):
     decreasing=0
     predictive_total=0
     beyond_reference=0
+    zuo_alignments=[]
+    zuo_in_bounds=[]
+    zuo_below=zuo_above=0
+    first_zuo_ready=None
     last_predicted_center_time=None
     for before,after in zip(frames[:-1],frames[1:]):
         control=after["control"]
@@ -65,6 +69,28 @@ def analyze_trace(trace, config):
             absolute_times.append(absolute_time)
             predicted_points.append(point)
             last_predicted_center_time=absolute_time
+            if control["method"]=="zuo_tp":
+                los=(target-own)/distance
+                direction=np.asarray(control["guidance_direction_unit"],float)
+                alignment=float(los@direction)
+                in_bounds=bool(np.all(point>=config.lower) and np.all(point<=config.upper))
+                zuo_alignments.append(alignment)
+                zuo_in_bounds.append(in_bounds)
+                zuo_below+=bool(point[2]<config.lower[2])
+                zuo_above+=bool(point[2]>config.upper[2])
+                offline.update(prediction_los_alignment=alignment,
+                               predicted_point_in_bounds=in_bounds)
+                if first_zuo_ready is None:
+                    first_zuo_ready=dict(decision_time_s=time,
+                        defender_position_m=own.tolist(),intruder_position_m=target.tolist(),
+                        estimated_target_velocity_mps=control["estimated_target_velocity_mps"],
+                        estimated_target_speed_mps=float(np.linalg.norm(
+                            control["estimated_target_velocity_mps"])),
+                        horizon_s=horizon,predicted_point_m=point.tolist(),
+                        predicted_point_in_bounds=in_bounds,
+                        current_los_direction_unit=los.tolist(),
+                        predicted_direction_unit=direction.tolist(),alignment=alignment,
+                        angle_deg=math.degrees(math.acos(float(np.clip(alignment,-1,1)))))
             if config.intruder_mode=="straight":
                 true_velocity=reference.sample(time)[1]
                 oracle=solve_constant_velocity_pip(own,config.defender_speeds[0],
@@ -98,8 +124,25 @@ def analyze_trace(trace, config):
                                      np.asarray(frames[-1]["defenders"][0][:3])))
     contact_centers=contact["positions"] if contact else None
     contact_midpoint=(np.mean(contact_centers,axis=0).tolist() if contact else None)
+    defender_positions=np.asarray([frame["defenders"][0][:3] for frame in frames],float)
+    boundary=next((event for event in trace["result"]["events"]
+                   if event["kind"]=="boundary_exit" and 0 in event["members"]),None)
     result=dict(initial_range_m=ranges[0],minimum_range_m=min(ranges+[final_range]),
         final_range_m=final_range,
+        defender_final_position_m=defender_positions[-1].tolist(),
+        defender_min_altitude_m=float(defender_positions[:,2].min()),
+        defender_max_altitude_m=float(defender_positions[:,2].max()),
+        defender_boundary_event=boundary,
+        first_zuo_ready_prediction=first_zuo_ready,
+        prediction_forward_fraction=(sum(a>0 for a in zuo_alignments)/len(zuo_alignments)
+            if zuo_alignments else None),
+        prediction_backward_fraction=(sum(a<=0 for a in zuo_alignments)/len(zuo_alignments)
+            if zuo_alignments else None),
+        predicted_point_in_bounds_fraction=(sum(zuo_in_bounds)/len(zuo_in_bounds)
+            if zuo_in_bounds else None),
+        predicted_point_below_floor_count=zuo_below,
+        predicted_point_above_ceiling_count=zuo_above,
+        predicted_point_behind_defender_count=sum(a<=0 for a in zuo_alignments),
         mean_positive_closing_rate_mps=float(np.mean([v for v in closing_rates if v>0]))
             if any(v>0 for v in closing_rates) else None,
         fraction_of_steps_range_decreasing=decreasing/len(closing_rates) if closing_rates else None,

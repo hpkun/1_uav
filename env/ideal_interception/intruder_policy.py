@@ -18,10 +18,17 @@ class IntruderPlan:
     reference: Reference
 
     def metadata(self):
+        altitudes=self.reference.points[:,2]
         return dict(policy=self.policy,start=self.start,goal=self.goal,
             control_points=(self.control_point_1,self.control_point_2),
             speed=self.speed,generation_seed=self.generation_seed,
-            polyline_sha256=self.reference.specification()["polyline_sha256"])
+            polyline_sha256=self.reference.specification()["polyline_sha256"],
+            start_altitude_m=self.start[2],goal_altitude_m=self.goal[2],
+            altitude_change_m=self.goal[2]-self.start[2],
+            minimum_altitude_m=float(altitudes.min()),
+            maximum_altitude_m=float(altitudes.max()),
+            maximum_absolute_altitude_deviation_from_start_m=float(
+                np.max(np.abs(altitudes-self.start[2]))))
 
 
 def sample_zuo_bezier_plan(config, index, rng, generation_seed):
@@ -32,7 +39,9 @@ def sample_zuo_bezier_plan(config, index, rng, generation_seed):
     """
     start=np.asarray(config.intruder_starts[index],float)+rng.uniform(
         -config.intruder_start_jitter_m,config.intruder_start_jitter_m,3)
-    goal=np.asarray(config.protected_center,float)
+    goal=np.asarray(config.protected_center,float).copy()
+    if config.intruder_goal_altitude_mode=="preserve_start_altitude":
+        goal[2]=np.clip(start[2],goal[2],goal[2]+config.protected_height)
     span=goal-start
     tangent=span/np.linalg.norm(span)
     lateral=np.array((-tangent[1],tangent[0],0.))
