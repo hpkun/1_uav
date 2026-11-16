@@ -13,8 +13,8 @@ import numpy as np
 
 from .ideal_interception_timeline import Timeline
 
-ROLE_COLORS={"defender":"#2378bf","intruder":"#d64040"}
-ROLE_LABELS={"defender":"Blue Defender","intruder":"Red Intruder"}
+ROLE_COLORS={"defender":"#d64040","intruder":"#2378bf"}
+ROLE_LABELS={"defender":"Red Defender","intruder":"Blue Intruder"}
 
 
 def intruder_reference_color():
@@ -80,7 +80,7 @@ def render_html(source,output,view="3d",overwrite=False):
                           [center[0]-radius,0,center[2]]],mode="lines",name="Protected region",
                          line=dict(color="#55a868",width=2)))
     for j,reference in enumerate(timeline.references):
-        data.append(line(reference[0],mode="lines",name=f"I{j} (Red Intruder) reference",
+        data.append(line(reference[0],mode="lines",name=f"I{j} (Blue Intruder) reference",
                          line=dict(color=intruder_reference_color(),dash="dash",width=3),opacity=.55))
     static=len(data)
     def dynamic(k):
@@ -234,7 +234,7 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
     for reference in timeline.references:
         coords=np.asarray([_coordinates(point,view) for point in reference[0]])
         axis.plot(*coords.T,linestyle="--",color=intruder_reference_color(),alpha=.4,
-                  label="Red Intruder reference")
+                  label="Blue Intruder reference")
     axis.set_xlim(scene["lower"][0],scene["upper"][0])
     axis.set_ylim(scene["lower"][1 if view!="altitude" else 2],
                   scene["upper"][1 if view!="altitude" else 2])

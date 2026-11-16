@@ -12,11 +12,10 @@ Checkpoint protocol rejects them and V1 interception Checkpoints. Historical
 Checkpoints and experiment files are retained. The v4 interception environment
 is separate and unchanged.
 
-In Zuo et al.'s terminology, **Blue UAV = defending interceptor** and
-**Red UAV = attacking intruder**. Internally, `defender` maps to Zuo Blue
-and `intruder` maps to Zuo Red. Ideal-environment replays use blue
-`#2378bf` for `D0…` defenders and red `#d64040` for `I0…` intruders;
-the intruder Bézier reference is a red dashed line.
+Project replay colors follow the requested team convention: **Red = defender**
+(`D0…`, `#d64040`) and **Blue = attacker/intruder** (`I0…`, `#2378bf`).
+The intruder Bézier reference is a blue dashed line. Colors and display labels
+do not change the internal roles, events, guidance formulas or simulation state.
 
 ## Entities and scenarios
 

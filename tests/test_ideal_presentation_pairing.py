@@ -14,7 +14,7 @@ from tools.ideal_intruder_policy_benchmark import compare
 
 
 def test_role_colors_and_reference_match_paper(tmp_path):
-    assert ROLE_COLORS=={"defender":"#2378bf","intruder":"#d64040"}
+    assert ROLE_COLORS=={"defender":"#d64040","intruder":"#2378bf"}
     assert intruder_reference_color()==ROLE_COLORS["intruder"]
     source=tmp_path/"episode.json"
     from tools.ideal_interception_trace import write_trace
@@ -22,8 +22,8 @@ def test_role_colors_and_reference_match_paper(tmp_path):
     output=tmp_path/"episode.html"
     render_html(source,output)
     html=output.read_text(encoding="utf-8")
-    assert "Blue Defender" in html and "Red Intruder" in html
-    assert "I0 (Red Intruder) reference" in html
+    assert "Red Defender" in html and "Blue Intruder" in html
+    assert "I0 (Blue Intruder) reference" in html
     assert "#d64040" in html and "#2378bf" in html
 
 
