@@ -107,6 +107,20 @@ for straight, an oracle PIP using real reference velocity. For bezier, future
 reference truth is sampled only if the predicted time is within path duration.
 Neither truth source is available to the online decision callback. Summary
 metrics include per-step horizon, point, angle, and range diagnostics.
+External evaluation seeds use the same scenario-seed convention in MAPPO
+evaluation, deterministic guidance, model-free trace generation, and paired
+benchmarks. Training worker episode-seed progression remains separate.
+
+Future-position error is **conditional on the predicted absolute time staying
+within the recorded reference duration**. Each result therefore reports
+`predictive_steps_total`, `future_truth_scored_steps`, unscored steps, and
+`future_truth_coverage = scored / predictive`. Predictions beyond the reference
+are counted separately as `prediction_beyond_reference_steps` and its fraction;
+the reference is never extended to manufacture truth. Paired mean, P95 and
+maximum errors use only the scored steps, so coverage must accompany any
+Zuo-TP versus ThreePoint-PIP error comparison. These are Zuo-TP evaluations
+under the project's unified 1v1 environment, not a reproduction of the
+paper's full multi-UAV experiments or numerical profile.
 
 The straight and deterministic Bézier cases above are analytical/controlled
 guidance fixtures. They are not the formal intruder strategy. For the V3.1

@@ -121,9 +121,18 @@ def initialize(config, seed):
         intruders[j,3:] = path.sample(0.)[1]
     assignment = nearest_distance_assignment(
         defenders[:,:3],intruders[:,:3],np.arange(5)<d,np.arange(2)<intr)
-    identity = asdict(config)
-    for key in ("seed","initialization","random_range","init_max_attempts"):
-        identity.pop(key)
+    if config.intruder_policy=="zuo_bezier":
+        # Only effective geometry and sampling settings belong to formal identity.
+        fields=("scale","dt","max_steps","lower","upper","defender_speeds",
+                "intruder_speeds","defender_starts","defender_directions",
+                "intruder_starts","intruder_policy","intruder_start_jitter_m",
+                "intruder_bezier_jitter_ratio","protected_center","protected_radius",
+                "protected_height","contact_distance")
+        identity={key:getattr(config,key) for key in fields}
+    else:
+        identity=asdict(config)
+        for key in ("seed","initialization","random_range","init_max_attempts"):
+            identity.pop(key)
     identity = dict(config=identity,defenders=defenders.tolist(),intruders=intruders.tolist(),
                     assignment=assignment,paths=[path.specification() for path in paths],
                     policy=config.intruder_policy,

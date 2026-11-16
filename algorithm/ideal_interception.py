@@ -20,6 +20,7 @@ from algorithm.interception import run_lock
 from algorithm.mappo.interception import MAPPO, TrainConfig
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
 from env.ideal_interception.config import PROTOCOL as VERSION, OBS_DIM, STATE_DIM
+from env.ideal_interception.seeding import reset_evaluation_scene
 
 PROTOCOL = dict(version=VERSION,algorithm="mappo-beta",observation=OBS_DIM,
                 state=STATE_DIM,action=3,defenders=5,intruders=2,
@@ -143,8 +144,7 @@ def evaluate(model,config,seeds,*,deterministic=True):
         if not deterministic:
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
-        env = InterceptionEnv(config)
-        obs,info = env.reset(np.random.SeedSequence([1,seed]))
+        env,obs,info = reset_evaluation_scene(config,seed)
         tracker = EpisodeAccumulator()
         tracker.reset(info)
         frames = [serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],defenders=info["defenders"],

@@ -31,6 +31,8 @@ def analyze_trace(trace, config):
     ranges=[]
     closing_rates=[]
     decreasing=0
+    predictive_total=0
+    beyond_reference=0
     last_predicted_center_time=None
     for before,after in zip(frames[:-1],frames[1:]):
         control=after["control"]
@@ -53,9 +55,13 @@ def analyze_trace(trace, config):
         horizon=control["prediction_horizon_s"]
         point=control["predicted_target_position_m"]
         if horizon is not None and point is not None:
+            predictive_total+=1
             point=np.asarray(point,float)
             absolute_time=time+horizon
             offline["predicted_absolute_pip_time_s"]=absolute_time
+            beyond=bool(absolute_time>reference.duration)
+            offline["prediction_beyond_reference"]=beyond
+            beyond_reference+=beyond
             absolute_times.append(absolute_time)
             predicted_points.append(point)
             last_predicted_center_time=absolute_time
@@ -80,7 +86,7 @@ def analyze_trace(trace, config):
                     horizon_errors.append(abs(error))
                     point_errors.append(point_error)
                     angle_errors.append(angle)
-            elif absolute_time<=reference.duration:
+            if absolute_time<=reference.duration:
                 truth=reference.sample(absolute_time)[0]
                 error=float(np.linalg.norm(point-truth))
                 offline["future_position_error_m"]=error
@@ -107,7 +113,13 @@ def analyze_trace(trace, config):
         predicted_pip_position_drift_m=(float(np.max(np.linalg.norm(
             np.asarray(predicted_points)-predicted_points[0],axis=1)))
             if predicted_points else None),
-        oracle_scored_steps=len(horizon_errors),future_truth_scored_steps=len(future_errors))
+        oracle_scored_steps=len(horizon_errors),
+        predictive_steps_total=predictive_total,
+        future_truth_scored_steps=len(future_errors),
+        future_truth_unscored_steps=predictive_total-len(future_errors),
+        future_truth_coverage=len(future_errors)/predictive_total if predictive_total else None,
+        prediction_beyond_reference_steps=beyond_reference,
+        prediction_beyond_reference_fraction=beyond_reference/predictive_total if predictive_total else None)
     result.update(_stats(horizon_errors,"absolute_horizon_error_s"))
     result.update(_stats(point_errors,"predicted_point_error_m"))
     result.update(_stats(angle_errors,"guidance_angle_error_deg"))

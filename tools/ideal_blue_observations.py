@@ -6,8 +6,9 @@ import json
 import math
 from pathlib import Path
 
-from env.ideal_interception import InterceptionConfig, InterceptionEnv
+from env.ideal_interception import InterceptionConfig
 from env.ideal_interception.config import PROTOCOL as ENVIRONMENT_PROTOCOL
+from env.ideal_interception.seeding import reset_evaluation_scene
 
 PROTOCOL = "uav-ideal-blue-observations-v1"
 
@@ -15,8 +16,7 @@ PROTOCOL = "uav-ideal-blue-observations-v1"
 def generate(config, seed=17):
     if type(seed) is not int or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
-    env = InterceptionEnv(config)
-    _, info = env.reset(seed)
+    env, _, info = reset_evaluation_scene(config,seed)
     targets = []
     for j, path in enumerate(env.paths):
         # A non-grid endpoint is metadata, never a fourth irregular observation.

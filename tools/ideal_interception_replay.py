@@ -13,6 +13,13 @@ import numpy as np
 
 from .ideal_interception_timeline import Timeline
 
+ROLE_COLORS={"defender":"#2378bf","intruder":"#d64040"}
+ROLE_LABELS={"defender":"Blue Defender","intruder":"Red Intruder"}
+
+
+def intruder_reference_color():
+    return ROLE_COLORS["intruder"]
+
 
 def _coordinates(point,view):
     return point if view=="3d" else point[:2] if view=="top" else (point[0],point[2])
@@ -42,7 +49,7 @@ def render_html(source,output,view="3d",overwrite=False):
     times=sorted(set(timeline.key_times+video_times(timeline.duration,30)))
     rows=[timeline.at(t) for t in times]
     first=rows[0]["entities"]
-    colors={e["id"]:("#d64040" if e["role"]=="defender" else "#2378bf") for e in first}
+    colors={e["id"]:ROLE_COLORS[e["role"]] for e in first}
     is3d=view=="3d"
     def line(points,**options):
         coords=np.asarray(points,float)
@@ -73,8 +80,8 @@ def render_html(source,output,view="3d",overwrite=False):
                           [center[0]-radius,0,center[2]]],mode="lines",name="Protected region",
                          line=dict(color="#55a868",width=2)))
     for j,reference in enumerate(timeline.references):
-        data.append(line(reference[0],mode="lines",name=f"I{j} reference",
-                         line=dict(color="#2378bf",dash="dash",width=3),opacity=.55))
+        data.append(line(reference[0],mode="lines",name=f"I{j} (Red Intruder) reference",
+                         line=dict(color=intruder_reference_color(),dash="dash",width=3),opacity=.55))
     static=len(data)
     def dynamic(k):
         row=rows[k]
@@ -84,14 +91,15 @@ def render_html(source,output,view="3d",overwrite=False):
             history=np.array([sample["entities"][[e["id"] for e in sample["entities"]].index(member)]["position"]
                               for sample in rows[:k+1]])
             color=colors[member]
-            traces.append(line(history,mode="lines",name=f"{entity['name']} actual",
+            label=f"{entity['name']} ({ROLE_LABELS[entity['role']]})"
+            traces.append(line(history,mode="lines",name=f"{label} actual",
                                line=dict(color=color,width=3)))
             traces.append(line([entity["position"]] if entity["active"] else [],mode="markers",
-                               name=entity["name"],marker=dict(color=color,size=7)))
+                               name=label,marker=dict(color=color,size=7)))
             velocity=np.asarray(entity["velocity"])
             arrow=[entity["position"],(np.asarray(entity["position"])+velocity*.15).tolist()]
             traces.append(line(arrow if entity["active"] else [],mode="lines",
-                               name=f"{entity['name']} velocity",showlegend=False,
+                               name=f"{label} velocity",showlegend=False,
                                line=dict(color=color,width=4)))
         events=[e for e in row["events"] if e["positions"]]
         points=[np.mean(e["positions"],axis=0) for e in events]
@@ -208,7 +216,7 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
     history=[timeline.at(t) for t in timeline.key_times]
     fig=plt.figure(figsize=(12.8,7.2),dpi=100)
     axis=fig.add_subplot(projection="3d" if view=="3d" else None)
-    colors={"defender":"#d64040","intruder":"#2378bf"}
+    colors=ROLE_COLORS
     cylinder=protected_cylinder_geometry(scene)
     center=cylinder["center"]
     radius=scene["protected_radius"]
@@ -225,7 +233,8 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
                    center[2]+scene["protected_height"],center[2]],color="#55a868")
     for reference in timeline.references:
         coords=np.asarray([_coordinates(point,view) for point in reference[0]])
-        axis.plot(*coords.T,linestyle="--",color=colors["intruder"],alpha=.4)
+        axis.plot(*coords.T,linestyle="--",color=intruder_reference_color(),alpha=.4,
+                  label="Red Intruder reference")
     axis.set_xlim(scene["lower"][0],scene["upper"][0])
     axis.set_ylim(scene["lower"][1 if view!="altitude" else 2],
                   scene["upper"][1 if view!="altitude" else 2])
@@ -239,7 +248,9 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
     artists={}
     for entity in first:
         color=colors[entity["role"]]
-        trail=axis.plot([],[],*([[]] if view=="3d" else []),color=color,linewidth=1.5)[0]
+        label=f"{entity['name']} ({ROLE_LABELS[entity['role']]})"
+        trail=axis.plot([],[],*([[]] if view=="3d" else []),color=color,linewidth=1.5,
+                        label=label)[0]
         point=axis.plot([],[],*([[]] if view=="3d" else []),marker="o",linestyle="none",color=color)[0]
         artists[entity["id"]]=(trail,point)
     event_artists=[]
@@ -251,6 +262,7 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
         artist=axis.plot(*([v] for v in point),marker="x",linestyle="none",color="#e69500")[0]
         artist.set_visible(False)
         event_artists.append((event["time"],artist))
+    axis.legend(loc="upper right",fontsize=8)
     def set_artist(artist,coordinates):
         if view=="3d":
             artist.set_data_3d(*coordinates.T)

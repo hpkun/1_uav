@@ -9,9 +9,10 @@ import sys
 import numpy as np
 
 from algorithm.common.serialization import serializable
-from env.ideal_interception import InterceptionConfig, InterceptionEnv
+from env.ideal_interception import InterceptionConfig
 from env.ideal_interception.config import PROTOCOL
 from env.ideal_interception.trajectory import Reference
+from env.ideal_interception.seeding import reset_evaluation_scene
 
 TRACE_VERSION = "uav-ideal-trace-v2"
 
@@ -60,8 +61,7 @@ def from_evaluation(result):
 
 def record(config,seed=17,actions=None,scenario_type="geometry"):
     """Capture a deterministic geometric fixture without MAPPO or CUDA."""
-    env = InterceptionEnv(config)
-    _,info = env.reset(seed)
+    env,_,info = reset_evaluation_scene(config,seed)
     from env.ideal_interception.scenario import validate_scenario
     validate_scenario(info["scene_diagnostics"],scenario_type)
     path_specs = info["intruder_paths"]

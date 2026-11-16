@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 from statistics import mean
+import numpy as np
 
 from algorithm.ideal_predictive_guidance import run_episode
 from env.ideal_interception import InterceptionConfig
@@ -12,11 +13,15 @@ def compare(config, seeds):
     if config.scale!="1v1" or config.intruder_policy!="zuo_bezier":
         raise ValueError("paired benchmark requires formal 1v1 zuo_bezier policy")
     rows=[]
+    future_errors={"zuo_tp":[],"three_point_pip":[]}
     for seed in seeds:
         methods={}
         hashes=[]
         for method in ("zuo_tp","three_point_pip"):
             summary,trace=run_episode(config,method,seed)
+            future_errors[method].extend(frame["offline_evaluation"]["future_position_error_m"]
+                for frame in trace["frames"][1:]
+                if "future_position_error_m" in frame["offline_evaluation"])
             path_hash=trace["references"][0]["specification"]["polyline_sha256"]
             hashes.append(path_hash)
             methods[method]=summary
@@ -29,7 +34,12 @@ def compare(config, seeds):
         contact=[v["actual_contact_time_s"] for v in values
                  if v["actual_contact_time_s"] is not None]
         horizon=[v for v in values if v["min_prediction_horizon_s"] is not None]
-        scored=[v for v in values if v["future_truth_scored_steps"]]
+        predictive_total=sum(v["predictive_steps_total"] for v in values)
+        scored_total=sum(v["future_truth_scored_steps"] for v in values)
+        beyond_total=sum(v["prediction_beyond_reference_steps"] for v in values)
+        errors=future_errors[method]
+        if len(errors)!=scored_total:
+            raise AssertionError("future truth aggregation differs from trace samples")
         aggregates[method]=dict(
             contact_count=sum(v["interception_count"]>0 for v in values),
             breach_count=sum(v["outcome"]=="breach" for v in values),
@@ -42,11 +52,18 @@ def compare(config, seeds):
             fallback_steps=sum(v["fallback_steps"] for v in values),
             no_positive_pip_solution_steps=sum(v["no_positive_pip_solution_steps"] for v in values),
             horizon_min_s=min(v["min_prediction_horizon_s"] for v in horizon) if horizon else None,
+            horizon_mean_s=(sum(v["mean_prediction_horizon_s"]*v["predictive_steps_total"]
+                for v in horizon)/predictive_total) if predictive_total else None,
             horizon_max_s=max(v["max_prediction_horizon_s"] for v in horizon) if horizon else None,
-            future_truth_scored_steps=sum(v["future_truth_scored_steps"] for v in values),
-            future_position_error_mean_m=(sum(v["future_position_error_m_mean"]*
-                v["future_truth_scored_steps"] for v in scored)/
-                sum(v["future_truth_scored_steps"] for v in scored)) if scored else None)
+            predictive_steps_total=predictive_total,
+            future_truth_scored_steps=scored_total,
+            future_truth_unscored_steps=predictive_total-scored_total,
+            future_truth_coverage=scored_total/predictive_total if predictive_total else None,
+            prediction_beyond_reference_steps=beyond_total,
+            prediction_beyond_reference_fraction=beyond_total/predictive_total if predictive_total else None,
+            future_position_error_mean_m=mean(errors) if errors else None,
+            future_position_error_p95_m=float(np.percentile(errors,95)) if errors else None,
+            future_position_error_max_m=max(errors) if errors else None)
     return dict(policy=config.intruder_policy,seed_count=len(rows),seeds=list(seeds),
                 shared_intruder_paths=True,unique_path_hashes=len({row["path_sha256"] for row in rows}),
                 aggregates=aggregates,trials=rows)
