@@ -8,7 +8,7 @@ from .trajectory import Reference
 from .geometry import region_entry
 from .assignment import nearest_distance_assignment,hungarian_fixed_assignment
 from .config import DEFENDER_SLOTS,INTRUDER_SLOTS
-from .intruder_policy import sample_zuo_bezier_plan
+from .intruder_policy import sample_zuo_bezier_plan,sample_level2_bezier_plan
 
 
 def inside_region(position, config):
@@ -49,7 +49,7 @@ def diagnostics(config,paths):
             path_complete_within_episode=bool(path.duration<=budget),
             minimum_boundary_margin=margin,
             altitude_range=[float(path.points[:,2].min()),float(path.points[:,2].max())],
-            within_bounds=bool(margin>=0)))
+            within_bounds=bool(margin>=0),**path.geometry_diagnostics()))
     return dict(reference_length=length,step_ratio=intruder_ratio,
                 defender_step_ratio=defender_ratio,intruder_step_ratio=intruder_ratio,
                 maximum_step_ratio=max(defender_ratio,intruder_ratio),
@@ -78,7 +78,9 @@ def initialize(config, seed):
             defender_positions += rng.uniform(-config.random_range,config.random_range,defender_positions.shape)
         if config.intruder_policy=="zuo_bezier":
             try:
-                plans=[sample_zuo_bezier_plan(config,j,rng,seed_id) for j in range(intr)]
+                sampler=(sample_level2_bezier_plan if config.intruder_motion_level=="level2_maneuvering"
+                         else sample_zuo_bezier_plan)
+                plans=[sampler(config,j,rng,seed_id) for j in range(intr)]
             except ValueError:
                 failure="invalid cubic Bezier candidate"
                 continue
@@ -133,12 +135,15 @@ def initialize(config, seed):
                 "protected_center","protected_radius",
                 "protected_height","contact_distance")
         identity={key:getattr(config,key) for key in fields}
+        if config.intruder_motion_level=="level2_maneuvering":
+            identity["intruder_motion_level"]=config.intruder_motion_level
         if config.scale=="6v6":
             identity["assignment_policy"]=config.assignment_policy
     else:
         identity=asdict(config)
         for key in ("seed","initialization","random_range","init_max_attempts"):
             identity.pop(key)
+        identity.pop("intruder_motion_level",None)
         if config.scale!="6v6":
             identity.pop("assignment_policy")
     if config.scale!="6v6":

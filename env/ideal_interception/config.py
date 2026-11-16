@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-interception-v3.3.0"
+PROTOCOL = "uav-ideal-interception-v3.4.0"
 SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2), "6v6": (6, 6)}
 DEFENDER_SLOTS = 6
 INTRUDER_SLOTS = 6
@@ -31,6 +31,7 @@ class InterceptionConfig:
                             (-260., 30., 60.), (-260., 60., 60.))
     assignment_policy: str = "nearest_dynamic"
     intruder_policy: str = "zuo_bezier"
+    intruder_motion_level: str = "level1_smooth"
     intruder_mode: str | None = None  # Explicit legacy/test reference fixture.
     intruder_start_jitter_m: float = 5.
     intruder_bezier_jitter_ratio: float = .04
@@ -66,11 +67,18 @@ class InterceptionConfig:
             raise ValueError("invalid assignment policy")
         if self.intruder_policy not in ("zuo_bezier", "legacy_reference") or self.intruder_mode not in (None,"straight","bezier"):
             raise ValueError("invalid intruder policy or fixture mode")
+        if self.intruder_motion_level not in ("level1_smooth", "level2_maneuvering"):
+            raise ValueError("invalid intruder motion level")
         if self.intruder_goal_altitude_mode not in ("preserve_start_altitude","asset_z"):
             raise ValueError("invalid intruder goal altitude mode")
+        if (self.intruder_motion_level=="level2_maneuvering" and
+                self.intruder_goal_altitude_mode!="preserve_start_altitude"):
+            raise ValueError("level2 requires preserved start altitude")
         if self.intruder_mode is not None and self.intruder_policy=="zuo_bezier":
             # Old explicit intruder_mode configurations remain geometric fixtures.
             object.__setattr__(self,"intruder_policy","legacy_reference")
+        if self.intruder_motion_level=="level2_maneuvering" and self.intruder_policy!="zuo_bezier":
+            raise ValueError("level2 requires pre-generated cubic intruder plans")
         if self.intruder_policy=="legacy_reference" and self.intruder_mode is None:
             raise ValueError("legacy reference fixture requires intruder_mode")
         if (type(self.max_steps) is not int or self.max_steps < 1
@@ -150,3 +158,8 @@ def formal_6v6_config(**overrides):
         defender_directions=((1.,0.,0.),)*DEFENDER_SLOTS,
         intruder_starts=SIX_INTRUDER_WEDGE,assignment_policy="hungarian_fixed")
     return InterceptionConfig(**(values|overrides))
+
+
+def formal_6v6_level2_config(**overrides):
+    """Project S-turn stress profile with the unchanged 6v6 deployment."""
+    return formal_6v6_config(**(dict(intruder_motion_level="level2_maneuvering")|overrides))

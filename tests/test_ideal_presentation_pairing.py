@@ -46,21 +46,21 @@ def test_formal_scenario_identity_ignores_legacy_endpoint():
 def test_seed_is_shared_across_guidance_mappo_scene_benchmark_and_trace(seed):
     config=InterceptionConfig()
     _,_,mappo_info=reset_evaluation_scene(config,seed)
-    zuo,zuo_trace=run_episode(config,"zuo_tp",seed)
+    two,two_trace=run_episode(config,"two_point_pip",seed)
     pip,pip_trace=run_episode(config,"three_point_pip",seed)
     benchmark=compare(config,[seed])
     trace=record(config,seed)
     expected=mappo_info["intruder_paths"][0]
-    for candidate in (zuo_trace,pip_trace,trace):
+    for candidate in (two_trace,pip_trace,trace):
         assert candidate["references"][0]["specification"]==expected
         assert candidate["scenario_id"]==mappo_info["scenario_id"]
-    assert zuo["intruder_path_sha256"]==pip["intruder_path_sha256"]
+    assert two["intruder_path_sha256"]==pip["intruder_path_sha256"]
     assert benchmark["trials"][0]["path_sha256"]==expected["polyline_sha256"]
     assert np.array_equal(scenario_seed(seed).generate_state(4),
                           np.random.SeedSequence(seed).generate_state(4))
 
 
-@pytest.mark.parametrize("method",["zuo_tp","three_point_pip"])
+@pytest.mark.parametrize("method",["two_point_pip","three_point_pip"])
 def test_future_truth_coverage_and_beyond_reference_are_explicit(method):
     summary,trace=run_episode(InterceptionConfig(),method,17)
     rows=[f["offline_evaluation"] for f in trace["frames"][1:]]

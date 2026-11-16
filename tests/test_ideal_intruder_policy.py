@@ -91,11 +91,11 @@ def test_preserved_altitude_and_asset_z_diagnostic_have_distinct_paths():
 
 def test_reference_is_defender_independent_and_never_replanned():
     config=InterceptionConfig()
-    zuo,zuo_trace=run_episode(config,"zuo_tp",17)
+    two,two_trace=run_episode(config,"two_point_pip",17)
     pip,pip_trace=run_episode(config,"three_point_pip",17)
-    assert zuo["intruder_path_sha256"]==pip["intruder_path_sha256"]
-    assert zuo_trace["references"]==pip_trace["references"]
-    assert zuo_trace["scenario_id"]==pip_trace["scenario_id"]
+    assert two["intruder_path_sha256"]==pip["intruder_path_sha256"]
+    assert two_trace["references"]==pip_trace["references"]
+    assert two_trace["scenario_id"]==pip_trace["scenario_id"]
     env=InterceptionEnv(config)
     env.reset(17)
     before=env.paths[0].specification()
@@ -129,7 +129,7 @@ def test_paper_profile_and_historical_v3_trace(tmp_path,historical_protocol):
     assert (default.dt,default.defender_speeds[0],default.intruder_speeds[0])==(.05,20.,20.)
     assert (paper.dt,paper.defender_speeds[0],paper.intruder_speeds[0],
             paper.contact_distance)==(.1,25.,30.,.1)
-    assert PROTOCOL=="uav-ideal-interception-v3.3.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.4.0"
     protocol=evaluation_protocol(default,[{"scenario_id":"a"},{"scenario_id":"b"}])
     assert protocol["kind"]=="randomized_intruder_plans"
     assert protocol["unique_scenarios"]==2
@@ -159,5 +159,5 @@ def test_paper_profile_and_historical_v3_trace(tmp_path,historical_protocol):
     with pytest.raises(ValueError,match="incompatible"):
         env.restore(env.snapshot()|{"protocol":"uav-ideal-interception-v3.1.0"})
     with pytest.raises(SystemExit):
-        guidance_main(["--method","zuo_tp","--intruder-policy","zuo_bezier",
+        guidance_main(["--method","two_point_pip","--motion-level","level1_smooth",
                        "--intruder-mode","straight","--out",str(tmp_path/"invalid")])

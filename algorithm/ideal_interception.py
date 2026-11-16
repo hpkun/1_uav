@@ -100,7 +100,7 @@ def summarize(rows):
     def average(key):
         values = [row[key] for row in rows if row[key] is not None]
         return sum(values)/len(values) if values else None
-    return dict(episodes=n,
+    result=dict(episodes=n,
         all_intercepted_rate=sum(r["outcome"]=="all_intercepted" for r in rows)/n if n else None,
         breach_rate=sum(r["outcome"]=="breach" for r in rows)/n if n else None,
         friendly_collision_rate=sum(r["outcome"]=="friendly_collision" for r in rows)/n if n else None,
@@ -108,9 +108,26 @@ def summarize(rows):
         mean_time=average("time"),
         mean_minimum_separation=average("minimum_separation"),
         mean_defender_exits=average("defender_exits"),mean_intruder_exits=average("intruder_exits"))
+    if rows and rows[0]["scale"]=="6v6":
+        initial=sum(r["initial_intruder_count"] for r in rows)
+        result.update(interception_ratio=sum(r["intercepted_count"] for r in rows)/initial,
+            breach_ratio=sum(r["breached_count"] for r in rows)/initial,
+            episodes_with_breach_rate=sum(r["breached_count"]>0 for r in rows)/n,
+            episodes_with_friendly_collision_rate=sum(r["friendly_collision_count"]>0 for r in rows)/n,
+            total_friendly_collision_count=sum(r["friendly_collision_count"] for r in rows),
+            total_defender_boundary_count=sum(r["defender_boundary_count"] for r in rows),
+            mission_success_rate=sum(bool(r["mission_success"]) for r in rows)/n)
+    return result
 
 
 def results(summary):
+    if "interception_ratio" in summary:
+        return terminal.fields(ep=summary["episodes"],
+            intercepted=terminal.percent(summary["interception_ratio"]),
+            breach=terminal.percent(summary["breach_ratio"]),
+            friendly=terminal.percent(summary["episodes_with_friendly_collision_rate"]),
+            reward=terminal.number(summary["mean_return"]),
+            contacts=terminal.number(summary["mean_interceptions"]))
     return terminal.fields(ep=summary["episodes"],
         intercepted=terminal.percent(summary["all_intercepted_rate"]),
         breach=terminal.percent(summary["breach_rate"]),
@@ -278,7 +295,7 @@ def fit(folder,config=None,training=None,*,total_steps=None,until_steps=None,
             recent = [episode for row in records for episode in row["completed_episodes"]][-100:]
             terminal.training_start("Ideal interception",terminal.fields(
                 experiment="ideal_interception",scale=config.scale,
-                mode=config.intruder_policy if config.intruder_policy=="zuo_bezier" else config.intruder_mode,
+                mode=config.intruder_motion_level if config.intruder_policy=="zuo_bezier" else config.intruder_mode,
                 initialization=config.initialization),training,start_update=model.updates,
                 planned_updates=total_steps//wave,
                 evaluation=terminal.evaluation_setup(eval_interval,evaluation_seeds,
@@ -320,8 +337,9 @@ def fit(folder,config=None,training=None,*,total_steps=None,until_steps=None,
                 window = summarize(recent)
                 terminal.training_progress("Ideal interception",record,total_steps=total_steps,
                     window=terminal.fields(win=f"{len(recent)}/100",
-                        intercepted=terminal.percent(window["all_intercepted_rate"]),
-                        breach=terminal.percent(window["breach_rate"]),
+                        intercepted=terminal.percent(window.get("interception_ratio",
+                            window["all_intercepted_rate"])),
+                        breach=terminal.percent(window.get("breach_ratio",window["breach_rate"])),
                         reward=terminal.number(window["mean_return"])))
                 if result is not None:
                     atomic_json(folder/f"evaluation_{model.updates:06}.json",result)

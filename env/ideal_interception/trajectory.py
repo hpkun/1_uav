@@ -67,6 +67,34 @@ class Reference:
                     polyline_points=len(self.points),
                     polyline_sha256=hashlib.sha256(self.points.tobytes()).hexdigest())
 
+    def geometry_diagnostics(self):
+        """Polyline geometry only; these measurements never enter guidance."""
+        span=self.points[-1]-self.points[0]
+        chord=float(np.linalg.norm(span))
+        unit=span/chord
+        along=(self.points-self.points[0])@unit
+        deviation=np.linalg.norm(self.points-(self.points[0]+along[:,None]*unit),axis=1)
+        tangents=np.diff(self.points,axis=0)/self.lengths[:,None]
+        heading=np.degrees(np.arccos(np.clip(tangents@unit,-1.,1.)))
+        turn=np.arccos(np.clip(np.sum(tangents[:-1]*tangents[1:],axis=1),-1.,1.))
+        curvature=turn/(.5*(self.lengths[:-1]+self.lengths[1:]))
+        if not len(curvature):
+            curvature=np.zeros(1)
+            turn=np.zeros(1)
+        acceleration=self.speed**2*curvature
+        return dict(straight_chord_length_m=chord,path_length_m=float(self.distance[-1]),
+            path_length_ratio=float(self.distance[-1]/chord),
+            maximum_chord_deviation_m=float(np.max(deviation)),
+            mean_chord_deviation_m=float(np.mean(deviation)),
+            maximum_heading_deviation_from_chord_deg=float(np.max(heading)),
+            total_absolute_heading_change_deg=float(np.degrees(np.sum(turn))),
+            curvature_mean_1pm=float(np.mean(curvature)),
+            curvature_p95_1pm=float(np.percentile(curvature,95)),
+            curvature_max_1pm=float(np.max(curvature)),
+            normal_acceleration_mean_mps2=float(np.mean(acceleration)),
+            normal_acceleration_p95_mps2=float(np.percentile(acceleration,95)),
+            normal_acceleration_max_mps2=float(np.max(acceleration)))
+
     def segments(self, start, end):
         """Yield exact linear pieces over [start,end]; no segment crosses a knot."""
         if end < start:

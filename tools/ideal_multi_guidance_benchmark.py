@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 
 from algorithm.ideal_multi_predictive_guidance import METHODS,run_episode
-from env.ideal_interception.config import (formal_6v6_config,zuo_paper_profile,
-    SIX_DEFENDER_CIRCLE,SIX_INTRUDER_WEDGE)
+from algorithm.ideal_pip_analysis import summarize_samples,acceleration_bins
+from env.ideal_interception.config import (PROTOCOL,formal_6v6_config,
+    formal_6v6_level2_config,zuo_paper_profile,SIX_DEFENDER_CIRCLE,SIX_INTRUDER_WEDGE)
 
 
 def benchmark(config,seeds):
@@ -16,9 +17,12 @@ def benchmark(config,seeds):
     trials=[]
     errors={method:[] for method in METHODS}
     horizons={method:[] for method in METHODS}
+    offline_samples={method:[] for method in METHODS}
+    geometries=[]
     for seed in seeds:
         methods={}
         identity=None
+        seed_geometry=None
         for method in METHODS:
             summary,trace=run_episode(config,method,seed)
             current=(summary["scenario_id"],summary["path_hashes"],
@@ -26,6 +30,8 @@ def benchmark(config,seeds):
                 summary["original_assignment"],summary["intruder_paths"])
             if identity is None:
                 identity=current
+                seed_geometry=trace["scene_diagnostics"]["paths"]
+                geometries.extend(seed_geometry)
             elif current!=identity:
                 raise AssertionError(f"seed {seed}: guidance methods received different scenarios")
             errors[method].extend(row["future_position_error_m"]
@@ -35,9 +41,12 @@ def benchmark(config,seeds):
             horizons[method].extend(pair["prediction_horizon_s"]
                 for frame in trace["frames"][1:] for pair in frame["control"]["pairs"].values()
                 if pair["prediction_horizon_s"] is not None)
+            offline_samples[method].extend(row for frame in trace["frames"][1:]
+                for row in frame["offline_evaluation"]["pairs"].values()
+                if "velocity_estimate_difference_mps" in row)
             methods[method]=summary
         trials.append(dict(seed=seed,scenario_id=identity[0],path_hashes=identity[1],
-            original_assignment=identity[4],methods=methods))
+            original_assignment=identity[4],geometry_paths=seed_geometry,methods=methods))
     count=len(trials)
     aggregates={}
     for method in METHODS:
@@ -66,6 +75,8 @@ def benchmark(config,seeds):
             intruder_collision_count=sum(row["intruder_collision_count"] for row in rows),
             mean_minimum_defender_defender_separation_m=mean_present(
                 "minimum_defender_defender_separation_m"),
+            predictive_steps_total=predictive,
+            future_truth_scored_steps=len(scored),
             fallback_steps=sum(row["fallback_steps"] for row in rows),
             no_positive_pip_solution_steps=sum(row["no_positive_pip_solution_steps"] for row in rows),
             prediction_horizon_min_s=float(min(horizons[method])) if predictive else None,
@@ -79,13 +90,19 @@ def benchmark(config,seeds):
             future_position_error_mean_m=float(np.mean(scored)) if scored else None,
             future_position_error_p95_m=float(np.percentile(scored,95)) if scored else None,
             future_position_error_max_m=float(max(scored)) if scored else None)
-        if method=="zuo_tp":
-            for key in ("prediction_forward_fraction","prediction_backward_fraction",
-                        "predicted_point_in_bounds_fraction","prediction_below_floor_fraction"):
-                aggregates[method][key]=(sum(row[key]*row["predictive_steps_total"] for row in rows
-                    if row[key] is not None)/predictive if predictive else None)
-    return dict(protocol="uav-ideal-interception-v3.3.0",scale="6v6",
+        aggregates[method]["same_state_pip"]=summarize_samples(offline_samples[method])
+        aggregates[method]["acceleration_bins"]=acceleration_bins(offline_samples[method])
+    geometry_keys=("path_length_ratio","maximum_chord_deviation_m",
+        "maximum_heading_deviation_from_chord_deg","total_absolute_heading_change_deg",
+        "curvature_p95_1pm","curvature_max_1pm",
+        "normal_acceleration_p95_mps2","normal_acceleration_max_mps2")
+    geometry_summary={key:dict(mean=float(np.mean([row[key] for row in geometries])),
+        p95=float(np.percentile([row[key] for row in geometries],95)),
+        max=float(max(row[key] for row in geometries))) for key in geometry_keys}
+    return dict(protocol=PROTOCOL,scale="6v6",
         profile="unified" if config.dt==.05 else "paper_like",
+        intruder_motion_level=config.intruder_motion_level,
+        geometry=geometry_summary,
         seeds=list(seeds),seed_count=count,paired_scenarios=True,
         aggregates=aggregates,trials=trials)
 
@@ -95,13 +112,18 @@ def main(argv=None):
     parser.add_argument("--seed-start",type=int,default=17)
     parser.add_argument("--trials",type=int,default=50)
     parser.add_argument("--profile",choices=("unified","paper_like"),default="unified")
+    parser.add_argument("--motion-level",choices=("level1_smooth","level2_maneuvering"),
+                        default="level1_smooth")
     parser.add_argument("--out",type=Path,required=True)
     args=parser.parse_args(argv)
     if args.trials<1 or args.seed_start<0:
         parser.error("positive trial count and nonnegative seed required")
-    config=(formal_6v6_config() if args.profile=="unified" else
+    helper=(formal_6v6_level2_config if args.motion_level=="level2_maneuvering"
+            else formal_6v6_config)
+    config=(helper() if args.profile=="unified" else
         zuo_paper_profile(scale="6v6",defender_starts=SIX_DEFENDER_CIRCLE,
-            intruder_starts=SIX_INTRUDER_WEDGE,assignment_policy="hungarian_fixed"))
+            intruder_starts=SIX_INTRUDER_WEDGE,assignment_policy="hungarian_fixed",
+            intruder_motion_level=args.motion_level))
     result=benchmark(config,range(args.seed_start,args.seed_start+args.trials))
     args.out.parent.mkdir(parents=True,exist_ok=True)
     with args.out.open("x",encoding="utf-8") as stream:

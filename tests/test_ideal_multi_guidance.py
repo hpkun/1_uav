@@ -1,4 +1,4 @@
-"""V3.3 six-on-six geometry, fixed matching, events, and causal guidance."""
+"""V3.4 six-on-six geometry, fixed matching, events, and causal guidance."""
 from dataclasses import replace
 from itertools import permutations
 import json
@@ -26,7 +26,7 @@ from tools.ideal_interception_replay import render_html,render_mp4
 
 def test_v33_slots_circle_wedge_and_seeded_paths():
     assert (PROTOCOL,DEFENDER_SLOTS,INTRUDER_SLOTS,OBS_DIM,STATE_DIM)==(
-        "uav-ideal-interception-v3.3.0",6,6,112,128)
+        "uav-ideal-interception-v3.4.0",6,6,112,128)
     config=formal_6v6_config()
     assert config.defender_starts==SIX_DEFENDER_CIRCLE
     assert config.intruder_starts==SIX_INTRUDER_WEDGE
@@ -159,15 +159,15 @@ def test_all_intruders_must_resolve_before_finalization(prior_breaches,expected_
     assert info["mission_success"]==(prior_breaches==0)
 
 
-def test_three_methods_share_scene_and_member_resolution(tmp_path):
+def test_two_methods_share_scene_and_member_resolution(tmp_path):
     results={method:run_episode(formal_6v6_config(),method,17) for method in METHODS}
     summaries={method:row[0] for method,row in results.items()}
     assert len({row["scenario_id"] for row in summaries.values()})==1
     assert len({tuple(row["path_hashes"]) for row in summaries.values()})==1
-    assert all(row["original_assignment"]==summaries["zuo_tp"]["original_assignment"]
+    assert all(row["original_assignment"]==summaries["two_point_pip"]["original_assignment"]
                for row in summaries.values())
-    assert all(row["defender_starts"]==summaries["zuo_tp"]["defender_starts"] and
-               row["intruder_starts"]==summaries["zuo_tp"]["intruder_starts"]
+    assert all(row["defender_starts"]==summaries["two_point_pip"]["defender_starts"] and
+               row["intruder_starts"]==summaries["two_point_pip"]["intruder_starts"]
                for row in summaries.values())
     for method,(summary,trace) in results.items():
         assert summary["warmup_steps"]>0 and summary["predictive_steps_total"]>0
@@ -179,10 +179,8 @@ def test_three_methods_share_scene_and_member_resolution(tmp_path):
         path=tmp_path/f"{method}.json"
         write_trace(path,trace)
         assert len(Timeline(path).at(0)["entities"])==12
-    assert summaries["zuo_tp"]["outcome"]=="mixed_resolution"
-    assert not summaries["zuo_tp"]["mission_success"]
-    assert all(summaries[method]["mission_success"] for method in METHODS[1:])
-    assert all(summaries[method]["intercepted_count"]==6 for method in METHODS[1:])
+    assert all(summaries[method]["mission_success"] for method in METHODS)
+    assert all(summaries[method]["intercepted_count"]==6 for method in METHODS)
 
 
 def test_six_member_html_and_mp4_replay(tmp_path):
@@ -239,3 +237,9 @@ def test_six_member_mappo_vector_interface_smoke(tmp_path):
                                "observation":68,"state":66,"defenders":5,"intruders":2}))
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(old,protocol=LEARNING_PROTOCOL)
+    prior=tmp_path/"v33_header.pt"
+    with zipfile.ZipFile(prior,"w") as archive:
+        archive.writestr("archive/interception_protocol.json",json.dumps(
+            LEARNING_PROTOCOL|{"version":"uav-ideal-interception-v3.3.0"}))
+    with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
+        read(prior,protocol=LEARNING_PROTOCOL)

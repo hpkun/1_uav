@@ -4,8 +4,6 @@ import math
 
 import numpy as np
 
-from .intercept_time import zuo_lookahead_time
-from .zuo_linear import predict_zuo_at
 
 
 @dataclass(frozen=True)
@@ -52,35 +50,6 @@ def _unavailable(method, kind, history, target_index, status):
         None, None, None, None, None, kind, None, len(positions))
 
 
-def estimate_zuo_prediction_from_history(history, target_index, defender_position,
-                                         defender_speed):
-    """Zuo equations (30)-(33), with the paper horizon kept separate from contact time."""
-    defender = _vector(defender_position)
-    status = history.method_status(target_index, "zuo_linear")
-    if status != "READY":
-        return _unavailable("zuo_tp", "paper_lookahead", history, target_index, status)
-    times, positions = history.observed(target_index)
-    velocity = (positions[-1]-positions[-2])/(times[-1]-times[-2])
-    target_speed = float(np.linalg.norm(velocity))
-    if not np.isfinite(velocity).all() or not math.isfinite(target_speed):
-        return _unavailable("zuo_tp", "paper_lookahead", history, target_index,
-                            "INVALID_PREDICTION")
-    horizon = zuo_lookahead_time(defender, positions[-1], defender_speed,
-                                 target_speed)
-    try:
-        point = (predict_zuo_at(positions[-2:], history.dt, [horizon])[0]
-                 if horizon > 0 else positions[-1])
-    except FloatingPointError:
-        return _unavailable("zuo_tp", "paper_lookahead", history, target_index,
-                            "INVALID_PREDICTION")
-    direction = point-defender
-    magnitude = float(np.linalg.norm(direction))
-    unit = _tuple(direction/magnitude) if magnitude > 0 and math.isfinite(magnitude) else None
-    return InterceptPrediction("zuo_tp", "READY", float(times[-1]), horizon,
-        float(times[-1]+horizon), _tuple(point), _tuple(velocity), None,
-        "paper_lookahead", None, 2, unit)
-
-
 def solve_constant_velocity_pip(defender_position, defender_speed, target_position,
                                 target_velocity):
     """Earliest positive center-coincidence time for a fixed-speed defender."""
@@ -123,37 +92,40 @@ def solve_constant_velocity_pip(defender_position, defender_speed, target_positi
     return PIPSolution("READY",horizon,_tuple(point),discriminant,degree)
 
 
-def estimate_zuo_pip_time_from_history(history, target_index, defender_position,
+def estimate_two_point_pip_from_history(history, target_index, defender_position,
                                        defender_speed):
-    """Two-point Zuo velocity and linear point; only Eq.(32) time is replaced."""
+    """Two-point finite-difference velocity with analytic constant-velocity PIP."""
     defender=_vector(defender_position)
-    status=history.method_status(target_index,"zuo_linear")
+    status=history.method_status(target_index,"two_point_pip")
     if status!="READY":
-        return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+        return _unavailable("two_point_pip","constant_velocity_pip",
                             history,target_index,status)
     times,positions=history.observed(target_index)
     velocity=(positions[-1]-positions[-2])/(times[-1]-times[-2])
     if not np.isfinite(velocity).all():
-        return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+        return _unavailable("two_point_pip","constant_velocity_pip",
                             history,target_index,"INVALID_PREDICTION")
     solution=solve_constant_velocity_pip(defender,defender_speed,positions[-1],velocity)
     horizon=solution.time_to_pip_s
     point=None
     if solution.status=="READY":
         try:
-            point=predict_zuo_at(positions[-2:],history.dt,[horizon])[0]
+            point=(positions[-1][None,:]+np.asarray([horizon])[:,None]*
+                   ((positions[-1]-positions[-2])/history.dt)[None,:])[0]
+            if not np.isfinite(point).all():
+                raise FloatingPointError("nonfinite linear prediction")
         except FloatingPointError:
-            return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+            return _unavailable("two_point_pip","constant_velocity_pip",
                                 history,target_index,"INVALID_PREDICTION")
         if (not np.isfinite(point).all() or np.linalg.norm(
                 point-np.asarray(solution.predicted_interception_position_m))>
                 1e-8*max(1.,np.linalg.norm(point))):
-            return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+            return _unavailable("two_point_pip","constant_velocity_pip",
                                 history,target_index,"INVALID_PREDICTION")
-    return InterceptPrediction("zuo_tp_pip_time",solution.status,float(times[-1]),
+    return InterceptPrediction("two_point_pip",solution.status,float(times[-1]),
         horizon,float(times[-1]+horizon) if horizon is not None else None,
         _tuple(point) if point is not None else None,_tuple(velocity),None,
-        "constant_velocity_pip_with_zuo_velocity",None,2,
+        "constant_velocity_pip",None,2,
         pip_discriminant=solution.discriminant,
         pip_equation_degree=solution.equation_degree)
 

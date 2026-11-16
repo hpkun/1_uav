@@ -24,18 +24,19 @@ class Timeline:
         with opener(source,"rt",encoding="utf-8") as stream:
             data=json.load(stream)
         if (data.get("trace_version") not in (TRACE_VERSION,"uav-ideal-trace-v1") or
-                data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v3.2.0",
+                data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v3.3.0",
+                                                         "uav-ideal-interception-v3.2.0",
                                                          "uav-ideal-interception-v3.1.0",
                                                          "uav-ideal-interception-v3.0.0",
                                                          "uav-ideal-interception-v2.0.0")):
             raise ValueError("unsupported ideal trajectory protocol")
         self.data=data
-        historical=data["environment_protocol"]!=PROTOCOL
-        self.defender_slots=5 if historical else DEFENDER_SLOTS
-        self.intruder_slots=2 if historical else INTRUDER_SLOTS
+        legacy_slots=data["environment_protocol"] not in (PROTOCOL,"uav-ideal-interception-v3.3.0")
+        self.defender_slots=5 if legacy_slots else DEFENDER_SLOTS
+        self.intruder_slots=2 if legacy_slots else INTRUDER_SLOTS
         try:
             raw=data["config"]
-            if historical:
+            if legacy_slots:
                 d,i=SCALES[raw["scale"]]
                 if (len(raw["defender_speeds"])!=5 or len(raw["intruder_speeds"])!=2
                         or len(raw["defender_starts"])!=5 or len(raw["intruder_starts"])!=2):
@@ -85,7 +86,7 @@ class Timeline:
         """Cross-check each recorded state against executed motion and event transitions."""
         tolerance=dict(rtol=1e-10,atol=1e-8)
         initial=self.frames[0]
-        if (self.data["environment_protocol"]==PROTOCOL and
+        if (self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.3.0") and
                 self.config.assignment_policy=="hungarian_fixed"):
             original={int(i):int(j) for i,j in initial["assignment"].items()}
             if self.data.get("original_assignment")!={str(i):j for i,j in original.items()}:
@@ -127,7 +128,7 @@ class Timeline:
                 if (frame["outcome"]=="ongoing" and any(frame["intruder_mask"]) and
                         set(pairs)!={i for i,active in enumerate(frame["defender_mask"]) if active}):
                     raise ValueError(f"frame {k} missing active defender assignment")
-                if self.data["environment_protocol"]==PROTOCOL and self.config.assignment_policy=="hungarian_fixed":
+                if self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.3.0") and self.config.assignment_policy=="hungarian_fixed":
                     original={int(i):int(j) for i,j in self.frames[0]["assignment"].items()}
                     expected=hungarian_fixed_assignment(
                         np.asarray(initial["defenders"])[:self.config.defender_count,:3],
@@ -135,7 +136,7 @@ class Timeline:
                     if original!=expected or pairs!={i:j for i,j in original.items()
                             if frame["defender_mask"][i] and frame["intruder_mask"][j]}:
                         raise ValueError(f"frame {k} fixed assignment mismatch")
-                elif self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.2.0",
+                elif self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.3.0","uav-ideal-interception-v3.2.0",
                     "uav-ideal-interception-v3.1.0",
                     "uav-ideal-interception-v3.0.0") and frame["outcome"]=="ongoing":
                     expected=nearest_distance_assignment(np.asarray(frame["defenders"])[:,:3],

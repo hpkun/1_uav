@@ -7,19 +7,19 @@ import numpy as np
 
 from algorithm.common.serialization import serializable
 from env.ideal_interception.config import (DEFENDER_SLOTS,INTRUDER_SLOTS,
-    formal_6v6_config)
+    formal_6v6_config,formal_6v6_level2_config)
 from env.ideal_interception.geometry import closest
 from env.ideal_interception.trajectory import Reference
 from prediction.history import IntruderHistory
-from prediction.intercept_prediction import (estimate_zuo_prediction_from_history,
-    estimate_zuo_pip_time_from_history,estimate_three_point_pip_from_history)
+from prediction.intercept_prediction import (estimate_two_point_pip_from_history,
+    estimate_three_point_pip_from_history)
 from tools.ideal_interception_trace import record,write_trace
+from .ideal_pip_analysis import compare_on_trace,summarize_samples,acceleration_bins
 
-METHODS=("zuo_tp","zuo_tp_pip_time","three_point_pip")
-PREDICTORS=dict(zuo_tp=estimate_zuo_prediction_from_history,
-    zuo_tp_pip_time=estimate_zuo_pip_time_from_history,
+METHODS=("two_point_pip","three_point_pip")
+PREDICTORS=dict(two_point_pip=estimate_two_point_pip_from_history,
     three_point_pip=estimate_three_point_pip_from_history)
-MODES=dict(zuo_tp="ZUO_TP",zuo_tp_pip_time="ZUO_TP_PIP_TIME",
+MODES=dict(two_point_pip="TWO_POINT_PIP",
     three_point_pip="THREE_POINT_PIP")
 
 
@@ -40,8 +40,6 @@ def _analyze(trace,config,method):
     predictive=warmup=fallback=no_root=beyond=0
     lengths=np.zeros(DEFENDER_SLOTS)
     separation=None
-    diagnostics={i:dict(predictive_steps=0,forward=0,backward=0,in_bounds=0,
-                        below_floor=0) for i in range(config.defender_count)}
     for before,after in zip(frames[:-1],frames[1:]):
         t0,t1=before["time"],after["time"]
         exits={event["members"][0]:event["time"] for event in after["events"]
@@ -80,29 +78,11 @@ def _analyze(trace,config,method):
                 error=float(np.linalg.norm(point-truth))
                 row["future_position_error_m"]=error
                 errors.append(error)
-            if method=="zuo_tp":
-                own=np.asarray(before["defenders"][i][:3])
-                target=np.asarray(before["intruders"][j][:3])
-                los=(target-own)/np.linalg.norm(target-own)
-                direction=np.asarray(control["guidance_direction_unit"])
-                pair=diagnostics[i]
-                pair["predictive_steps"]+=1
-                pair["forward"]+=float(los@direction)>0
-                pair["backward"]+=float(los@direction)<=0
-                pair["in_bounds"]+=bool(np.all(point>=config.lower) and np.all(point<=config.upper))
-                pair["below_floor"]+=point[2]<config.lower[2]
             offline[key]=row
         after["offline_evaluation"]={"pairs":offline}
     result=trace["result"]
     contacts=[event["time"] for event in result["events"]
               if event["kind"]=="interception_contact"]
-    total=sum(row["predictive_steps"] for row in diagnostics.values())
-    strict={key:(sum(row[key] for row in diagnostics.values())/total if total else None)
-            for key in ("forward","backward","in_bounds","below_floor")}
-    for row in diagnostics.values():
-        n=row["predictive_steps"]
-        for key in ("forward","backward","in_bounds","below_floor"):
-            row[key+"_fraction"]=row[key]/n if n else None
     return dict(intercepted_count=result["intercepted_count"],
         breached_count=result["breached_count"],
         other_resolved_count=result["other_resolved_count"],
@@ -126,15 +106,10 @@ def _analyze(trace,config,method):
         future_truth_coverage=len(errors)/predictive if predictive else None,
         prediction_beyond_reference_fraction=beyond/predictive if predictive else None,
         future_position_error_m={key:value for key,value in _stats(errors).items()
-                                 if key in ("mean","p95","max")},
-        strict_zuo_pair_diagnostics=diagnostics if method=="zuo_tp" else None,
-        prediction_forward_fraction=strict["forward"] if method=="zuo_tp" else None,
-        prediction_backward_fraction=strict["backward"] if method=="zuo_tp" else None,
-        predicted_point_in_bounds_fraction=strict["in_bounds"] if method=="zuo_tp" else None,
-        prediction_below_floor_fraction=strict["below_floor"] if method=="zuo_tp" else None)
+                                 if key in ("mean","p95","max")})
 
 
-def run_episode(config=None,method="zuo_tp",seed=17):
+def run_episode(config=None,method="two_point_pip",seed=17):
     config=formal_6v6_config() if config is None else config
     if config.scale!="6v6" or config.assignment_policy!="hungarian_fixed" or method not in METHODS:
         raise ValueError("6v6 fixed-assignment config and named guidance method required")
@@ -178,6 +153,7 @@ def run_episode(config=None,method="zuo_tp",seed=17):
     first=trace["frames"][0]
     specs=[row["specification"] for row in trace["references"]]
     result=dict(method=method,seed=seed,scenario_id=trace["scenario_id"],
+        intruder_motion_level=config.intruder_motion_level,
         defender_starts=[first["defenders"][i][:3] for i in range(config.defender_count)],
         intruder_starts=[first["intruders"][j][:3] for j in range(config.intruder_count)],
         intruder_paths=[dict(start=spec["start"],goal=spec["end"],
@@ -191,6 +167,9 @@ def run_episode(config=None,method="zuo_tp",seed=17):
         per_pair_initial_distance_m=trace["per_pair_initial_distance_m"],
         defender_final_status=trace["result"]["defender_status"])
     result.update(_analyze(trace,config,method))
+    offline_rows=compare_on_trace(trace,config)
+    result["same_state_pip"]=summarize_samples(offline_rows)
+    result["acceleration_bins"]=acceleration_bins(offline_rows)
     return serializable(result),serializable(trace)
 
 
@@ -199,10 +178,14 @@ def main(argv=None):
     parser.add_argument("--method",required=True,choices=METHODS)
     parser.add_argument("--seed",type=int,default=17)
     parser.add_argument("--profile",choices=("unified","paper_like"),default="unified")
+    parser.add_argument("--motion-level",choices=("level1_smooth","level2_maneuvering"),
+                        default="level1_smooth")
     parser.add_argument("--out",type=Path,required=True)
     args=parser.parse_args(argv)
-    config=(formal_6v6_config() if args.profile=="unified" else
-            formal_6v6_config(**dict(dt=.1,defender_speeds=(25.,)*DEFENDER_SLOTS,
+    helper=(formal_6v6_level2_config if args.motion_level=="level2_maneuvering"
+            else formal_6v6_config)
+    config=(helper() if args.profile=="unified" else
+            helper(**dict(dt=.1,defender_speeds=(25.,)*DEFENDER_SLOTS,
                 intruder_speeds=(30.,)*INTRUDER_SLOTS)))
     summary,trace=run_episode(config,args.method,args.seed)
     args.out.mkdir(parents=True,exist_ok=False)

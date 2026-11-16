@@ -5,15 +5,12 @@ from pathlib import Path
 from statistics import mean
 import numpy as np
 
-from algorithm.ideal_predictive_guidance import run_episode
+from algorithm.ideal_predictive_guidance import METHODS,run_episode
 from env.ideal_interception import InterceptionConfig
-
-METHODS=("zuo_tp","zuo_tp_pip_time","three_point_pip")
-
 
 def compare(config, seeds):
     if config.scale!="1v1" or config.intruder_policy!="zuo_bezier":
-        raise ValueError("paired benchmark requires formal 1v1 zuo_bezier policy")
+        raise ValueError("paired benchmark requires formal 1v1 pre-generated paths")
     rows=[]
     future_errors={method:[] for method in METHODS}
     for seed in seeds:
@@ -67,24 +64,13 @@ def compare(config, seeds):
             future_position_error_mean_m=mean(errors) if errors else None,
             future_position_error_p95_m=float(np.percentile(errors,95)) if errors else None,
             future_position_error_max_m=max(errors) if errors else None)
-        if method=="zuo_tp":
-            aggregates[method].update(
-                prediction_forward_fraction=sum(v["prediction_forward_fraction"]*
-                    v["predictive_steps_total"] for v in values)/predictive_total,
-                prediction_backward_fraction=sum(v["prediction_backward_fraction"]*
-                    v["predictive_steps_total"] for v in values)/predictive_total,
-                predicted_point_in_bounds_fraction=sum(v["predicted_point_in_bounds_fraction"]*
-                    v["predictive_steps_total"] for v in values)/predictive_total,
-                prediction_below_floor_fraction=sum(v["predicted_point_below_floor_count"]
-                    for v in values)/predictive_total)
-        if method=="zuo_tp_pip_time":
-            count=sum(v["pip_estimator_comparison_steps"] for v in values)
-            aggregates[method].update(pip_estimator_comparison_steps=count,
-                **{key:(sum(v[key]*v["pip_estimator_comparison_steps"] for v in values
-                            if v[key] is not None)/count if count else None)
-                   for key in ("mean_velocity_estimate_difference_mps",
-                               "mean_pip_horizon_difference_s","mean_pip_point_difference_m")})
-    return dict(policy=config.intruder_policy,seed_count=len(rows),seeds=list(seeds),
+        count=sum(v["pip_estimator_comparison_steps"] for v in values)
+        aggregates[method].update(pip_estimator_comparison_steps=count,
+            **{key:(sum(v[key]*v["pip_estimator_comparison_steps"] for v in values
+                        if v[key] is not None)/count if count else None)
+               for key in ("mean_velocity_estimate_difference_mps",
+                           "mean_pip_horizon_difference_s","mean_pip_point_difference_m")})
+    return dict(motion_level=config.intruder_motion_level,seed_count=len(rows),seeds=list(seeds),
                 shared_intruder_paths=True,unique_path_hashes=len({row["path_sha256"] for row in rows}),
                 aggregates=aggregates,trials=rows)
 

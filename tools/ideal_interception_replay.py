@@ -17,6 +17,15 @@ ROLE_COLORS={"defender":"#d64040","intruder":"#2378bf"}
 ROLE_LABELS={"defender":"Red Defender","intruder":"Blue Intruder"}
 
 
+def motion_label(timeline):
+    config=timeline.data.get("config",{})
+    if config.get("intruder_policy")=="legacy_reference":
+        return "Fixture reference"
+    level=config.get("intruder_motion_level")
+    return {"level1_smooth":"Level 1 Smooth Bézier",
+            "level2_maneuvering":"Level 2 Maneuvering Bézier"}.get(level,"Historical reference")
+
+
 def intruder_reference_color():
     return ROLE_COLORS["intruder"]
 
@@ -114,7 +123,7 @@ def render_html(source,output,view="3d",overwrite=False):
             for k,t in enumerate(times)]
     fig=go.Figure(data=data,frames=frames)
     label={"3d":"3D Overview","top":"XY Top View","altitude":"XZ Side View"}[view]
-    fig.update_layout(title=f"{label} | Red Defender / Blue Intruder | {timeline.data['scenario_id'][:12]}",
+    fig.update_layout(title=f"{label} | {motion_label(timeline)} | Red Defender / Blue Intruder | {timeline.data['scenario_id'][:12]}",
                       height=700,legend=dict(orientation="h",y=1.12,x=0))
     if is3d:
         fig.update_layout(scene=dict(aspectmode="data",xaxis_title="x (m)",yaxis_title="y (m)",
@@ -239,7 +248,8 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
                    center[2]+scene["protected_height"],center[2]],color="#55a868")
     for index,reference in enumerate(timeline.references):
         coords=np.asarray([_coordinates(point,view) for point in reference[0]])
-        axis.plot(*coords.T,linestyle="--",color=intruder_reference_color(),alpha=.4,
+        axis.plot(*coords.T,linestyle="--",color=intruder_reference_color(),alpha=.85,
+                  linewidth=2.,
                   label="Blue reference" if index==0 else "_nolegend_")
     axis.set_xlim(scene["lower"][0],scene["upper"][0])
     axis.set_ylim(scene["lower"][1 if view!="altitude" else 2],
@@ -289,7 +299,7 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
                     point.set_visible(entity["active"])
                 for event_time,artist in event_artists:
                     artist.set_visible(event_time<=time)
-                axis.set_title(f"{time:.3f} s | {row['outcome']} | {timeline.data['scenario_id'][:12]}")
+                axis.set_title(f"{motion_label(timeline)} | {time:.3f} s | {row['outcome']} | {timeline.data['scenario_id'][:12]}")
                 writer.grab_frame()
     finally:
         plt.close(fig)
