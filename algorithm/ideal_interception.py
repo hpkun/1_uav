@@ -120,11 +120,18 @@ def vector_env(config,training):
 
 def evaluation_protocol(config,rows):
     unique = len({row["scenario_id"] for row in rows})
-    return dict(kind="fixed_case" if config.initialization=="fixed" else "random_initial_positions",
+    formal=config.intruder_policy=="zuo_bezier"
+    randomized=(["intruder_initial_positions","intruder_bezier_control_points"] if formal else [])
+    if config.initialization=="random":
+        randomized.insert(0,"defender_initial_positions")
+        if not formal:
+            randomized.append("intruder_initial_positions")
+    return dict(kind="randomized_intruder_plans" if formal else
+                    "fixed_case" if config.initialization=="fixed" else "random_initial_positions",
         episodes=len(rows),unique_scenarios=unique,duplicate_scenarios=len(rows)-unique,
-        randomized=[] if config.initialization=="fixed" else
-            ["defender_initial_positions","intruder_initial_positions"],
-        fixed=["intruder_endpoints","fixed_speeds","protected_region"],
+        randomized=randomized,
+        fixed=["protected_asset","fixed_speeds","protected_region"] if formal else
+              ["intruder_endpoints","fixed_speeds","protected_region"],
         assignment="nearest_distance_event_driven",
         interpretation="geometric contact is an abstract event, not physical damage")
 
@@ -253,7 +260,8 @@ def fit(folder,config=None,training=None,*,total_steps=None,until_steps=None,
             evaluations = payload["evaluations"].copy() if payload else []
             recent = [episode for row in records for episode in row["completed_episodes"]][-100:]
             terminal.training_start("Ideal interception",terminal.fields(
-                experiment="ideal_interception",scale=config.scale,mode=config.intruder_mode,
+                experiment="ideal_interception",scale=config.scale,
+                mode=config.intruder_policy if config.intruder_policy=="zuo_bezier" else config.intruder_mode,
                 initialization=config.initialization),training,start_update=model.updates,
                 planned_updates=total_steps//wave,
                 evaluation=terminal.evaluation_setup(eval_interval,evaluation_seeds,

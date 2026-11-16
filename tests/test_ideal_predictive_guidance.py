@@ -111,7 +111,7 @@ def test_no_positive_pip_root_falls_back_to_current_target():
 
 
 def test_v2_records_runtime_assignment_and_v1_read_policy(tmp_path):
-    base=InterceptionConfig(scale="5v2",max_steps=2)
+    base=InterceptionConfig(scale="5v2",max_steps=2,intruder_mode="straight")
     config=replace(base,defender_starts=((-0.75,0.,60.),)+base.defender_starts[1:],
         intruder_starts=((0.75,0.,60.),)+base.intruder_starts[1:])
     trace=record(config,17)

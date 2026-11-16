@@ -104,6 +104,9 @@ def solve_constant_velocity_pip(defender_position, defender_speed, target_positi
         discriminant = b*b-4*a*c
         if not math.isfinite(discriminant):
             return PIPSolution("INVALID_PREDICTION",None,None,None,degree)
+        tolerance=1e-12*max(b*b,abs(4*a*c),1.)
+        if -tolerance<=discriminant<0:
+            discriminant=0.
         if discriminant < 0:
             roots = []
         else:
@@ -126,7 +129,7 @@ def estimate_three_point_pip_from_history(history, target_index, defender_positi
     defender = _vector(defender_position)
     if not math.isfinite(defender_speed) or defender_speed <= 0:
         raise ValueError("defender speed must be finite and positive")
-    status = history.method_status(target_index, "tan_quadratic")
+    status = history.method_status(target_index, "three_point_pip")
     if status != "READY":
         return _unavailable("three_point_pip", "constant_velocity_pip",
                             history, target_index, status)

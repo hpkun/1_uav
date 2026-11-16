@@ -20,7 +20,8 @@ def analyze_trace(trace, config):
     """Attach offline truth comparisons to frames after the real run has ended."""
     frames=trace["frames"]
     spec=trace["references"][0]["specification"]
-    reference=Reference(spec["start"],spec["end"],spec["speed"],spec["mode"])
+    reference=Reference(spec["start"],spec["end"],spec["speed"],spec["mode"],
+                        control_points=spec["controls"] if spec["mode"]=="bezier" else None)
     horizon_errors=[]
     point_errors=[]
     angle_errors=[]
@@ -97,7 +98,7 @@ def analyze_trace(trace, config):
             if any(v>0 for v in closing_rates) else None,
         fraction_of_steps_range_decreasing=decreasing/len(closing_rates) if closing_rates else None,
         actual_contact_time_s=contact["time"] if contact else None,
-        actual_contact_position_m=contact_midpoint,
+        actual_contact_midpoint_m=contact_midpoint,
         actual_contact_centers_m=contact_centers,
         final_predicted_center_intercept_time_s=last_predicted_center_time if contact else None,
         time_lead_due_to_contact_radius_s=(last_predicted_center_time-contact["time"])

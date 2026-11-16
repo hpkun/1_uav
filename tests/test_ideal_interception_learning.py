@@ -11,7 +11,7 @@ from env.ideal_interception.config import OBS_DIM, STATE_DIM
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
 def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
-    config = InterceptionConfig(max_steps=4)
+    config = InterceptionConfig(max_steps=4,intruder_mode="straight")
     training = TrainConfig(workers=1,horizon=2,epochs=1)
     model = cli.InterceptionMAPPO(training)
     assert model.actor[0].in_features==OBS_DIM
@@ -32,6 +32,8 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
         read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v1.0.0"})
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v2.0.0"})
+    with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
+        read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v3.0.0"})
     cli.fit(folder,resume=True)
     last = read(checkpoint,protocol=cli.PROTOCOL)
     assert last["steps"]==4 and last["updates"]==2
@@ -55,7 +57,7 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
 def test_bilateral_recovery_from_missing_committed_record(tmp_path,monkeypatch):
-    config = InterceptionConfig(max_steps=3)
+    config = InterceptionConfig(max_steps=3,intruder_mode="straight")
     training = TrainConfig(workers=1,horizon=2,epochs=1)
     folder = tmp_path/"run"
     original = cli.atomic_json
@@ -78,7 +80,7 @@ def test_bilateral_recovery_from_missing_committed_record(tmp_path,monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
 def test_bilateral_resume_preserves_training_and_evaluation_values(tmp_path):
-    config = InterceptionConfig(max_steps=3)
+    config = InterceptionConfig(max_steps=3,intruder_mode="straight")
     training = TrainConfig(workers=1,horizon=2,epochs=1)
     full,split = tmp_path/"full",tmp_path/"split"
     cli.fit(full,config,training,total_steps=4,eval_interval=1,

@@ -19,7 +19,8 @@ TRACE_VERSION = "uav-ideal-trace-v2"
 def references_from_specs(specs):
     references = []
     for spec in specs:
-        path = Reference(spec["start"],spec["end"],spec["speed"],spec["mode"])
+        path = Reference(spec["start"],spec["end"],spec["speed"],spec["mode"],
+                         control_points=spec["controls"] if spec["mode"]=="bezier" else None)
         if path.specification() != spec:
             raise ValueError("reference path specification or hash mismatch")
         references.append(dict(specification=spec,points=path.points.tolist()))
@@ -30,7 +31,9 @@ def build_trace(config,seed,scenario_id,path_specs,frames,result):
     if any("assignment" not in frame for frame in frames):
         raise ValueError("v2 trace requires recorded assignment in every frame")
     from env.ideal_interception.scenario import diagnostics
-    paths=[Reference(spec["start"],spec["end"],spec["speed"],spec["mode"]) for spec in path_specs]
+    paths=[Reference(spec["start"],spec["end"],spec["speed"],spec["mode"],
+                     control_points=spec["controls"] if spec["mode"]=="bezier" else None)
+           for spec in path_specs]
     first=frames[0]
     entities=[dict(id=i,role="defender",speed=config.defender_speeds[i],
                    initial_state=first["defenders"][i]) for i in range(5) if first["defender_mask"][i]]
@@ -106,7 +109,8 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output",type=Path)
     parser.add_argument("--scale",choices=("1v1","3v1","5v2"),default="1v1")
-    parser.add_argument("--mode",choices=("straight","bezier"),default="straight")
+    parser.add_argument("--mode",choices=("straight","bezier"),default=None,
+                        help="explicit legacy/test reference fixture; omit for zuo_bezier")
     parser.add_argument("--initialization",choices=("fixed","random"),default="fixed")
     parser.add_argument("--seed",type=int,default=17)
     parser.add_argument("--scenario-type",choices=("geometry","region_crossing"),default="geometry")

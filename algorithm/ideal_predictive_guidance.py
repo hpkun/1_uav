@@ -29,7 +29,8 @@ def canonical_1v1_config(intruder_mode="straight"):
 
 def _minimum_pair_distance(trace):
     spec=trace["references"][0]["specification"]
-    path=Reference(spec["start"],spec["end"],spec["speed"],spec["mode"])
+    path=Reference(spec["start"],spec["end"],spec["speed"],spec["mode"],
+                   control_points=spec["controls"] if spec["mode"]=="bezier" else None)
     minimum=float("inf")
     for before,after in zip(trace["frames"][:-1],trace["frames"][1:]):
         if not before["defender_mask"][0] or not before["intruder_mask"][0]:
@@ -104,7 +105,9 @@ def run_episode(config=None,method="zuo_tp",seed=17):
     minimum_separation=_minimum_pair_distance(trace)
     horizons=[row["prediction_horizon_s"] for row in controls
               if row["guidance_mode"] in ("ZUO_TP","THREE_POINT_PIP")]
-    summary=dict(method=method,seed=seed,intruder_mode=config.intruder_mode,
+    summary=dict(method=method,seed=seed,intruder_policy=config.intruder_policy,
+        intruder_mode=config.intruder_mode,
+        intruder_path_sha256=trace["references"][0]["specification"]["polyline_sha256"],
         outcome=trace["result"]["outcome"],time_s=trace["result"]["time"],
         steps=len(controls),interception_count=sum(event["kind"]=="interception_contact"
             for event in trace["result"]["events"]),
@@ -125,11 +128,17 @@ def run_episode(config=None,method="zuo_tp",seed=17):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--method",choices=METHODS,required=True)
-    parser.add_argument("--intruder-mode",choices=("straight","bezier"),default="straight")
+    parser.add_argument("--intruder-policy",choices=("fixture","zuo_bezier"),default="fixture")
+    parser.add_argument("--intruder-mode",choices=("straight","bezier"),default=None,
+                        help="fixture reference only; omit for zuo_bezier")
     parser.add_argument("--seed",type=int,default=17)
     parser.add_argument("--out",type=Path,required=True)
     args=parser.parse_args(argv)
-    summary,trace=run_episode(canonical_1v1_config(args.intruder_mode),
+    if args.intruder_policy=="zuo_bezier" and args.intruder_mode is not None:
+        parser.error("--intruder-mode is only valid for fixture references")
+    config=(InterceptionConfig(scale="1v1") if args.intruder_policy=="zuo_bezier"
+            else canonical_1v1_config(args.intruder_mode or "straight"))
+    summary,trace=run_episode(config,
                               args.method,args.seed)
     args.out.mkdir(parents=True,exist_ok=True)
     with (args.out/"summary.json").open("x",encoding="utf-8") as stream:

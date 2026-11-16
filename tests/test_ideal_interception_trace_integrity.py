@@ -9,7 +9,7 @@ from tools.ideal_interception_timeline import Timeline
 
 
 def fixture():
-    base=InterceptionConfig()
+    base=InterceptionConfig(intruder_mode="straight")
     return record(replace(base,dt=1.,max_steps=2,
         defender_starts=((-5.,0.,60.),)+base.defender_starts[1:],
         intruder_starts=((5.,0.,60.),)+base.intruder_starts[1:],

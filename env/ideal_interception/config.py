@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-interception-v3.0.0"
+PROTOCOL = "uav-ideal-interception-v3.1.0"
 SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2)}
 DEFENDER_SLOTS = 5
 INTRUDER_SLOTS = 2
@@ -25,7 +25,10 @@ class InterceptionConfig:
     defender_directions: tuple = ((1., 0., 0.),)*5
     intruder_starts: tuple = ((200., -10., 60.), (200., 10., 80.))
     intruder_ends: tuple = ((-260., -10., 60.), (-260., 10., 80.))
-    intruder_mode: str = "straight"
+    intruder_policy: str = "zuo_bezier"
+    intruder_mode: str | None = None  # Explicit legacy/test reference fixture.
+    intruder_start_jitter_m: float = 5.
+    intruder_bezier_jitter_ratio: float = .04
     initialization: str = "fixed"
     random_range: float = 5.
     init_max_attempts: int = 128
@@ -42,8 +45,15 @@ class InterceptionConfig:
     seed: int = 17
 
     def __post_init__(self):
-        if self.scale not in SCALES or self.intruder_mode not in ("straight", "bezier") or self.initialization not in ("fixed", "random"):
-            raise ValueError("invalid scale, intruder mode or initialization")
+        if self.scale not in SCALES or self.initialization not in ("fixed", "random"):
+            raise ValueError("invalid scale or initialization")
+        if self.intruder_policy not in ("zuo_bezier", "legacy_reference") or self.intruder_mode not in (None,"straight","bezier"):
+            raise ValueError("invalid intruder policy or fixture mode")
+        if self.intruder_mode is not None and self.intruder_policy=="zuo_bezier":
+            # Old explicit intruder_mode configurations remain geometric fixtures.
+            object.__setattr__(self,"intruder_policy","legacy_reference")
+        if self.intruder_policy=="legacy_reference" and self.intruder_mode is None:
+            raise ValueError("legacy reference fixture requires intruder_mode")
         if (type(self.max_steps) is not int or self.max_steps < 1
                 or type(self.init_max_attempts) is not int or self.init_max_attempts < 1
                 or type(self.seed) is not int or self.seed < 0):
@@ -53,7 +63,8 @@ class InterceptionConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"invalid {name}")
-        for name in ("random_range", "interception_reward", "protection_reward",
+        for name in ("random_range", "intruder_start_jitter_m", "intruder_bezier_jitter_ratio",
+                     "interception_reward", "protection_reward",
                      "failure_penalty", "time_penalty"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
@@ -75,7 +86,8 @@ class InterceptionConfig:
             raise ValueError("defender directions must be nonzero")
         d, i = SCALES[self.scale]
         starts = np.r_[np.asarray(self.defender_starts[:d]), np.asarray(self.intruder_starts[:i])]
-        if np.any(starts-np.asarray(self.lower) <= self.random_range) or np.any(np.asarray(self.upper)-starts <= self.random_range):
+        margin=max(self.random_range,self.intruder_start_jitter_m if self.intruder_policy=="zuo_bezier" else 0.)
+        if np.any(starts-np.asarray(self.lower) <= margin) or np.any(np.asarray(self.upper)-starts <= margin):
             raise ValueError("initial entities must remain inside region")
         if any(np.linalg.norm(starts[a]-starts[b]) <= self.contact_distance+1e-9
                for a in range(len(starts)) for b in range(a+1,len(starts))):
@@ -94,3 +106,10 @@ class InterceptionConfig:
     @property
     def intruder_count(self):
         return SCALES[self.scale][1]
+
+
+def zuo_paper_profile(**overrides):
+    """Optional paper-like numerical profile, separate from project defaults."""
+    values=dict(dt=.1,defender_speeds=(25.,)*5,intruder_speeds=(30.,)*2,
+                contact_distance=.1)
+    return InterceptionConfig(**(values|overrides))

@@ -55,7 +55,7 @@ diagnostic and offline fixed-horizon quadratic prediction remain available.
 The offline tool reads validated `uav-ideal-trace-v1` and v2 replays. New v2
 frames store the environment's actual runtime assignment, which the evaluator
 uses directly. Historical V2-environment/v1-trace files retain the fixed
-`D_i -> I_(i % intruder_count)` rule. V3-environment/v1-trace files can be
+`D_i -> I_(i % intruder_count)` rule. V3.0/V3.1-environment/v1-trace files can be
 replayed geometrically but are rejected by assignment-dependent evaluation
 because the exact event-time association is unavailable. Recorded
 defender motion is a hindsight **virtual trajectory assumption**, not a
@@ -107,3 +107,16 @@ for straight, an oracle PIP using real reference velocity. For bezier, future
 reference truth is sampled only if the predicted time is within path duration.
 Neither truth source is available to the online decision callback. Summary
 metrics include per-step horizon, point, angle, and range diagnostics.
+
+The straight and deterministic Bézier cases above are analytical/controlled
+guidance fixtures. They are not the formal intruder strategy. For the V3.1
+formal randomized `zuo_bezier` policy, use the same seed for paired controller
+runs, or run the built-in 20-trial comparison. It asserts the exact same
+intruder path hash for both controllers on every seed and records all trial
+hashes, contact outcomes, fallback counts and future-position errors.
+
+```bash
+python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-policy zuo_bezier --seed 17 --out outputs/ideal_guidance/formal_zuo_seed17
+python -m algorithm.ideal_predictive_guidance --method three_point_pip --intruder-policy zuo_bezier --seed 17 --out outputs/ideal_guidance/formal_pip_seed17
+python -m tools.ideal_intruder_policy_benchmark --seed-start 17 --trials 20 --out outputs/ideal_guidance/formal_paired_17_36.json
+```

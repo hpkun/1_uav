@@ -1,6 +1,6 @@
 # Ideal three-dimensional interception simulation
 
-Protocol: `uav-ideal-interception-v3.0.0`. This is an abstract geometric
+Protocol: `uav-ideal-interception-v3.1.0`. This is an abstract geometric
 contact simulation for multi-agent decision research. A contact is a
 continuous-time distance event; the model does not simulate airframe shape,
 impulse, structural damage or real UAV collision control.
@@ -24,8 +24,14 @@ Every active entity has SI state `[x,y,z,vx,vy,vz]`. Each defender's three
 Beta actions specify a direction after subtracting 0.5 and normalizing.
 Its speed is fixed by configuration; an all-0.5 action retains the previous
 valid heading. There is no acceleration, inertia, attitude or PID model.
-Intruders are independent entities with status and activity masks. Their
-straight or piecewise-linear Bézier paths supply preset constant-speed motion;
+Intruders are independent entities with status and activity masks. By default,
+each reset samples a complete `zuo_bezier` plan with a random start near the
+configured +x anchor and two random cubic control points. Its goal `P3` is the
+protected asset point (`protected_center`); both intruders in 5v2 use that goal.
+The reference is fixed before any defender action and followed at configured
+constant speed using polyline arc length. An explicit `intruder_mode=straight`
+or `bezier` selects a legacy/test reference fixture; its `intruder_ends` do not
+define the formal policy goal. These preset paths supply constant-speed motion;
 an active intruder never waits at a path endpoint: reaching it emits
 `path_complete`, deactivates that intruder and ends the episode with
 `intruder_path_complete`. Inactive entities have zero velocity.
@@ -69,8 +75,10 @@ task event, not a physical damage model. Episode and evaluation reports record
 outcome, event categories and timestamps, member exits, protected-region
 breaches and minimum friendly separation. Each episode records the actual
 intruder start, end, speed, Bézier control points, polyline point count,
-polyline hash and path duration. A fixed scenario
-with multiple seeds is identified as one physical scenario.
+polyline hash and path duration. The formal policy additionally records its
+actual start, asset goal, control points, generation seed and policy identity
+in reset information and scenario identity. Different seeds produce different
+formal paths even when `initialization="fixed"` keeps defenders fixed.
 
 Each initialized scene also records `reference_length`, dimensionless
 `step_ratio` (reference speed × control period / horizontal scene span),
@@ -79,21 +87,44 @@ whether the path stays within bounds, and whether it enters the protected
 region. The last distinction separates bypass paths from region-crossing paths
 without using a learned policy's contact result to label the geometry.
 
-V3 defaults use `dt=0.05 s`, `max_steps=600`, a 30 s episode budget,
+V3.1 defaults use `dt=0.05 s`, `max_steps=600`, a 30 s episode budget,
 `contact_distance=0.1 m`, and 20 m/s fixed speed for
 both sides. The space spans 600 m horizontally and 120 m vertically; the
 protected cylinder has radius 20 m. `position_scale=300 m` and
 `speed_scale=20 m/s` match these scales. These values are engineering test
 settings, not calibrated physical parameters or reproduced results from Zuo
-et al. Random initialization perturbs starting positions while keeping the
-configured paths and deterministic nearest-distance task association. A terminal event can end an
+et al. Formal intruder starts always vary by seed; `initialization="random"`
+also perturbs defender starts. A terminal event can end an
 episode before the nominal 30 s budget.
 
-V3 changes the default sampling and contact geometry and replaces the former
-fixed modulo association. New snapshots and Checkpoints use V3 and reject V2
-as a training protocol. Historical V2 trajectory files remain readable for
-offline playback; they are not rewritten or silently treated as V3 training
-data. Observation and centralized state dimensions remain 68 and 66.
+V3.1 changes the default intruder policy, so new snapshots and Checkpoints
+use V3.1 and reject V3.0 training state. Historical V3.0 and V2 trajectory
+files remain readable for offline playback; they are not rewritten or
+silently treated as V3.1 training data. Observation and centralized state
+dimensions remain 68 and 66.
+
+### Intruder policy provenance and sampling
+
+Zuo et al., Section 5.1.2 supports a pre-programmed cubic Bézier path, a
+random start and new random control points per independent trial, the
+protected asset as destination, constant speed, and no defender awareness,
+evasion, reactive steering or intruder cooperation. Our arena coordinates,
+uniform start zone, control-point distribution, `1–2` intruder two-anchor
+wedge approximation, and V3.1 default `0.05 s / 20 m/s` profile are
+project-specific adaptations. The paper does not specify a control-point
+sampling distribution.
+
+The project defaults are `intruder_start_jitter_m=5` and
+`intruder_bezier_jitter_ratio=0.04`. For each start `P0`, `P1` and `P2` begin
+at one and two thirds of the span to the asset, then receive independent
+bounded uniform offsets in two perpendicular lateral/vertical directions.
+The amplitude is `0.04 × ||P3-P0||` in each direction. Rejection sampling
+checks initial contact, arena bounds, nondegenerate segments and entry into
+the protected cylinder within the episode budget; it raises after
+`init_max_attempts` failures. These numerical values are engineering choices,
+not parameters reported by Zuo et al. `zuo_paper_profile()` is an optional
+paper-like numerical profile (`dt=0.1 s`, defender `25 m/s`, intruder `30 m/s`,
+contact distance `0.1 m`) and does not replace the V3.1 defaults.
 
 ## Commands
 
@@ -135,7 +166,7 @@ Generate a deterministic trace without a model or CUDA, then render the same
 file as an interactive HTML player or an MP4 (FFmpeg required):
 
 ```bash
-python -m tools.ideal_interception_trace ideal_episode.json.gz --scale 5v2 --mode bezier --initialization random --seed 17
+python -m tools.ideal_interception_trace ideal_episode.json.gz --scale 5v2 --seed 17
 python -m tools.ideal_interception_replay ideal_episode.json.gz ideal_episode.html --view 3d
 python -m tools.ideal_interception_replay ideal_episode.json.gz ideal_episode.mp4 --view top --fps 30
 ```

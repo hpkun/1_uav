@@ -46,6 +46,7 @@ class InterceptionEnv:
             action_semantics="defender_desired_motion_direction")
         if include_paths:
             info["intruder_paths"] = [path.specification() for path in self.paths]
+            info["intruder_plans"] = [getattr(path,"plan_metadata",None) for path in self.paths]
             info["scene_diagnostics"] = self.scene_diagnostics
         return obs,info
 

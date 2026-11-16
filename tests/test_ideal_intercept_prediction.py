@@ -59,6 +59,15 @@ def test_pip_equal_speed_linear_and_no_positive_root():
     assert set(signature.parameters)=={"history","target_index","defender_position","defender_speed"}
 
 
+def test_pip_near_tangent_roundoff_is_not_a_false_no_solution():
+    tangent=solve_constant_velocity_pip((0,0,0),20.,(10,0,0),(-20,20+1e-12,0))
+    assert tangent.status=="READY" and tangent.equation_degree==2
+    assert tangent.discriminant==0.
+    assert tangent.time_to_pip_s==pytest.approx(.5,abs=1e-10)
+    clear_miss=solve_constant_velocity_pip((0,0,0),20.,(10,0,0),(-20,21,0))
+    assert clear_miss.status=="NO_POSITIVE_PIP_SOLUTION"
+
+
 def test_three_point_velocity_and_acceleration_diagnostic_only():
     history=history_for((30,4,2),(-20,1,0),(0,4,2))
     result=estimate_three_point_pip_from_history(history,0,(-100,-30,50),20.)

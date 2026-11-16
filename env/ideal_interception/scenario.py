@@ -1,4 +1,4 @@
-"""Seeded bilateral scenario construction and fixed task association."""
+"""Seeded bilateral scenarios with event-driven nearest-distance association."""
 from dataclasses import asdict
 import hashlib
 import json
@@ -7,6 +7,7 @@ import numpy as np
 from .trajectory import Reference
 from .geometry import region_entry
 from .assignment import nearest_distance_assignment
+from .intruder_policy import sample_zuo_bezier_plan
 
 
 def inside_region(position, config):
@@ -72,10 +73,24 @@ def initialize(config, seed):
     failure = None
     for _ in range(config.init_max_attempts):
         defender_positions = np.asarray(config.defender_starts[:d],float).copy()
-        intruder_positions = np.asarray(config.intruder_starts[:intr],float).copy()
         if config.initialization == "random":
             defender_positions += rng.uniform(-config.random_range,config.random_range,defender_positions.shape)
-            intruder_positions += rng.uniform(-config.random_range,config.random_range,intruder_positions.shape)
+        if config.intruder_policy=="zuo_bezier":
+            try:
+                plans=[sample_zuo_bezier_plan(config,j,rng,seed_id) for j in range(intr)]
+            except ValueError:
+                failure="invalid cubic Bezier candidate"
+                continue
+            intruder_positions=np.asarray([plan.start for plan in plans],float)
+            paths=[plan.reference for plan in plans]
+        else:
+            plans=[]
+            intruder_positions = np.asarray(config.intruder_starts[:intr],float).copy()
+            if config.initialization == "random":
+                intruder_positions += rng.uniform(-config.random_range,config.random_range,intruder_positions.shape)
+            paths=[Reference(intruder_positions[j],config.intruder_ends[j],
+                             config.intruder_speeds[j],config.intruder_mode,"stop")
+                   for j in range(intr)]
         positions = np.concatenate((defender_positions,intruder_positions))
         if np.any(positions <= config.lower) or np.any(positions >= config.upper):
             failure = "member outside region"
@@ -87,12 +102,14 @@ def initialize(config, seed):
         if any(inside_region(position,config) for position in intruder_positions):
             failure = "intruder starts inside protected region"
             continue
+        if plans and not diagnostics(config,paths)["scenario_validity"]["region_crossing"]:
+            failure="intruder plan does not cross protected region within episode budget"
+            continue
         break
     else:
         raise ValueError(f"initialization failed after {config.init_max_attempts} attempts: {failure}")
-    paths = [Reference(intruder_positions[j],config.intruder_ends[j],
-                       config.intruder_speeds[j],config.intruder_mode,"stop")
-             for j in range(intr)]
+    for plan in plans:
+        plan.reference.plan_metadata=plan.metadata()
     defenders = np.zeros((5,6),float)
     intruders = np.zeros((2,6),float)
     directions = np.asarray(config.defender_directions[:d],float)
@@ -108,7 +125,9 @@ def initialize(config, seed):
     for key in ("seed","initialization","random_range","init_max_attempts"):
         identity.pop(key)
     identity = dict(config=identity,defenders=defenders.tolist(),intruders=intruders.tolist(),
-                    assignment=assignment,paths=[path.specification() for path in paths])
+                    assignment=assignment,paths=[path.specification() for path in paths],
+                    policy=config.intruder_policy,
+                    plans=[path.plan_metadata for path in paths] if plans else [])
     scenario_id = hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(",",":"),
                                              allow_nan=False).encode()).hexdigest()
     return defenders,intruders,paths,assignment,seed_id,scenario_id

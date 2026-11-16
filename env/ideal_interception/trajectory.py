@@ -5,22 +5,31 @@ import numpy as np
 
 
 class Reference:
-    def __init__(self, start, end, speed, mode, end_behavior="stop"):
+    def __init__(self, start, end, speed, mode, end_behavior="stop", control_points=None):
         start, end = np.asarray(start, float), np.asarray(end, float)
         if (start.shape != (3,) or end.shape != (3,) or not np.isfinite(start).all()
                 or not np.isfinite(end).all() or not math.isfinite(speed) or speed <= 0
                 or mode not in ("straight", "bezier") or end_behavior not in ("stop", "ping_pong")):
             raise ValueError("invalid reference geometry, speed or mode")
         if mode == "straight":
+            if control_points is not None:
+                raise ValueError("straight reference has no control points")
             points = np.stack((start, end))
             controls = []
         else:
-            span = end - start
-            offset = np.array((-span[1], span[0], 0.))
-            if np.linalg.norm(offset) < 1e-12:
-                offset = np.array((0., 1., 0.))
-            offset = .25 * np.linalg.norm(span) * offset / np.linalg.norm(offset)
-            a, b = start + span/3 + offset, start + 2*span/3 - offset
+            if control_points is None:
+                # Historical fixture/replay geometry only; not the formal policy.
+                span = end - start
+                offset = np.array((-span[1], span[0], 0.))
+                if np.linalg.norm(offset) < 1e-12:
+                    offset = np.array((0., 1., 0.))
+                offset = .25 * np.linalg.norm(span) * offset / np.linalg.norm(offset)
+                a, b = start + span/3 + offset, start + 2*span/3 - offset
+            else:
+                controls_array=np.asarray(control_points,float)
+                if controls_array.shape!=(2,3) or not np.isfinite(controls_array).all():
+                    raise ValueError("invalid cubic Bezier control points")
+                a,b=controls_array
             controls = [a.tolist(),b.tolist()]
             t = np.linspace(0., 1., 1025)[:, None]
             points = (1-t)**3*start + 3*(1-t)**2*t*a + 3*(1-t)*t*t*b + t**3*end

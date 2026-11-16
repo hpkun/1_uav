@@ -41,7 +41,8 @@ def generate(config, seed=17):
                               observations[-1]["time"],path.duration,rel_tol=0,abs_tol=1e-9))))
     return dict(protocol=PROTOCOL,environment_protocol=ENVIRONMENT_PROTOCOL,
         scenario_id=info["scenario_id"],seed=seed,environment_seed=info["seed"],
-        scale=config.scale,intruder_mode=config.intruder_mode,
+        scale=config.scale,intruder_policy=config.intruder_policy,
+        intruder_mode=config.intruder_mode,
         initialization=config.initialization,dt=config.dt,target_count=len(targets),
         config=json.loads(json.dumps(asdict(config))),targets=targets)
 
@@ -68,7 +69,7 @@ def main(argv=None):
             parser.error("--config cannot be combined with scene flags")
         config=InterceptionConfig(**json.loads(args.config.read_text(encoding="utf-8")))
     else:
-        config=InterceptionConfig(scale=args.scale or "1v1",intruder_mode=args.mode or "straight",
+        config=InterceptionConfig(scale=args.scale or "1v1",intruder_mode=args.mode,
                                   initialization=args.initialization or "fixed")
     write_observations(args.out,generate(config,args.seed))
 

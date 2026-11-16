@@ -75,7 +75,7 @@ def test_independent_multi_target_real_trace(tmp_path):
 
 
 def test_partial_terminal_frame_is_not_a_regular_sample(tmp_path):
-    base=InterceptionConfig()
+    base=InterceptionConfig(intruder_mode="straight")
     config=replace(base,dt=1.,max_steps=3,
         defender_starts=((-5.,0.,60.),)+base.defender_starts[1:],
         intruder_starts=((5.,0.,60.),)+base.intruder_starts[1:],

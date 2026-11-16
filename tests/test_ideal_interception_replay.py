@@ -12,7 +12,7 @@ from tools.ideal_interception_timeline import Timeline
 
 
 def test_trace_round_trip_and_continuous_contact(tmp_path):
-    base=InterceptionConfig()
+    base=InterceptionConfig(intruder_mode="straight")
     config=replace(base,dt=1.,max_steps=10,
         defender_starts=((-5.,0.,60.),)+base.defender_starts[1:],
         intruder_starts=((5.,0.,60.),)+base.intruder_starts[1:],
@@ -57,7 +57,7 @@ def test_record_is_deterministic_and_reference_tamper_is_rejected(tmp_path):
 
 
 def test_multitarget_member_exit_is_visible_inside_control_step(tmp_path):
-    base=InterceptionConfig(scale="5v2",dt=1.,max_steps=2)
+    base=InterceptionConfig(scale="5v2",dt=1.,max_steps=2,intruder_mode="straight")
     config=replace(base,defender_starts=((-5.,0.,60.),)+base.defender_starts[1:],
                    intruder_starts=((5.,0.,60.),base.intruder_starts[1]),
                    intruder_ends=((-50.,0.,60.),base.intruder_ends[1]))
@@ -93,7 +93,7 @@ def test_ideal_timeline_rejects_v4_trace(tmp_path):
     with pytest.raises(ValueError,match="protocol"):
         Timeline(path)
     ideal=tmp_path/"ideal.json"
-    write_trace(ideal,record(InterceptionConfig(max_steps=2),7))
+    write_trace(ideal,record(InterceptionConfig(max_steps=2,intruder_mode="straight"),7))
     from tools.interception_timeline import Timeline as V4Timeline
     with pytest.raises(ValueError,match="unsupported interception trajectory"):
         V4Timeline(ideal)
@@ -102,7 +102,7 @@ def test_ideal_timeline_rejects_v4_trace(tmp_path):
 def test_html_uses_recorded_trace_without_simulation(tmp_path):
     pytest.importorskip("plotly")
     from tools.ideal_interception_replay import render_html
-    data=record(InterceptionConfig(max_steps=2),7)
+    data=record(InterceptionConfig(max_steps=2,intruder_mode="straight"),7)
     source=tmp_path/"trace.json"
     write_trace(source,data)
     target=tmp_path/"view.html"
@@ -119,7 +119,7 @@ def test_html_uses_recorded_trace_without_simulation(tmp_path):
 def test_short_mp4_uses_the_same_trace(tmp_path,view):
     from tools.ideal_interception_replay import render_mp4
     source=tmp_path/"trace.json"
-    write_trace(source,record(InterceptionConfig(max_steps=2),7))
+    write_trace(source,record(InterceptionConfig(max_steps=2,intruder_mode="straight"),7))
     target=tmp_path/f"{view}.mp4"
     render_mp4(source,target,view,fps=30)
     assert target.stat().st_size>1000
@@ -136,7 +136,7 @@ def test_html_clock_and_existing_outputs(tmp_path,monkeypatch):
     pytest.importorskip("plotly")
     from tools import ideal_interception_replay as replay
     source=tmp_path/"trace.json"
-    write_trace(source,record(InterceptionConfig(max_steps=2),7))
+    write_trace(source,record(InterceptionConfig(max_steps=2,intruder_mode="straight"),7))
     target=tmp_path/"view.html"
     replay.render_html(source,target,"altitude")
     html=target.read_text()

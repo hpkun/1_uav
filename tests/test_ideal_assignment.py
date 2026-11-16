@@ -51,11 +51,11 @@ def test_defaults_budget_reset_observations_and_snapshot():
     assert env.assignment==expected
     with pytest.raises(ValueError,match="incompatible"):
         env.restore(snapshot|{"protocol":"uav-ideal-interception-v2.0.0"})
-    assert PROTOCOL=="uav-ideal-interception-v3.0.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.1.0"
 
 
 def test_substep_contact_reassigns_surviving_members():
-    base=InterceptionConfig(scale="5v2")
+    base=InterceptionConfig(scale="5v2",intruder_mode="straight")
     config=replace(base,
         defender_starts=((-0.75,0.,60.),)+base.defender_starts[1:],
         intruder_starts=((0.75,0.,60.),)+base.intruder_starts[1:])
@@ -91,7 +91,7 @@ def test_substep_contact_reassigns_surviving_members():
 
 
 def test_terminal_contact_has_no_stale_target_assignment():
-    base=InterceptionConfig()
+    base=InterceptionConfig(intruder_mode="straight")
     config=replace(base,defender_starts=((-0.75,0.,60.),)+base.defender_starts[1:],
         intruder_starts=((0.75,0.,60.),)+base.intruder_starts[1:])
     env=InterceptionEnv(config)

@@ -24,7 +24,7 @@ def test_full_path_diagnostics_and_seed_identity():
 
 
 def test_scenario_declaration_rejects_bypass_and_late_entry():
-    base=InterceptionConfig()
+    base=InterceptionConfig(intruder_mode="straight")
     bypass=replace(base,intruder_starts=((200.,100.,60.),base.intruder_starts[1]),
                    intruder_ends=((-260.,100.,60.),base.intruder_ends[1]))
     report=InterceptionEnv(bypass).reset()[1]["scene_diagnostics"]
@@ -41,7 +41,8 @@ def test_scenario_declaration_rejects_bypass_and_late_entry():
 
 
 def test_model_free_cli_uses_full_config_and_rejects_conflicts(tmp_path):
-    config=InterceptionConfig(max_steps=2,defender_speeds=(24.,)*5)
+    config=InterceptionConfig(max_steps=2,defender_speeds=(24.,)*5,
+                              intruder_mode="straight")
     source=tmp_path/"scene.json"
     source.write_text(json.dumps(asdict(config)))
     a,b=tmp_path/"a.json",tmp_path/"b.json"

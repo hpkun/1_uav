@@ -20,13 +20,13 @@ def legacy_geometry(scale="1v1"):
         defender_starts=((-10.,-10.,10.),(-10.,0.,15.),(-10.,10.,20.),
                          (-14.,-5.,25.),(-14.,5.,30.)),
         intruder_starts=((18.,0.,15.),(18.,8.,25.)),
-        intruder_ends=((-25.,0.,15.),(-25.,8.,25.)),
+        intruder_ends=((-25.,0.,15.),(-25.,8.,25.)),intruder_mode="straight",
         protected_center=(-20.,0.,0.),protected_radius=4.,protected_height=35.,
         position_scale=30.,speed_scale=3.,random_range=1.,contact_distance=.5)
 
 
 def test_bilateral_shapes_constant_speeds_and_zero_direction():
-    env = InterceptionEnv(InterceptionConfig())
+    env = InterceptionEnv(InterceptionConfig(intruder_mode="straight"))
     obs,info = env.reset(7)
     assert obs.shape==(5,OBS_DIM) and info["centralized_state"].shape==(STATE_DIM,)
     assert info["defender_mask"].sum()==1 and info["intruder_mask"].sum()==1
@@ -200,7 +200,7 @@ def test_v3_defaults_are_valid_fixed_speed_scenarios(scale):
 
 
 def test_path_completion_exits_intruder_without_stationary_active_member():
-    config=replace(InterceptionConfig(),dt=1.,intruder_starts=((0.,0.,60.),(200.,10.,80.)),
+    config=replace(InterceptionConfig(intruder_mode="straight"),dt=1.,intruder_starts=((0.,0.,60.),(200.,10.,80.)),
                    intruder_ends=((-10.,0.,60.),(-260.,10.,80.)))
     env=InterceptionEnv(config)
     env.reset()
