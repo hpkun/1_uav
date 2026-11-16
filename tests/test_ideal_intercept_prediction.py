@@ -7,7 +7,8 @@ import pytest
 from env.ideal_interception import InterceptionConfig,InterceptionEnv
 from prediction.history import IntruderHistory
 from prediction.intercept_prediction import (estimate_zuo_prediction_from_history,
-    estimate_three_point_pip_from_history,solve_constant_velocity_pip)
+    estimate_zuo_pip_time_from_history,estimate_three_point_pip_from_history,
+    solve_constant_velocity_pip)
 
 
 def history_for(position,velocity=(0,0,0),acceleration=(0,0,0),dt=.05):
@@ -31,6 +32,39 @@ def test_zuo_paper_formula_cold_start_and_inactive():
     assert result.paper_direction_unit==pytest.approx((-1,0,0))
     history.observe(.2,[[30,0,0],[0,0,0]],[False,False],"fixture")
     assert estimate_zuo_prediction_from_history(history,0,(0,0,0),20.).status=="INACTIVE"
+
+
+def test_zuo_pip_time_uses_two_point_velocity_and_shared_solver(monkeypatch):
+    import prediction.intercept_prediction as module
+    history=IntruderHistory(.05)
+    history.observe(0.,[[100,0,70],[0,0,0]],[True,False],"fixture")
+    assert estimate_zuo_pip_time_from_history(history,0,(-100,-30,50),20.).status=="INSUFFICIENT_HISTORY"
+    history.observe(.05,[[99,0,70],[0,0,0]],[True,False],"fixture")
+    strict=estimate_zuo_prediction_from_history(history,0,(-100,-30,50),20.)
+    solver=module.solve_constant_velocity_pip
+    calls=[]
+    def checked(*args):
+        calls.append(args)
+        return solver(*args)
+    monkeypatch.setattr(module,"solve_constant_velocity_pip",checked)
+    monkeypatch.setattr(module,"zuo_lookahead_time",lambda *args: (_ for _ in ()).throw(
+        AssertionError("Eq.32 must not run in the ablation")))
+    hybrid=estimate_zuo_pip_time_from_history(history,0,(-100,-30,50),20.)
+    assert len(calls)==1 and hybrid.status=="READY"
+    assert hybrid.history_count==2 and hybrid.estimated_target_acceleration_mps2 is None
+    assert hybrid.estimated_target_velocity_mps==strict.estimated_target_velocity_mps
+    assert hybrid.horizon_kind=="constant_velocity_pip_with_zuo_velocity"
+    assert hybrid.predicted_target_position_m==pytest.approx(
+        np.asarray((99,0,70))+np.asarray(hybrid.estimated_target_velocity_mps)*hybrid.horizon_s)
+    assert hybrid.horizon_s<strict.horizon_s
+
+
+def test_zuo_pip_time_no_positive_root_keeps_velocity_diagnostic():
+    history=history_for((10,0,0),(20,0,0))
+    result=estimate_zuo_pip_time_from_history(history,0,(0,0,0),20.)
+    assert result.status=="NO_POSITIVE_PIP_SOLUTION"
+    assert result.predicted_target_position_m is None and result.horizon_s is None
+    assert result.estimated_target_velocity_mps==pytest.approx((20,0,0))
 
 
 def test_pip_quadratic_3d_geometry_and_earliest_positive_root():

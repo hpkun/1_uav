@@ -34,7 +34,7 @@ different defender action invalidates the assumption, so neither field is
 treated as a real event. `ContactForecast.predicted_contact_time` instead
 describes the first contact of two explicitly supplied virtual trajectories.
 
-`prediction.intercept_prediction` exposes two additional 1v1 estimates
+`prediction.intercept_prediction` exposes three additional 1v1 estimates
 using only `IntruderHistory` positions. `estimate_zuo_prediction_from_history`
 reuses the paper look-ahead time and the existing two-point linear position
 predictor. Its `horizon_kind` is `paper_lookahead`; it is never presented as
@@ -51,6 +51,16 @@ recorded for diagnosis but never extrapolated in online PIP. This is
 center-coincidence geometry; actual 0.1 m contact is decided by the unchanged
 continuous event detector. The independent two-point constant-velocity contact
 diagnostic and offline fixed-horizon quadratic prediction remain available.
+
+`estimate_zuo_pip_time_from_history` is the separate `zuo_tp_pip_time`
+ablation. It keeps Zuo-TP's two observed positions, Eq. (30) velocity, Eq. (31)
+linear point, and direction mapping. It replaces only Eq. (32)'s look-ahead
+time with the existing constant-velocity PIP solver's earliest positive root.
+Its label is **Zuo-TP + PIP-Time**, not the strict paper baseline. The first
+step uses pure pursuit; a step with no positive PIP root also uses the current
+target position, then retries from fresh history on the next step. The solver
+degree and discriminant are recorded. No reference future position enters the
+online controller.
 
 The offline tool reads validated `uav-ideal-trace-v1` and v2 replays. New v2
 frames store the environment's actual runtime assignment, which the evaluator
@@ -80,14 +90,15 @@ Prediction horizons longer than available future observations have no score.
 The CPU-only runner samples the current environment state each 0.05 s,
 updates `IntruderHistory`, reads the current assignment and chooses a unit
 direction toward the newly predicted target position. It maps that direction
-through the existing Beta-compatible `[0,1]` action interface. Zuo needs one
-warmup pure-pursuit step; ThreePoint-PIP needs two. On a genuinely
+through the existing Beta-compatible `[0,1]` action interface. Strict Zuo-TP
+and Zuo-TP + PIP-Time need one warmup pure-pursuit step; ThreePoint-PIP needs two. On a genuinely
 invalid prediction or direction, the current observed target position is
 used for that step. No previous prediction is reused. The runner is separate
 from MAPPO, training, reward and event detection.
 
 ```bash
 python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-mode straight --seed 17 --out outputs/ideal_guidance/zuo_pip_canonical_straight_seed17
+python -m algorithm.ideal_predictive_guidance --method zuo_tp_pip_time --intruder-mode straight --seed 17 --out outputs/ideal_guidance/zuo_pip_time_canonical_straight_seed17
 python -m algorithm.ideal_predictive_guidance --method three_point_pip --intruder-mode straight --seed 17 --out outputs/ideal_guidance/three_point_pip_canonical_straight_seed17
 python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-mode bezier --seed 17 --out outputs/ideal_guidance/zuo_pip_canonical_bezier_seed17
 python -m algorithm.ideal_predictive_guidance --method three_point_pip --intruder-mode bezier --seed 17 --out outputs/ideal_guidance/three_point_pip_canonical_bezier_seed17
@@ -118,7 +129,7 @@ within the recorded reference duration**. Each result therefore reports
 are counted separately as `prediction_beyond_reference_steps` and its fraction;
 the reference is never extended to manufacture truth. Paired mean, P95 and
 maximum errors use only the scored steps, so coverage must accompany any
-Zuo-TP versus ThreePoint-PIP error comparison. These are Zuo-TP evaluations
+three-method error comparison. These are Zuo-TP evaluations
 under the project's unified 1v1 environment, not a reproduction of the
 paper's full multi-UAV experiments or numerical profile.
 
@@ -126,11 +137,17 @@ The straight and deterministic Bézier cases above are analytical/controlled
 guidance fixtures. They are not the formal intruder strategy. For the V3.2
 formal randomized `zuo_bezier` policy, use the same seed for paired controller
 runs, or run the built-in 20-trial comparison. It asserts the exact same
-intruder path hash for both controllers on every seed and records all trial
-hashes, contact outcomes, fallback counts and future-position errors.
+intruder path hash for all three controllers on every seed and records all trial
+hashes, contact outcomes, fallback counts and future-position errors. The
+hybrid result additionally records, at its own decision states, the strict
+Zuo time and point calculated offline. A separate offline analysis calls the
+same PIP solver on two-point and three-point velocity estimates at identical
+recorded states, reporting mean velocity, horizon and PIP-point differences.
+These diagnostics are attached after the episode and never affect actions.
 
 ```bash
 python -m algorithm.ideal_predictive_guidance --method zuo_tp --intruder-policy zuo_bezier --seed 17 --out outputs/ideal_guidance/formal_zuo_seed17
+python -m algorithm.ideal_predictive_guidance --method zuo_tp_pip_time --intruder-policy zuo_bezier --seed 17 --out outputs/ideal_guidance/formal_zuo_pip_time_seed17
 python -m algorithm.ideal_predictive_guidance --method three_point_pip --intruder-policy zuo_bezier --seed 17 --out outputs/ideal_guidance/formal_pip_seed17
 python -m tools.ideal_intruder_policy_benchmark --seed-start 17 --trials 20 --out outputs/ideal_guidance/formal_paired_17_36.json
 ```

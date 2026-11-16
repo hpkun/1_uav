@@ -11,12 +11,12 @@ from env.ideal_interception.geometry import closest
 from env.ideal_interception.trajectory import Reference
 from prediction.history import IntruderHistory
 from prediction.intercept_prediction import (estimate_zuo_prediction_from_history,
-    estimate_three_point_pip_from_history)
+    estimate_zuo_pip_time_from_history,estimate_three_point_pip_from_history)
 from tools.ideal_interception_trace import record, write_trace
-from .ideal_guidance_analysis import analyze_trace
+from .ideal_guidance_analysis import analyze_trace,compare_pip_estimators_on_trace
 
 
-METHODS=("zuo_tp","three_point_pip")
+METHODS=("zuo_tp","zuo_tp_pip_time","three_point_pip")
 
 
 def canonical_1v1_config(intruder_mode="straight"):
@@ -47,7 +47,7 @@ def _minimum_pair_distance(trace):
 def run_episode(config=None,method="zuo_tp",seed=17):
     config=canonical_1v1_config() if config is None else config
     if config.scale!="1v1" or method not in METHODS:
-        raise ValueError("deterministic guidance supports 1v1 and two named methods only")
+        raise ValueError("deterministic guidance supports 1v1 and three named methods only")
     history=IntruderHistory(config.dt,slots=2)
     controls=[]
     def decide(info):
@@ -62,6 +62,10 @@ def run_episode(config=None,method="zuo_tp",seed=17):
             prediction=estimate_zuo_prediction_from_history(history,target_index,own,
                 config.defender_speeds[0])
             active_mode="ZUO_TP"
+        elif method=="zuo_tp_pip_time":
+            prediction=estimate_zuo_pip_time_from_history(history,target_index,own,
+                config.defender_speeds[0])
+            active_mode="ZUO_TP_PIP_TIME"
         else:
             prediction=estimate_three_point_pip_from_history(history,target_index,own,
                 config.defender_speeds[0])
@@ -104,7 +108,7 @@ def run_episode(config=None,method="zuo_tp",seed=17):
     trace=record(config,seed,actions=decide)
     minimum_separation=_minimum_pair_distance(trace)
     horizons=[row["prediction_horizon_s"] for row in controls
-              if row["guidance_mode"] in ("ZUO_TP","THREE_POINT_PIP")]
+              if row["guidance_mode"] in ("ZUO_TP","ZUO_TP_PIP_TIME","THREE_POINT_PIP")]
     summary=dict(method=method,seed=seed,intruder_policy=config.intruder_policy,
         intruder_mode=config.intruder_mode,
         intruder_path_sha256=trace["references"][0]["specification"]["polyline_sha256"],
@@ -113,7 +117,7 @@ def run_episode(config=None,method="zuo_tp",seed=17):
             for event in trace["result"]["events"]),
         minimum_separation_m=minimum_separation,
         minimum_center_separation_m=minimum_separation,
-        predictive_steps=sum(row["guidance_mode"] in ("ZUO_TP","THREE_POINT_PIP") for row in controls),
+        predictive_steps=sum(row["guidance_mode"] in ("ZUO_TP","ZUO_TP_PIP_TIME","THREE_POINT_PIP") for row in controls),
         warmup_steps=sum(row["guidance_mode"]=="WARMUP_PP" for row in controls),
         fallback_steps=sum(row["guidance_mode"]=="FALLBACK_PP" for row in controls),
         mean_prediction_horizon_s=float(np.mean(horizons)) if horizons else None,
@@ -122,6 +126,8 @@ def run_episode(config=None,method="zuo_tp",seed=17):
         no_positive_pip_solution_steps=sum(row["prediction_status"]=="NO_POSITIVE_PIP_SOLUTION"
                                            for row in controls))
     summary.update(analyze_trace(trace,config))
+    if method=="zuo_tp_pip_time":
+        summary.update(compare_pip_estimators_on_trace(trace,config))
     return summary,trace
 
 

@@ -12,7 +12,8 @@ from tools.ideal_interception_trace import record,write_trace
 
 
 @pytest.mark.parametrize("method,active_mode,warmup",[
-    ("zuo_tp","ZUO_TP",1),("three_point_pip","THREE_POINT_PIP",2)])
+    ("zuo_tp","ZUO_TP",1),("zuo_tp_pip_time","ZUO_TP_PIP_TIME",1),
+    ("three_point_pip","THREE_POINT_PIP",2)])
 def test_straight_1v1_guidance_trace_and_actions(tmp_path,method,active_mode,warmup):
     summary,trace=run_episode(canonical_1v1_config(),method,17)
     assert summary["steps"]<=600 and summary["steps"]==len(trace["frames"])-1
@@ -108,6 +109,49 @@ def test_no_positive_pip_root_falls_back_to_current_target():
     assert all(row["guidance_mode"]=="FALLBACK_PP" and
                row["fallback_reason"]=="NO_POSITIVE_PIP_SOLUTION" and
                row["predicted_target_position_m"] is None for row in fallback)
+
+
+def test_zuo_pip_time_retries_after_no_root_and_straight_estimators_agree():
+    base=canonical_1v1_config()
+    config=replace(base,defender_starts=((0.,-30.,50.),)+base.defender_starts[1:],
+        intruder_starts=((-179.7,0.,70.),)+base.intruder_starts[1:])
+    summary,trace=run_episode(config,"zuo_tp_pip_time",17)
+    assert summary["warmup_steps"]==1
+    assert summary["no_positive_pip_solution_steps"]>=2
+    for frame in trace["frames"][2:4]:
+        control=frame["control"]
+        assert control["guidance_mode"]=="FALLBACK_PP"
+        assert control["fallback_reason"]=="NO_POSITIVE_PIP_SOLUTION"
+        assert control["decision_time_s"]==pytest.approx(trace["frames"][frame["step"]-1]["time"])
+    canonical,episode=run_episode(base,"zuo_tp_pip_time",17)
+    assert canonical["outcome"]=="all_intercepted"
+    assert canonical["pip_estimator_comparison_steps"]>0
+    assert canonical["mean_velocity_estimate_difference_mps"]<1e-10
+    assert canonical["mean_pip_horizon_difference_s"]<1e-9
+    assert canonical["mean_pip_point_difference_m"]<1e-9
+    assert canonical["absolute_horizon_error_s_max"]<1e-9
+    assert canonical["predicted_point_error_m_max"]<1e-8
+    assert all("future_position_error_m" not in frame["control"] for frame in episode["frames"][1:])
+
+
+def test_formal_three_method_pairing_and_first_ready_single_variable():
+    config=InterceptionConfig(scale="1v1")
+    results={method:run_episode(config,method,17) for method in
+             ("zuo_tp","zuo_tp_pip_time","three_point_pip")}
+    summaries={method:result[0] for method,result in results.items()}
+    assert len({row["intruder_path_sha256"] for row in summaries.values()})==1
+    assert all("first_hybrid_ready_prediction" not in summaries[method]
+               for method in ("zuo_tp","three_point_pip"))
+    strict=summaries["zuo_tp"]["first_zuo_ready_prediction"]
+    hybrid=summaries["zuo_tp_pip_time"]["first_hybrid_ready_prediction"]
+    assert strict["decision_time_s"]==hybrid["decision_time_s"]
+    assert strict["defender_position_m"]==hybrid["defender_position_m"]
+    assert strict["intruder_position_m"]==hybrid["intruder_position_m"]
+    assert strict["estimated_target_velocity_mps"]==hybrid["estimated_target_velocity_mps"]
+    assert hybrid["horizon_s"]<strict["horizon_s"]
+    assert hybrid["pip_equation_degree"] in (1,2)
+    assert summaries["zuo_tp"]["warmup_steps"]==summaries["zuo_tp_pip_time"]["warmup_steps"]==1
+    assert summaries["three_point_pip"]["warmup_steps"]==2
 
 
 def test_v2_records_runtime_assignment_and_v1_read_policy(tmp_path):

@@ -123,6 +123,41 @@ def solve_constant_velocity_pip(defender_position, defender_speed, target_positi
     return PIPSolution("READY",horizon,_tuple(point),discriminant,degree)
 
 
+def estimate_zuo_pip_time_from_history(history, target_index, defender_position,
+                                       defender_speed):
+    """Two-point Zuo velocity and linear point; only Eq.(32) time is replaced."""
+    defender=_vector(defender_position)
+    status=history.method_status(target_index,"zuo_linear")
+    if status!="READY":
+        return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+                            history,target_index,status)
+    times,positions=history.observed(target_index)
+    velocity=(positions[-1]-positions[-2])/(times[-1]-times[-2])
+    if not np.isfinite(velocity).all():
+        return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+                            history,target_index,"INVALID_PREDICTION")
+    solution=solve_constant_velocity_pip(defender,defender_speed,positions[-1],velocity)
+    horizon=solution.time_to_pip_s
+    point=None
+    if solution.status=="READY":
+        try:
+            point=predict_zuo_at(positions[-2:],history.dt,[horizon])[0]
+        except FloatingPointError:
+            return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+                                history,target_index,"INVALID_PREDICTION")
+        if (not np.isfinite(point).all() or np.linalg.norm(
+                point-np.asarray(solution.predicted_interception_position_m))>
+                1e-8*max(1.,np.linalg.norm(point))):
+            return _unavailable("zuo_tp_pip_time","constant_velocity_pip_with_zuo_velocity",
+                                history,target_index,"INVALID_PREDICTION")
+    return InterceptPrediction("zuo_tp_pip_time",solution.status,float(times[-1]),
+        horizon,float(times[-1]+horizon) if horizon is not None else None,
+        _tuple(point) if point is not None else None,_tuple(velocity),None,
+        "constant_velocity_pip_with_zuo_velocity",None,2,
+        pip_discriminant=solution.discriminant,
+        pip_equation_degree=solution.equation_degree)
+
+
 def estimate_three_point_pip_from_history(history, target_index, defender_position,
                                           defender_speed):
     """Three observations estimate current velocity; only that velocity enters PIP."""

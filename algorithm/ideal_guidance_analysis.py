@@ -5,6 +5,7 @@ import numpy as np
 
 from env.ideal_interception.trajectory import Reference
 from prediction.intercept_prediction import solve_constant_velocity_pip
+from prediction.intercept_time import zuo_lookahead_time
 
 
 def _stats(values, prefix):
@@ -37,6 +38,10 @@ def analyze_trace(trace, config):
     zuo_in_bounds=[]
     zuo_below=zuo_above=0
     first_zuo_ready=None
+    first_hybrid_ready=None
+    hybrid_horizon_differences=[]
+    hybrid_point_differences=[]
+    hybrid_ratios=[]
     last_predicted_center_time=None
     for before,after in zip(frames[:-1],frames[1:]):
         control=after["control"]
@@ -91,6 +96,33 @@ def analyze_trace(trace, config):
                         current_los_direction_unit=los.tolist(),
                         predicted_direction_unit=direction.tolist(),alignment=alignment,
                         angle_deg=math.degrees(math.acos(float(np.clip(alignment,-1,1)))))
+            elif control["method"]=="zuo_tp_pip_time":
+                velocity=np.asarray(control["estimated_target_velocity_mps"],float)
+                strict_horizon=zuo_lookahead_time(own,target,config.defender_speeds[0],
+                                                  float(np.linalg.norm(velocity)))
+                strict_point=target+velocity*strict_horizon
+                difference=horizon-strict_horizon
+                point_difference=float(np.linalg.norm(point-strict_point))
+                ratio=horizon/strict_horizon
+                offline.update(strict_zuo_horizon_same_state_s=strict_horizon,
+                    pip_vs_zuo_horizon_difference_s=difference,
+                    absolute_pip_vs_zuo_horizon_difference_s=abs(difference),
+                    horizon_ratio=ratio,
+                    predicted_point_difference_from_strict_zuo_m=point_difference)
+                hybrid_horizon_differences.append(difference)
+                hybrid_point_differences.append(point_difference)
+                hybrid_ratios.append(ratio)
+                if first_hybrid_ready is None:
+                    los=(target-own)/distance
+                    direction=np.asarray(control["guidance_direction_unit"],float)
+                    alignment=float(los@direction)
+                    first_hybrid_ready=dict(decision_time_s=time,
+                        defender_position_m=own.tolist(),intruder_position_m=target.tolist(),
+                        estimated_target_velocity_mps=velocity.tolist(),
+                        horizon_s=horizon,predicted_point_m=point.tolist(),
+                        guidance_direction_unit=direction.tolist(),
+                        alignment=alignment,pip_equation_degree=control["pip_equation_degree"],
+                        pip_discriminant=control["pip_discriminant"])
             if config.intruder_mode=="straight":
                 true_velocity=reference.sample(time)[1]
                 oracle=solve_constant_velocity_pip(own,config.defender_speeds[0],
@@ -163,8 +195,45 @@ def analyze_trace(trace, config):
         future_truth_coverage=len(future_errors)/predictive_total if predictive_total else None,
         prediction_beyond_reference_steps=beyond_reference,
         prediction_beyond_reference_fraction=beyond_reference/predictive_total if predictive_total else None)
+    if frames[1]["control"]["method"]=="zuo_tp_pip_time":
+        result.update(first_hybrid_ready_prediction=first_hybrid_ready,
+            mean_pip_vs_zuo_horizon_difference_s=(float(np.mean(hybrid_horizon_differences))
+                if hybrid_horizon_differences else None),
+            mean_absolute_pip_vs_zuo_horizon_difference_s=(float(np.mean(np.abs(hybrid_horizon_differences)))
+                if hybrid_horizon_differences else None),
+            mean_predicted_point_difference_from_strict_zuo_m=(float(np.mean(hybrid_point_differences))
+                if hybrid_point_differences else None),
+            mean_horizon_ratio=(float(np.mean(hybrid_ratios)) if hybrid_ratios else None))
     result.update(_stats(horizon_errors,"absolute_horizon_error_s"))
     result.update(_stats(point_errors,"predicted_point_error_m"))
     result.update(_stats(angle_errors,"guidance_angle_error_deg"))
     result.update(_stats(future_errors,"future_position_error_m"))
     return result
+
+
+def compare_pip_estimators_on_trace(trace,config):
+    """Offline two/three-point PIP comparison at identical recorded states."""
+    rows=[]
+    frames=trace["frames"]
+    for k in range(2,len(frames)-1):
+        before=frames[k]
+        if not before["intruder_mask"][0] or not before["defender_mask"][0]:
+            continue
+        points=np.asarray([frames[j]["intruders"][0][:3] for j in (k-2,k-1,k)])
+        velocity_two=(points[2]-points[1])/config.dt
+        velocity_three=(3*points[2]-4*points[1]+points[0])/(2*config.dt)
+        defender=before["defenders"][0][:3]
+        two=solve_constant_velocity_pip(defender,config.defender_speeds[0],points[2],velocity_two)
+        three=solve_constant_velocity_pip(defender,config.defender_speeds[0],points[2],velocity_three)
+        if two.status!="READY" or three.status!="READY":
+            continue
+        row=dict(velocity_estimate_difference_mps=float(np.linalg.norm(velocity_two-velocity_three)),
+                 pip_horizon_difference_s=abs(two.time_to_pip_s-three.time_to_pip_s),
+                 pip_point_difference_m=float(np.linalg.norm(np.asarray(
+                     two.predicted_interception_position_m)-three.predicted_interception_position_m)))
+        frames[k+1]["offline_evaluation"].update(row)
+        rows.append(row)
+    return dict(pip_estimator_comparison_steps=len(rows),
+        **{f"mean_{key}":float(np.mean([row[key] for row in rows])) if rows else None
+           for key in ("velocity_estimate_difference_mps","pip_horizon_difference_s",
+                       "pip_point_difference_m")})
