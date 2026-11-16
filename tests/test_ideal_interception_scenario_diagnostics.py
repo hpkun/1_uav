@@ -49,7 +49,7 @@ def test_model_free_cli_uses_full_config_and_rejects_conflicts(tmp_path):
     trace_main([str(a),"--config",str(source),"--seed","31"])
     trace_main([str(b),"--config",str(source),"--seed","31"])
     assert json.loads(a.read_text())==json.loads(b.read_text())
-    assert json.loads(a.read_text())["config"]["defender_speeds"]==[24.]*5
+    assert json.loads(a.read_text())["config"]["defender_speeds"]==[24.]*5+[20.]
     with pytest.raises(SystemExit):
         trace_main([str(tmp_path/"bad.json"),"--config",str(source),"--scale","1v1"])
     source.write_text('{"unknown_parameter": 1}')

@@ -3,13 +3,13 @@ import numpy as np
 import pytest
 
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
-from env.ideal_interception.config import OBS_DIM, STATE_DIM
+from env.ideal_interception.config import OBS_DIM, STATE_DIM,DEFENDER_SLOTS
 from env.ideal_interception.geometry import region_entry
 from env.ideal_interception.trajectory import Reference
 
 
 def actions(direction=(.5,.5,.5)):
-    return np.tile(direction,(5,1))
+    return np.tile(direction,(DEFENDER_SLOTS,1))
 
 
 def legacy_geometry(scale="1v1"):
@@ -28,7 +28,7 @@ def legacy_geometry(scale="1v1"):
 def test_bilateral_shapes_constant_speeds_and_zero_direction():
     env = InterceptionEnv(InterceptionConfig(intruder_mode="straight"))
     obs,info = env.reset(7)
-    assert obs.shape==(5,OBS_DIM) and info["centralized_state"].shape==(STATE_DIM,)
+    assert obs.shape==(DEFENDER_SLOTS,OBS_DIM) and info["centralized_state"].shape==(STATE_DIM,)
     assert info["defender_mask"].sum()==1 and info["intruder_mask"].sum()==1
     start = info["defenders"][0].copy()
     target = info["intruders"][0].copy()
@@ -75,7 +75,7 @@ def test_multi_target_contact_exits_pair_and_episode_continues():
     _,_,terminated,_,info = env.step(actions())
     assert not terminated and info["outcome"]=="ongoing" and info["time"]==4.
     assert not info["defender_mask"][0] and not info["intruder_mask"][0]
-    assert info["defender_mask"][1:].all() and info["intruder_mask"][1]
+    assert info["defender_mask"][1:5].all() and info["intruder_mask"][1]
     frozen = info["defenders"][0].copy()
     _,_,_,_,info = env.step(actions())
     np.testing.assert_array_equal(info["defenders"][0],frozen)
@@ -147,7 +147,7 @@ def test_two_interceptions_in_one_step_keep_other_members_moving():
     assert contacts[0]["time"]==pytest.approx(9.5/3)
     assert contacts[1]["time"]==pytest.approx(14.5/3)
     assert info["time"]==pytest.approx(14.5/3)
-    assert not info["defender_mask"][:2].any() and info["defender_mask"][2:].all()
+    assert not info["defender_mask"][:2].any() and info["defender_mask"][2:5].all()
     assert not info["intruder_mask"].any()
     assert info["defenders"][2,0] > defenders[2][0]
     assert all(e["time"] <= info["time"] for e in info["events"])
@@ -187,8 +187,8 @@ def test_v3_defaults_are_valid_fixed_speed_scenarios(scale):
     config = InterceptionConfig(scale=scale)
     env = InterceptionEnv(config)
     obs,info = env.reset(17)
-    assert obs.shape==(5,68)
-    assert info["centralized_state"].shape==(66,)
+    assert obs.shape==(DEFENDER_SLOTS,OBS_DIM)
+    assert info["centralized_state"].shape==(STATE_DIM,)
     assert np.isfinite(obs).all() and np.isfinite(info["centralized_state"]).all()
     assert len(info["intruder_paths"])==config.intruder_count
     assert all(path["duration"]>0 and path["polyline_sha256"] for path in info["intruder_paths"])

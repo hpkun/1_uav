@@ -7,7 +7,7 @@ import pytest
 from algorithm.ideal_predictive_guidance import run_episode, main as guidance_main
 from algorithm.ideal_interception import evaluation_protocol
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
-from env.ideal_interception.config import PROTOCOL, zuo_paper_profile
+from env.ideal_interception.config import PROTOCOL, zuo_paper_profile,DEFENDER_SLOTS
 from tools.ideal_interception_timeline import Timeline
 from tools.ideal_interception_trace import record, write_trace
 
@@ -99,7 +99,8 @@ def test_reference_is_defender_independent_and_never_replanned():
     env=InterceptionEnv(config)
     env.reset(17)
     before=env.paths[0].specification()
-    for action in (np.zeros((5,3)),np.ones((5,3)),np.full((5,3),.5)):
+    for action in (np.zeros((DEFENDER_SLOTS,3)),np.ones((DEFENDER_SLOTS,3)),
+                   np.full((DEFENDER_SLOTS,3),.5)):
         if env.outcome!="ongoing":
             break
         env.step(action)
@@ -112,27 +113,40 @@ def test_unopposed_target_breaches_before_path_completion():
     env=InterceptionEnv(config)
     env.reset(17)
     while env.outcome=="ongoing":
-        _,_,_,_,info=env.step(np.full((5,3),.5))
+        _,_,_,_,info=env.step(np.full((DEFENDER_SLOTS,3),.5))
     assert info["outcome"]=="breach"
     assert any(event["kind"]=="region_breach" for event in info["events"])
     assert all(event["kind"] not in ("path_complete","boundary_exit")
                for event in env.events)
 
 
-def test_paper_profile_and_historical_v3_trace(tmp_path):
+@pytest.mark.parametrize("historical_protocol",[
+    "uav-ideal-interception-v3.0.0","uav-ideal-interception-v3.1.0",
+    "uav-ideal-interception-v3.2.0"])
+def test_paper_profile_and_historical_v3_trace(tmp_path,historical_protocol):
     default=InterceptionConfig()
     paper=zuo_paper_profile()
     assert (default.dt,default.defender_speeds[0],default.intruder_speeds[0])==(.05,20.,20.)
     assert (paper.dt,paper.defender_speeds[0],paper.intruder_speeds[0],
             paper.contact_distance)==(.1,25.,30.,.1)
-    assert PROTOCOL=="uav-ideal-interception-v3.2.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.3.0"
     protocol=evaluation_protocol(default,[{"scenario_id":"a"},{"scenario_id":"b"}])
     assert protocol["kind"]=="randomized_intruder_plans"
     assert protocol["unique_scenarios"]==2
     assert "intruder_bezier_control_points" in protocol["randomized"]
     legacy=InterceptionConfig(intruder_mode="straight",max_steps=2)
     trace=record(legacy,17)
-    trace["environment_protocol"]="uav-ideal-interception-v3.0.0"
+    trace["environment_protocol"]=historical_protocol
+    for key in ("defender_speeds","defender_starts","defender_directions"):
+        trace["config"][key]=trace["config"][key][:5]
+    for key in ("intruder_speeds","intruder_starts","intruder_ends"):
+        trace["config"][key]=trace["config"][key][:2]
+    for frame in trace["frames"]:
+        for key in ("defenders","defender_mask","executed_velocities"):
+            if key in frame:
+                frame[key]=frame[key][:5]
+        for key in ("intruders","intruder_mask"):
+            frame[key]=frame[key][:2]
     for key in ("intruder_policy","intruder_start_jitter_m","intruder_bezier_jitter_ratio"):
         trace["config"].pop(key)
     path=tmp_path/"historical_v3.json"

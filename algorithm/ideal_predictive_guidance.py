@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from env.ideal_interception import InterceptionConfig
+from env.ideal_interception.config import DEFENDER_SLOTS,INTRUDER_SLOTS
 from env.ideal_interception.geometry import closest
 from env.ideal_interception.trajectory import Reference
 from prediction.history import IntruderHistory
@@ -48,7 +49,7 @@ def run_episode(config=None,method="zuo_tp",seed=17):
     config=canonical_1v1_config() if config is None else config
     if config.scale!="1v1" or method not in METHODS:
         raise ValueError("deterministic guidance supports 1v1 and three named methods only")
-    history=IntruderHistory(config.dt,slots=2)
+    history=IntruderHistory(config.dt,slots=INTRUDER_SLOTS)
     controls=[]
     def decide(info):
         time=float(info["time"])
@@ -93,7 +94,7 @@ def run_episode(config=None,method="zuo_tp",seed=17):
         if not np.isfinite(length) or length<=1e-12:
             raise FloatingPointError("no finite 1v1 guidance direction")
         direction=delta/length
-        action=np.full((5,3),.5)
+        action=np.full((DEFENDER_SLOTS,3),.5)
         action[0]=.5+.5*direction
         control=dict(decision_time_s=time,method=method,guidance_mode=mode,
             assigned_target=target_index,prediction_status=prediction.status,

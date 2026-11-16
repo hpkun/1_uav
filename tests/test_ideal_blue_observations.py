@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from env.ideal_interception import InterceptionConfig,InterceptionEnv
+from env.ideal_interception.config import DEFENDER_SLOTS
 from tools.ideal_blue_observations import generate,main
 
 
@@ -32,7 +33,7 @@ def test_blue_path_outlives_red_terminal_event():
     config=replace(base,defender_starts=((294.,-50.,60.),)+base.defender_starts[1:])
     env=InterceptionEnv(config)
     _,info=env.reset(17)
-    action=np.full((5,3),.5)
+    action=np.full((DEFENDER_SLOTS,3),.5)
     action[0]=[1.,.5,.5]
     for _ in range(10):
         _,_,done,_,info=env.step(action)

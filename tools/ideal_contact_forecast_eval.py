@@ -29,7 +29,7 @@ def evaluate(source, horizon_steps=2):
     assignment = None
     initial_assignment = None
     previous_masks = None
-    history = IntruderHistory(dt, slots=2)
+    history = IntruderHistory(dt, slots=timeline.intruder_slots)
     history.reset(data["scenario_id"])
     frames = timeline.frames
     rows = []
@@ -62,7 +62,8 @@ def evaluate(source, horizon_steps=2):
                     continue
                 future = list(target.future_times)
                 real = [event for event in timeline.events if event["kind"] == "interception_contact"
-                        and event["members"] == [i, 5+j] and time < event["time"] <= future[-1]+1e-9]
+                        and event["members"] == [i, timeline.defender_slots+j]
+                        and time < event["time"] <= future[-1]+1e-9]
                 event = real[0] if real else None
                 if event is not None and event["time"] < future[-1]:
                     future = [t for t in future if t < event["time"]-1e-9] + [float(event["time"])]
@@ -75,7 +76,8 @@ def evaluate(source, horizon_steps=2):
                 if complete:
                     states = [timeline.at(t) for t in (time, *future) if event is None or t < event["time"]-1e-9]
                     by_id = [{entity["id"]: entity for entity in state["entities"]} for state in states]
-                    complete = all(row[i]["active"] and row[5+j]["active"] for row in by_id)
+                    complete = all(row[i]["active"] and row[timeline.defender_slots+j]["active"]
+                                   for row in by_id)
                 if complete:
                     track = [row[i]["position"] for row in by_id]
                     if event is not None:

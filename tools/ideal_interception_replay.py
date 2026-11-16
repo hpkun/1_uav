@@ -81,6 +81,7 @@ def render_html(source,output,view="3d",overwrite=False):
                          line=dict(color="#55a868",width=2)))
     for j,reference in enumerate(timeline.references):
         data.append(line(reference[0],mode="lines",name=f"I{j} (Blue Intruder) reference",
+                         showlegend=False,
                          line=dict(color=intruder_reference_color(),dash="dash",width=3),opacity=.55))
     static=len(data)
     def dynamic(k):
@@ -91,9 +92,9 @@ def render_html(source,output,view="3d",overwrite=False):
             history=np.array([sample["entities"][[e["id"] for e in sample["entities"]].index(member)]["position"]
                               for sample in rows[:k+1]])
             color=colors[member]
-            label=f"{entity['name']} ({ROLE_LABELS[entity['role']]})"
+            label=entity["name"]
             traces.append(line(history,mode="lines",name=f"{label} actual",
-                               line=dict(color=color,width=3)))
+                               showlegend=False,line=dict(color=color,width=3)))
             traces.append(line([entity["position"]] if entity["active"] else [],mode="markers",
                                name=label,marker=dict(color=color,size=7)))
             velocity=np.asarray(entity["velocity"])
@@ -113,7 +114,8 @@ def render_html(source,output,view="3d",overwrite=False):
             for k,t in enumerate(times)]
     fig=go.Figure(data=data,frames=frames)
     label={"3d":"3D Overview","top":"XY Top View","altitude":"XZ Side View"}[view]
-    fig.update_layout(title=f"{label} | {timeline.data['scenario_id'][:12]}",height=700)
+    fig.update_layout(title=f"{label} | Red Defender / Blue Intruder | {timeline.data['scenario_id'][:12]}",
+                      height=700,legend=dict(orientation="h",y=1.12,x=0))
     if is3d:
         fig.update_layout(scene=dict(aspectmode="data",xaxis_title="x (m)",yaxis_title="y (m)",
                                      zaxis_title="z (m)"))
@@ -164,6 +166,10 @@ document.getElementById('next').onclick=()=>{pause();show(keys[Math.min(keys.len
 show(0);
 """.replace("TIMES",times_json).replace("KEYS",keys_json)
     graph=fig.to_html(full_html=False,include_plotlyjs=True,div_id="ideal-plot")
+    fixed=timeline.data.get("original_assignment",{})
+    assignment_text=("Fixed assignment: "+", ".join(f"D{i}→I{j}" for i,j in sorted(
+        ((int(i),int(j)) for i,j in fixed.items()))) if
+        timeline.data.get("config",{}).get("assignment_policy")=="hungarian_fixed" else "")
     html=("<!doctype html><meta charset='utf-8'><title>Ideal interception replay</title>"
           "<style>body{font:15px system-ui;margin:16px}#clock{width:45vw}</style>"
           "<button id='play'>Play</button><button id='pause'>Pause</button>"
@@ -171,7 +177,7 @@ show(0);
           "<select id='rate'><option value='.5'>0.5×</option><option value='1' selected>1×</option>"
           "<option value='2'>2×</option><option value='4'>4×</option></select>"
           f"<input id='clock' type='range' min='0' max='{timeline.duration}' step='0.001' value='0'>"
-          "<span id='stamp'></span>"+graph+"<script>"+script+"</script>")
+          "<span id='stamp'></span><div>"+assignment_text+"</div>"+graph+"<script>"+script+"</script>")
     _atomic_text(output,html,overwrite)
 
 
@@ -231,10 +237,10 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
         axis.plot([center[0]-radius,center[0]+radius,center[0]+radius,center[0]-radius,center[0]-radius],
                   [center[2],center[2],center[2]+scene["protected_height"],
                    center[2]+scene["protected_height"],center[2]],color="#55a868")
-    for reference in timeline.references:
+    for index,reference in enumerate(timeline.references):
         coords=np.asarray([_coordinates(point,view) for point in reference[0]])
         axis.plot(*coords.T,linestyle="--",color=intruder_reference_color(),alpha=.4,
-                  label="Blue Intruder reference")
+                  label="Blue reference" if index==0 else "_nolegend_")
     axis.set_xlim(scene["lower"][0],scene["upper"][0])
     axis.set_ylim(scene["lower"][1 if view!="altitude" else 2],
                   scene["upper"][1 if view!="altitude" else 2])
@@ -248,7 +254,7 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
     artists={}
     for entity in first:
         color=colors[entity["role"]]
-        label=f"{entity['name']} ({ROLE_LABELS[entity['role']]})"
+        label=entity["name"]
         trail=axis.plot([],[],*([[]] if view=="3d" else []),color=color,linewidth=1.5,
                         label=label)[0]
         point=axis.plot([],[],*([[]] if view=="3d" else []),marker="o",linestyle="none",color=color)[0]
@@ -262,7 +268,8 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
         artist=axis.plot(*([v] for v in point),marker="x",linestyle="none",color="#e69500")[0]
         artist.set_visible(False)
         event_artists.append((event["time"],artist))
-    axis.legend(loc="upper right",fontsize=8)
+    fig.subplots_adjust(right=.78)
+    axis.legend(loc="upper left",bbox_to_anchor=(1.02,1),fontsize=7,ncol=2)
     def set_artist(artist,coordinates):
         if view=="3d":
             artist.set_data_3d(*coordinates.T)

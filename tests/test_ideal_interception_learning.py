@@ -6,7 +6,7 @@ import algorithm.ideal_interception as cli
 from algorithm.common.interception_checkpoint import read
 from algorithm.mappo.interception import TrainConfig
 from env.ideal_interception import InterceptionConfig
-from env.ideal_interception.config import OBS_DIM, STATE_DIM
+from env.ideal_interception.config import OBS_DIM, STATE_DIM,DEFENDER_SLOTS
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
@@ -16,9 +16,9 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
     model = cli.InterceptionMAPPO(training)
     assert model.actor[0].in_features==OBS_DIM
     assert model.critic[0].in_features==STATE_DIM
-    assert model.actor[-1].out_features==6 and model.critic[-1].out_features==5
-    action,logp = model.act(torch.zeros((5,OBS_DIM)).numpy(),
-                            [True,False,False,False,False],deterministic=True)
+    assert model.actor[-1].out_features==6 and model.critic[-1].out_features==DEFENDER_SLOTS
+    action,logp = model.act(torch.zeros((DEFENDER_SLOTS,OBS_DIM)).numpy(),
+                            [True]+[False]*(DEFENDER_SLOTS-1),deterministic=True)
     assert torch.all(action[1:]==.5) and torch.all(logp[1:]==0)
     folder = tmp_path/"run"
     checkpoint = cli.fit(folder,config,training,total_steps=4,until_steps=2,
@@ -36,6 +36,8 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
         read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v3.0.0"})
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v3.1.0"})
+    with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
+        read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v3.2.0"})
     cli.fit(folder,resume=True)
     last = read(checkpoint,protocol=cli.PROTOCOL)
     assert last["steps"]==4 and last["updates"]==2

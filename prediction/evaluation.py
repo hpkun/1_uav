@@ -30,7 +30,7 @@ def evaluate_trace(timeline, threshold=None):
     frames = data["frames"]
     complete = {int(frame["step"]): frame for frame in frames
                 if np.isclose(frame["time"],frame["step"]*dt,rtol=1e-9,atol=1e-9)}
-    history = IntruderHistory(dt, slots=2)
+    history = IntruderHistory(dt, slots=timeline.intruder_slots)
     history.reset(data["scenario_id"])
     rows = []
     for frame in frames:
@@ -39,7 +39,7 @@ def evaluate_trace(timeline, threshold=None):
             continue
         positions = np.asarray(frame["intruders"], dtype=float)[:,:3]
         history.observe(float(frame["time"]),positions,frame["intruder_mask"],data["scenario_id"])
-        for j in range(2):
+        for j in range(timeline.intruder_slots):
             predicted = history.predict(j)
             if predicted is None:
                 continue

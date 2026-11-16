@@ -6,7 +6,8 @@ import numpy as np
 
 from .trajectory import Reference
 from .geometry import region_entry
-from .assignment import nearest_distance_assignment
+from .assignment import nearest_distance_assignment,hungarian_fixed_assignment
+from .config import DEFENDER_SLOTS,INTRUDER_SLOTS
 from .intruder_policy import sample_zuo_bezier_plan
 
 
@@ -110,8 +111,8 @@ def initialize(config, seed):
         raise ValueError(f"initialization failed after {config.init_max_attempts} attempts: {failure}")
     for plan in plans:
         plan.reference.plan_metadata=plan.metadata()
-    defenders = np.zeros((5,6),float)
-    intruders = np.zeros((2,6),float)
+    defenders = np.zeros((DEFENDER_SLOTS,6),float)
+    intruders = np.zeros((INTRUDER_SLOTS,6),float)
     directions = np.asarray(config.defender_directions[:d],float)
     directions /= np.linalg.norm(directions,axis=1)[:,None]
     defenders[:d,:3] = defender_positions
@@ -119,8 +120,10 @@ def initialize(config, seed):
     intruders[:intr,:3] = intruder_positions
     for j,path in enumerate(paths):
         intruders[j,3:] = path.sample(0.)[1]
-    assignment = nearest_distance_assignment(
-        defenders[:,:3],intruders[:,:3],np.arange(5)<d,np.arange(2)<intr)
+    assignment = (hungarian_fixed_assignment(defenders[:d,:3],intruders[:intr,:3])
+                  if config.assignment_policy=="hungarian_fixed" else
+                  nearest_distance_assignment(defenders[:,:3],intruders[:,:3],
+                      np.arange(DEFENDER_SLOTS)<d,np.arange(INTRUDER_SLOTS)<intr))
     if config.intruder_policy=="zuo_bezier":
         # Only effective geometry and sampling settings belong to formal identity.
         fields=("scale","dt","max_steps","lower","upper","defender_speeds",
@@ -130,11 +133,24 @@ def initialize(config, seed):
                 "protected_center","protected_radius",
                 "protected_height","contact_distance")
         identity={key:getattr(config,key) for key in fields}
+        if config.scale=="6v6":
+            identity["assignment_policy"]=config.assignment_policy
     else:
         identity=asdict(config)
         for key in ("seed","initialization","random_range","init_max_attempts"):
             identity.pop(key)
-    identity = dict(config=identity,defenders=defenders.tolist(),intruders=intruders.tolist(),
+        if config.scale!="6v6":
+            identity.pop("assignment_policy")
+    if config.scale!="6v6":
+        # Preserve V3.2 scenario identities after the new inactive slots are appended.
+        for key,count in (("defender_speeds",5),("defender_starts",5),
+                          ("defender_directions",5),("intruder_speeds",2),
+                          ("intruder_starts",2),("intruder_ends",2)):
+            if key in identity:
+                identity[key]=identity[key][:count]
+    identity_defenders=defenders[:5] if config.scale!="6v6" else defenders
+    identity_intruders=intruders[:2] if config.scale!="6v6" else intruders
+    identity = dict(config=identity,defenders=identity_defenders.tolist(),intruders=identity_intruders.tolist(),
                     assignment=assignment,paths=[path.specification() for path in paths],
                     policy=config.intruder_policy,
                     plans=[path.plan_metadata for path in paths] if plans else [])

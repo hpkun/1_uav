@@ -6,6 +6,7 @@ import pytest
 
 from algorithm.ideal_predictive_guidance import run_episode,canonical_1v1_config
 from env.ideal_interception import InterceptionConfig
+from env.ideal_interception.config import DEFENDER_SLOTS,INTRUDER_SLOTS
 from tools.ideal_contact_forecast_eval import evaluate
 from tools.ideal_interception_timeline import Timeline
 from tools.ideal_interception_trace import record,write_trace
@@ -31,7 +32,7 @@ def test_straight_1v1_guidance_trace_and_actions(tmp_path,method,active_mode,war
         assert control["assigned_target"]==0
         assert control["guidance_mode"] in ("WARMUP_PP",active_mode,"FALLBACK_PP")
         action=np.asarray(control["action"])
-        assert action.shape==(5,3) and np.isfinite(action).all()
+        assert action.shape==(DEFENDER_SLOTS,3) and np.isfinite(action).all()
         assert ((0<=action)&(action<=1)).all()
         np.testing.assert_allclose(action[1:],.5)
         assert np.linalg.norm(control["guidance_direction_unit"])==pytest.approx(1.)
@@ -181,6 +182,18 @@ def test_v2_records_runtime_assignment_and_v1_read_policy(tmp_path):
     with pytest.raises(ValueError,match="lacks exact runtime assignment"):
         evaluate(legacy)
     old["environment_protocol"]="uav-ideal-interception-v2.0.0"
+    for key in ("defender_speeds","defender_starts","defender_directions"):
+        old["config"][key]=old["config"][key][:5]
+    for key in ("intruder_speeds","intruder_starts","intruder_ends"):
+        old["config"][key]=old["config"][key][:2]
+    for frame in old["frames"]:
+        for key in ("defenders","defender_mask","executed_velocities"):
+            if key in frame:
+                frame[key]=frame[key][:5]
+        for key in ("intruders","intruder_mask"):
+            frame[key]=frame[key][:2]
+    for event in [e for frame in old["frames"] for e in frame["events"]]+old["result"]["events"]:
+        event["members"]=[member-1 if member>=6 else member for member in event["members"]]
     legacy_v2=tmp_path/"v1_v2.json"
     write_trace(legacy_v2,old)
     assert evaluate(legacy_v2)["assignment_source"]=="fixed_scenario_rule"

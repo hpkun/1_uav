@@ -5,7 +5,7 @@ import pytest
 
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
 from env.ideal_interception.assignment import nearest_distance_assignment
-from env.ideal_interception.config import PROTOCOL
+from env.ideal_interception.config import PROTOCOL,DEFENDER_SLOTS,INTRUDER_SLOTS
 
 
 def test_nearest_assignment_scales_masks_ties_and_many_to_one():
@@ -42,16 +42,18 @@ def test_defaults_budget_reset_observations_and_snapshot():
     path=info["scene_diagnostics"]["paths"][0]
     assert path["duration_fraction"]==pytest.approx(path["duration"]/30.)
     for i,j in expected.items():
-        np.testing.assert_array_equal(obs[i,55:57],np.eye(2)[j])
-        np.testing.assert_array_equal(info["centralized_state"][49+2*i:51+2*i],np.eye(2)[j])
+        start=6+7*(DEFENDER_SLOTS+INTRUDER_SLOTS)
+        central=7*(DEFENDER_SLOTS+INTRUDER_SLOTS)
+        np.testing.assert_array_equal(obs[i,start:start+INTRUDER_SLOTS],np.eye(INTRUDER_SLOTS)[j])
+        np.testing.assert_array_equal(info["centralized_state"][central+INTRUDER_SLOTS*i:central+INTRUDER_SLOTS*(i+1)],np.eye(INTRUDER_SLOTS)[j])
     snapshot=env.snapshot()
-    env.step(np.full((5,3),.5))
+    env.step(np.full((DEFENDER_SLOTS,3),.5))
     assert env.output()[1]["centralized_state"][-1]==pytest.approx(1.-config.dt/30.,abs=1e-7)
     env.restore(snapshot)
     assert env.assignment==expected
     with pytest.raises(ValueError,match="incompatible"):
         env.restore(snapshot|{"protocol":"uav-ideal-interception-v2.0.0"})
-    assert PROTOCOL=="uav-ideal-interception-v3.2.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.3.0"
 
 
 def test_substep_contact_reassigns_surviving_members():
@@ -62,7 +64,7 @@ def test_substep_contact_reassigns_surviving_members():
     env=InterceptionEnv(config)
     _,initial=env.reset(17)
     assert initial["assignment"][0]==0
-    obs,_,terminated,_,info=env.step(np.full((5,3),.5))
+    obs,_,terminated,_,info=env.step(np.full((DEFENDER_SLOTS,3),.5))
     contact=next(e for e in info["events"] if e["kind"]=="interception_contact")
     assert 0<contact["time"]<config.dt
     separation_at_contact=np.linalg.norm(
@@ -80,13 +82,15 @@ def test_substep_contact_reassigns_surviving_members():
         info["defenders"][:,:3],info["intruders"][:,:3],info["defender_mask"],info["intruder_mask"])
     assert not obs[0].any()
     for i in range(1,5):
-        np.testing.assert_array_equal(obs[i,55:57],[0.,1.])
-        np.testing.assert_array_equal(info["centralized_state"][49+2*i:51+2*i],[0.,1.])
+        start=6+7*(DEFENDER_SLOTS+INTRUDER_SLOTS)
+        central=7*(DEFENDER_SLOTS+INTRUDER_SLOTS)
+        np.testing.assert_array_equal(obs[i,start:start+INTRUDER_SLOTS],np.eye(INTRUDER_SLOTS)[1])
+        np.testing.assert_array_equal(info["centralized_state"][central+INTRUDER_SLOTS*i:central+INTRUDER_SLOTS*(i+1)],np.eye(INTRUDER_SLOTS)[1])
     snapshot=env.snapshot()
     restored=InterceptionEnv(config)
     restored.restore(snapshot)
     assert restored.assignment==info["assignment"]
-    _,_,_,_,next_info=env.step(np.full((5,3),.5))
+    _,_,_,_,next_info=env.step(np.full((DEFENDER_SLOTS,3),.5))
     assert next_info["assignment"]==info["assignment"]
 
 
@@ -96,8 +100,9 @@ def test_terminal_contact_has_no_stale_target_assignment():
         intruder_starts=((0.75,0.,60.),)+base.intruder_starts[1:])
     env=InterceptionEnv(config)
     env.reset(17)
-    obs,_,done,_,info=env.step(np.full((5,3),.5))
+    obs,_,done,_,info=env.step(np.full((DEFENDER_SLOTS,3),.5))
     assert done and info["outcome"]=="all_intercepted"
     assert info["assignment"]=={}
     assert not obs.any()
-    assert not info["centralized_state"][49:59].any()
+    central=7*(DEFENDER_SLOTS+INTRUDER_SLOTS)
+    assert not info["centralized_state"][central:central+DEFENDER_SLOTS*INTRUDER_SLOTS].any()

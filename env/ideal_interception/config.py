@@ -3,12 +3,12 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-interception-v3.2.0"
-SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2)}
-DEFENDER_SLOTS = 5
-INTRUDER_SLOTS = 2
-OBS_DIM = 68
-STATE_DIM = 66
+PROTOCOL = "uav-ideal-interception-v3.3.0"
+SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2), "6v6": (6, 6)}
+DEFENDER_SLOTS = 6
+INTRUDER_SLOTS = 6
+OBS_DIM = 6 + 7*(DEFENDER_SLOTS+INTRUDER_SLOTS) + INTRUDER_SLOTS + 3 + 1 + DEFENDER_SLOTS + INTRUDER_SLOTS
+STATE_DIM = 7*(DEFENDER_SLOTS+INTRUDER_SLOTS) + DEFENDER_SLOTS*INTRUDER_SLOTS + 3 + len(SCALES) + 1
 
 
 @dataclass(frozen=True)
@@ -18,13 +18,18 @@ class InterceptionConfig:
     max_steps: int = 600
     lower: tuple = (-300., -300., 0.)
     upper: tuple = (300., 300., 120.)
-    defender_speeds: tuple = (20., 20., 20., 20., 20.)
-    intruder_speeds: tuple = (20., 20.)
+    defender_speeds: tuple = (20.,)*DEFENDER_SLOTS
+    intruder_speeds: tuple = (20.,)*INTRUDER_SLOTS
     defender_starts: tuple = ((-100., -50., 60.), (-100., 0., 60.), (-100., 50., 60.),
-                              (-120., -80., 80.), (-120., 80., 80.))
-    defender_directions: tuple = ((1., 0., 0.),)*5
-    intruder_starts: tuple = ((200., -10., 60.), (200., 10., 80.))
-    intruder_ends: tuple = ((-260., -10., 60.), (-260., 10., 80.))
+                              (-120., -80., 80.), (-120., 80., 80.), (-140., 120., 80.))
+    defender_directions: tuple = ((1., 0., 0.),)*DEFENDER_SLOTS
+    intruder_starts: tuple = ((200., -10., 60.), (200., 10., 80.),
+                              (220., -60., 60.), (220., -30., 60.),
+                              (220., 30., 60.), (220., 60., 60.))
+    intruder_ends: tuple = ((-260., -10., 60.), (-260., 10., 80.),
+                            (-260., -60., 60.), (-260., -30., 60.),
+                            (-260., 30., 60.), (-260., 60., 60.))
+    assignment_policy: str = "nearest_dynamic"
     intruder_policy: str = "zuo_bezier"
     intruder_mode: str | None = None  # Explicit legacy/test reference fixture.
     intruder_start_jitter_m: float = 5.
@@ -48,6 +53,17 @@ class InterceptionConfig:
     def __post_init__(self):
         if self.scale not in SCALES or self.initialization not in ("fixed", "random"):
             raise ValueError("invalid scale or initialization")
+        if self.scale!="6v6":
+            # Accept old-scale construction with V3.2-length arrays; appended slots stay inactive.
+            defaults=type(self).__dataclass_fields__
+            for name,old_length in (("defender_speeds",5),("defender_starts",5),
+                    ("defender_directions",5),("intruder_speeds",2),
+                    ("intruder_starts",2),("intruder_ends",2)):
+                value=getattr(self,name)
+                if len(value)==old_length:
+                    object.__setattr__(self,name,tuple(value)+tuple(defaults[name].default[old_length:]))
+        if self.assignment_policy not in ("nearest_dynamic","hungarian_fixed"):
+            raise ValueError("invalid assignment policy")
         if self.intruder_policy not in ("zuo_bezier", "legacy_reference") or self.intruder_mode not in (None,"straight","bezier"):
             raise ValueError("invalid intruder policy or fixture mode")
         if self.intruder_goal_altitude_mode not in ("preserve_start_altitude","asset_z"):
@@ -72,9 +88,11 @@ class InterceptionConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"invalid {name}")
-        shapes = dict(lower=(3,), upper=(3,), defender_speeds=(5,), intruder_speeds=(2,),
-                      defender_starts=(5,3), defender_directions=(5,3),
-                      intruder_starts=(2,3), intruder_ends=(2,3), protected_center=(3,))
+        shapes = dict(lower=(3,), upper=(3,), defender_speeds=(DEFENDER_SLOTS,),
+                      intruder_speeds=(INTRUDER_SLOTS,),
+                      defender_starts=(DEFENDER_SLOTS,3), defender_directions=(DEFENDER_SLOTS,3),
+                      intruder_starts=(INTRUDER_SLOTS,3), intruder_ends=(INTRUDER_SLOTS,3),
+                      protected_center=(3,))
         for name, shape in shapes.items():
             value = np.asarray(getattr(self, name), dtype=float)
             if value.shape != shape or not np.isfinite(value).all():
@@ -113,6 +131,22 @@ class InterceptionConfig:
 
 def zuo_paper_profile(**overrides):
     """Optional paper-like numerical profile, separate from project defaults."""
-    values=dict(dt=.1,defender_speeds=(25.,)*5,intruder_speeds=(30.,)*2,
+    values=dict(dt=.1,defender_speeds=(25.,)*DEFENDER_SLOTS,
+                intruder_speeds=(30.,)*INTRUDER_SLOTS,
                 contact_distance=.1)
+    return InterceptionConfig(**(values|overrides))
+
+
+SIX_DEFENDER_CIRCLE = ((-70.,0.,60.),(-95.,43.3012701892,60.),
+    (-145.,43.3012701892,60.),(-170.,0.,60.),
+    (-145.,-43.3012701892,60.),(-95.,-43.3012701892,60.))
+SIX_INTRUDER_WEDGE = ((190.,0.,60.),(210.,-30.,60.),(210.,30.,60.),
+    (230.,-60.,60.),(230.,0.,60.),(230.,60.,60.))
+
+
+def formal_6v6_config(**overrides):
+    """Project 6v6 geometry; only intruder plans vary with the scenario seed."""
+    values=dict(scale="6v6",defender_starts=SIX_DEFENDER_CIRCLE,
+        defender_directions=((1.,0.,0.),)*DEFENDER_SLOTS,
+        intruder_starts=SIX_INTRUDER_WEDGE,assignment_policy="hungarian_fixed")
     return InterceptionConfig(**(values|overrides))

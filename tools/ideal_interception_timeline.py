@@ -4,13 +4,14 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
-from env.ideal_interception.config import PROTOCOL
+from env.ideal_interception.config import PROTOCOL,SCALES,DEFENDER_SLOTS,INTRUDER_SLOTS
 from env.ideal_interception.trajectory import Reference
 from env.ideal_interception import InterceptionConfig
-from env.ideal_interception.assignment import nearest_distance_assignment
+from env.ideal_interception.assignment import nearest_distance_assignment,hungarian_fixed_assignment
 from .ideal_interception_trace import TRACE_VERSION
 
 PHYSICAL_EVENTS = {"interception_contact","friendly_collision","intruder_collision",
@@ -23,13 +24,25 @@ class Timeline:
         with opener(source,"rt",encoding="utf-8") as stream:
             data=json.load(stream)
         if (data.get("trace_version") not in (TRACE_VERSION,"uav-ideal-trace-v1") or
-                data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v3.1.0",
+                data.get("environment_protocol") not in (PROTOCOL,"uav-ideal-interception-v3.2.0",
+                                                         "uav-ideal-interception-v3.1.0",
                                                          "uav-ideal-interception-v3.0.0",
                                                          "uav-ideal-interception-v2.0.0")):
             raise ValueError("unsupported ideal trajectory protocol")
         self.data=data
+        historical=data["environment_protocol"]!=PROTOCOL
+        self.defender_slots=5 if historical else DEFENDER_SLOTS
+        self.intruder_slots=2 if historical else INTRUDER_SLOTS
         try:
-            self.config=InterceptionConfig(**data["config"])
+            raw=data["config"]
+            if historical:
+                d,i=SCALES[raw["scale"]]
+                if (len(raw["defender_speeds"])!=5 or len(raw["intruder_speeds"])!=2
+                        or len(raw["defender_starts"])!=5 or len(raw["intruder_starts"])!=2):
+                    raise ValueError("invalid historical 5/2 slot schema")
+                self.config=SimpleNamespace(**raw,defender_count=d,intruder_count=i)
+            else:
+                self.config=InterceptionConfig(**raw)
             self.frames=data["frames"]
             references=data["references"]
         except (KeyError,TypeError,ValueError) as exc:
@@ -72,11 +85,25 @@ class Timeline:
         """Cross-check each recorded state against executed motion and event transitions."""
         tolerance=dict(rtol=1e-10,atol=1e-8)
         initial=self.frames[0]
+        if (self.data["environment_protocol"]==PROTOCOL and
+                self.config.assignment_policy=="hungarian_fixed"):
+            original={int(i):int(j) for i,j in initial["assignment"].items()}
+            if self.data.get("original_assignment")!={str(i):j for i,j in original.items()}:
+                raise ValueError("fixed assignment metadata mismatch")
+            distances={str(i):float(np.linalg.norm(
+                np.asarray(initial["defenders"][i][:3])-
+                np.asarray(initial["intruders"][j][:3]))) for i,j in original.items()}
+            if (self.data.get("per_pair_initial_distance_m")!=distances or
+                    not np.isclose(self.data.get("assignment_total_cost_m",np.nan),
+                                   sum(distances.values()),**tolerance)):
+                raise ValueError("fixed assignment cost metadata mismatch")
         for k,frame in enumerate(self.frames):
-            for field,shape in (("defenders",(5,6)),("intruders",(2,6))):
+            for field,shape in (("defenders",(self.defender_slots,6)),
+                                ("intruders",(self.intruder_slots,6))):
                 if np.shape(frame.get(field))!=shape or not np.isfinite(np.asarray(frame[field],float)).all():
                     raise ValueError(f"frame {k} invalid {field}")
-            for field,size in (("defender_mask",5),("intruder_mask",2)):
+            for field,size in (("defender_mask",self.defender_slots),
+                               ("intruder_mask",self.intruder_slots)):
                 mask=frame.get(field)
                 if not isinstance(mask,list) or len(mask)!=size or any(type(v) is not bool for v in mask):
                     raise ValueError(f"frame {k} invalid {field}")
@@ -93,13 +120,23 @@ class Timeline:
                 if (len(pairs)!=len(assignment) or any(str(i) != str(key) for key,i in
                         ((key,int(key)) for key in assignment)) or
                         any(not frame["defender_mask"][i] or not frame["intruder_mask"][j]
-                            for i,j in pairs.items() if 0<=i<5 and 0<=j<2) or
-                        any(i not in range(5) or j not in range(2) for i,j in pairs.items())):
+                            for i,j in pairs.items() if 0<=i<self.defender_slots and 0<=j<self.intruder_slots) or
+                        any(i not in range(self.defender_slots) or j not in range(self.intruder_slots)
+                            for i,j in pairs.items())):
                     raise ValueError(f"frame {k} invalid assignment")
                 if (frame["outcome"]=="ongoing" and any(frame["intruder_mask"]) and
                         set(pairs)!={i for i,active in enumerate(frame["defender_mask"]) if active}):
                     raise ValueError(f"frame {k} missing active defender assignment")
-                if self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.1.0",
+                if self.data["environment_protocol"]==PROTOCOL and self.config.assignment_policy=="hungarian_fixed":
+                    original={int(i):int(j) for i,j in self.frames[0]["assignment"].items()}
+                    expected=hungarian_fixed_assignment(
+                        np.asarray(initial["defenders"])[:self.config.defender_count,:3],
+                        np.asarray(initial["intruders"])[:self.config.intruder_count,:3])
+                    if original!=expected or pairs!={i:j for i,j in original.items()
+                            if frame["defender_mask"][i] and frame["intruder_mask"][j]}:
+                        raise ValueError(f"frame {k} fixed assignment mismatch")
+                elif self.data["environment_protocol"] in (PROTOCOL,"uav-ideal-interception-v3.2.0",
+                    "uav-ideal-interception-v3.1.0",
                     "uav-ideal-interception-v3.0.0") and frame["outcome"]=="ongoing":
                     expected=nearest_distance_assignment(np.asarray(frame["defenders"])[:,:3],
                         np.asarray(frame["intruders"])[:,:3],frame["defender_mask"],frame["intruder_mask"])
@@ -120,20 +157,33 @@ class Timeline:
             control=after.get("control")
             if control is not None:
                 action=np.asarray(control.get("action"),float)
-                direction=np.asarray(control.get("guidance_direction_unit"),float)
                 if (not np.isclose(control.get("decision_time_s",np.nan),t0,atol=1e-9) or
-                        action.shape!=(5,3) or not np.isfinite(action).all() or
-                        np.any((action<0)|(action>1)) or direction.shape!=(3,) or
-                        not np.isfinite(direction).all() or not np.isclose(np.linalg.norm(direction),1.,atol=1e-9) or
-                        str(control.get("assigned_target"))!=str(before.get("assignment",{}).get("0",
-                            before.get("assignment",{}).get(0)))):
+                        action.shape!=(self.defender_slots,3) or not np.isfinite(action).all() or
+                        np.any((action<0)|(action>1))):
                     raise ValueError(f"frame {k} invalid step-start control")
+                if "pairs" in control:
+                    pairs={int(i):row for i,row in control["pairs"].items()}
+                    if set(pairs)!={int(i) for i in before["assignment"]}:
+                        raise ValueError(f"frame {k} invalid step-start pairs")
+                    for i,row in pairs.items():
+                        direction=np.asarray(row.get("guidance_direction_unit"),float)
+                        if (direction.shape!=(3,) or not np.isfinite(direction).all() or
+                                not np.isclose(np.linalg.norm(direction),1.,atol=1e-9) or
+                                int(row.get("assigned_target",-1))!=int(before["assignment"][str(i)])):
+                            raise ValueError(f"frame {k} invalid step-start pair {i}")
+                else:
+                    direction=np.asarray(control.get("guidance_direction_unit"),float)
+                    if (direction.shape!=(3,) or not np.isfinite(direction).all() or
+                            not np.isclose(np.linalg.norm(direction),1.,atol=1e-9) or
+                            str(control.get("assigned_target"))!=str(before.get("assignment",{}).get("0",
+                                before.get("assignment",{}).get(0)))):
+                        raise ValueError(f"frame {k} invalid step-start control")
             state=combined(before)
             active=masks(before)
             executed=np.asarray(after.get("executed_velocities"),float)
-            if executed.shape!=(5,3) or not np.isfinite(executed).all():
+            if executed.shape!=(self.defender_slots,3) or not np.isfinite(executed).all():
                 raise ValueError(f"frame {k} invalid executed_velocities")
-            for i in range(5):
+            for i in range(self.defender_slots):
                 speed=np.linalg.norm(executed[i])
                 if active[i] and not np.isclose(speed,self.config.defender_speeds[i],**tolerance):
                     raise ValueError(f"frame {k} defender {i} executed speed mismatch")
@@ -154,18 +204,18 @@ class Timeline:
                         or time<previous_time-1e-10):
                     raise ValueError(f"frame {k} event time outside step or out of order")
                 previous_time=time
-                if (type(members) is not list or any(type(m) is not int or m<0 or m>=7 for m in members)
+                if (type(members) is not list or any(type(m) is not int or m<0 or m>=self.defender_slots+self.intruder_slots for m in members)
                         or len(positions)!=len(members) or len(states)!=len(members)):
                     raise ValueError(f"frame {k} invalid event members or states")
                 for member,position,recorded in zip(members,positions,states):
                     if not active[member]:
                         raise ValueError(f"frame {k} event uses inactive member {member}")
                     expected=state[member].copy()
-                    if member<5:
+                    if member<self.defender_slots:
                         expected[:3]+=executed[member]*(time-t0)
                         expected[3:]=executed[member]
                     else:
-                        expected=self._intruder_at(member-5,time)
+                        expected=self._intruder_at(member-self.defender_slots,time)
                     if kind=="member_inactive":
                         expected[3:]=0.
                     if (np.shape(position)!=(3,) or np.shape(recorded)!=(6,)
@@ -180,15 +230,15 @@ class Timeline:
                     active[member]=False
                 all_events.append(event)
             expected=state.copy()
-            for member in range(7):
+            for member in range(self.defender_slots+self.intruder_slots):
                 if member in inactive_at:
                     expected[member]=inactive_at[member]
                 elif active[member]:
-                    if member<5:
+                    if member<self.defender_slots:
                         expected[member,:3]+=executed[member]*(t1-t0)
                         expected[member,3:]=executed[member]
                     else:
-                        expected[member]=self._intruder_at(member-5,t1)
+                        expected[member]=self._intruder_at(member-self.defender_slots,t1)
             if not np.allclose(expected,combined(after),**tolerance):
                 raise ValueError(f"frame {k} reconstructed state mismatch")
             if active!=masks(after):
@@ -216,21 +266,21 @@ class Timeline:
         before=self.frames[index]
         exact=time==self.times[index]
         after=before if exact else self.frames[index+1]
-        states=[np.asarray(before["defenders"][i],float).copy() for i in range(5)]
-        states += [np.asarray(before["intruders"][j],float).copy() for j in range(2)]
+        states=[np.asarray(before["defenders"][i],float).copy() for i in range(self.defender_slots)]
+        states += [np.asarray(before["intruders"][j],float).copy() for j in range(self.intruder_slots)]
         masks=list(before["defender_mask"])+list(before["intruder_mask"])
         if not exact:
             executed=np.asarray(after["executed_velocities"],float)
-            if executed.shape!=(5,3):
+            if executed.shape!=(self.defender_slots,3):
                 raise ValueError("missing executed ideal motion")
             elapsed=time-before["time"]
-            for i in range(5):
+            for i in range(self.defender_slots):
                 if masks[i]:
                     states[i][:3]+=executed[i]*elapsed
                     states[i][3:]=executed[i]
             for j in range(len(self.references)):
-                if masks[5+j]:
-                    states[5+j]=self._intruder_at(j,time)
+                if masks[self.defender_slots+j]:
+                    states[self.defender_slots+j]=self._intruder_at(j,time)
             for event in after["events"]:
                 if event["time"]>time or event["kind"]!="member_inactive":
                     continue
@@ -240,12 +290,12 @@ class Timeline:
                     masks[member]=False
         entities=[]
         for member,state in enumerate(states):
-            if member>=5 and member-5>=len(self.references):
+            if member>=self.defender_slots and member-self.defender_slots>=len(self.references):
                 continue
-            if member<5 and not self.frames[0]["defender_mask"][member]:
+            if member<self.defender_slots and not self.frames[0]["defender_mask"][member]:
                 continue
-            entities.append(dict(id=member,name=f"D{member}" if member<5 else f"I{member-5}",
-                role="defender" if member<5 else "intruder",position=state[:3].tolist(),
+            entities.append(dict(id=member,name=f"D{member}" if member<self.defender_slots else f"I{member-self.defender_slots}",
+                role="defender" if member<self.defender_slots else "intruder",position=state[:3].tolist(),
                 velocity=state[3:].tolist(),active=bool(masks[member])))
         visible=[event for event in self.events if event["time"]<=time and event["kind"] in PHYSICAL_EVENTS]
         return dict(time=time,step=after["step"],outcome=after["outcome"] if exact else before["outcome"],

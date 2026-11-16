@@ -11,6 +11,7 @@ import numpy as np
 from algorithm.common.serialization import serializable
 from env.ideal_interception import InterceptionConfig
 from env.ideal_interception.config import PROTOCOL
+from env.ideal_interception.config import DEFENDER_SLOTS,INTRUDER_SLOTS,SCALES
 from env.ideal_interception.trajectory import Reference
 from env.ideal_interception.seeding import reset_evaluation_scene
 
@@ -37,11 +38,16 @@ def build_trace(config,seed,scenario_id,path_specs,frames,result):
            for spec in path_specs]
     first=frames[0]
     entities=[dict(id=i,role="defender",speed=config.defender_speeds[i],
-                   initial_state=first["defenders"][i]) for i in range(5) if first["defender_mask"][i]]
-    entities += [dict(id=5+j,role="intruder",speed=config.intruder_speeds[j],
-                      initial_state=first["intruders"][j]) for j in range(2) if first["intruder_mask"][j]]
+                   initial_state=first["defenders"][i]) for i in range(DEFENDER_SLOTS) if first["defender_mask"][i]]
+    entities += [dict(id=DEFENDER_SLOTS+j,role="intruder",speed=config.intruder_speeds[j],
+                      initial_state=first["intruders"][j]) for j in range(INTRUDER_SLOTS) if first["intruder_mask"][j]]
+    original={int(i):int(j) for i,j in first["assignment"].items()}
+    pair_distance={i:float(np.linalg.norm(np.asarray(first["defenders"][i][:3])-
+                       np.asarray(first["intruders"][j][:3]))) for i,j in original.items()}
     return serializable(dict(trace_version=TRACE_VERSION,environment_protocol=PROTOCOL,
         config=asdict(config),seed=seed,scenario_id=scenario_id,
+        original_assignment=original,assignment_total_cost_m=sum(pair_distance.values()),
+        per_pair_initial_distance_m=pair_distance,
         scene=dict(lower=config.lower,upper=config.upper,
             protected_center=config.protected_center,protected_radius=config.protected_radius,
             protected_height=config.protected_height),
@@ -73,7 +79,7 @@ def record(config,seed=17,actions=None,scenario_type="geometry"):
     reward_parts = {}
     episode_return = 0.
     while True:
-        decision = np.full((5,3),.5) if actions is None else actions(info)
+        decision = np.full((DEFENDER_SLOTS,3),.5) if actions is None else actions(info)
         action,control = decision if isinstance(decision,tuple) else (decision,None)
         action = np.asarray(action,float)
         _,_,terminated,truncated,info = env.step(action)
@@ -93,7 +99,12 @@ def record(config,seed=17,actions=None,scenario_type="geometry"):
             break
     trace=build_trace(config,info["seed"],info["scenario_id"],path_specs,frames,
         dict(outcome=info["outcome"],time=info["time"],events=all_events,
-             episode_return=episode_return,reward_parts=reward_parts))
+             episode_return=episode_return,reward_parts=reward_parts,
+             defender_status=info["defender_status"],intruder_status=info["intruder_status"],
+             **{key:info[key] for key in ("initial_intruder_count","intercepted_count",
+                "breached_count","intruder_collision_count","other_resolved_count",
+                "remaining_intruder_count","defender_boundary_count","friendly_collision_count",
+                "active_defenders_remaining","mission_success","interception_ratio","breach_ratio")}))
     trace["scenario_type"]=scenario_type
     return trace
 
@@ -108,7 +119,7 @@ def write_trace(path,data):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output",type=Path)
-    parser.add_argument("--scale",choices=("1v1","3v1","5v2"),default="1v1")
+    parser.add_argument("--scale",choices=tuple(SCALES),default="1v1")
     parser.add_argument("--mode",choices=("straight","bezier"),default=None,
                         help="explicit legacy/test reference fixture; omit for zuo_bezier")
     parser.add_argument("--initialization",choices=("fixed","random"),default="fixed")

@@ -124,7 +124,7 @@ def test_pip_history_status_and_environment_chain():
     config=InterceptionConfig(scale="1v1",intruder_mode="straight")
     env=InterceptionEnv(config)
     _,info=env.reset(17)
-    history=IntruderHistory(config.dt)
+    history=IntruderHistory(config.dt,slots=len(info["intruder_mask"]))
     for step in range(3):
         history.observe(info["time"],info["intruders"][:,:3],info["intruder_mask"],info["scenario_id"])
         if step==2:
@@ -132,4 +132,4 @@ def test_pip_history_status_and_environment_chain():
             assert result.status=="READY" and math.isfinite(result.horizon_s)
             np.testing.assert_allclose(np.diff(history.observed(0)[0]),[.05,.05])
         if step<2:
-            _,_,_,_,info=env.step(np.full((5,3),.5))
+            _,_,_,_,info=env.step(np.full((len(info["defender_mask"]),3),.5))

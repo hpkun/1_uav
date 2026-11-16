@@ -67,6 +67,7 @@ def clean_central(states):
 class MAPPO:
     observation_dim = OBS_DIM
     state_dim = STATE_DIM
+    agent_count = MAX_PURSUERS
     clean_states = staticmethod(clean_central)
 
     def __init__(self, config, *, device="cuda"):
@@ -74,7 +75,7 @@ class MAPPO:
         self.device = require_cuda(device)
         torch.set_num_threads(1)
         self.actor = network(self.observation_dim, 2 * AXES, .01).to(self.device)
-        self.critic = network(self.state_dim, MAX_PURSUERS, 1.).to(self.device)
+        self.critic = network(self.state_dim, self.agent_count, 1.).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config.critic_lr)
         self.updates = self.steps = self.episodes = 0

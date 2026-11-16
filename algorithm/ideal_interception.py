@@ -19,29 +19,35 @@ from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.interception import run_lock
 from algorithm.mappo.interception import MAPPO, TrainConfig
 from env.ideal_interception import InterceptionConfig, InterceptionEnv
-from env.ideal_interception.config import PROTOCOL as VERSION, OBS_DIM, STATE_DIM
+from env.ideal_interception.config import (PROTOCOL as VERSION, OBS_DIM, STATE_DIM,
+    DEFENDER_SLOTS, INTRUDER_SLOTS)
 from env.ideal_interception.seeding import reset_evaluation_scene
 
 PROTOCOL = dict(version=VERSION,algorithm="mappo-beta",observation=OBS_DIM,
-                state=STATE_DIM,action=3,defenders=5,intruders=2,
+                state=STATE_DIM,action=3,defenders=DEFENDER_SLOTS,intruders=INTRUDER_SLOTS,
                 action_semantics="defender_desired_motion_direction")
 
 
 class InterceptionMAPPO(MAPPO):
     observation_dim = OBS_DIM
     state_dim = STATE_DIM
+    agent_count = DEFENDER_SLOTS
 
     @staticmethod
     def clean_states(states):
-        defenders = states[...,:35].reshape(*states.shape[:-1],5,7)
-        intruders = states[...,35:49].reshape(*states.shape[:-1],2,7)
-        assignment = states[...,49:59].reshape(*states.shape[:-1],5,2)
+        defender_end=7*DEFENDER_SLOTS
+        intruder_end=defender_end+7*INTRUDER_SLOTS
+        assignment_end=intruder_end+DEFENDER_SLOTS*INTRUDER_SLOTS
+        defenders = states[...,:defender_end].reshape(*states.shape[:-1],DEFENDER_SLOTS,7)
+        intruders = states[...,defender_end:intruder_end].reshape(*states.shape[:-1],INTRUDER_SLOTS,7)
+        assignment = states[...,intruder_end:assignment_end].reshape(
+            *states.shape[:-1],DEFENDER_SLOTS,INTRUDER_SLOTS)
         dm,im = defenders[...,-1:],intruders[...,-1:]
         if not (((dm==0)|(dm==1)).all() and ((im==0)|(im==1)).all()):
             raise ValueError("invalid bilateral critic masks")
         return torch.cat((torch.where(dm.bool(),defenders,0.).flatten(-2),
             torch.where(im.bool(),intruders,0.).flatten(-2),
-            torch.where(dm.bool(),assignment,0.).flatten(-2),states[...,59:]),dim=-1)
+            torch.where(dm.bool(),assignment,0.).flatten(-2),states[...,assignment_end:]),dim=-1)
 
 
 class EpisodeAccumulator:
@@ -51,6 +57,7 @@ class EpisodeAccumulator:
         self.intruder_paths = info["intruder_paths"]
         self.scene_diagnostics = info["scene_diagnostics"]
         self.scenario_id,self.seed = info["scenario_id"],info["seed"]
+        self.original_assignment=info["original_assignment"]
         self.total = 0.
         self.parts = {}
         self.events = []
@@ -70,10 +77,19 @@ class EpisodeAccumulator:
             final_defenders=info["defenders"].tolist(),final_intruders=info["intruders"].tolist(),
             defender_status=info["defender_status"],intruder_status=info["intruder_status"],
             assignment=info["assignment"],episode_return=self.total,
+            original_assignment=self.original_assignment,
             reward_parts=self.parts.copy(),events=self.events.copy(),
             interception_count=info["interception_count"],breach_count=info["breach_count"],
             friendly_collision_count=info["friendly_collision_count"],
             intruder_collision_count=info["intruder_collision_count"],
+            initial_intruder_count=info["initial_intruder_count"],
+            intercepted_count=info["intercepted_count"],breached_count=info["breached_count"],
+            other_resolved_count=info["other_resolved_count"],
+            remaining_intruder_count=info["remaining_intruder_count"],
+            defender_boundary_count=info["defender_boundary_count"],
+            active_defenders_remaining=info["active_defenders_remaining"],
+            mission_success=info["mission_success"],
+            interception_ratio=info["interception_ratio"],breach_ratio=info["breach_ratio"],
             minimum_separation=info["minimum_separation"],
             defender_exits=sum(s not in ("active","unused") for s in info["defender_status"]),
             intruder_exits=sum(s not in ("active","unused") for s in info["intruder_status"]))
@@ -133,7 +149,8 @@ def evaluation_protocol(config,rows):
         randomized=randomized,
         fixed=["protected_asset","fixed_speeds","protected_region"] if formal else
               ["intruder_endpoints","fixed_speeds","protected_region"],
-        assignment="nearest_distance_event_driven",
+        assignment=("minimum_distance_hungarian_fixed" if config.assignment_policy=="hungarian_fixed"
+                    else "nearest_distance_event_driven"),
         interpretation="geometric contact is an abstract event, not physical damage")
 
 
@@ -324,7 +341,7 @@ def main(argv=None):
     for command in (train,resume,assess):
         command.add_argument("--out",required=True,type=Path)
         command.add_argument("--device")
-    train.add_argument("--scale",choices=("1v1","3v1","5v2"),required=True)
+    train.add_argument("--scale",choices=("1v1","3v1","5v2","6v6"),required=True)
     train.add_argument("--config",type=Path)
     train.add_argument("--total-steps",type=int,required=True)
     train.add_argument("--until-steps",type=int)
