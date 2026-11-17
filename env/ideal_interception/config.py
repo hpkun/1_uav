@@ -32,6 +32,8 @@ class InterceptionConfig:
     assignment_policy: str = "nearest_dynamic"
     intruder_policy: str = "zuo_bezier"
     intruder_motion_level: str = "level1_smooth"
+    scenario_profile_version: str = "nominal_v1"
+    defender_circle_radius_m: float | None = None
     intruder_mode: str | None = None  # Explicit legacy/test reference fixture.
     intruder_start_jitter_m: float = 5.
     intruder_bezier_jitter_ratio: float = .04
@@ -69,6 +71,16 @@ class InterceptionConfig:
             raise ValueError("invalid intruder policy or fixture mode")
         if self.intruder_motion_level not in ("level1_smooth", "level2_maneuvering"):
             raise ValueError("invalid intruder motion level")
+        if self.scenario_profile_version not in ("nominal_v1","avoidance_stress_v1"):
+            raise ValueError("invalid scenario profile version")
+        if self.scenario_profile_version=="avoidance_stress_v1":
+            if (self.scale!="6v6" or self.intruder_motion_level!="level2_maneuvering"
+                    or self.defender_circle_radius_m is None
+                    or not math.isfinite(self.defender_circle_radius_m)
+                    or self.defender_circle_radius_m<=0):
+                raise ValueError("invalid avoidance stress profile")
+        elif self.defender_circle_radius_m is not None:
+            raise ValueError("circle radius metadata requires stress profile")
         if self.intruder_goal_altitude_mode not in ("preserve_start_altitude","asset_z"):
             raise ValueError("invalid intruder goal altitude mode")
         if (self.intruder_motion_level=="level2_maneuvering" and
@@ -163,3 +175,15 @@ def formal_6v6_config(**overrides):
 def formal_6v6_level2_config(**overrides):
     """Project S-turn stress profile with the unchanged 6v6 deployment."""
     return formal_6v6_config(**(dict(intruder_motion_level="level2_maneuvering")|overrides))
+
+
+def formal_6v6_avoidance_stress_config(radius_m,**overrides):
+    """Level-2 targets with a circular defender formation of explicit radius."""
+    if not math.isfinite(radius_m) or radius_m<=0:
+        raise ValueError("invalid defender circle radius")
+    angles=np.arange(DEFENDER_SLOTS)*np.pi/3
+    starts=tuple((-120.+radius_m*float(np.cos(a)),
+                  radius_m*float(np.sin(a)),60.) for a in angles)
+    return formal_6v6_level2_config(**(dict(defender_starts=starts,
+        scenario_profile_version="avoidance_stress_v1",
+        defender_circle_radius_m=float(radius_m))|overrides))

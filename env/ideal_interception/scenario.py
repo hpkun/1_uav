@@ -137,6 +137,10 @@ def initialize(config, seed):
         identity={key:getattr(config,key) for key in fields}
         if config.intruder_motion_level=="level2_maneuvering":
             identity["intruder_motion_level"]=config.intruder_motion_level
+            identity.pop("intruder_bezier_jitter_ratio")
+        if config.scenario_profile_version=="avoidance_stress_v1":
+            identity["scenario_profile_version"]=config.scenario_profile_version
+            identity["defender_circle_radius_m"]=config.defender_circle_radius_m
         if config.scale=="6v6":
             identity["assignment_policy"]=config.assignment_policy
     else:

@@ -26,6 +26,18 @@ def motion_label(timeline):
             "level2_maneuvering":"Level 2 Maneuvering Bézier"}.get(level,"Historical reference")
 
 
+def guidance_label(timeline):
+    control=timeline.frames[1].get("control",{})
+    mode=control.get("avoidance_mode")
+    if mode is None:
+        return ""
+    method={"three_point_pip":"ThreePoint-PIP",
+            "two_point_pip":"TwoPoint-PIP"}.get(control.get("method"),control.get("method","Guidance"))
+    avoidance={"none":"None","knn_repulsion":"kNN",
+               "predictive_cpa_knn":"Predictive CPA-kNN"}.get(mode,mode)
+    return f"{method} + {avoidance}"
+
+
 def intruder_reference_color():
     return ROLE_COLORS["intruder"]
 
@@ -119,11 +131,12 @@ def render_html(source,output,view="3d",overwrite=False):
         return traces
     data.extend(dynamic(0))
     frames=[go.Frame(data=dynamic(k),traces=list(range(static,len(data))),
-                     name=str(k),layout=go.Layout(title=f"t={t:.6f} s | {rows[k]['outcome']}"))
+                     name=str(k),layout=go.Layout(title=f"{motion_label(timeline)} | "
+                         f"{guidance_label(timeline)} | t={t:.6f} s | {rows[k]['outcome']}"))
             for k,t in enumerate(times)]
     fig=go.Figure(data=data,frames=frames)
     label={"3d":"3D Overview","top":"XY Top View","altitude":"XZ Side View"}[view]
-    fig.update_layout(title=f"{label} | {motion_label(timeline)} | Red Defender / Blue Intruder | {timeline.data['scenario_id'][:12]}",
+    fig.update_layout(title=f"{label} | {motion_label(timeline)} | {guidance_label(timeline)} | Red Defender / Blue Intruder | {timeline.data['scenario_id'][:12]}",
                       height=700,legend=dict(orientation="h",y=1.12,x=0))
     if is3d:
         fig.update_layout(scene=dict(aspectmode="data",xaxis_title="x (m)",yaxis_title="y (m)",
@@ -299,7 +312,11 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
                     point.set_visible(entity["active"])
                 for event_time,artist in event_artists:
                     artist.set_visible(event_time<=time)
-                axis.set_title(f"{motion_label(timeline)} | {time:.3f} s | {row['outcome']} | {timeline.data['scenario_id'][:12]}")
+                active_avoidance=(sum(bool(pair.get("avoidance_active")) for pair in
+                    timeline.frames[min(bisect_right(timeline.times,time),len(timeline.frames)-1)]
+                        .get("control",{}).get("pairs",{}).values()))
+                axis.set_title(f"{motion_label(timeline)} | {guidance_label(timeline)} | "
+                    f"t={time:.3f} s | avoid={active_avoidance} | {row['outcome']}")
                 writer.grab_frame()
     finally:
         plt.close(fig)

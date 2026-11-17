@@ -1,5 +1,6 @@
 """Model-free, fixed-assignment 6v6 guidance and post-episode diagnostics."""
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from prediction.intercept_prediction import (estimate_two_point_pip_from_history
     estimate_three_point_pip_from_history)
 from tools.ideal_interception_trace import record,write_trace
 from .ideal_pip_analysis import compare_on_trace,summarize_samples,acceleration_bins
+from .ideal_collision_avoidance import AvoidanceConfig,apply_collision_avoidance
+from .ideal_collision_safety import analyze_safety
 
 METHODS=("two_point_pip","three_point_pip")
 PREDICTORS=dict(two_point_pip=estimate_two_point_pip_from_history,
@@ -109,8 +112,9 @@ def _analyze(trace,config,method):
                                  if key in ("mean","p95","max")})
 
 
-def run_episode(config=None,method="two_point_pip",seed=17):
+def run_episode(config=None,method="two_point_pip",seed=17,avoidance=None):
     config=formal_6v6_config() if config is None else config
+    avoidance=AvoidanceConfig() if avoidance is None else avoidance
     if config.scale!="6v6" or config.assignment_policy!="hungarian_fixed" or method not in METHODS:
         raise ValueError("6v6 fixed-assignment config and named guidance method required")
     history=IntruderHistory(config.dt,slots=INTRUDER_SLOTS)
@@ -120,6 +124,8 @@ def run_episode(config=None,method="two_point_pip",seed=17):
                         info["intruder_mask"],info["scenario_id"])
         action=np.full((DEFENDER_SLOTS,3),.5)
         pairs={}
+        defender_positions=np.asarray(info["defenders"][:,:3])
+        defender_velocities=np.asarray(info["defenders"][:,3:])
         for i,j in sorted(info["assignment"].items()):
             own=np.asarray(info["defenders"][i,:3])
             target=np.asarray(info["intruders"][j,:3])
@@ -139,21 +145,27 @@ def run_episode(config=None,method="two_point_pip",seed=17):
             if not np.isfinite(norm) or norm<=1e-12:
                 raise FloatingPointError("no finite multi-guidance direction")
             direction=delta/norm
-            action[i]=.5+.5*direction
+            final,avoidance_row=apply_collision_avoidance(avoidance,i,
+                defender_positions,defender_velocities,info["defender_mask"],direction)
+            action[i]=.5+.5*final
             pairs[i]=dict(assigned_target=j,guidance_mode=mode,
                 prediction_status=prediction.status,prediction_horizon_s=prediction.horizon_s,
                 predicted_target_position_m=prediction.predicted_target_position_m,
                 estimated_target_velocity_mps=prediction.estimated_target_velocity_mps,
-                guidance_direction_unit=direction.tolist(),
+                guidance_direction_unit=final.tolist(),
                 pip_equation_degree=prediction.pip_equation_degree,
-                pip_discriminant=prediction.pip_discriminant)
+                pip_discriminant=prediction.pip_discriminant,
+                avoidance_adjusted_direction_unit=final.tolist(),**avoidance_row)
         return action,dict(decision_time_s=float(info["time"]),method=method,
-                           action=action.tolist(),pairs=pairs)
+                           avoidance_mode=avoidance.mode,action=action.tolist(),pairs=pairs)
     trace=record(config,seed,actions=decide,scenario_type="region_crossing")
     first=trace["frames"][0]
     specs=[row["specification"] for row in trace["references"]]
     result=dict(method=method,seed=seed,scenario_id=trace["scenario_id"],
         intruder_motion_level=config.intruder_motion_level,
+        scenario_profile_version=config.scenario_profile_version,
+        defender_circle_radius_m=config.defender_circle_radius_m,
+        avoidance_mode=avoidance.mode,avoidance_config=asdict(avoidance),
         defender_starts=[first["defenders"][i][:3] for i in range(config.defender_count)],
         intruder_starts=[first["intruders"][j][:3] for j in range(config.intruder_count)],
         intruder_paths=[dict(start=spec["start"],goal=spec["end"],
@@ -167,6 +179,7 @@ def run_episode(config=None,method="two_point_pip",seed=17):
         per_pair_initial_distance_m=trace["per_pair_initial_distance_m"],
         defender_final_status=trace["result"]["defender_status"])
     result.update(_analyze(trace,config,method))
+    result.update(analyze_safety(trace,avoidance))
     offline_rows=compare_on_trace(trace,config)
     result["same_state_pip"]=summarize_samples(offline_rows)
     result["acceleration_bins"]=acceleration_bins(offline_rows)

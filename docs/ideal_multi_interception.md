@@ -86,3 +86,6 @@ The 6v6 formation, path profile, and deterministic fixed assignment are
 project choices motivated by the broad interception setting of
 [Zuo et al.](https://www.mdpi.com/2504-446X/10/6/418). They do not reproduce
 the paper's full allocation or cooperative obstacle-avoidance framework.
+
+The later, independent friendly-only controller experiment is documented in
+`docs/ideal_collision_avoidance.md`.

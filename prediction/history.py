@@ -1,4 +1,4 @@
-"""Independent, timestamped histories for up to two intruders."""
+"""Independent, timestamped per-intruder observation histories."""
 from collections import deque
 import math
 import numpy as np
