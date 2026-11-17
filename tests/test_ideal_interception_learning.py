@@ -1,5 +1,6 @@
 import json
 import zipfile
+import numpy as np
 import torch
 import pytest
 
@@ -7,7 +8,59 @@ import algorithm.ideal_interception as cli
 from algorithm.common.interception_checkpoint import read
 from algorithm.mappo.interception import TrainConfig
 from env.ideal_interception.config import STATE_DIM,DEFENDER_SLOTS,formal_6v6_config
-from env.ideal_interception.learning import PG_OBS_DIM
+from env.ideal_interception.learning import PG_OBS_DIM,PredictionGuidedInterceptionEnv
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
+@pytest.mark.parametrize("deterministic",[True,False])
+def test_pg_mappo_act_with_no_active_defenders(deterministic,monkeypatch):
+    model=cli.InterceptionMAPPO(TrainConfig(workers=1,horizon=1))
+    def unexpected_distribution(_):
+        raise AssertionError("empty mask must not construct a Beta distribution")
+    monkeypatch.setattr(model,"distribution",unexpected_distribution)
+    action,logp=model.act(np.zeros((DEFENDER_SLOTS,PG_OBS_DIM),dtype=np.float32),
+                          np.zeros(DEFENDER_SLOTS,dtype=bool),deterministic=deterministic)
+    assert action.shape==(DEFENDER_SLOTS,3) and logp.shape==(DEFENDER_SLOTS,)
+    assert torch.all(action==.5) and torch.all(logp==0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
+def test_pg_mappo_act_with_active_defender_keeps_beta_outputs():
+    model=cli.InterceptionMAPPO(TrainConfig(workers=1,horizon=1))
+    observations=np.zeros((DEFENDER_SLOTS,PG_OBS_DIM),dtype=np.float32)
+    mask=np.zeros(DEFENDER_SLOTS,dtype=bool);mask[2]=True
+    with torch.no_grad():
+        distribution=model.distribution(model.tensor(observations[mask]).float())
+        expected=distribution.mean.clamp(1e-6,1-1e-6)[0]
+        expected_logp=distribution.log_prob(expected).sum()
+    action,logp=model.act(observations,mask,deterministic=True)
+    torch.testing.assert_close(action[2],expected,rtol=0,atol=0)
+    torch.testing.assert_close(logp[2],expected_logp,rtol=0,atol=0)
+    assert torch.all(action[~model.tensor(mask)]==.5)
+    assert torch.all(logp[~model.tensor(mask)]==0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
+def test_pg_evaluation_continues_after_all_defenders_exit():
+    original=formal_6v6_config()
+    starts=tuple((-299.5,float(y),60.) for y in (-150,-90,-30,30,90,150))
+    config=formal_6v6_config(dt=1.,max_steps=30,intruder_mode="straight",
+        random_range=0.,intruder_start_jitter_m=0.,
+        defender_starts=starts+original.defender_starts[6:],
+        defender_directions=((-1.,0.,0.),)*DEFENDER_SLOTS)
+    env=PredictionGuidedInterceptionEnv(config)
+    env.reset(17)
+    observation,_,terminated,truncated,info=env.step(np.full((DEFENDER_SLOTS,3),.5))
+    assert not terminated and not truncated and info["outcome"]=="ongoing"
+    assert not info["defender_mask"].any() and info["intruder_mask"].any()
+    model=cli.InterceptionMAPPO(TrainConfig(workers=1,horizon=1))
+    while not (terminated or truncated):
+        action,logp=model.act(observation,info["defender_mask"],deterministic=True)
+        assert torch.all(action==.5) and torch.all(logp==0)
+        observation,_,terminated,truncated,info=env.step(action.cpu().numpy())
+    assert info["outcome"]=="mixed_resolution"
+    assert not info["intruder_mask"].any()
+    assert info["step"]<=config.max_steps
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")

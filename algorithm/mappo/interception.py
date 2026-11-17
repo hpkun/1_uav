@@ -91,11 +91,13 @@ class MAPPO:
     def act(self, observations, mask, deterministic=False):
         mask = self.tensor(mask).bool()
         obs = self.tensor(observations).float()
+        action = torch.full((*mask.shape, AXES), .5, device=self.device)
+        logp = torch.zeros(mask.shape, device=self.device)
+        if not mask.any():
+            return action, logp
         dist = self.distribution(obs[mask])
         values = dist.mean if deterministic else dist.sample()
         values = values.clamp(1e-6, 1 - 1e-6)
-        action = torch.full((*mask.shape, AXES), .5, device=self.device)
-        logp = torch.zeros(mask.shape, device=self.device)
         action[mask] = values
         logp[mask] = dist.log_prob(values).sum(-1)
         return action, logp
