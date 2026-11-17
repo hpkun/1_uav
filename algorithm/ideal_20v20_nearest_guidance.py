@@ -14,7 +14,7 @@ from env.ideal_interception.large_scale_20v20_env import (TwentyConfig,
 from prediction.history import IntruderHistory
 from prediction.intercept_prediction import estimate_three_point_pip_from_history
 
-TRACE_VERSION = "uav-ideal-20v20-nearest-trace-v1"
+TRACE_VERSION = "uav-ideal-20v20-nearest-trace-v2"
 
 
 def _frame(info, *, control=None):
@@ -103,8 +103,9 @@ def run_episode(seed=17, avoidance=None):
                 if event["kind"] == "interception_contact"]
     summary = dict(experiment="ideal_20v20_nearest_three_point_pip",
         protocol=PROTOCOL_20V20, seed=seed, scenario_id=info["scenario_id"],
-        assignment_policy="nearest_dynamic", avoidance_mode=avoidance.mode,
+        assignment_policy=config.assignment_policy, avoidance_mode=avoidance.mode,
         intercepted_count=info["intercepted_count"], breached_count=info["breached_count"],
+        unassigned_contact_count=info["unassigned_contact_count"],
         remaining_intruder_count=info["remaining_intruder_count"],
         interception_ratio=info["interception_ratio"], breach_ratio=info["breach_ratio"],
         mission_success=info["mission_success"], outcome=info["outcome"],
@@ -121,6 +122,11 @@ def run_episode(seed=17, avoidance=None):
         initial_unique_target_count=info["initial_unique_target_count"],
         initial_max_defenders_per_target=info["initial_max_defenders_per_target"],
         assignment_update_count=info["assignment_update_count"],
+        target_resolution_reassignment_count=info["target_resolution_reassignment_count"],
+        total_reassigned_defenders=info["total_reassigned_defenders"],
+        mean_reassigned_defenders_per_resolution=info["mean_reassigned_defenders_per_resolution"],
+        maximum_reassigned_defenders_single_resolution=(
+            info["maximum_reassigned_defenders_single_resolution"]),
         mean_unique_targets_assigned=info["mean_unique_targets_assigned"],
         minimum_unique_targets_assigned=info["minimum_unique_targets_assigned"],
         maximum_defenders_per_single_target=info["maximum_defenders_per_single_target"],
@@ -156,10 +162,12 @@ def main(argv=None):
     print(f"seed={args.seed} intercepted={summary['intercepted_count']}/20 "
           f"breached={summary['breached_count']}/20 "
           f"interception_ratio={summary['interception_ratio']:.3f} "
-          f"friendly_collisions={summary['friendly_collision_count']} "
           f"initial_unique_targets={summary['initial_unique_target_count']} "
           f"initial_max_defenders_per_target={summary['initial_max_defenders_per_target']} "
-          f"assignment_updates={summary['assignment_update_count']} "
+          f"target_resolution_reassignments={summary['target_resolution_reassignment_count']} "
+          f"reassigned_defenders={summary['total_reassigned_defenders']} "
+          f"friendly_collisions={summary['friendly_collision_count']} "
+          f"minimum_dd_separation={summary['minimum_defender_defender_separation_m']:.3f}m "
           f"episode_time={summary['episode_resolution_time_s']:.3f}s")
 
 

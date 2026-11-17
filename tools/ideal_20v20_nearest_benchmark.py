@@ -30,9 +30,15 @@ def benchmark(seed_start, trials, avoidance=None):
             friendly_collision_episode_rate=float(np.mean([
                 row["friendly_collision_count"] > 0 for row in rows])),
             mean_friendly_collision_count=mean("friendly_collision_count"),
+            unassigned_contact_episode_rate=float(np.mean([
+                row["unassigned_contact_count"] > 0 for row in rows])),
+            mean_unassigned_contact_count=mean("unassigned_contact_count"),
             mean_initial_unique_target_count=mean("initial_unique_target_count"),
             mean_initial_max_defenders_per_target=mean("initial_max_defenders_per_target"),
             mean_assignment_update_count=mean("assignment_update_count"),
+            mean_target_resolution_reassignment_count=mean(
+                "target_resolution_reassignment_count"),
+            mean_total_reassigned_defenders=mean("total_reassigned_defenders"),
             mean_minimum_defender_defender_separation_m=(
                 float(np.mean(separations)) if separations else None)),
         per_seed=rows)

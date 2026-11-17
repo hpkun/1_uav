@@ -2,7 +2,6 @@
 import numpy as np
 
 from .geometry import boundary, closest, direction, inside_intervals, proximity, region_entry
-from .assignment import nearest_distance_assignment
 from .large_scale_20v20 import TWENTY_COUNT as DEFENDER_SLOTS
 
 PRIORITY = {"region_breach":0, "friendly_collision":1, "interception_contact":2,
@@ -144,11 +143,18 @@ def advance(env, actions):
         before_defenders = env.defender_mask.copy()
         before_intruders = env.intruder_mask.copy()
         move_to(tau)
-        emit(kind,members)
+        event_kind = ("unassigned_contact" if kind == "interception_contact" and
+                      env.assignment.get(members[0]) != members[1]-DEFENDER_SLOTS else kind)
+        emit(event_kind,members)
         if kind == "interception_contact":
-            env.interception_count += 1
-            inactive(members[0],"contact_exit")
-            inactive(members[1],"intercepted")
+            if event_kind == "interception_contact":
+                env.interception_count += 1
+                inactive(members[0],"contact_exit")
+                inactive(members[1],"intercepted")
+            else:
+                env.unassigned_contact_count += 1
+                inactive(members[0],"unassigned_contact_exit")
+                inactive(members[1],"unassigned_contact_exit")
             if not multi:
                 if not env.intruder_mask.any():
                     env.outcome = "all_intercepted"
@@ -189,10 +195,7 @@ def advance(env, actions):
                              and env.breach_count==0 else "mixed_resolution")
         if (not np.array_equal(before_defenders,env.defender_mask) or
                 not np.array_equal(before_intruders,env.intruder_mask)):
-            env.assignment = nearest_distance_assignment(
-                env.defenders[:,:3],env.intruders[:,:3],
-                env.defender_mask,env.intruder_mask)
-            env.record_assignment()
+            env.update_assignments_after_member_event(before_defenders,before_intruders)
         if env.outcome != "ongoing":
             emit("episode_end")
             break

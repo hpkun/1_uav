@@ -15,14 +15,14 @@ from .scenario import diagnostics, inside_region
 
 
 _DEFENDER_ANCHORS, _INTRUDER_ANCHORS = initial_positions()
-PROTOCOL_20V20 = "uav-ideal-interception-20v20-nearest-v1"
+PROTOCOL_20V20 = "uav-ideal-interception-20v20-target-resolution-nearest-v2"
 
 
 @dataclass(frozen=True)
 class TwentyConfig:
     """Frozen formal comparison profile; only the external episode seed varies."""
     scale: str = "20v20"
-    assignment_policy: str = "nearest_dynamic"
+    assignment_policy: str = "initial_nearest_target_resolution_fallback"
     intruder_policy: str = "zuo_bezier"
     intruder_motion_level: str = "level2_maneuvering"
     dt: float = .05
@@ -70,12 +70,47 @@ class TwentyVTwentyEnv:
             raise TypeError("20v20 requires TwentyConfig")
         self.outcome = "uninitialized"
 
-    def record_assignment(self):
+    def record_assignment(self, reason, *, resolved_target=None, affected_defenders=(),
+                          old_assignment=None):
         counts = Counter(self.assignment.values())
-        self.assignment_history.append(dict(time=float(self.time),
-            assignment={int(i): int(j) for i, j in sorted(self.assignment.items())},
+        current = {int(i): int(j) for i, j in sorted(self.assignment.items())}
+        self.assignment_history.append(dict(time=float(self.time), reason=reason,
+            resolved_target=resolved_target,
+            affected_defenders=list(affected_defenders),
+            old_assignment=dict(old_assignment or {}), new_assignment=current,
+            assignment=current.copy(),
             unique_target_count=len(counts),
             max_defenders_per_target=max(counts.values(), default=0)))
+
+    def update_assignments_after_member_event(self, before_defenders, before_intruders):
+        """Remove exited defenders; reselect only active pursuers of resolved targets."""
+        previous = self.assignment.copy()
+        original = previous.copy()
+        recorded_resolution = False
+        for i in np.flatnonzero(before_defenders & ~self.defender_mask):
+            self.assignment.pop(int(i), None)
+        resolved = np.flatnonzero(before_intruders & ~self.intruder_mask)
+        for j in resolved:
+            j = int(j)
+            affected = [i for i, target in sorted(self.assignment.items())
+                        if target == j and self.defender_mask[i]]
+            if not affected:
+                continue
+            old = previous.copy()
+            for i in affected:
+                del self.assignment[i]
+            affected_mask = np.zeros(TWENTY_COUNT, dtype=bool)
+            affected_mask[affected] = True
+            replacement = nearest_distance_assignment(self.defenders[:, :3],
+                self.intruders[:, :3], affected_mask, self.intruder_mask)
+            self.assignment.update(replacement)
+            self.record_assignment("target_resolution_nearest_reassignment",
+                resolved_target=j, affected_defenders=affected, old_assignment=old)
+            previous = self.assignment.copy()
+            recorded_resolution = True
+        if not recorded_resolution and self.assignment != original:
+            self.record_assignment("defender_exit_assignment_removed",
+                old_assignment=original)
 
     def reset(self, seed=None):
         c = self.config
@@ -127,6 +162,7 @@ class TwentyVTwentyEnv:
         self.events = []
         self.minimum_separation = None
         self.interception_count = self.breach_count = 0
+        self.unassigned_contact_count = 0
         self.friendly_collision_count = self.intruder_collision_count = 0
         self.defender_boundary_count = 0
         self.seed = seed_id
@@ -136,7 +172,7 @@ class TwentyVTwentyEnv:
         self.scenario_id = hashlib.sha256(json.dumps(identity, sort_keys=True,
             separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         self.assignment_history = []
-        self.record_assignment()
+        self.record_assignment("initial_nearest_assignment")
         observation, info = self.output(include_paths=True)
         info["assignment_updates"] = self.assignment_history.copy()
         return observation, info
@@ -144,6 +180,10 @@ class TwentyVTwentyEnv:
     def output(self, events=(), parts=None, team_reward=0., include_paths=False):
         c = self.config
         history = self.assignment_history
+        resolutions = [row for row in history
+                       if row["reason"] == "target_resolution_nearest_reassignment"]
+        reassigned_counts = [sum(i in row["new_assignment"] for i in row["affected_defenders"])
+                             for row in resolutions]
         info = dict(protocol=PROTOCOL_20V20, defenders=self.defenders.copy(),
             intruders=self.intruders.copy(), defender_mask=self.defender_mask.copy(),
             intruder_mask=self.intruder_mask.copy(), defender_status=self.defender_status.copy(),
@@ -156,6 +196,7 @@ class TwentyVTwentyEnv:
             seed=self.seed, scenario_id=self.scenario_id, scale=c.scale,
             interception_count=self.interception_count, breached_count=self.breach_count,
             intercepted_count=self.interception_count, breach_count=self.breach_count,
+            unassigned_contact_count=self.unassigned_contact_count,
             friendly_collision_count=self.friendly_collision_count,
             intruder_collision_count=self.intruder_collision_count,
             defender_boundary_count=self.defender_boundary_count,
@@ -171,6 +212,11 @@ class TwentyVTwentyEnv:
             initial_unique_target_count=history[0]["unique_target_count"],
             initial_max_defenders_per_target=history[0]["max_defenders_per_target"],
             assignment_update_count=len(history)-1,
+            target_resolution_reassignment_count=len(resolutions),
+            total_reassigned_defenders=sum(reassigned_counts),
+            mean_reassigned_defenders_per_resolution=(float(np.mean(reassigned_counts))
+                if reassigned_counts else 0.),
+            maximum_reassigned_defenders_single_resolution=max(reassigned_counts, default=0),
             mean_unique_targets_assigned=float(np.mean([row["unique_target_count"] for row in history])),
             minimum_unique_targets_assigned=min(row["unique_target_count"] for row in history),
             maximum_defenders_per_single_target=max(row["max_defenders_per_target"] for row in history))

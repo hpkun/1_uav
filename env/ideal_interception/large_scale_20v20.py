@@ -1,19 +1,18 @@
-"""Static 20v20 layout and nearest-distance assignment audit, separate from V3.5.
+"""Static front-arc 20v20 layout and nearest assignment audit, separate from V3.5.
 
 This module does not construct an InterceptionEnv or change its 15-slot protocol.
 """
-import math
-
 import numpy as np
 
 from .assignment import nearest_distance_assignment
 from .config import FIFTEEN_INTRUDER_WEDGE
 
 TWENTY_COUNT = 20
-VERSION = "20v20-layout-nearest-v1"
-DEFENDER_CENTER = (-120., 0., 60.)
-BASE_15_RADIUS_M = 60.
-TWENTY_DEFENDER_RADIUS_M = BASE_15_RADIUS_M*math.sqrt(TWENTY_COUNT/15)
+VERSION = "20v20-front-arc-nearest-v2"
+DEFENDER_CENTER = (-220., 0., 60.)
+TWENTY_DEFENDER_RADIUS_M = 65.
+ARC_START_DEG = -75.
+ARC_END_DEG = 75.
 NEW_INTRUDER_ANCHORS = ((285., -150., 60.), (285., -75., 60.),
                         (285., 0., 60.), (285., 75., 60.),
                         (285., 150., 60.))
@@ -21,14 +20,14 @@ PROTECTED_CENTER = (-220., 0., 0.)
 PROTECTED_RADIUS_M = 20.
 ARENA_LOWER = (-300., -300., 0.)
 ARENA_UPPER = (300., 300., 120.)
-REFERENCE_NOTE = ("Scene layout is project-specific and only borrows the circular-defense "
+REFERENCE_NOTE = ("Scene layout is project-specific and only borrows the front-defense "
     "/ wedge-intrusion large-scale layout idea from Zuo et al. 2026; it does not "
     "reproduce the paper's LB-Hungarian algorithm or numerical scene.")
 
 
 def initial_positions():
     """Return deterministic nominal anchors, without sampling or trajectory generation."""
-    angles = 2*math.pi*np.arange(TWENTY_COUNT)/TWENTY_COUNT
+    angles = np.deg2rad(np.linspace(ARC_START_DEG, ARC_END_DEG, TWENTY_COUNT))
     defenders = np.column_stack((
         DEFENDER_CENTER[0]+TWENTY_DEFENDER_RADIUS_M*np.cos(angles),
         DEFENDER_CENTER[1]+TWENTY_DEFENDER_RADIUS_M*np.sin(angles),
@@ -39,6 +38,9 @@ def initial_positions():
         if (positions.shape != (TWENTY_COUNT, 3) or not np.isfinite(positions).all()
                 or np.any(positions < ARENA_LOWER) or np.any(positions > ARENA_UPPER)):
             raise ValueError("invalid 20v20 nominal layout")
+    adjacent = np.linalg.norm(np.diff(defenders, axis=0), axis=1)
+    if np.any(defenders[:, 0] <= PROTECTED_CENTER[0]) or adjacent.min() <= 8.:
+        raise ValueError("front-arc defenders are behind the asset or too close")
     return defenders, intruders
 
 

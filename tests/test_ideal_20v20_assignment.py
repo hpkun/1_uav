@@ -11,7 +11,7 @@ from env.ideal_interception.config import (PROTOCOL, DEFENDER_SLOTS, INTRUDER_SL
     OBS_DIM, STATE_DIM, FIFTEEN_DEFENDER_CIRCLE, FIFTEEN_INTRUDER_WEDGE,
     SIX_INTRUDER_WEDGE)
 from env.ideal_interception.large_scale_20v20 import (TWENTY_COUNT, DEFENDER_CENTER,
-    TWENTY_DEFENDER_RADIUS_M, NEW_INTRUDER_ANCHORS, initial_positions,
+    TWENTY_DEFENDER_RADIUS_M, ARC_START_DEG, ARC_END_DEG, NEW_INTRUDER_ANCHORS, initial_positions,
     build_audit, segments_cross_interior, monotonic_y_inversions)
 from tools.ideal_20v20_assignment_audit import main
 
@@ -23,11 +23,22 @@ def test_nominal_positions_and_frozen_15v15_anchors():
     for positions in (defenders, intruders):
         assert (positions >= (-300., -300., 0.)).all()
         assert (positions <= (300., 300., 120.)).all()
-    assert DEFENDER_CENTER == (-120., 0., 60.)
-    assert TWENTY_DEFENDER_RADIUS_M == pytest.approx(60.*math.sqrt(20/15))
+    assert DEFENDER_CENTER == (-220., 0., 60.)
+    assert TWENTY_DEFENDER_RADIUS_M == 65.
+    assert (ARC_START_DEG, ARC_END_DEG) == (-75., 75.)
     np.testing.assert_allclose(np.linalg.norm(defenders[:, :2]-DEFENDER_CENTER[:2], axis=1),
                                TWENTY_DEFENDER_RADIUS_M, rtol=0, atol=1e-12)
     assert np.all(defenders[:, 2] == 60.)
+    assert np.all(defenders[:, 0] > -220.)
+    assert defenders[:, 0].min() >= -203.2
+    assert defenders[:, 0].max() == pytest.approx(-155., abs=.2)
+    angles = np.degrees(np.arctan2(defenders[:, 1], defenders[:, 0]+220.))
+    np.testing.assert_allclose(angles, np.linspace(-75., 75., 20), atol=1e-12)
+    distances = np.linalg.norm(defenders[:, None, :]-defenders[None, :, :], axis=2)
+    distances[np.eye(20, dtype=bool)] = np.inf
+    expected_spacing = 2*65.*math.sin(math.radians(150/19)/2)
+    assert distances.min() == pytest.approx(expected_spacing, abs=1e-9)
+    assert distances.min() > 8.
     np.testing.assert_array_equal(intruders[:15], FIFTEEN_INTRUDER_WEDGE)
     np.testing.assert_array_equal(intruders[15:], NEW_INTRUDER_ANCHORS)
     assert PROTOCOL == "uav-ideal-interception-v3.5.0"
