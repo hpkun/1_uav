@@ -1,6 +1,11 @@
 # Ideal three-dimensional interception simulation
 
-Protocol: `uav-ideal-interception-v3.2.0`. This is an abstract geometric
+Current protocol: `uav-ideal-interception-v3.5.0`. The formal 15v15 Level-2
+scenario, paired avoidance benchmark, audit commands, and historical playback
+matrix are documented in [ideal_15v15.md](ideal_15v15.md). The V3.2 details
+below describe the historical smaller-scale protocol and its provenance.
+
+This is an abstract geometric
 contact simulation for multi-agent decision research. A contact is a
 continuous-time distance event; the model does not simulate airframe shape,
 impulse, structural damage or real UAV collision control.

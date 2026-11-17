@@ -1,4 +1,4 @@
-"""V3.4 six-on-six geometry, fixed matching, events, and causal guidance."""
+"""Six-on-six physical regression under the V3.5 slot schema."""
 from dataclasses import replace
 from itertools import permutations
 import json
@@ -26,10 +26,10 @@ from tools.ideal_interception_replay import render_html,render_mp4
 
 def test_v33_slots_circle_wedge_and_seeded_paths():
     assert (PROTOCOL,DEFENDER_SLOTS,INTRUDER_SLOTS,OBS_DIM,STATE_DIM)==(
-        "uav-ideal-interception-v3.4.0",6,6,112,128)
+        "uav-ideal-interception-v3.5.0",15,15,265,444)
     config=formal_6v6_config()
-    assert config.defender_starts==SIX_DEFENDER_CIRCLE
-    assert config.intruder_starts==SIX_INTRUDER_WEDGE
+    assert config.defender_starts[:6]==SIX_DEFENDER_CIRCLE
+    assert config.intruder_starts[:6]==SIX_INTRUDER_WEDGE
     circle=np.asarray(SIX_DEFENDER_CIRCLE)
     np.testing.assert_allclose(circle.mean(axis=0),(-120,0,60),atol=1e-10)
     np.testing.assert_allclose(np.linalg.norm(circle[:,:2]-(-120,0),axis=1),50,atol=1e-10)
@@ -41,7 +41,7 @@ def test_v33_slots_circle_wedge_and_seeded_paths():
         env.restore(env.snapshot()|{"protocol":"uav-ideal-interception-v3.2.0"})
     b=InterceptionEnv(config).reset(17)[1]
     c=InterceptionEnv(config).reset(18)[1]
-    assert obs.shape==(6,112) and a["centralized_state"].shape==(128,)
+    assert obs.shape==(DEFENDER_SLOTS,OBS_DIM) and a["centralized_state"].shape==(STATE_DIM,)
     assert a["scenario_id"]==b["scenario_id"]!=c["scenario_id"]
     assert a["intruder_paths"]==b["intruder_paths"]!=c["intruder_paths"]
     starts=np.asarray(a["intruders"][:6,:3])
@@ -70,7 +70,7 @@ def test_hungarian_optimum_tie_and_frozen_assignment():
         cost_matrix=np.linalg.norm(positions[0][:,None]-positions[1][None],axis=2)
         assert sum(cost_matrix[i,j] for i,j in initial.items())==pytest.approx(
             min(sum(cost_matrix[i,j] for i,j in enumerate(p)) for p in permutations(range(6))))
-        env.step(np.full((6,3),.5))
+        env.step(np.full((DEFENDER_SLOTS,3),.5))
         assert env.original_assignment==initial
         assert env.assignment==initial
 
@@ -87,33 +87,33 @@ def test_single_member_events_continue_and_breached_pair_never_reassigns():
         intruder_ends=((-260.,0.,60.),)+base.intruder_ends[1:]))
     _,initial=breach.reset(17)
     owner=next(i for i,j in initial["original_assignment"].items() if j==0)
-    _,_,done,_,info=breach.step(np.full((6,3),.5))
+    _,_,done,_,info=breach.step(np.full((DEFENDER_SLOTS,3),.5))
     assert not done and info["outcome"]=="ongoing" and info["breached_count"]==1
     assert info["intruder_status"][0]=="breached"
     assert info["defender_status"][owner]=="target_breached_no_reassignment"
     assert owner not in info["assignment"]
     assert info["original_assignment"]==initial["original_assignment"]
-    breach.step(np.full((6,3),.5))
+    breach.step(np.full((DEFENDER_SLOTS,3),.5))
     assert breach.original_assignment==initial["original_assignment"]
     assert owner not in breach.assignment
 
     starts=((299.,0.,60.),)+base.defender_starts[1:]
     boundary=InterceptionEnv(replace(base,defender_starts=starts))
     boundary.reset(17)
-    _,_,done,_,info=boundary.step(np.full((6,3),.5))
+    _,_,done,_,info=boundary.step(np.full((DEFENDER_SLOTS,3),.5))
     assert not done and info["defender_boundary_count"]==1
     assert info["defender_status"][0]=="boundary_exit"
 
     starts=((188.,0.,60.),)+base.defender_starts[1:]
     contact=InterceptionEnv(replace(base,defender_starts=starts))
     contact.reset(17)
-    _,_,done,_,info=contact.step(np.full((6,3),.5))
+    _,_,done,_,info=contact.step(np.full((DEFENDER_SLOTS,3),.5))
     assert not done and info["intercepted_count"]==1 and info["remaining_intruder_count"]==5
 
     starts=((-70.,-1.,60.),(-70.,1.,60.))+base.defender_starts[2:]
     friendly=InterceptionEnv(replace(base,defender_starts=starts))
     friendly.reset(17)
-    action=np.full((6,3),.5)
+    action=np.full((DEFENDER_SLOTS,3),.5)
     action[0]=(.5,1.,.5)
     action[1]=(.5,0.,.5)
     _,_,done,_,info=friendly.step(action)
@@ -125,7 +125,7 @@ def test_single_member_events_continue_and_breached_pair_never_reassigns():
     intruder_collision=InterceptionEnv(replace(base,intruder_starts=intruder_starts,
                                                intruder_ends=intruder_ends))
     intruder_collision.reset(17)
-    _,_,done,_,info=intruder_collision.step(np.full((6,3),.5))
+    _,_,done,_,info=intruder_collision.step(np.full((DEFENDER_SLOTS,3),.5))
     assert not done and info["intruder_collision_count"]==1
     assert not info["intruder_mask"][:2].any()
     assert info["remaining_intruder_count"]==4
@@ -151,7 +151,7 @@ def test_all_intruders_must_resolve_before_finalization(prior_breaches,expected_
     env.assignment={owner:0}
     env.defenders[owner,:3]=env.intruders[0,:3]-np.array([2.,0.,0.])
     env.defenders[owner,3:]=[20.,0.,0.]
-    _,_,done,_,info=env.step(np.full((6,3),.5))
+    _,_,done,_,info=env.step(np.full((DEFENDER_SLOTS,3),.5))
     assert done and info["outcome"]==expected_outcome
     assert info["intercepted_count"]==6-prior_breaches
     assert info["breached_count"]==prior_breaches
@@ -172,7 +172,7 @@ def test_two_methods_share_scene_and_member_resolution(tmp_path):
     for method,(summary,trace) in results.items():
         assert summary["warmup_steps"]>0 and summary["predictive_steps_total"]>0
         assert summary["intercepted_count"]+summary["breached_count"]+summary["other_resolved_count"]==6
-        assert all(np.shape(frame["control"]["action"])==(6,3) for frame in trace["frames"][1:])
+        assert all(np.shape(frame["control"]["action"])==(DEFENDER_SLOTS,3) for frame in trace["frames"][1:])
         for frame in trace["frames"][1:]:
             for pair in frame["control"]["pairs"].values():
                 assert np.linalg.norm(pair["guidance_direction_unit"])==pytest.approx(1.)
@@ -218,18 +218,18 @@ def test_six_member_mappo_vector_interface_smoke(tmp_path):
     config=formal_6v6_config()
     training=TrainConfig(workers=1,horizon=1)
     model=InterceptionMAPPO(training)
-    assert model.actor[0].in_features==112
-    assert model.critic[0].in_features==128
-    assert model.critic[-1].out_features==6
+    assert model.actor[0].in_features==OBS_DIM
+    assert model.critic[0].in_features==STATE_DIM
+    assert model.critic[-1].out_features==DEFENDER_SLOTS
     with vector_env(config,training) as vector:
-        assert vector.observations.shape==(1,6,112)
-        assert vector.states.shape==(1,128)
-        assert vector.masks.shape==(1,6)
+        assert vector.observations.shape==(1,DEFENDER_SLOTS,OBS_DIM)
+        assert vector.states.shape==(1,STATE_DIM)
+        assert vector.masks.shape==(1,DEFENDER_SLOTS)
         action,_=model.act(vector.observations,vector.masks,deterministic=True)
-        assert action.shape==(1,6,3)
+        assert action.shape==(1,DEFENDER_SLOTS,3)
         result=vector.step(action.cpu().numpy())
-        assert result.rewards.shape==(1,6)
-        assert result.transition_states.shape==(1,128)
+        assert result.rewards.shape==(1,DEFENDER_SLOTS)
+        assert result.transition_states.shape==(1,STATE_DIM)
     old=tmp_path/"v32_header.pt"
     with zipfile.ZipFile(old,"w") as archive:
         archive.writestr("archive/interception_protocol.json",json.dumps(
@@ -243,3 +243,10 @@ def test_six_member_mappo_vector_interface_smoke(tmp_path):
             LEARNING_PROTOCOL|{"version":"uav-ideal-interception-v3.3.0"}))
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(prior,protocol=LEARNING_PROTOCOL)
+    v34=tmp_path/"v34_header.pt"
+    with zipfile.ZipFile(v34,"w") as archive:
+        archive.writestr("archive/interception_protocol.json",json.dumps(
+            LEARNING_PROTOCOL|{"version":"uav-ideal-interception-v3.4.0",
+                               "observation":112,"state":128,"defenders":6,"intruders":6}))
+    with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
+        read(v34,protocol=LEARNING_PROTOCOL)

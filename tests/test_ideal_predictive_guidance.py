@@ -184,7 +184,8 @@ def test_v2_records_runtime_assignment_and_v1_read_policy(tmp_path):
         for key in ("intruders","intruder_mask"):
             frame[key]=frame[key][:2]
     for event in [e for frame in old["frames"] for e in frame["events"]]+old["result"]["events"]:
-        event["members"]=[member-1 if member>=6 else member for member in event["members"]]
+        event["members"]=[member-(DEFENDER_SLOTS-5) if member>=DEFENDER_SLOTS else member
+                          for member in event["members"]]
     legacy_v2=tmp_path/"v1_v2.json"
     write_trace(legacy_v2,old)
     assert evaluate(legacy_v2)["assignment_source"]=="fixed_scenario_rule"

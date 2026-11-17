@@ -1,4 +1,4 @@
-"""Model-free, fixed-assignment 6v6 guidance and post-episode diagnostics."""
+"""Model-free, fixed-assignment multi-member guidance and diagnostics."""
 import argparse
 from dataclasses import asdict
 import json
@@ -115,8 +115,9 @@ def _analyze(trace,config,method):
 def run_episode(config=None,method="two_point_pip",seed=17,avoidance=None):
     config=formal_6v6_config() if config is None else config
     avoidance=AvoidanceConfig() if avoidance is None else avoidance
-    if config.scale!="6v6" or config.assignment_policy!="hungarian_fixed" or method not in METHODS:
-        raise ValueError("6v6 fixed-assignment config and named guidance method required")
+    if (config.scale not in ("6v6","15v15") or config.assignment_policy!="hungarian_fixed"
+            or method not in METHODS or (config.scale=="15v15" and method!="three_point_pip")):
+        raise ValueError("fixed-assignment scale and supported guidance method required")
     history=IntruderHistory(config.dt,slots=INTRUDER_SLOTS)
     predictor=PREDICTORS[method]
     def decide(info):
@@ -161,7 +162,7 @@ def run_episode(config=None,method="two_point_pip",seed=17,avoidance=None):
     trace=record(config,seed,actions=decide,scenario_type="region_crossing")
     first=trace["frames"][0]
     specs=[row["specification"] for row in trace["references"]]
-    result=dict(method=method,seed=seed,scenario_id=trace["scenario_id"],
+    result=dict(method=method,scale=config.scale,seed=seed,scenario_id=trace["scenario_id"],
         intruder_motion_level=config.intruder_motion_level,
         scenario_profile_version=config.scenario_profile_version,
         defender_circle_radius_m=config.defender_circle_radius_m,
@@ -205,7 +206,7 @@ def main(argv=None):
     with (args.out/"summary.json").open("x",encoding="utf-8") as stream:
         json.dump(summary,stream,indent=2,allow_nan=False)
     write_trace(args.out/"episode.json",trace)
-    print(f"method={args.method} intercepted={summary['intercepted_count']}/6 "
+    print(f"method={args.method} intercepted={summary['intercepted_count']}/{config.intruder_count} "
           f"breached={summary['breached_count']} outcome={summary['outcome']} "
           f"time={summary['episode_resolution_time_s']:.3f}s")
 

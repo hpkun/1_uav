@@ -108,7 +108,7 @@ def summarize(rows):
         mean_time=average("time"),
         mean_minimum_separation=average("minimum_separation"),
         mean_defender_exits=average("defender_exits"),mean_intruder_exits=average("intruder_exits"))
-    if rows and rows[0]["scale"]=="6v6":
+    if rows and rows[0]["scale"] in ("6v6","15v15"):
         initial=sum(r["initial_intruder_count"] for r in rows)
         result.update(interception_ratio=sum(r["intercepted_count"] for r in rows)/initial,
             breach_ratio=sum(r["breached_count"] for r in rows)/initial,
@@ -359,7 +359,7 @@ def main(argv=None):
     for command in (train,resume,assess):
         command.add_argument("--out",required=True,type=Path)
         command.add_argument("--device")
-    train.add_argument("--scale",choices=("1v1","3v1","5v2","6v6"),required=True)
+    train.add_argument("--scale",choices=("1v1","3v1","5v2","6v6","15v15"),required=True)
     train.add_argument("--config",type=Path)
     train.add_argument("--total-steps",type=int,required=True)
     train.add_argument("--until-steps",type=int)
@@ -380,7 +380,11 @@ def main(argv=None):
         options = json.loads(args.config.read_text()) if args.config else {}
         if options.get("scale",args.scale)!=args.scale:
             parser.error("scale differs from configuration")
-        config = InterceptionConfig(**(options|dict(scale=args.scale)))
+        if args.scale=="15v15":
+            from env.ideal_interception.config import formal_15v15_level2_config
+            config = formal_15v15_level2_config(**options)
+        else:
+            config = InterceptionConfig(**(options|dict(scale=args.scale)))
         training = TrainConfig(seed=args.seed,workers=args.workers,horizon=args.horizon)
         fit(args.out,config,training,total_steps=args.total_steps,
             until_steps=args.until_steps,eval_interval=args.eval_interval,

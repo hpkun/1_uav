@@ -1,12 +1,13 @@
 """V3.4 motion profiles and historical trace isolation."""
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from algorithm.ideal_multi_predictive_guidance import METHODS,run_episode
 from algorithm.ideal_interception import summarize
-from env.ideal_interception.config import (PROTOCOL,formal_6v6_config,
+from env.ideal_interception.config import (PROTOCOL,DEFENDER_SLOTS,formal_6v6_config,
     formal_6v6_level2_config)
 from env.ideal_interception.environment import InterceptionEnv
 from env.ideal_interception.scenario import initialize,diagnostics
@@ -24,7 +25,7 @@ LEVEL1_SEED17_HASHES=(
 
 
 def test_method_namespace_and_level1_seed17_fingerprint():
-    assert PROTOCOL=="uav-ideal-interception-v3.4.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.5.0"
     assert METHODS==("two_point_pip","three_point_pip")
     c=formal_6v6_config()
     defenders,intruders,paths,assignment,_,scenario_id=initialize(c,17)
@@ -94,7 +95,7 @@ def test_level2_guidance_pairing_and_offline_only_truth():
             for pair in frame["control"]["pairs"].values():
                 assert "two_point_velocity_error_mps" not in pair
                 assert "true_local_acceleration_mps2" not in pair
-    for action in (np.zeros((6,3)),np.ones((6,3))):
+    for action in (np.zeros((DEFENDER_SLOTS,3)),np.ones((DEFENDER_SLOTS,3))):
         env=InterceptionEnv(c)
         _,info=env.reset(17)
         original=deepcopy(info["intruder_plans"])
@@ -118,15 +119,10 @@ def test_two_point_rename_preserves_v33_seed17_physical_values():
 
 
 def test_v33_strict_metadata_still_replays(tmp_path):
-    _,trace=run_episode(formal_6v6_config(),"two_point_pip",17)
-    historical=deepcopy(trace)
-    historical["environment_protocol"]="uav-ideal-interception-v3.3.0"
-    historical["config"].pop("intruder_motion_level")
-    for frame in historical["frames"][1:]:
-        frame["control"]["method"]="zuo_tp"
-    path=tmp_path/"historical_zuo.json"
-    write_trace(path,historical)
-    assert Timeline(path).duration==trace["result"]["time"]
+    path=Path(__file__).resolve().parents[1]/"outputs/ideal_guidance/multi6_v33_seed17_zuo_tp_verified/episode.json"
+    timeline=Timeline(path)
+    assert timeline.defender_slots==timeline.intruder_slots==6
+    assert len(timeline.at(0)["entities"])==12
 
 
 def test_mappo_6v6_summary_uses_member_counts():

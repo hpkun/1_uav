@@ -3,10 +3,11 @@ from dataclasses import dataclass
 import math
 import numpy as np
 
-PROTOCOL = "uav-ideal-interception-v3.4.0"
-SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2), "6v6": (6, 6)}
-DEFENDER_SLOTS = 6
-INTRUDER_SLOTS = 6
+PROTOCOL = "uav-ideal-interception-v3.5.0"
+SCALES = {"1v1": (1, 1), "3v1": (3, 1), "5v2": (5, 2), "6v6": (6, 6),
+          "15v15": (15, 15)}
+DEFENDER_SLOTS = 15
+INTRUDER_SLOTS = 15
 OBS_DIM = 6 + 7*(DEFENDER_SLOTS+INTRUDER_SLOTS) + INTRUDER_SLOTS + 3 + 1 + DEFENDER_SLOTS + INTRUDER_SLOTS
 STATE_DIM = 7*(DEFENDER_SLOTS+INTRUDER_SLOTS) + DEFENDER_SLOTS*INTRUDER_SLOTS + 3 + len(SCALES) + 1
 
@@ -21,14 +22,23 @@ class InterceptionConfig:
     defender_speeds: tuple = (20.,)*DEFENDER_SLOTS
     intruder_speeds: tuple = (20.,)*INTRUDER_SLOTS
     defender_starts: tuple = ((-100., -50., 60.), (-100., 0., 60.), (-100., 50., 60.),
-                              (-120., -80., 80.), (-120., 80., 80.), (-140., 120., 80.))
+                              (-120., -80., 80.), (-120., 80., 80.), (-140., 120., 80.)) + (
+                              (-160.,-120.,60.),(-160.,-90.,60.),(-160.,-60.,60.),
+                              (-160.,-30.,60.),(-160.,0.,60.),(-160.,30.,60.),
+                              (-160.,60.,60.),(-160.,90.,60.),(-160.,120.,60.))
     defender_directions: tuple = ((1., 0., 0.),)*DEFENDER_SLOTS
     intruder_starts: tuple = ((200., -10., 60.), (200., 10., 80.),
                               (220., -60., 60.), (220., -30., 60.),
-                              (220., 30., 60.), (220., 60., 60.))
+                              (220., 30., 60.), (220., 60., 60.)) + (
+                              (250.,-90.,60.),(250.,-30.,60.),(250.,30.,60.),
+                              (250.,90.,60.),(270.,-120.,60.),(270.,-60.,60.),
+                              (270.,0.,60.),(270.,60.,60.),(270.,120.,60.))
     intruder_ends: tuple = ((-260., -10., 60.), (-260., 10., 80.),
                             (-260., -60., 60.), (-260., -30., 60.),
-                            (-260., 30., 60.), (-260., 60., 60.))
+                            (-260., 30., 60.), (-260., 60., 60.)) + (
+                            (-260.,-90.,60.),(-260.,-30.,60.),(-260.,30.,60.),
+                            (-260.,90.,60.),(-260.,-120.,60.),(-260.,-60.,60.),
+                            (-260.,0.,60.),(-260.,60.,60.),(-260.,120.,60.))
     assignment_policy: str = "nearest_dynamic"
     intruder_policy: str = "zuo_bezier"
     intruder_motion_level: str = "level1_smooth"
@@ -56,15 +66,18 @@ class InterceptionConfig:
     def __post_init__(self):
         if self.scale not in SCALES or self.initialization not in ("fixed", "random"):
             raise ValueError("invalid scale or initialization")
-        if self.scale!="6v6":
-            # Accept old-scale construction with V3.2-length arrays; appended slots stay inactive.
-            defaults=type(self).__dataclass_fields__
-            for name,old_length in (("defender_speeds",5),("defender_starts",5),
-                    ("defender_directions",5),("intruder_speeds",2),
-                    ("intruder_starts",2),("intruder_ends",2)):
+        # Historical constructors may supply their former physical slot count.
+        defaults=type(self).__dataclass_fields__
+        historical=((5,6),(2,6)) if self.scale in ("1v1","3v1","5v2") else ((6,),(6,))
+        if self.scale!="15v15":
+            for name,old_lengths in (("defender_speeds",historical[0]),
+                    ("defender_starts",historical[0]),
+                    ("defender_directions",historical[0]),
+                    ("intruder_speeds",historical[1]),
+                    ("intruder_starts",historical[1]),("intruder_ends",historical[1])):
                 value=getattr(self,name)
-                if len(value)==old_length:
-                    object.__setattr__(self,name,tuple(value)+tuple(defaults[name].default[old_length:]))
+                if len(value) in old_lengths:
+                    object.__setattr__(self,name,tuple(value)+tuple(defaults[name].default[len(value):]))
         if self.assignment_policy not in ("nearest_dynamic","hungarian_fixed"):
             raise ValueError("invalid assignment policy")
         if self.intruder_policy not in ("zuo_bezier", "legacy_reference") or self.intruder_mode not in (None,"straight","bezier"):
@@ -162,6 +175,13 @@ SIX_DEFENDER_CIRCLE = ((-70.,0.,60.),(-95.,43.3012701892,60.),
     (-145.,-43.3012701892,60.),(-95.,-43.3012701892,60.))
 SIX_INTRUDER_WEDGE = ((190.,0.,60.),(210.,-30.,60.),(210.,30.,60.),
     (230.,-60.,60.),(230.,0.,60.),(230.,60.,60.))
+FIFTEEN_DEFENDER_CIRCLE = tuple(
+    (-120.+60.*math.cos(2.*math.pi*i/15),
+     60.*math.sin(2.*math.pi*i/15),60.) for i in range(15))
+FIFTEEN_INTRUDER_WEDGE = SIX_INTRUDER_WEDGE + (
+    (250.,-90.,60.),(250.,-30.,60.),(250.,30.,60.),(250.,90.,60.),
+    (270.,-120.,60.),(270.,-60.,60.),(270.,0.,60.),(270.,60.,60.),
+    (270.,120.,60.))
 
 
 def formal_6v6_config(**overrides):
@@ -181,9 +201,21 @@ def formal_6v6_avoidance_stress_config(radius_m,**overrides):
     """Level-2 targets with a circular defender formation of explicit radius."""
     if not math.isfinite(radius_m) or radius_m<=0:
         raise ValueError("invalid defender circle radius")
-    angles=np.arange(DEFENDER_SLOTS)*np.pi/3
+    angles=np.arange(SCALES["6v6"][0])*np.pi/3
     starts=tuple((-120.+radius_m*float(np.cos(a)),
                   radius_m*float(np.sin(a)),60.) for a in angles)
     return formal_6v6_level2_config(**(dict(defender_starts=starts,
         scenario_profile_version="avoidance_stress_v1",
         defender_circle_radius_m=float(radius_m))|overrides))
+
+
+def formal_15v15_config(**overrides):
+    """Frozen project 15v15 nominal geometry with fixed Hungarian association."""
+    values=dict(scale="15v15",defender_starts=FIFTEEN_DEFENDER_CIRCLE,
+        defender_directions=((1.,0.,0.),)*DEFENDER_SLOTS,
+        intruder_starts=FIFTEEN_INTRUDER_WEDGE,assignment_policy="hungarian_fixed")
+    return InterceptionConfig(**(values|overrides))
+
+
+def formal_15v15_level2_config(**overrides):
+    return formal_15v15_config(**(dict(intruder_motion_level="level2_maneuvering")|overrides))

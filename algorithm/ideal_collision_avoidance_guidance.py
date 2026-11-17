@@ -1,4 +1,4 @@
-"""Single 6v6 ThreePoint-PIP episode with an isolated friendly avoidance mode."""
+"""Single fixed-assignment ThreePoint-PIP episode with friendly avoidance."""
 import argparse
 import json
 from pathlib import Path
@@ -6,13 +6,14 @@ from pathlib import Path
 from .ideal_collision_avoidance import AvoidanceConfig,MODES
 from .ideal_multi_predictive_guidance import run_episode
 from env.ideal_interception.config import (formal_6v6_level2_config,
-    formal_6v6_avoidance_stress_config)
+    formal_6v6_avoidance_stress_config,formal_15v15_level2_config)
 from tools.ideal_interception_trace import write_trace
 
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--method",choices=("three_point_pip",),default="three_point_pip")
+    parser.add_argument("--scale",choices=("6v6","15v15"),default="6v6")
     parser.add_argument("--avoidance-mode",choices=MODES,required=True)
     parser.add_argument("--motion-level",choices=("level2_maneuvering",),
                         default="level2_maneuvering")
@@ -25,6 +26,8 @@ def main(argv=None):
         parser.error("seed must be nonnegative")
     profile=None
     if args.scenario_profile=="stress":
+        if args.scale=="15v15":
+            parser.error("15v15 has only the nominal profile")
         if args.radius_audit is None:
             parser.error("--radius-audit is required for stress")
         profile=json.loads(args.radius_audit.read_text(encoding="utf-8"))["stress_profile"]
@@ -33,7 +36,8 @@ def main(argv=None):
             parser.error("radius audit does not establish an adequate stress profile")
         config=formal_6v6_avoidance_stress_config(profile["selected_radius_m"])
     else:
-        config=formal_6v6_level2_config()
+        config=(formal_15v15_level2_config() if args.scale=="15v15" else
+                formal_6v6_level2_config())
     summary,trace=run_episode(config,"three_point_pip",args.seed,
         AvoidanceConfig(mode=args.avoidance_mode))
     if profile is not None:
@@ -44,7 +48,7 @@ def main(argv=None):
         json.dump(summary,stream,indent=2,allow_nan=False)
     write_trace(args.out/"episode.json",trace)
     print(f"mode={args.avoidance_mode} seed={args.seed} "
-          f"intercepted={summary['intercepted_count']}/6 "
+          f"intercepted={summary['intercepted_count']}/{config.intruder_count} "
           f"friendly_collision={summary['friendly_collision_count']} "
           f"safety={summary['safety_violation_count']} "
           f"time={summary['episode_resolution_time_s']:.3f}s")

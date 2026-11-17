@@ -95,7 +95,7 @@ def advance(env, actions):
         velocities[i] = direction(actions[i],env.defenders[i,3:]/c.defender_speeds[i])*c.defender_speeds[i]
         env.defenders[i,3:] = velocities[i]
     origin, cursor = env.time, 0.
-    multi = c.scale=="6v6"
+    multi = c.scale in ("6v6","15v15")
     start_mask = env.defender_mask.copy()
     events = []
     def emit(kind, members=()):

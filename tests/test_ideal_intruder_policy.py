@@ -129,7 +129,7 @@ def test_paper_profile_and_historical_v3_trace(tmp_path,historical_protocol):
     assert (default.dt,default.defender_speeds[0],default.intruder_speeds[0])==(.05,20.,20.)
     assert (paper.dt,paper.defender_speeds[0],paper.intruder_speeds[0],
             paper.contact_distance)==(.1,25.,30.,.1)
-    assert PROTOCOL=="uav-ideal-interception-v3.4.0"
+    assert PROTOCOL=="uav-ideal-interception-v3.5.0"
     protocol=evaluation_protocol(default,[{"scenario_id":"a"},{"scenario_id":"b"}])
     assert protocol["kind"]=="randomized_intruder_plans"
     assert protocol["unique_scenarios"]==2

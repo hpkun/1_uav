@@ -56,6 +56,8 @@ def analyze_safety(trace,avoidance=AvoidanceConfig()):
             early_steps+=bool(control["predictive_early_activation"])
             deviations.append(control["avoidance_guidance_deviation_deg"])
     return dict(minimum_friendly_distance_m=minimum,
+        minimum_preavoidance_predicted_cpa_distance_m=min_cpa,
+        maximum_preavoidance_cpa_risk=max_risk,
         minimum_predicted_cpa_distance_m=min_cpa,maximum_cpa_risk=max_risk,
         safety_violation_count=safety_entries,alert_entry_count=alert_entries,
         alert_exposure_pair_seconds=exposure,

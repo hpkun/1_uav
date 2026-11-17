@@ -1,5 +1,7 @@
 """Analytic friendly-avoidance fixtures and profile isolation."""
 from dataclasses import replace
+from pathlib import Path
+import json
 import math
 
 import numpy as np
@@ -159,6 +161,7 @@ def test_none_seed17_physical_regression():
     summary,trace=run_episode(formal_6v6_level2_config(),"three_point_pip",17,
         AvoidanceConfig(mode="none"))
     assert summary["path_hashes"][0]=="7f937dd5c2fa552ae50efbd08c1836034125490d261cf3885803fc4c7e1db643"
+    assert summary["scenario_id"]=="460192d2db95b871731a6d3746d99e9f64a7fcc1e666ba69dda65eb2fb0f8693"
     assert summary["original_assignment"]=={0:0,4:1,2:2,5:3,3:4,1:5}
     assert trace["frames"][1]["control"]["action"][0]==[
         .9999574035175591,.49356619731032175,.5010958334411767]
@@ -169,6 +172,16 @@ def test_none_seed17_physical_regression():
     assert summary["episode_resolution_time_s"]==10.06967153319023
     assert all(not pair["avoidance_active"] for frame in trace["frames"][1:]
                for pair in frame["control"]["pairs"].values())
+    archive=Path(__file__).resolve().parents[1]/"outputs/ideal_guidance/v34_level2_three_point_seed17/episode.json"
+    historical=json.loads(archive.read_text(encoding="utf-8"))
+    assert len(historical["frames"])==len(trace["frames"])
+    assert {int(i):j for i,j in historical["original_assignment"].items()}==summary["original_assignment"]
+    for old,new in zip(historical["frames"],trace["frames"]):
+        assert old["time"]==new["time"]
+        assert old["defenders"][:6]==new["defenders"][:6]
+        assert old["intruders"][:6]==new["intruders"][:6]
+        if old["step"]:
+            assert old["control"]["action"][:6]==new["control"]["action"][:6]
 
 
 def test_stress_cpa_end_to_end_speed_and_paired_scene():
@@ -177,6 +190,14 @@ def test_stress_cpa_end_to_end_speed_and_paired_scene():
         AvoidanceConfig(mode="predictive_cpa_knn"))
     assert summary["avoidance_active_steps"]>0
     assert summary["predictive_early_activation_count"]>0
+    archive=Path(__file__).resolve().parents[1]/"outputs/ideal_guidance/v34_avoidance_stress_seed40_cpa/episode.json"
+    historical=json.loads(archive.read_text(encoding="utf-8"))
+    assert len(historical["frames"])==len(trace["frames"])
+    assert all(old["time"]==new["time"] and
+        old["defenders"][:6]==new["defenders"][:6] and
+        old["intruders"][:6]==new["intruders"][:6] and
+        old["control"]["action"][:6]==new["control"]["action"][:6]
+        for old,new in zip(historical["frames"][1:],trace["frames"][1:]))
     for before,after in zip(trace["frames"][:-1],trace["frames"][1:]):
         executed=np.asarray(after["executed_velocities"])
         for i,active in enumerate(before["defender_mask"]):

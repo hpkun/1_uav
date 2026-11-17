@@ -141,24 +141,25 @@ def initialize(config, seed):
         if config.scenario_profile_version=="avoidance_stress_v1":
             identity["scenario_profile_version"]=config.scenario_profile_version
             identity["defender_circle_radius_m"]=config.defender_circle_radius_m
-        if config.scale=="6v6":
+        if config.scale in ("6v6","15v15"):
             identity["assignment_policy"]=config.assignment_policy
     else:
         identity=asdict(config)
         for key in ("seed","initialization","random_range","init_max_attempts"):
             identity.pop(key)
         identity.pop("intruder_motion_level",None)
-        if config.scale!="6v6":
+        if config.scale not in ("6v6","15v15"):
             identity.pop("assignment_policy")
-    if config.scale!="6v6":
-        # Preserve V3.2 scenario identities after the new inactive slots are appended.
-        for key,count in (("defender_speeds",5),("defender_starts",5),
-                          ("defender_directions",5),("intruder_speeds",2),
-                          ("intruder_starts",2),("intruder_ends",2)):
-            if key in identity:
-                identity[key]=identity[key][:count]
-    identity_defenders=defenders[:5] if config.scale!="6v6" else defenders
-    identity_intruders=intruders[:2] if config.scale!="6v6" else intruders
+    # Hash the historical physical slots, excluding newly appended inactive slots.
+    identity_d=5 if config.scale in ("1v1","3v1","5v2") else config.defender_count
+    identity_i=2 if config.scale in ("1v1","3v1","5v2") else config.intruder_count
+    for key,count in (("defender_speeds",identity_d),("defender_starts",identity_d),
+                      ("defender_directions",identity_d),("intruder_speeds",identity_i),
+                      ("intruder_starts",identity_i),("intruder_ends",identity_i)):
+        if key in identity:
+            identity[key]=identity[key][:count]
+    identity_defenders=defenders[:identity_d]
+    identity_intruders=intruders[:identity_i]
     identity = dict(config=identity,defenders=identity_defenders.tolist(),intruders=identity_intruders.tolist(),
                     assignment=assignment,paths=[path.specification() for path in paths],
                     policy=config.intruder_policy,

@@ -67,7 +67,10 @@ def protected_cylinder_geometry(scene,angles=64,levels=8):
 def render_html(source,output,view="3d",overwrite=False):
     import plotly.graph_objects as go
     timeline=Timeline(source)
-    times=sorted(set(timeline.key_times+video_times(timeline.duration,30)))
+    # At 0.05 s the 15v15 control frames already supply 20 FPS; extra display
+    # samples quadratically duplicate all 30 entity trails in standalone HTML.
+    times=(timeline.key_times if timeline.config.scale=="15v15" else
+           sorted(set(timeline.key_times+video_times(timeline.duration,30))))
     rows=[timeline.at(t) for t in times]
     first=rows[0]["entities"]
     colors={e["id"]:ROLE_COLORS[e["role"]] for e in first}
@@ -104,6 +107,9 @@ def render_html(source,output,view="3d",overwrite=False):
         data.append(line(reference[0],mode="lines",name=f"I{j} (Blue Intruder) reference",
                          showlegend=False,
                          line=dict(color=intruder_reference_color(),dash="dash",width=3),opacity=.55))
+    for role in ("defender","intruder"):
+        data.append(line([],mode="lines",name=ROLE_LABELS[role],showlegend=True,
+                         line=dict(color=ROLE_COLORS[role],width=4)))
     static=len(data)
     def dynamic(k):
         row=rows[k]
@@ -117,7 +123,8 @@ def render_html(source,output,view="3d",overwrite=False):
             traces.append(line(history,mode="lines",name=f"{label} actual",
                                showlegend=False,line=dict(color=color,width=3)))
             traces.append(line([entity["position"]] if entity["active"] else [],mode="markers",
-                               name=label,marker=dict(color=color,size=7)))
+                               name=label,showlegend=False,text=[label] if entity["active"] else [],
+                               marker=dict(color=color,size=7)))
             velocity=np.asarray(entity["velocity"])
             arrow=[entity["position"],(np.asarray(entity["position"])+velocity*.15).tolist()]
             traces.append(line(arrow if entity["active"] else [],mode="lines",
@@ -130,13 +137,18 @@ def render_html(source,output,view="3d",overwrite=False):
                            marker=dict(color="#e69500",size=8,symbol="x")))
         return traces
     data.extend(dynamic(0))
+    def active_avoidance(time):
+        frame=timeline.frames[min(bisect_right(timeline.times,time),len(timeline.frames)-1)]
+        return sum(bool(pair.get("avoidance_active")) for pair in
+                   frame.get("control",{}).get("pairs",{}).values())
     frames=[go.Frame(data=dynamic(k),traces=list(range(static,len(data))),
-                     name=str(k),layout=go.Layout(title=f"{motion_label(timeline)} | "
-                         f"{guidance_label(timeline)} | t={t:.6f} s | {rows[k]['outcome']}"))
+                     name=str(k),layout=go.Layout(title=f"{timeline.config.scale} | {motion_label(timeline)} | "
+                         f"{guidance_label(timeline)} | t={t:.6f} s | "
+                         f"avoid={active_avoidance(t)} | {rows[k]['outcome']}"))
             for k,t in enumerate(times)]
     fig=go.Figure(data=data,frames=frames)
     label={"3d":"3D Overview","top":"XY Top View","altitude":"XZ Side View"}[view]
-    fig.update_layout(title=f"{label} | {motion_label(timeline)} | {guidance_label(timeline)} | Red Defender / Blue Intruder | {timeline.data['scenario_id'][:12]}",
+    fig.update_layout(title=f"{timeline.config.scale} | {label} | {motion_label(timeline)} | {guidance_label(timeline)} | Red Defender / Blue Intruder | {timeline.data['scenario_id'][:12]}",
                       height=700,legend=dict(orientation="h",y=1.12,x=0))
     if is3d:
         fig.update_layout(scene=dict(aspectmode="data",xaxis_title="x (m)",yaxis_title="y (m)",
@@ -279,7 +291,7 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
         color=colors[entity["role"]]
         label=entity["name"]
         trail=axis.plot([],[],*([[]] if view=="3d" else []),color=color,linewidth=1.5,
-                        label=label)[0]
+                        label=ROLE_LABELS[entity["role"]] if label in ("D0","I0") else "_nolegend_")[0]
         point=axis.plot([],[],*([[]] if view=="3d" else []),marker="o",linestyle="none",color=color)[0]
         artists[entity["id"]]=(trail,point)
     event_artists=[]
@@ -291,8 +303,8 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
         artist=axis.plot(*([v] for v in point),marker="x",linestyle="none",color="#e69500")[0]
         artist.set_visible(False)
         event_artists.append((event["time"],artist))
-    fig.subplots_adjust(right=.78)
-    axis.legend(loc="upper left",bbox_to_anchor=(1.02,1),fontsize=7,ncol=2)
+    fig.subplots_adjust(right=.84)
+    axis.legend(loc="upper left",bbox_to_anchor=(1.01,1),fontsize=8)
     def set_artist(artist,coordinates):
         if view=="3d":
             artist.set_data_3d(*coordinates.T)
@@ -315,7 +327,7 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
                 active_avoidance=(sum(bool(pair.get("avoidance_active")) for pair in
                     timeline.frames[min(bisect_right(timeline.times,time),len(timeline.frames)-1)]
                         .get("control",{}).get("pairs",{}).values()))
-                axis.set_title(f"{motion_label(timeline)} | {guidance_label(timeline)} | "
+                axis.set_title(f"{timeline.config.scale} | {motion_label(timeline)} | {guidance_label(timeline)} | "
                     f"t={time:.3f} s | avoid={active_avoidance} | {row['outcome']}")
                 writer.grab_frame()
     finally:
