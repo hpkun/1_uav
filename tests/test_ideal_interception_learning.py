@@ -1,23 +1,24 @@
 import json
+import zipfile
 import torch
 import pytest
 
 import algorithm.ideal_interception as cli
 from algorithm.common.interception_checkpoint import read
 from algorithm.mappo.interception import TrainConfig
-from env.ideal_interception import InterceptionConfig
-from env.ideal_interception.config import OBS_DIM, STATE_DIM,DEFENDER_SLOTS
+from env.ideal_interception.config import STATE_DIM,DEFENDER_SLOTS,formal_6v6_config
+from env.ideal_interception.learning import PG_OBS_DIM
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
 def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
-    config = InterceptionConfig(max_steps=4,intruder_mode="straight")
+    config = formal_6v6_config(max_steps=4,intruder_mode="straight")
     training = TrainConfig(workers=1,horizon=2,epochs=1)
     model = cli.InterceptionMAPPO(training)
-    assert model.actor[0].in_features==OBS_DIM
+    assert model.actor[0].in_features==PG_OBS_DIM==48
     assert model.critic[0].in_features==STATE_DIM
     assert model.actor[-1].out_features==6 and model.critic[-1].out_features==DEFENDER_SLOTS
-    action,logp = model.act(torch.zeros((DEFENDER_SLOTS,OBS_DIM)).numpy(),
+    action,logp = model.act(torch.zeros((DEFENDER_SLOTS,PG_OBS_DIM)).numpy(),
                             [True]+[False]*(DEFENDER_SLOTS-1),deterministic=True)
     assert torch.all(action[1:]==.5) and torch.all(logp[1:]==0)
     folder = tmp_path/"run"
@@ -25,9 +26,15 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
                          eval_interval=1,evaluation_seeds=[2200,2201])
     first = read(checkpoint,protocol=cli.PROTOCOL)
     assert first["protocol"]==cli.PROTOCOL and first["steps"]==2
-    assert json.loads((folder/"update_000001.json").read_text())["valid_samples"]==2
+    assert json.loads((folder/"update_000001.json").read_text())["valid_samples"]==12
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(checkpoint)
+    former=tmp_path/"old_mappo_header.pt"
+    with zipfile.ZipFile(former,"w") as archive:
+        archive.writestr("archive/interception_protocol.json",json.dumps(
+            cli.PROTOCOL|{"algorithm":"mappo-beta","observation":265}))
+    with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
+        read(former,protocol=cli.PROTOCOL)
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v1.0.0"})
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
@@ -61,7 +68,7 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
 def test_bilateral_recovery_from_missing_committed_record(tmp_path,monkeypatch):
-    config = InterceptionConfig(max_steps=3,intruder_mode="straight")
+    config = formal_6v6_config(max_steps=3,intruder_mode="straight")
     training = TrainConfig(workers=1,horizon=2,epochs=1)
     folder = tmp_path/"run"
     original = cli.atomic_json
@@ -84,7 +91,7 @@ def test_bilateral_recovery_from_missing_committed_record(tmp_path,monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required by repository policy")
 def test_bilateral_resume_preserves_training_and_evaluation_values(tmp_path):
-    config = InterceptionConfig(max_steps=3,intruder_mode="straight")
+    config = formal_6v6_config(max_steps=3,intruder_mode="straight")
     training = TrainConfig(workers=1,horizon=2,epochs=1)
     full,split = tmp_path/"full",tmp_path/"split"
     cli.fit(full,config,training,total_steps=4,eval_interval=1,

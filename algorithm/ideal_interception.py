@@ -18,18 +18,19 @@ from algorithm.common.serialization import serializable
 from algorithm.common.vector_env import ParallelVectorEnv
 from algorithm.interception import run_lock
 from algorithm.mappo.interception import MAPPO, TrainConfig
-from env.ideal_interception import InterceptionConfig, InterceptionEnv
-from env.ideal_interception.config import (PROTOCOL as VERSION, OBS_DIM, STATE_DIM,
+from env.ideal_interception import InterceptionConfig
+from env.ideal_interception.learning import PredictionGuidedInterceptionEnv,PG_OBS_DIM
+from env.ideal_interception.config import (PROTOCOL as VERSION, STATE_DIM,
     DEFENDER_SLOTS, INTRUDER_SLOTS)
-from env.ideal_interception.seeding import reset_evaluation_scene
+from env.ideal_interception.seeding import reset_evaluation_scene, scenario_seed
 
-PROTOCOL = dict(version=VERSION,algorithm="mappo-beta",observation=OBS_DIM,
+PROTOCOL = dict(version=VERSION,algorithm="pg-mappo-beta-v1",observation=PG_OBS_DIM,
                 state=STATE_DIM,action=3,defenders=DEFENDER_SLOTS,intruders=INTRUDER_SLOTS,
                 action_semantics="defender_desired_motion_direction")
 
 
 class InterceptionMAPPO(MAPPO):
-    observation_dim = OBS_DIM
+    observation_dim = PG_OBS_DIM
     state_dim = STATE_DIM
     agent_count = DEFENDER_SLOTS
 
@@ -63,9 +64,9 @@ class EpisodeAccumulator:
         self.events = []
 
     def add(self,info,rewards):
-        self.total += info["team_reward"]
+        self.total += info["learning_reward_sum"]
         self.events.extend(info["events"])
-        for key,value in info["reward_parts"].items():
+        for key,value in info["learning_reward_parts"].items():
             self.parts[key] = self.parts.get(key,0.)+value
 
     def summary(self,info):
@@ -148,7 +149,7 @@ def model_digest(actor,critic):
 
 def vector_env(config,training):
     return ParallelVectorEnv(config,training.workers,training.seed,
-                             environment_factory=InterceptionEnv,
+                             environment_factory=PredictionGuidedInterceptionEnv,
                              accumulator_factory=EpisodeAccumulator)
 
 
@@ -178,7 +179,8 @@ def evaluate(model,config,seeds,*,deterministic=True):
         if not deterministic:
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
-        env,obs,info = reset_evaluation_scene(config,seed)
+        env=PredictionGuidedInterceptionEnv(config)
+        obs,info=env.reset(scenario_seed(seed))
         tracker = EpisodeAccumulator()
         tracker.reset(info)
         frames = [serializable(dict(time=info["time"],step=info["step"],outcome=info["outcome"],defenders=info["defenders"],
@@ -359,7 +361,7 @@ def main(argv=None):
     for command in (train,resume,assess):
         command.add_argument("--out",required=True,type=Path)
         command.add_argument("--device")
-    train.add_argument("--scale",choices=("1v1","3v1","5v2","6v6","15v15"),required=True)
+    train.add_argument("--scale",choices=("6v6","15v15"),required=True)
     train.add_argument("--config",type=Path)
     train.add_argument("--total-steps",type=int,required=True)
     train.add_argument("--until-steps",type=int)
@@ -380,11 +382,10 @@ def main(argv=None):
         options = json.loads(args.config.read_text()) if args.config else {}
         if options.get("scale",args.scale)!=args.scale:
             parser.error("scale differs from configuration")
-        if args.scale=="15v15":
-            from env.ideal_interception.config import formal_15v15_level2_config
-            config = formal_15v15_level2_config(**options)
-        else:
-            config = InterceptionConfig(**(options|dict(scale=args.scale)))
+        from env.ideal_interception.config import (formal_6v6_level2_config,
+            formal_15v15_level2_config)
+        helper=formal_6v6_level2_config if args.scale=="6v6" else formal_15v15_level2_config
+        config = helper(**options)
         training = TrainConfig(seed=args.seed,workers=args.workers,horizon=args.horizon)
         fit(args.out,config,training,total_steps=args.total_steps,
             until_steps=args.until_steps,eval_interval=args.eval_interval,

@@ -14,6 +14,7 @@ from algorithm.common.interception_checkpoint import read
 from algorithm.mappo.interception import TrainConfig
 from algorithm.ideal_multi_predictive_guidance import run_episode
 from env.ideal_interception import InterceptionEnv
+from env.ideal_interception.learning import PG_OBS_DIM
 from env.ideal_interception.config import (PROTOCOL,SCALES,DEFENDER_SLOTS,INTRUDER_SLOTS,
     OBS_DIM,STATE_DIM,FIFTEEN_DEFENDER_CIRCLE,FIFTEEN_INTRUDER_WEDGE,
     SIX_INTRUDER_WEDGE,formal_6v6_level2_config,formal_15v15_config,
@@ -150,11 +151,11 @@ def test_15v15_html_roles_and_member_labels(tmp_path):
 def test_15v15_mappo_shapes_and_old_checkpoint_rejection(tmp_path):
     training=TrainConfig(workers=1,horizon=1)
     model=InterceptionMAPPO(training)
-    assert model.actor[0].in_features==OBS_DIM
+    assert model.actor[0].in_features==PG_OBS_DIM
     assert model.critic[0].in_features==STATE_DIM
     assert model.critic[-1].out_features==DEFENDER_SLOTS
     with vector_env(formal_15v15_level2_config(),training) as vector:
-        assert vector.observations.shape==(1,15,265)
+        assert vector.observations.shape==(1,15,PG_OBS_DIM)
         assert vector.states.shape==(1,444)
         assert vector.masks.shape==(1,15)
         actions,_=model.act(vector.observations,vector.masks,deterministic=True)

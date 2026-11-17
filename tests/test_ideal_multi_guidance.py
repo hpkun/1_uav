@@ -15,6 +15,7 @@ from algorithm.ideal_multi_predictive_guidance import METHODS,run_episode
 from tools.ideal_multi_guidance_benchmark import benchmark
 from algorithm.mappo.interception import TrainConfig
 from env.ideal_interception import InterceptionEnv
+from env.ideal_interception.learning import PG_OBS_DIM
 from env.ideal_interception.assignment import minimum_cost_assignment
 from env.ideal_interception.config import (PROTOCOL,OBS_DIM,STATE_DIM,
     DEFENDER_SLOTS,INTRUDER_SLOTS,SIX_DEFENDER_CIRCLE,SIX_INTRUDER_WEDGE,
@@ -218,11 +219,11 @@ def test_six_member_mappo_vector_interface_smoke(tmp_path):
     config=formal_6v6_config()
     training=TrainConfig(workers=1,horizon=1)
     model=InterceptionMAPPO(training)
-    assert model.actor[0].in_features==OBS_DIM
+    assert model.actor[0].in_features==PG_OBS_DIM
     assert model.critic[0].in_features==STATE_DIM
     assert model.critic[-1].out_features==DEFENDER_SLOTS
     with vector_env(config,training) as vector:
-        assert vector.observations.shape==(1,DEFENDER_SLOTS,OBS_DIM)
+        assert vector.observations.shape==(1,DEFENDER_SLOTS,PG_OBS_DIM)
         assert vector.states.shape==(1,STATE_DIM)
         assert vector.masks.shape==(1,DEFENDER_SLOTS)
         action,_=model.act(vector.observations,vector.masks,deterministic=True)
