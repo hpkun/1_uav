@@ -24,7 +24,7 @@ from env.ideal_interception.config import (PROTOCOL as VERSION, STATE_DIM,
     DEFENDER_SLOTS, INTRUDER_SLOTS)
 from env.ideal_interception.seeding import reset_evaluation_scene, scenario_seed
 
-PROTOCOL = dict(version=VERSION,algorithm="pg-mappo-beta-v1",observation=PG_OBS_DIM,
+PROTOCOL = dict(version=VERSION,algorithm="pg-mappo-beta-v2",observation=PG_OBS_DIM,
                 state=STATE_DIM,action=3,defenders=DEFENDER_SLOTS,intruders=INTRUDER_SLOTS,
                 action_semantics="defender_desired_motion_direction")
 

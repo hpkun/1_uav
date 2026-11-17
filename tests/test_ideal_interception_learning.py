@@ -79,6 +79,7 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
                          eval_interval=1,evaluation_seeds=[2200,2201])
     first = read(checkpoint,protocol=cli.PROTOCOL)
     assert first["protocol"]==cli.PROTOCOL and first["steps"]==2
+    assert cli.PROTOCOL["algorithm"]=="pg-mappo-beta-v2"
     assert json.loads((folder/"update_000001.json").read_text())["valid_samples"]==12
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(checkpoint)
@@ -88,6 +89,12 @@ def test_bilateral_mappo_checkpoint_resume_evaluate_and_masks(tmp_path):
             cli.PROTOCOL|{"algorithm":"mappo-beta","observation":265}))
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(former,protocol=cli.PROTOCOL)
+    former_v1=tmp_path/"old_pg_mappo_v1_header.pt"
+    with zipfile.ZipFile(former_v1,"w") as archive:
+        archive.writestr("archive/interception_protocol.json",json.dumps(
+            cli.PROTOCOL|{"algorithm":"pg-mappo-beta-v1"}))
+    with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
+        read(former_v1,protocol=cli.PROTOCOL)
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):
         read(checkpoint,protocol=cli.PROTOCOL|{"version":"uav-ideal-interception-v1.0.0"})
     with pytest.raises(ValueError,match="incompatible checkpoint protocol"):

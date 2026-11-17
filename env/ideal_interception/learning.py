@@ -69,8 +69,15 @@ def build_pg_observation(info, history, config):
         estimated = np.asarray(velocity, dtype=float) if velocity_valid else np.zeros(3)
         valid = usable_pip(prediction, float(info["time"]), config)
         point = np.asarray(prediction.predicted_target_position_m, dtype=float) if valid else None
-        pip_block = (np.r_[(point-own[:3])/config.position_scale,
-                           prediction.horizon_s/total, 1.] if valid else np.zeros(5))
+        pip_block = np.zeros(5)
+        if valid:
+            delta = point-own[:3]
+            pip_distance = float(np.linalg.norm(delta))
+            if not math.isfinite(pip_distance) or pip_distance <= 1e-12:
+                valid, point = False, None
+            else:
+                # V2: unit line-of-sight direction; horizon carries the time/range scale.
+                pip_block = np.r_[delta/pip_distance, prediction.horizon_s/total, 1.]
         peers = sorted((float(np.linalg.norm(defenders[k, :3]-own[:3])), int(k))
                        for k in np.flatnonzero(active) if k != i)[:FRIEND_COUNT]
         neighbor_blocks = [np.r_[(defenders[k, :3]-own[:3])/config.position_scale,

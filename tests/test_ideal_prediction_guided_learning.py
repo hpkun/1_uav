@@ -62,14 +62,62 @@ def test_three_point_history_velocity_and_true_velocity_isolation():
     assert observation[0,13]==1. and observation[0,18]==1.
     np.testing.assert_allclose(observation[0,10:13],
         np.asarray(prediction.estimated_target_velocity_mps)/config.speed_scale,rtol=1e-6)
+    delta=np.asarray(prediction.predicted_target_position_m)-info["defenders"][0,:3]
     np.testing.assert_allclose(observation[0,14:17],
-        (np.asarray(prediction.predicted_target_position_m)-info["defenders"][0,:3])/
-        config.position_scale,rtol=1e-6)
+        delta/np.linalg.norm(delta),rtol=1e-6)
+    assert np.linalg.norm(observation[0,14:17])==pytest.approx(1.,abs=1e-6)
     assert observation[0,17]==pytest.approx(prediction.horizon_s/(config.dt*config.max_steps))
     modified=deepcopy(info)
     modified["intruders"][:,3:]=np.nan
     same,_=build_pg_observation(modified,env.history,config)
     np.testing.assert_array_equal(same,observation)
+
+
+@pytest.mark.parametrize("delta,expected",[
+    ((.1,0.,0.),(1.,0.,0.)),
+    ((100.,0.,0.),(1.,0.,0.)),
+    ((1.,2.,2.),(1/3,2/3,2/3)),
+])
+def test_pip_direction_is_unit_length_at_near_and_far_ranges(monkeypatch,delta,expected):
+    config=formal_6v6_level2_config()
+    env=PredictionGuidedInterceptionEnv(config)
+    _,info=env.reset(17)
+    own=info["defenders"][0,:3]
+    point=tuple(own+np.asarray(delta))
+    prediction=SimpleNamespace(status="READY",horizon_s=1.,
+        predicted_target_position_m=point,estimated_target_velocity_mps=(1.,0.,0.))
+    import env.ideal_interception.learning as learning
+    monkeypatch.setattr(learning,"estimate_three_point_pip_from_history",lambda *args:prediction)
+    observation,priors=build_pg_observation(info,env.history,config)
+    np.testing.assert_allclose(observation[0,14:17],expected,rtol=1e-6,atol=1e-6)
+    assert np.linalg.norm(observation[0,14:17])==pytest.approx(1.,abs=1e-6)
+    assert observation[0,17]==pytest.approx(1./(config.dt*config.max_steps))
+    assert observation[0,18]==1. and priors[0]["pip_valid"]
+
+
+def test_coincident_pip_is_invalid_and_guidance_falls_back(monkeypatch):
+    config=formal_6v6_level2_config()
+    env=PredictionGuidedInterceptionEnv(config)
+    _,info=env.reset(17)
+    prediction=SimpleNamespace(status="READY",horizon_s=1.,
+        predicted_target_position_m=tuple(info["defenders"][0,:3]),
+        estimated_target_velocity_mps=(1.,0.,0.))
+    import env.ideal_interception.learning as learning
+    monkeypatch.setattr(learning,"estimate_three_point_pip_from_history",lambda *args:prediction)
+    observation,priors=build_pg_observation(info,env.history,config)
+    assert np.array_equal(observation[0,14:19],np.zeros(5))
+    assert np.isfinite(observation).all()
+    assert not priors[0]["pip_valid"] and priors[0]["pip_point"] is None
+    np.testing.assert_array_equal(priors[0]["target_position"],
+        info["intruders"][info["assignment"][0],:3])
+    guidance_points=[]
+    original_guidance=learning.guidance_reward
+    def record_guidance(before,after,point,speed,dt):
+        guidance_points.append(np.asarray(point).copy())
+        return original_guidance(before,after,point,speed,dt)
+    monkeypatch.setattr(learning,"guidance_reward",record_guidance)
+    env.step(np.full((DEFENDER_SLOTS,3),.5))
+    np.testing.assert_array_equal(guidance_points[0],priors[0]["target_position"])
 
 
 def test_invalid_pip_zero_block_and_current_target_fallback(monkeypatch):
