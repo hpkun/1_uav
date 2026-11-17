@@ -1,4 +1,4 @@
-"""Write-once visual audit of nominal 20v20 distance-only Hungarian assignment."""
+"""Write-once visual audit of nominal 20v20 nearest-distance assignment."""
 import argparse
 import csv
 import json
@@ -41,7 +41,7 @@ def write_figures(out, summary):
         ax.plot((defenders[i, 0], intruders[j, 0]),
                 (defenders[i, 1], intruders[j, 1]), color="#7a7a7a", lw=.8,
                 alpha=.65, zorder=1,
-                label="Distance-Hungarian assignment" if i == 0 else "_nolegend_")
+                label="Nearest-distance assignment" if i == 0 else "_nolegend_")
     ax.scatter(defenders[:, 0], defenders[:, 1], s=48, c="#d64040", marker="o",
                label="Defender", zorder=3)
     ax.scatter(intruders[:, 0], intruders[:, 1], s=55, c="#2378bf", marker="^",
@@ -55,7 +55,7 @@ def write_figures(out, summary):
     for j, point in enumerate(intruders):
         ax.annotate(f"I{j}", point[:2], xytext=(4, 4), textcoords="offset points",
                     color="#164f80", fontsize=8)
-    ax.set(title="20v20 Initial Distance-Hungarian Assignment", xlabel="X (m)",
+    ax.set(title="20v20 Initial Nearest-Distance Assignment", xlabel="X (m)",
            ylabel="Y (m)", xlim=(-260, 310), ylim=(-185, 185))
     ax.set_aspect("equal")
     ax.grid(alpha=.2)
@@ -93,7 +93,7 @@ def main(argv=None):
     write_csv(args.out/"assignment.csv", summary["pairs"])
     write_figures(args.out, summary)
     stats = summary["statistics"]
-    print("20v20 distance assignment")
+    print("20v20 nearest-distance assignment")
     print(f"pairs={len(summary['pairs'])}")
     print(f"total_distance={stats['total_distance_m']:.3f} m")
     print(f"mean_distance={stats['mean_distance_m']:.3f} m")

@@ -1,4 +1,4 @@
-"""Static 20v20 layout and distance-only assignment audit, separate from V3.5.
+"""Static 20v20 layout and nearest-distance assignment audit, separate from V3.5.
 
 This module does not construct an InterceptionEnv or change its 15-slot protocol.
 """
@@ -6,11 +6,11 @@ import math
 
 import numpy as np
 
-from .assignment import hungarian_fixed_assignment
+from .assignment import nearest_distance_assignment
 from .config import FIFTEEN_INTRUDER_WEDGE
 
 TWENTY_COUNT = 20
-VERSION = "20v20-layout-v1"
+VERSION = "20v20-layout-nearest-v1"
 DEFENDER_CENTER = (-120., 0., 60.)
 BASE_15_RADIUS_M = 60.
 TWENTY_DEFENDER_RADIUS_M = BASE_15_RADIUS_M*math.sqrt(TWENTY_COUNT/15)
@@ -55,7 +55,10 @@ def segments_cross_interior(a, b, c, d):
         return False
     t = _cross_2d(c-a, s)/denominator
     u = _cross_2d(c-a, r)/denominator
-    return 0. < t < 1. and 0. < u < 1.
+    # Shared endpoints can round to 0.9999999999999999 on converging rays.
+    interior_tolerance = 1e-9
+    return (interior_tolerance < t < 1.-interior_tolerance and
+            interior_tolerance < u < 1.-interior_tolerance)
 
 
 def assignment_line_crossings_xy(defenders, intruders, assignment):
@@ -73,10 +76,11 @@ def monotonic_y_inversions(defenders, intruders, assignment):
 
 def build_audit():
     defenders, intruders = initial_positions()
-    assignment = hungarian_fixed_assignment(defenders, intruders)
+    active = np.ones(TWENTY_COUNT, dtype=bool)
+    assignment = nearest_distance_assignment(defenders, intruders, active, active)
     expected = set(range(TWENTY_COUNT))
-    if set(assignment) != expected or set(assignment.values()) != expected:
-        raise ValueError("Hungarian assignment is not a 20v20 bijection")
+    if set(assignment) != expected or not set(assignment.values()) <= expected:
+        raise ValueError("invalid nearest-distance assignment")
     distances = np.linalg.norm(defenders-intruders[[assignment[i] for i in range(TWENTY_COUNT)]],
                                axis=1)
     if not np.isfinite(distances).all() or np.any(distances <= 0):
@@ -85,8 +89,8 @@ def build_audit():
                   defender_position=defenders[i].tolist(),
                   intruder_position=intruders[assignment[i]].tolist(),
                   distance_m=float(distances[i])) for i in range(TWENTY_COUNT)]
-    return dict(experiment="ideal_20v20_distance_assignment", version=VERSION,
-        assignment_method="global_minimum_3d_distance_hungarian",
+    return dict(experiment="ideal_20v20_nearest_assignment", version=VERSION,
+        assignment_method="per_defender_nearest_active_intruder_3d_distance",
         reference_note=REFERENCE_NOTE,
         defender_count=TWENTY_COUNT, intruder_count=TWENTY_COUNT,
         defender_center=list(DEFENDER_CENTER),

@@ -1,4 +1,4 @@
-"""Nominal 20v20 layout, one-to-one distance assignment, and audit outputs."""
+"""Nominal 20v20 layout, duplicate-permitting nearest assignment, and audit outputs."""
 import csv
 import json
 import math
@@ -6,7 +6,7 @@ import math
 import numpy as np
 import pytest
 
-from env.ideal_interception.assignment import hungarian_fixed_assignment
+from env.ideal_interception.assignment import nearest_distance_assignment
 from env.ideal_interception.config import (PROTOCOL, DEFENDER_SLOTS, INTRUDER_SLOTS,
     OBS_DIM, STATE_DIM, FIFTEEN_DEFENDER_CIRCLE, FIFTEEN_INTRUDER_WEDGE,
     SIX_INTRUDER_WEDGE)
@@ -41,15 +41,17 @@ def test_nominal_positions_and_frozen_15v15_anchors():
         (270.,120.,60.))
 
 
-def test_hungarian_bijection_and_independent_3d_distances():
+def test_nearest_assignment_allows_duplicate_targets_and_3d_distances():
     summary = build_audit()
     defenders = np.asarray(summary["defender_positions"])
     intruders = np.asarray(summary["intruder_positions"])
     assignment = {int(i): j for i, j in summary["assignment"].items()}
     assert summary["defender_count"] == summary["intruder_count"] == TWENTY_COUNT
     assert len(summary["pairs"]) == 20
-    assert set(assignment) == set(assignment.values()) == set(range(20))
-    assert assignment == hungarian_fixed_assignment(defenders, intruders)
+    assert set(assignment) == set(range(20))
+    assert set(assignment.values()) == {0}
+    assert assignment == nearest_distance_assignment(defenders, intruders,
+        np.ones(20, dtype=bool), np.ones(20, dtype=bool))
     distances = []
     for i, pair in enumerate(summary["pairs"]):
         assert pair["defender"] == i and pair["intruder"] == assignment[i]
@@ -63,12 +65,15 @@ def test_hungarian_bijection_and_independent_3d_distances():
     assert stats["std_distance_m"] == pytest.approx(np.std(distances))
     assert stats["minimum_distance_m"] == pytest.approx(min(distances))
     assert stats["maximum_distance_m"] == pytest.approx(max(distances))
+    assert stats["assignment_line_crossings_xy"] == 0
+    assert stats["monotonic_y_inversions"] == 0
     json.dumps(summary, allow_nan=False)
 
 
 def test_crossing_excludes_shared_endpoints_and_y_inversion_counts():
     assert segments_cross_interior((0,0),(2,2),(0,2),(2,0))
     assert not segments_cross_interior((0,0),(1,1),(1,1),(2,0))
+    assert not segments_cross_interior((0,0),(190,0),(0,1),(190,0))
     assert not segments_cross_interior((0,0),(2,0),(1,0),(3,0))
     defenders = np.column_stack((np.zeros(20), np.arange(20), np.zeros(20)))
     intruders = defenders.copy()
