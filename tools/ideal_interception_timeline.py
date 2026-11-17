@@ -18,6 +18,10 @@ PHYSICAL_EVENTS = {"interception_contact","friendly_collision","intruder_collisi
                    "region_breach","boundary_exit","path_complete"}
 SLOT_SCHEMAS = {
     PROTOCOL: (DEFENDER_SLOTS,INTRUDER_SLOTS),
+    "uav-ideal-interception-20v20-zuo-hierarchical-v1": (20,20),
+    "uav-ideal-interception-20v20-zuo-allocation-pip-v1": (20,20),
+    "uav-ideal-interception-20v20-zuo-allocation-pip-knn-v2": (20,20),
+    "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3": (20,20),
     "uav-ideal-interception-v3.4.0": (6,6),
     "uav-ideal-interception-v3.3.0": (6,6),
     "uav-ideal-interception-v3.2.0": (5,2),
@@ -42,7 +46,17 @@ class Timeline:
         historical=data["environment_protocol"]!=PROTOCOL
         try:
             raw=data["config"]
-            if historical:
+            if data["environment_protocol"] in (
+                    "uav-ideal-interception-20v20-zuo-hierarchical-v1",
+                    "uav-ideal-interception-20v20-zuo-allocation-pip-v1",
+                    "uav-ideal-interception-20v20-zuo-allocation-pip-knn-v2",
+                    "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3"):
+                from dataclasses import asdict
+                from env.ideal_interception.large_scale_20v20_env import TwentyConfig
+                if raw!=json.loads(json.dumps(asdict(TwentyConfig(seed=raw["seed"])))):
+                    raise ValueError("20v20 Zuo trace must use the frozen scene profile")
+                self.config=SimpleNamespace(**raw,defender_count=20,intruder_count=20)
+            elif historical:
                 d,i=SCALES[raw["scale"]]
                 if any(len(raw[name])!=self.defender_slots for name in
                        ("defender_speeds","defender_starts","defender_directions")) or any(

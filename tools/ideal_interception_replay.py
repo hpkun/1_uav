@@ -31,8 +31,14 @@ def guidance_label(timeline):
     mode=control.get("avoidance_mode")
     if mode is None:
         return ""
-    method={"three_point_pip":"ThreePoint-PIP",
+    method={"zuo_hierarchical":"Zuo hierarchical",
+            "three_point_pip":"ThreePoint-PIP",
             "two_point_pip":"TwoPoint-PIP"}.get(control.get("method"),control.get("method","Guidance"))
+    if timeline.data.get("environment_protocol") in (
+            "uav-ideal-interception-20v20-zuo-allocation-pip-v1",
+            "uav-ideal-interception-20v20-zuo-allocation-pip-knn-v2",
+            "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3"):
+        method="Zuo LB assignment + "+method
     avoidance={"none":"None","knn_repulsion":"kNN",
                "predictive_cpa_knn":"Predictive CPA-kNN"}.get(mode,mode)
     return f"{method} + {avoidance}"
