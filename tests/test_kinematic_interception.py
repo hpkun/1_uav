@@ -1,10 +1,12 @@
 """Independent A/B kinematics, causal forecasts and substep interception tests."""
 import math
+import json
 
 import numpy as np
 import pytest
 
 from env.ideal_interception.trajectory import Reference
+from algorithm.common.serialization import serializable
 from kinematic_interception.controllers import Controller
 from kinematic_interception.dynamics import (Command, DynamicsConfig, PointState,
     WingState, propagate, step, velocity)
@@ -12,8 +14,10 @@ from kinematic_interception.environment import (KinematicInterceptionEnv, Scene,
     one_vs_one_scene, twenty_scene)
 from kinematic_interception.evaluation import (offline_forecast_experiment,
     paired_experiment, run_episode)
-from kinematic_interception.prediction import TargetHistory, feasible_intercept, forecast
+from kinematic_interception.prediction import (Forecast, TargetHistory,
+    feasible_intercept, forecast, minimum_segment_distance)
 from kinematic_interception.visualization import plot_trace
+from kinematic_interception.replay import _validated_trace
 
 
 CONFIG = DynamicsConfig()
@@ -139,6 +143,35 @@ def test_kfip_uses_actual_dynamics_and_cannot_claim_global_unreachable():
     assert plan_b.status in ("CANDIDATE_CONTACT","NO_CONTACT_PREDICTED","FAR_TRACK")
 
 
+def test_kfip_detects_contact_between_prediction_samples():
+    target = Forecast("CV",np.array((.2,0.,0.)),np.array((-20.,0.,0.)),
+                      np.zeros(3),0.,20.,3)
+    state = PointState(np.zeros(3),np.array((20.,0.,0.)))
+    plan = feasible_intercept(state,target,CONFIG,horizon=.1,interval=.1)
+    assert plan.candidates_evaluated == 1
+    assert plan.status == "CANDIDATE_CONTACT"
+    assert plan.minimum_distance_m < 1e-12
+    assert abs(plan.closest_time_s-.005) < 1e-4
+    # The two 10 ms segment endpoints remain outside the 0.1 m contact radius.
+    rows = propagate(state,plan.command,CONFIG,.01,.01)
+    assert all(np.linalg.norm(member.position-target.at(t)) > .1
+               for t,member in rows)
+
+
+def test_segment_scoring_changes_candidate_order_without_smaller_substeps():
+    target = Forecast("CV",np.zeros(3),np.zeros(3),np.zeros(3),0.,20.,3)
+    crossing = [(0.,PointState(np.array((-.2,0.,0.)),np.zeros(3))),
+                (.01,PointState(np.array((.2,0.,0.)),np.zeros(3)))]
+    near_static = [(0.,PointState(np.array((.05,0.,0.)),np.zeros(3))),
+                   (.01,PointState(np.array((.05,0.,0.)),np.zeros(3)))]
+    crossing_distance,crossing_time = minimum_segment_distance(crossing,target)
+    static_distance,_ = minimum_segment_distance(near_static,target)
+    assert min(np.linalg.norm(member.position) for _,member in crossing) > static_distance
+    assert crossing_distance < static_distance
+    assert crossing_distance == 0.
+    assert crossing_time == pytest.approx(.005)
+
+
 def _crossing_scene():
     path = Reference((1.2,0.,10.),(-10.,0.,10.),20.,"straight")
     return Scene(np.array(((0.,0.,10.),)),(path,),(-30.,-30.,0.),
@@ -225,6 +258,13 @@ def test_trace_can_render_independent_3d_path(tmp_path):
     destination = tmp_path/"episode.png"
     plot_trace(trace,destination)
     assert destination.stat().st_size > 1000
+    payload = json.loads(json.dumps(serializable(dict(trace=trace))))
+    _,times,defenders,intruders = _validated_trace(payload)
+    assert len(times) == len(trace["frames"])
+    assert defenders.shape[1:] == intruders.shape[1:] == (1,6)
+    payload["trace"]["references"][0]["points"][0][0] += .01
+    with pytest.raises(ValueError,match="hash mismatch"):
+        _validated_trace(payload)
 
 
 def test_offline_prediction_reports_per_path_units():

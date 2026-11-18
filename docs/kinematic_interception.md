@@ -26,6 +26,10 @@ environment or a calibrated aircraft model.
 - G2/G3 replan every 0.25 s. Execution and prediction call the same `step`
   function using 0.01 s substeps by default. Multi-member scenarios can use
   the existing CPA-kNN direction modifier before the A/B execution layer.
+  K-FIP ranks candidates by the analytic closest approach over every relative
+  substep segment, including the time between its endpoints. For CA forecasts,
+  each 0.01 s target curve piece is represented by its endpoint chord, matching
+  the event engine's piecewise-linear approximation.
 
 ## Scenarios and events
 
@@ -55,6 +59,7 @@ python -m kinematic_interception.run --seed 17 19 23 --offline-prediction
 python -m kinematic_interception.run --scale 20 --seed 17 --model A --method G2 --avoidance predictive_cpa_knn
 python -m kinematic_interception.run --seed 17 --model B --method G3 --out outputs/kinematic_b_g3_seed17.json
 python -m kinematic_interception.visualization outputs/kinematic_b_g3_seed17.json outputs/kinematic_b_g3_seed17.png
+python -m kinematic_interception.replay outputs/kinematic_b_g3_seed17.json outputs/kinematic_b_g3_seed17.mp4 --fps 10
 ```
 
 Supplying a single model and method with `--out` writes the entire episode's

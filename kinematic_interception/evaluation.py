@@ -88,7 +88,14 @@ def run_episode(scene, model, method, *, avoidance=None, substep=.01, trace=Fals
     if trace:
         return result,dict(summary=result,events=env.events,
                            frames=frames,controls=controls,
-                           references=[path.specification() for path in scene.paths])
+                           scene=dict(lower=scene.lower,upper=scene.upper,
+                               protected_center=scene.protected_center,
+                               protected_radius=scene.protected_radius,
+                               protected_height=scene.protected_height,
+                               contact_distance=scene.contact_distance),
+                           references=[dict(specification=path.specification(),
+                                            points=path.points.tolist())
+                                       for path in scene.paths])
     return result
 
 

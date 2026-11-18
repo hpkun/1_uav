@@ -103,6 +103,34 @@ class FeasiblePlan:
     candidates_evaluated: int
 
 
+def minimum_segment_distance(rows, target):
+    """Closest distance/time over the same linear substep segments as the environment.
+
+    Defender endpoints come from the actual A/B stepping function. Target
+    forecast endpoints define each segment; CA curvature is approximated only
+    within the existing substep, as in the environment's segment event check.
+    """
+    times = np.asarray([time for time, _ in rows], dtype=float)
+    defender = np.asarray([state.position for _, state in rows], dtype=float)
+    if (len(times) < 2 or not np.isfinite(times).all() or
+            np.any(np.diff(times) <= 0) or not np.isfinite(defender).all()):
+        raise ValueError("at least two finite, increasing trajectory samples required")
+    relative = defender-np.asarray([target.at(float(time)) for time in times])
+    if relative.shape != defender.shape or not np.isfinite(relative).all():
+        raise ValueError("nonfinite or mismatched target forecast positions")
+    displacement = np.diff(relative, axis=0)
+    squared = np.einsum("ij,ij->i", displacement, displacement)
+    fraction = np.zeros(len(displacement))
+    np.divide(-np.einsum("ij,ij->i", relative[:-1], displacement), squared,
+              out=fraction, where=squared > 0)
+    np.clip(fraction, 0., 1., out=fraction)
+    closest = relative[:-1]+fraction[:, None]*displacement
+    distances_squared = np.einsum("ij,ij->i", closest, closest)
+    index = int(np.argmin(distances_squared))
+    time = times[index]+fraction[index]*(times[index+1]-times[index])
+    return math.sqrt(max(0.,float(distances_squared[index]))), float(time)
+
+
 def feasible_intercept(state, target, dynamics, *, horizon=15., interval=.1,
                        contact_distance=.1):
     """Finite held-command search, not a proof of dynamical reachability."""
@@ -129,9 +157,7 @@ def feasible_intercept(state, target, dynamics, *, horizon=15., interval=.1,
         # The executor resolves the curved path at 0.01 s. Use the same
         # substep size here so reaching a speed/turn limit has the same timing.
         rows = propagate(state,command,dynamics,end,min(interval,.01))
-        distances = [(float(np.linalg.norm(position.position-target.at(t))),t)
-                     for t,position in rows]
-        distance,closest_time = min(distances)
+        distance,closest_time = minimum_segment_distance(rows,target)
         scored.append((distance,closest_time,end,aim,command))
     if not scored:
         raise FloatingPointError("no finite feasible-intercept candidate")
