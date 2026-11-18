@@ -9,8 +9,11 @@ description = "Three-dimensional cooperative UAV interception and pursuit-evasio
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "torch>=2.0", "plotly>=5.18", "matplotlib>=3.7"]
 
+[project.optional-dependencies]
+mpc = ["scipy>=1.10", "cvxpy>=1.4", "casadi>=3.6"]
+
 [tool.setuptools.packages.find]
-include = ["env*", "algorithm*", "tools*"]
+include = ["env*", "algorithm*", "tools*", "kinematic_interception*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

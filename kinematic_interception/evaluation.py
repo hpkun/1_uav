@@ -21,12 +21,15 @@ def run_episode(scene, model, method, *, avoidance=None, substep=.01, trace=Fals
     avoidance = avoidance or AvoidanceConfig(mode="none")
     if len(env.states) == 1 and avoidance.mode != "none":
         raise ValueError("1v1 comparison uses no friendly avoidance")
+    if method == "G4" and avoidance.mode != "none":
+        raise ValueError("G4 direct-control MPC has no CPA postprocessor")
     frames = [env.snapshot()] if trace else None
     controls = [] if trace else None
     planning_time = 0.
     planning_calls = 0
     statuses = defaultdict(int)
     predicted_minima = []
+    solve_times=[]
     while env.outcome == "ongoing":
         before = env.snapshot()
         history.observe(env.time, before["intruders"][:,:3], env.intruder_mask)
@@ -41,6 +44,8 @@ def run_episode(scene, model, method, *, avoidance=None, substep=.01, trace=Fals
             statuses[detail["status"]] += 1
             if "minimum_distance_m" in detail:
                 predicted_minima.append(detail["minimum_distance_m"])
+            if "solve_time_s" in detail:
+                solve_times.append(detail["solve_time_s"])
             details[i] = detail
             if avoidance.mode != "none":
                 direction,_ = apply_collision_avoidance(avoidance,i,
@@ -51,8 +56,10 @@ def run_episode(scene, model, method, *, avoidance=None, substep=.01, trace=Fals
         if trace:
             controls.append(dict(time=env.time,assignment=env.assignment.copy(),
                 details=details,
-                commands=[None if command is None else dict(direction=command.direction,
-                    speed=command.speed) for command in commands]))
+                commands=[None if command is None else (
+                    dict(direction=command.direction,speed=command.speed)
+                    if isinstance(command,Command) else dict(control=vars(command)))
+                    for command in commands]))
         after = env.step(commands)
         if trace:
             frames.append(after)
@@ -82,6 +89,11 @@ def run_episode(scene, model, method, *, avoidance=None, substep=.01, trace=Fals
         planning_calls=planning_calls,
         mean_planning_time_s=planning_time/planning_calls if planning_calls else None,
         guidance_status_counts=dict(statuses),
+        solver_calls=len(solve_times),
+        solver_fallbacks=statuses.get("FALLBACK",0),
+        mean_solver_time_s=float(np.mean(solve_times)) if solve_times else None,
+        p95_solver_time_s=float(np.percentile(solve_times,95)) if solve_times else None,
+        p99_solver_time_s=float(np.percentile(solve_times,99)) if solve_times else None,
         mean_predicted_candidate_minimum_distance_m=(
             float(np.mean(predicted_minima)) if predicted_minima else None),
         path_hashes=[path.specification()["polyline_sha256"] for path in scene.paths])

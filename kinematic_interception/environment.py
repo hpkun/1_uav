@@ -11,6 +11,7 @@ from env.ideal_interception.trajectory import Reference
 
 from . import PROTOCOL
 from .dynamics import Command, DynamicsConfig, PointState, WingState, step, velocity
+from .mpc.dynamics import AControl, BControl, direct_step
 
 
 PRIORITY = {"region_breach": 0, "friendly_collision": 1,
@@ -226,9 +227,21 @@ class KinematicInterceptionEnv:
         if len(commands) != len(self.states):
             raise ValueError("one high-level command per Defender slot required")
         for i in np.flatnonzero(self.defender_mask):
-            if not isinstance(commands[i], Command):
-                raise TypeError("active Defender command must be Command")
-            commands[i].validated(self.dynamics.v_max)
+            if isinstance(commands[i], Command):
+                commands[i].validated(self.dynamics.v_max)
+            elif not isinstance(commands[i], AControl if self.model == "A" else BControl):
+                raise TypeError("active Defender control does not match model")
+        def advance(state, control, duration):
+            if isinstance(control, Command):
+                return step(state,control,self.dynamics,duration)
+            end = direct_step(state,control,self.dynamics,duration)
+            actual = (velocity(end)-velocity(state))/duration
+            if self.model == "A":
+                return end,actual,dict()
+            lateral = max(state.speed,end.speed)*math.hypot(
+                math.cos(state.flightpath)*control.yaw_rate,control.flightpath_rate)
+            return end,actual,dict(yaw_rate=control.yaw_rate,
+                flightpath_rate=control.flightpath_rate,lateral_acceleration=lateral)
         origin = self.time
         stop = min(origin+self.dynamics.dt, self.scene.max_steps*self.dynamics.dt)
         while self.time < stop-1e-12 and self.outcome == "ongoing":
@@ -251,7 +264,7 @@ class KinematicInterceptionEnv:
                     if not self.defender_mask[i]:
                         end_states.append(state.copy())
                         continue
-                    end,acceleration,diagnostic = step(state,commands[i],self.dynamics,h)
+                    end,acceleration,diagnostic = advance(state,commands[i],h)
                     end_states.append(end)
                     diagnostics[i] = (acceleration,diagnostic)
                 target_start = np.array([path.sample(left)[0] for path in self.scene.paths])
@@ -324,8 +337,7 @@ class KinematicInterceptionEnv:
                             exit_times[member] = tau
                             self.trajectory_length[member] += float(np.linalg.norm(
                                 positions[0][member]-start_states[member].position))
-                            partial = (step(start_states[member],commands[member],
-                                            self.dynamics,tau)[0] if tau > 0
+                            partial = (advance(start_states[member],commands[member],tau)[0] if tau > 0
                                        else start_states[member].copy())
                             partial.position = positions[0][member].copy()
                             self.states[member] = partial
@@ -337,8 +349,7 @@ class KinematicInterceptionEnv:
                     duration = exit_times.get(i,separation_cursor)
                     if self.defender_mask[i]:
                         if elapsed:
-                            partial = (step(start_states[i],commands[i],self.dynamics,
-                                            duration)[0] if duration > 0
+                            partial = (advance(start_states[i],commands[i],duration)[0] if duration > 0
                                        else start_states[i].copy())
                             partial.position = start_states[i].position+dv[i]*duration
                             self.states[i] = partial
@@ -348,8 +359,7 @@ class KinematicInterceptionEnv:
                             self.states[i].position-start_states[i].position))
                     if duration > 0:
                         if i in exit_times or elapsed:
-                            _,acceleration,diagnostic = step(start_states[i],commands[i],
-                                                              self.dynamics,duration)
+                            _,acceleration,diagnostic = advance(start_states[i],commands[i],duration)
                         else:
                             acceleration,diagnostic = diagnostics[i]
                         self.max_applied_acceleration = max(self.max_applied_acceleration,

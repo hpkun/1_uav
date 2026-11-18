@@ -18,11 +18,16 @@ class Controller:
     _cached: dict[int, tuple[float, Command]] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.method not in ("G0", "G1", "G2", "G3"):
+        if self.method not in ("G0", "G1", "G2", "G3", "G4"):
             raise ValueError("unknown guidance method")
+        if self.method == "G4":
+            from .mpc.controller import MPCController
+            self._mpc = MPCController(self.dynamics,self.history)
 
     def command(self, index: int, state: PointState | WingState,
                 target_index: int, target_position, time: float):
+        if self.method == "G4":
+            return self._mpc.command(index,state,target_index,target_position,time)
         target = np.asarray(target_position, float)
         if target.shape != (3,) or not np.isfinite(target).all():
             raise ValueError("invalid observed target position")

@@ -18,7 +18,7 @@ def main(argv=None):
     parser.add_argument("--scale", type=int, choices=(1,3,6,20), default=1)
     parser.add_argument("--seed", type=int, nargs="+", default=[17])
     parser.add_argument("--model", choices=("A","B"))
-    parser.add_argument("--method", choices=("G0","G1","G2","G3"))
+    parser.add_argument("--method", choices=("G0","G1","G2","G3","G4"))
     parser.add_argument("--avoidance", choices=("none","predictive_cpa_knn"),
                         default="none")
     parser.add_argument("--offline-prediction", action="store_true")
