@@ -7,7 +7,7 @@ import json
 import numpy as np
 
 from .assignment import nearest_distance_assignment
-from .intruder_policy import sample_level2_bezier_plan
+from .large_scale_20v20_trajectory import sample_20v20_delayed_convergence_plan
 from .large_scale_20v20 import (TWENTY_COUNT, initial_positions, PROTECTED_CENTER,
     PROTECTED_RADIUS_M, ARENA_LOWER, ARENA_UPPER)
 from .large_scale_20v20_events import advance
@@ -15,7 +15,7 @@ from .scenario import diagnostics, inside_region
 
 
 _DEFENDER_ANCHORS, _INTRUDER_ANCHORS = initial_positions()
-PROTOCOL_20V20 = "uav-ideal-interception-20v20-target-resolution-nearest-v2"
+PROTOCOL_20V20 = "uav-ideal-interception-20v20-delayed-convergence-nearest-v3"
 
 
 @dataclass(frozen=True)
@@ -121,7 +121,7 @@ class TwentyVTwentyEnv:
         defender_positions = np.asarray(c.defender_starts, dtype=float)
         for _ in range(c.init_max_attempts):
             try:
-                plans = [sample_level2_bezier_plan(c, j, rng, seed_id)
+                plans = [sample_20v20_delayed_convergence_plan(c, j, rng, seed_id)
                          for j in range(TWENTY_COUNT)]
             except ValueError:
                 continue

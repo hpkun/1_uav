@@ -18,6 +18,8 @@ ROLE_LABELS={"defender":"Red Defender","intruder":"Blue Intruder"}
 
 
 def motion_label(timeline):
+    if "delayed-convergence" in timeline.data.get("environment_protocol",""):
+        return "20v20 Delayed Convergence Bézier"
     config=timeline.data.get("config",{})
     if config.get("intruder_policy")=="legacy_reference":
         return "Fixture reference"
@@ -37,7 +39,8 @@ def guidance_label(timeline):
     if timeline.data.get("environment_protocol") in (
             "uav-ideal-interception-20v20-zuo-allocation-pip-v1",
             "uav-ideal-interception-20v20-zuo-allocation-pip-knn-v2",
-            "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3"):
+            "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3",
+            "uav-ideal-interception-20v20-delayed-convergence-zuo-pip-cpa-v4"):
         method="Zuo LB assignment + "+method
     avoidance={"none":"None","knn_repulsion":"kNN",
                "predictive_cpa_knn":"Predictive CPA-kNN"}.get(mode,mode)
@@ -46,6 +49,13 @@ def guidance_label(timeline):
 
 def intruder_reference_color():
     return ROLE_COLORS["intruder"]
+
+
+def show_reference_lines(timeline, mode="auto"):
+    if mode not in ("auto","on","off"):
+        raise ValueError("reference-lines must be auto, on or off")
+    return (mode=="on" or mode=="auto" and
+            "delayed-convergence" not in timeline.data["environment_protocol"])
 
 
 def _coordinates(point,view):
@@ -70,12 +80,13 @@ def protected_cylinder_geometry(scene,angles=64,levels=8):
                 z=height,center=center)
 
 
-def render_html(source,output,view="3d",overwrite=False):
+def render_html(source,output,view="3d",overwrite=False,reference_lines="auto"):
     import plotly.graph_objects as go
     timeline=Timeline(source)
+    show_reference=show_reference_lines(timeline,reference_lines)
     # At 0.05 s the 15v15 control frames already supply 20 FPS; extra display
     # samples quadratically duplicate all 30 entity trails in standalone HTML.
-    times=(timeline.key_times if timeline.config.scale=="15v15" else
+    times=(timeline.key_times if timeline.config.scale in ("15v15","20v20") else
            sorted(set(timeline.key_times+video_times(timeline.duration,30))))
     rows=[timeline.at(t) for t in times]
     first=rows[0]["entities"]
@@ -89,7 +100,7 @@ def render_html(source,output,view="3d",overwrite=False):
             return go.Scatter3d(x=coords[:,0],y=coords[:,1],z=coords[:,2],**options)
         x,y=(coords[:,0],coords[:,1]) if view=="top" else (coords[:,0],coords[:,2])
         return go.Scatter(x=x,y=y,**options)
-    scene=timeline.data["scene"]
+    scene=timeline.data.get("scene") or vars(timeline.config)
     cylinder=protected_cylinder_geometry(scene)
     center=cylinder["center"]
     radius=scene["protected_radius"]
@@ -109,10 +120,11 @@ def render_html(source,output,view="3d",overwrite=False):
                           [center[0]-radius,0,center[2]+scene["protected_height"]],
                           [center[0]-radius,0,center[2]]],mode="lines",name="Protected region",
                          line=dict(color="#55a868",width=2)))
-    for j,reference in enumerate(timeline.references):
-        data.append(line(reference[0],mode="lines",name=f"I{j} (Blue Intruder) reference",
-                         showlegend=False,
-                         line=dict(color=intruder_reference_color(),dash="dash",width=3),opacity=.55))
+    if show_reference:
+        for j,reference in enumerate(timeline.references):
+            data.append(line(reference[0],mode="lines",name=f"I{j} (Blue Intruder) reference",
+                             showlegend=False,
+                             line=dict(color=intruder_reference_color(),dash="dash",width=3),opacity=.55))
     for role in ("defender","intruder"):
         data.append(line([],mode="lines",name=ROLE_LABELS[role],showlegend=True,
                          line=dict(color=ROLE_COLORS[role],width=4)))
@@ -243,7 +255,7 @@ def _atomic_text(output,content,overwrite=False):
             temporary.unlink(missing_ok=True)
 
 
-def _render_mp4_to_path(source,output,view="3d",fps=30):
+def _render_mp4_to_path(source,output,view="3d",fps=30,reference_lines="auto"):
     ffmpeg=shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("FFmpeg required for MP4 export")
@@ -258,7 +270,8 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
     from matplotlib.animation import FFMpegWriter
     matplotlib.rcParams["animation.ffmpeg_path"]=ffmpeg
     timeline=Timeline(source)
-    scene=timeline.data["scene"]
+    show_reference=show_reference_lines(timeline,reference_lines)
+    scene=timeline.data.get("scene") or vars(timeline.config)
     history=[timeline.at(t) for t in timeline.key_times]
     fig=plt.figure(figsize=(12.8,7.2),dpi=100)
     axis=fig.add_subplot(projection="3d" if view=="3d" else None)
@@ -277,11 +290,12 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
         axis.plot([center[0]-radius,center[0]+radius,center[0]+radius,center[0]-radius,center[0]-radius],
                   [center[2],center[2],center[2]+scene["protected_height"],
                    center[2]+scene["protected_height"],center[2]],color="#55a868")
-    for index,reference in enumerate(timeline.references):
-        coords=np.asarray([_coordinates(point,view) for point in reference[0]])
-        axis.plot(*coords.T,linestyle="--",color=intruder_reference_color(),alpha=.85,
-                  linewidth=2.,
-                  label="Blue reference" if index==0 else "_nolegend_")
+    if show_reference:
+        for index,reference in enumerate(timeline.references):
+            coords=np.asarray([_coordinates(point,view) for point in reference[0]])
+            axis.plot(*coords.T,linestyle="--",color=intruder_reference_color(),alpha=.85,
+                      linewidth=2.,
+                      label="Blue reference" if index==0 else "_nolegend_")
     axis.set_xlim(scene["lower"][0],scene["upper"][0])
     axis.set_ylim(scene["lower"][1 if view!="altitude" else 2],
                   scene["upper"][1 if view!="altitude" else 2])
@@ -340,13 +354,13 @@ def _render_mp4_to_path(source,output,view="3d",fps=30):
         plt.close(fig)
 
 
-def render_mp4(source,output,view="3d",fps=30,overwrite=False):
+def render_mp4(source,output,view="3d",fps=30,overwrite=False,reference_lines="auto"):
     output=Path(output)
     if output.exists() and not overwrite:
         raise FileExistsError(output)
     with tempfile.TemporaryDirectory(dir=output.parent) as folder:
         temporary=Path(folder)/"video.mp4"
-        _render_mp4_to_path(source,temporary,view,fps)
+        _render_mp4_to_path(source,temporary,view,fps,reference_lines)
         if not temporary.is_file() or temporary.stat().st_size==0:
             raise RuntimeError("FFmpeg did not produce a valid video file")
         _publish(temporary,output,overwrite)
@@ -359,11 +373,12 @@ def main(argv=None):
     parser.add_argument("--view",choices=("3d","top","altitude"),default="3d")
     parser.add_argument("--fps",type=int,default=30)
     parser.add_argument("--overwrite",action="store_true")
+    parser.add_argument("--reference-lines",choices=("auto","on","off"),default="auto")
     args=parser.parse_args(argv)
     if args.output.suffix==".mp4":
-        render_mp4(args.trace,args.output,args.view,args.fps,args.overwrite)
+        render_mp4(args.trace,args.output,args.view,args.fps,args.overwrite,args.reference_lines)
     elif args.output.suffix==".html":
-        render_html(args.trace,args.output,args.view,args.overwrite)
+        render_html(args.trace,args.output,args.view,args.overwrite,args.reference_lines)
     else:
         parser.error("output must end in .html or .mp4")
 

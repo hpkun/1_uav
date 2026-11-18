@@ -16,6 +16,7 @@ class IntruderPlan:
     speed: float
     generation_seed: int
     reference: Reference
+    profile_metadata: dict | None = None
 
     def metadata(self):
         altitudes=self.reference.points[:,2]
@@ -31,6 +32,8 @@ class IntruderPlan:
                 np.max(np.abs(altitudes-self.start[2]))))
         if self.policy=="level2_maneuvering":
             row["intruder_motion_level"]="level2_maneuvering"
+        if self.profile_metadata is not None:
+            row.update(self.profile_metadata)
         return row
 
 

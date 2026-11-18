@@ -14,7 +14,7 @@ from env.ideal_interception.large_scale_20v20_env import TwentyConfig, TwentyVTw
 from prediction.history import IntruderHistory
 
 
-PROTOCOL = "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3"
+PROTOCOL = "uav-ideal-interception-20v20-delayed-convergence-zuo-pip-cpa-v4"
 TRACE_VERSION = "uav-ideal-trace-v2"
 EPS = 1e-12
 CONTROLLER_SPEC = dict(
@@ -24,7 +24,7 @@ CONTROLLER_SPEC = dict(
     avoidance="project predictive_cpa_knn: k=4, CPA horizon=3 s, safe=3 m, alert=8 m, max weight=0.40",
     assignment_refresh="initial and affected defenders after target resolution",
     paper_label_note="The paper calls Eqs. 4-9 LB-Hungarian, but specifies a sequential argmax, not a Hungarian subproblem.",
-    scene_note="Project 20v20 front-arc Level-2 scenario; not the paper's numerical experiment.")
+    scene_note="Project 20v20 delayed-convergence scene; not the paper's numerical experiment.")
 
 
 def load_balanced_assignment(defenders, intruders, defender_mask, intruder_mask, initial_loads=None):
@@ -148,6 +148,7 @@ def run_episode(seed=17):
                    episode_resolution_time_s=info["time"],
                    initial_unique_target_count=initial["initial_unique_target_count"],
                    initial_max_defenders_per_target=initial["initial_max_defenders_per_target"],
+                   path_hashes=[path.specification()["polyline_sha256"] for path in env.paths],
                    target_resolution_reassignment_count=info["target_resolution_reassignment_count"],
                    total_reassigned_defenders=info["total_reassigned_defenders"])
     trace = dict(trace_version=TRACE_VERSION, environment_protocol=PROTOCOL,

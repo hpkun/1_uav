@@ -65,6 +65,8 @@ def test_full_episode_uses_three_point_pip_and_predictive_avoidance():
     assert summary["guidance_method"] == "three_point_pip"
     assert summary["interception_ratio"] == pytest.approx(summary["intercepted_count"]/20)
     assert trace["frames"][-1]["outcome"] != "ongoing"
+    assert summary["path_hashes"] == [row["specification"]["polyline_sha256"]
+                                      for row in trace["references"]]
     controls = [frame["control"] for frame in trace["frames"][1:]]
     assert all(control["method"] == "three_point_pip" and
                control["avoidance_mode"] == "predictive_cpa_knn" for control in controls)

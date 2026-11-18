@@ -18,10 +18,13 @@ PHYSICAL_EVENTS = {"interception_contact","friendly_collision","intruder_collisi
                    "region_breach","boundary_exit","path_complete"}
 SLOT_SCHEMAS = {
     PROTOCOL: (DEFENDER_SLOTS,INTRUDER_SLOTS),
+    "uav-ideal-interception-20v20-target-resolution-nearest-v2": (20,20),
+    "uav-ideal-interception-20v20-delayed-convergence-nearest-v3": (20,20),
     "uav-ideal-interception-20v20-zuo-hierarchical-v1": (20,20),
     "uav-ideal-interception-20v20-zuo-allocation-pip-v1": (20,20),
     "uav-ideal-interception-20v20-zuo-allocation-pip-knn-v2": (20,20),
     "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3": (20,20),
+    "uav-ideal-interception-20v20-delayed-convergence-zuo-pip-cpa-v4": (20,20),
     "uav-ideal-interception-v3.4.0": (6,6),
     "uav-ideal-interception-v3.3.0": (6,6),
     "uav-ideal-interception-v3.2.0": (5,2),
@@ -38,7 +41,8 @@ class Timeline:
         opener=gzip.open if Path(source).suffix==".gz" else open
         with opener(source,"rt",encoding="utf-8") as stream:
             data=json.load(stream)
-        if (data.get("trace_version") not in (TRACE_VERSION,"uav-ideal-trace-v1") or
+        if (data.get("trace_version") not in (TRACE_VERSION,"uav-ideal-trace-v1",
+                "uav-ideal-20v20-nearest-trace-v2") or
                 data.get("environment_protocol") not in SLOT_SCHEMAS):
             raise ValueError("unsupported ideal trajectory protocol")
         self.data=data
@@ -47,10 +51,13 @@ class Timeline:
         try:
             raw=data["config"]
             if data["environment_protocol"] in (
+                    "uav-ideal-interception-20v20-target-resolution-nearest-v2",
+                    "uav-ideal-interception-20v20-delayed-convergence-nearest-v3",
                     "uav-ideal-interception-20v20-zuo-hierarchical-v1",
                     "uav-ideal-interception-20v20-zuo-allocation-pip-v1",
                     "uav-ideal-interception-20v20-zuo-allocation-pip-knn-v2",
-                    "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3"):
+                    "uav-ideal-interception-20v20-zuo-allocation-pip-cpa-v3",
+                    "uav-ideal-interception-20v20-delayed-convergence-zuo-pip-cpa-v4"):
                 from dataclasses import asdict
                 from env.ideal_interception.large_scale_20v20_env import TwentyConfig
                 if raw!=json.loads(json.dumps(asdict(TwentyConfig(seed=raw["seed"])))):
@@ -132,7 +139,7 @@ class Timeline:
                     raise ValueError(f"frame {k} invalid {field}")
             if type(frame.get("events")) is not list:
                 raise ValueError(f"frame {k} invalid events")
-            if self.data["trace_version"] == TRACE_VERSION:
+            if self.data["trace_version"] in (TRACE_VERSION,"uav-ideal-20v20-nearest-trace-v2"):
                 assignment=frame.get("assignment")
                 if not isinstance(assignment,dict):
                     raise ValueError(f"frame {k} missing recorded assignment")
@@ -267,9 +274,11 @@ class Timeline:
             if active!=masks(after):
                 raise ValueError(f"frame {k} activity mask mismatch")
         result=self.data.get("result")
+        result_outcome=result.get("outcome",result.get("summary",{}).get("outcome")) if isinstance(result,dict) else None
+        result_time=result.get("time",result.get("summary",{}).get("episode_resolution_time_s")) if isinstance(result,dict) else None
         if (not isinstance(result,dict) or result.get("events")!=all_events
-                or result.get("outcome")!=self.frames[-1]["outcome"]
-                or not np.isclose(result.get("time",np.nan),self.duration,**tolerance)):
+                or result_outcome!=self.frames[-1]["outcome"]
+                or not np.isclose(result_time,self.duration,**tolerance)):
             raise ValueError("result events, outcome or time mismatch")
 
     def _intruder_at(self,index,time):
